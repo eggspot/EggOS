@@ -655,6 +655,46 @@ fn decode(trap_type: u64, address: u64, status: u64, pc: u64) -> Exception {
 
 core::arch::global_asm!(
     r#"
+    .macro SYS number
+    mov         \number, %g1
+    ta          0x6d
+    .endm
+    .macro OK
+    bcs,pn      %xcc, 9f
+     nop
+    brnz,pn     %o0, 9f
+     nop
+    .endm
+    .macro FAILED_WITH errno
+    bcc,pn      %xcc, 9f
+     nop
+    cmp         %o0, \errno
+    bne,pn      %xcc, 9f
+     nop
+    .endm
+    .macro SET64 value, register
+    sethi       %hh(\value), %l7
+    or          %l7, %hm(\value), %l7
+    sllx        %l7, 32, %l7
+    sethi       %hi(\value), \register
+    or          \register, %lo(\value), \register
+    or          \register, %l7, \register
+    .endm
+    .macro EXPECT register, value
+    SET64       \value, %g1
+    cmp         \register, %g1
+    bne,pn      %xcc, 9f
+     nop
+    .endm
+    .macro EXIT_OK_OR_FAIL
+    mov         0, %o0
+    SYS         188
+9:  mov         1, %o0
+    SYS         188
+8:  ba          8b
+     nop
+    .endm
+
     .pushsection .rodata.user_test, "a"
     .balign 8
     .global sparc64_user_test_start
@@ -708,12 +748,97 @@ sparc64_user_test_linux_hello:
     .balign 4
     .global sparc64_user_test_linux_start
 sparc64_user_test_linux_start:
-    .global sparc64_user_test_linux_pending
-sparc64_user_test_linux_pending:
+    add         %sp, {bias} + 128, %l5
+    and         %l5, 15, %l1
+    brnz,pn     %l1, 9f
+     nop
+    add         %sp, -336, %sp
+    add         %sp, {bias} + 176, %l6
+    SYS         20
+    mov         %o0, %l0
+    SYS         143
+    cmp         %o0, %l0
+    bne,pn      %xcc, 9f
+     nop
+    mov         %l6, %o0
+    mov         16, %o1
+    mov         0, %o2
+    SYS         347
+    bcs,pn      %xcc, 9f
+     nop
+    cmp         %o0, 16
+    bne,pn      %xcc, 9f
+     nop
+    ldx         [%l6], %l1
+    ldx         [%l6 + 8], %l2
+    or          %l1, %l2, %l1
+    brz,pn      %l1, 9f
+     nop
+    mov         0, %o0
+    mov         3, %o1
+    mov         0, %o2
+    add         %l6, 16, %o3
+    SYS         331
+    OK
+    ldx         [%l6 + 16], %l1
+    EXPECT      %l1, 0x800000
+    ldx         [%l6 + 24], %l1
+    EXPECT      %l1, -1
+    mov         1, %l1
+    stx         %l1, [%l6 + 32]
+    stx         %g0, [%l6 + 40]
+    stx         %g0, [%l6 + 48]
+    stx         %g0, [%l6 + 56]
+    mov         13, %o0
+    add         %l6, 32, %o1
+    mov         0, %o2
+    mov         0, %o3
+    mov         8, %o4
+    SYS         102
+    OK
+    mov         13, %o0
+    mov         0, %o1
+    add         %l6, 64, %o2
+    mov         0, %o3
+    mov         8, %o4
+    SYS         102
+    OK
+    ldx         [%l6 + 64], %l1
+    EXPECT      %l1, 1
+    mov         0, %o0
+    add         %l6, 96, %o1
+    SYS         28
+    OK
+    ldsw        [%l6 + 104], %l1
+    EXPECT      %l1, 2
+    ldx         [%l5], %l0
+    add         %l5, 8, %l1
+    mov         2, %l2
+6:  ldx         [%l1], %o1
+    add         %l1, 8, %l1
+    brz,pn      %o1, 8f
+     mov        0, %o2
+7:  ldub        [%o1 + %o2], %l3
+    brz,pn      %l3, 5f
+     nop
+    ba          7b
+     add        %o2, 1, %o2
+5:  stx         %o1, [%l6 + 128]
+    stx         %o2, [%l6 + 136]
     mov         1, %o0
-    mov         {linux_exit_group}, %g1
-    ta          0x6d
-5:  ba          5b
+    add         %l6, 128, %o1
+    mov         1, %o2
+    SYS         121
+    ba          6b
+     nop
+8:  subcc       %l2, 1, %l2
+    bne,pn      %xcc, 6b
+     nop
+    mov         %l0, %o0
+    SYS         188
+9:  mov         255, %o0
+    SYS         188
+4:  ba          4b
      nop
     .global sparc64_user_test_linux_start_end
 sparc64_user_test_linux_start_end:
@@ -732,6 +857,709 @@ sparc64_user_test_stack_growth:
 7:  stx         %l0, [%l0]
     ba          7b
      sub        %l0, %l1, %l0
+
+    .global sparc64_user_test_checks
+sparc64_user_test_checks:
+    .irp        n, 2,3,4,5,6,7
+    mov         0x100 + \n, %g\n
+    .endr
+    .irp        n, 0,1,2,3,4,5,6,7
+    mov         0x110 + \n, %l\n
+    .endr
+    .irp        n, 0,1,2,3,4,5,7
+    mov         0x120 + \n, %i\n
+    .endr
+    mov         0x137, %o7
+    mov         1, %o0
+    mov         2, %o1
+    mov         3, %o2
+    mov         4, %o3
+    mov         5, %o4
+    mov         6, %o5
+    mov         {syscall_first}, %g1
+    ta          0x6d
+    sub         %o1, 2, %o1
+    .irp        n, 2,3,4,5
+    sub         %o\n, \n + 1, %o\n
+    or          %o1, %o\n, %o1
+    .endr
+    sub         %o7, 0x137, %o7
+    or          %o1, %o7, %o1
+    .irp        n, 2,3,4,5,6,7
+    sub         %g\n, 0x100 + \n, %g\n
+    or          %o1, %g\n, %o1
+    .endr
+    .irp        n, 0,1,2,3,4,5,6,7
+    sub         %l\n, 0x110 + \n, %l\n
+    or          %o1, %l\n, %o1
+    .endr
+    .irp        n, 0,1,2,3,4,5,7
+    sub         %i\n, 0x120 + \n, %i\n
+    or          %o1, %i\n, %o1
+    .endr
+    or          %o1, %g1, %o1
+    mov         {syscall_report}, %g1
+    ta          0x6d
+    ldx         [%o0], %o2
+1:  ba          1b
+     nop
+
+    .global sparc64_user_test_fp_registers
+sparc64_user_test_fp_registers:
+    add         %sp, -192, %sp
+    add         %sp, {bias} + 176, %l6
+    mov         {syscall_first}, %g1
+    ta          0x6d
+    mov         %o0, %l0
+    mov         0, %l1
+    .irp        i, 0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
+    std         %f\i, [%l6]
+    ldx         [%l6], %l2
+    or          %l1, %l2, %l1
+    .endr
+    stx         %fsr, [%l6]
+    ldx         [%l6], %l2
+    SET64       {fsr_version}, %l3
+    andn        %l2, %l3, %l2
+    or          %l1, %l2, %l1
+    and         %l0, 3, %l2
+    sllx        %l2, 30, %l2
+    stx         %l2, [%l6]
+    ldx         [%l6], %fsr
+    .irp        i, 0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
+    add         %l0, \i, %l2
+    stx         %l2, [%l6]
+    ldd         [%l6], %f\i
+    .endr
+1:  mov         {syscall_null}, %g1
+    ta          0x6d
+    mov         %o0, %l3
+    .irp        i, 0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62
+    add         %l0, \i, %l2
+    std         %f\i, [%l6]
+    ldx         [%l6], %l4
+    xor         %l4, %l2, %l4
+    or          %l1, %l4, %l1
+    .endr
+    stx         %fsr, [%l6]
+    ldx         [%l6], %l2
+    srlx        %l2, 30, %l2
+    and         %l2, 3, %l2
+    and         %l0, 3, %l4
+    xor         %l2, %l4, %l2
+    or          %l1, %l2, %l1
+    brz,pt      %l3, 1b
+     nop
+    mov         %l1, %o0
+    mov         {syscall_report}, %g1
+    ta          0x6d
+2:  ba          2b
+     nop
+
+    .global sparc64_user_test_linux_thread_pointer
+sparc64_user_test_linux_thread_pointer:
+    mov         %g7, %l0
+    SYS         20
+    sllx        %o0, 12, %l1
+    mov         %l1, %g7
+    mov         {thread_pointer_rounds}, %l2
+7:  SYS         245
+    or          %l0, %o0, %l0
+    xor         %g7, %l1, %l3
+    or          %l0, %l3, %l0
+    subcc       %l2, 1, %l2
+    bne,pt      %xcc, 7b
+     nop
+    movrnz      %l0, 1, %l0
+    mov         %l0, %o0
+    SYS         188
+8:  ba          8b
+     nop
+
+    .global sparc64_user_test_linux_poll
+sparc64_user_test_linux_poll:
+    add         %sp, -240, %sp
+    add         %sp, {bias} + 176, %l6
+    stx         %g0, [%l6]
+    mov         1, %l1
+    stw         %l1, [%l6 + 8]
+    mov         4, %l1
+    sth         %l1, [%l6 + 12]
+    sth         %g0, [%l6 + 14]
+    mov         2, %l1
+    stw         %l1, [%l6 + 16]
+    stw         %g0, [%l6 + 20]
+    stx         %g0, [%l6 + 32]
+    stx         %g0, [%l6 + 40]
+    mov         %l6, %o0
+    mov         3, %o1
+    add         %l6, 32, %o2
+    mov         0, %o3
+    mov         0, %o4
+    SYS         298
+    bcs,pn      %xcc, 9f
+     nop
+    EXPECT      %o0, 1
+    lduh        [%l6 + 6], %l1
+    EXPECT      %l1, 0
+    lduh        [%l6 + 14], %l1
+    EXPECT      %l1, 4
+    lduh        [%l6 + 22], %l1
+    EXPECT      %l1, 0
+    mov         1, %o0
+    SET64       0x40087468, %o1
+    add         %l6, 48, %o2
+    SYS         54
+    OK
+    stx         %g0, [%l6 + 32]
+    SET64       {poll_wait}, %l1
+    stx         %l1, [%l6 + 40]
+    mov         0, %o0
+    mov         0, %o1
+    add         %l6, 32, %o2
+    mov         0, %o3
+    mov         0, %o4
+    SYS         298
+    OK
+    ldx         [%l6 + 32], %l1
+    ldx         [%l6 + 40], %l2
+    or          %l1, %l2, %l1
+    EXPECT      %l1, 0
+    EXIT_OK_OR_FAIL
+
+    .global sparc64_user_test_linux_signals
+sparc64_user_test_linux_signals:
+    add         %sp, -240, %sp
+    add         %sp, {bias} + 176, %l6
+    mov         0, %o0
+    mov         20, %o1
+    SYS         37
+    OK
+    sethi       %hi(0x20000000), %l1
+    stx         %l1, [%l6]
+    mov         1, %o0
+    mov         %l6, %o1
+    mov         0, %o2
+    mov         8, %o3
+    SYS         103
+    OK
+    SYS         20
+    mov         %o0, %o1
+    mov         30, %o2
+    SYS         211
+    OK
+    add         %l6, 16, %o0
+    mov         8, %o1
+    SYS         104
+    OK
+    ldx         [%l6 + 16], %l1
+    EXPECT      %l1, 0x20000000
+    mov         2, %o0
+    mov         %l6, %o1
+    mov         0, %o2
+    mov         8, %o3
+    SYS         103
+9:  mov         1, %o0
+    SYS         188
+8:  ba          8b
+     nop
+
+    .global sparc64_user_test_linux_signal_handler
+sparc64_user_test_linux_signal_handler:
+    add         %sp, -304, %sp
+    add         %sp, {bias} + 176, %l6
+    sethi       %hi(0x2800), %l1
+    sub         %l6, %l1, %l1
+    stx         %l1, [%l6]
+    stx         %g0, [%l6 + 8]
+    sethi       %hi(0x2000), %l1
+    stx         %l1, [%l6 + 16]
+    mov         %l6, %o0
+    mov         0, %o1
+    SYS         28
+    OK
+1:  rd          %pc, %l1
+    add         %l1, 5f - 1b, %l1
+    stx         %l1, [%l6 + 32]
+    mov         0x201, %l1
+    stx         %l1, [%l6 + 40]
+    stx         %g0, [%l6 + 48]
+    stx         %g0, [%l6 + 56]
+    mov         30, %o0
+    add         %l6, 32, %o1
+    mov         0, %o2
+    mov         0, %o3
+    mov         8, %o4
+    SYS         102
+    OK
+    SYS         20
+    mov         %o0, %o1
+    mov         30, %o2
+    mov         0x5a5, %g3
+    mov         1, %g2
+    SET64       {signal_fp_kept}, %l1
+    stx         %l1, [%l6 + 64]
+    ldd         [%l6 + 64], %f8
+    SET64       {signal_rounding}<<30, %l1
+    stx         %l1, [%l6 + 64]
+    ldx         [%l6 + 64], %fsr
+    SYS         211
+    OK
+    EXPECT      %g3, 0x5a5
+    EXPECT      %g2, 2
+    std         %f8, [%l6 + 64]
+    ldx         [%l6 + 64], %l1
+    EXPECT      %l1, {signal_fp_kept}
+    std         %f10, [%l6 + 64]
+    ldx         [%l6 + 64], %l1
+    EXPECT      %l1, {signal_fp_changed}
+    stx         %fsr, [%l6 + 64]
+    ldx         [%l6 + 64], %l1
+    srlx        %l1, 30, %l1
+    and         %l1, 3, %l1
+    EXPECT      %l1, {signal_rounding}
+    mov         1, %o0
+    mov         0, %o1
+    add         %l6, 72, %o2
+    mov         8, %o3
+    SYS         103
+    OK
+    ldx         [%l6 + 72], %l1
+    EXPECT      %l1, 0
+    EXIT_OK_OR_FAIL
+5:  save        %sp, -192, %sp
+    cmp         %i0, 30
+    bne,pn      %xcc, 7f
+     nop
+    ldsw        [%i1], %l0
+    cmp         %l0, 30
+    bne,pn      %xcc, 7f
+     nop
+    ldsw        [%i1 + 8], %l0
+    cmp         %l0, -6
+    bne,pn      %xcc, 7f
+     nop
+    add         %i6, {bias}, %l1
+    ldx         [%i1 + {frame_stack_sp}], %l2
+    cmp         %l1, %l2
+    blu,pn      %xcc, 7f
+     nop
+    ldx         [%i1 + {frame_stack_size}], %l3
+    add         %l2, %l3, %l2
+    cmp         %l1, %l2
+    bgeu,pn     %xcc, 7f
+     nop
+    SET64       {signal_fp_kept}, %l1
+    std         %f8, [%sp + {bias} + 176]
+    ldx         [%sp + {bias} + 176], %l0
+    cmp         %l0, %l1
+    bne,pn      %xcc, 7f
+     nop
+    ldx         [%i1 + {frame_fpu}], %l2
+    ldx         [%l2 + 32], %l0
+    cmp         %l0, %l1
+    bne,pn      %xcc, 7f
+     nop
+    ldx         [%l2 + 256], %l0
+    srlx        %l0, 30, %l0
+    and         %l0, 3, %l0
+    cmp         %l0, {signal_rounding}
+    bne,pn      %xcc, 7f
+     nop
+    SET64       {signal_fp_changed}, %l0
+    stx         %l0, [%l2 + 40]
+    stx         %g0, [%sp + {bias} + 176]
+    ldd         [%sp + {bias} + 176], %f8
+    mov         2, %l0
+    stx         %l0, [%i1 + {saved_g2}]
+7:  mov         0, %g3
+    ret
+     restore
+
+    .global sparc64_user_test_linux_fault_handler
+sparc64_user_test_linux_fault_handler:
+    add         %sp, -272, %sp
+    add         %sp, {bias} + 176, %l6
+1:  rd          %pc, %l1
+    add         %l1, 5f - 1b, %l1
+    stx         %l1, [%l6]
+    mov         0x200, %l1
+    stx         %l1, [%l6 + 8]
+    stx         %g0, [%l6 + 16]
+    stx         %g0, [%l6 + 24]
+    mov         11, %o0
+    mov         %l6, %o1
+    mov         0, %o2
+    mov         0, %o3
+    mov         8, %o4
+    SYS         102
+    OK
+    mov         0, %o0
+    sethi       %hi(8192), %o1
+    mov         0, %o2
+    mov         0x22, %o3
+    mov         -1, %o4
+    mov         0, %o5
+    SYS         71
+    bcs,pn      %xcc, 9f
+     nop
+    mov         %o0, %l0
+    mov         0, %g2
+    SET64       {fault_address}, %g3
+    mov         1, %g4
+2:  rd          %pc, %g5
+    add         %g5, 3f - 2b, %g5
+    ldx         [%g3], %l1
+    ba          9f
+     nop
+3:  mov         %l0, %g3
+    mov         2, %g4
+4:  rd          %pc, %g5
+    add         %g5, 6f - 4b, %g5
+    ldx         [%g3], %l1
+    ba          9f
+     nop
+6:  EXPECT      %g2, 2
+    EXIT_OK_OR_FAIL
+5:  save        %sp, -192, %sp
+    cmp         %i0, 11
+    bne,pn      %xcc, 7f
+     nop
+    ldsw        [%i1], %l0
+    cmp         %l0, 11
+    bne,pn      %xcc, 7f
+     nop
+    ldsw        [%i1 + 8], %l0
+    ldx         [%i1 + {saved_g4}], %l1
+    cmp         %l0, %l1
+    bne,pn      %xcc, 7f
+     nop
+    ldx         [%i1 + 16], %l0
+    ldx         [%i1 + {saved_g3}], %l1
+    cmp         %l0, %l1
+    bne,pn      %xcc, 7f
+     nop
+    ldx         [%i1 + {saved_g2}], %l0
+    add         %l0, 1, %l0
+    stx         %l0, [%i1 + {saved_g2}]
+7:  ldx         [%i1 + {saved_g5}], %l0
+    stx         %l0, [%i1 + {saved_tpc}]
+    add         %l0, 4, %l0
+    stx         %l0, [%i1 + {saved_tnpc}]
+    ret
+     restore
+
+    .global sparc64_user_test_linux_signal_queue
+sparc64_user_test_linux_signal_queue:
+    add         %sp, -496, %sp
+    add         %sp, {bias} + 176, %l6
+    SET64       1<<({queued_signal}-1), %l1
+    stx         %l1, [%l6 + 272]
+    stx         %g0, [%l6 + 256]
+    stx         %g0, [%l6 + 264]
+    mov         1, %o0
+    add         %l6, 272, %o1
+    mov         0, %o2
+    mov         8, %o3
+    SYS         103
+    OK
+    SYS         20
+    mov         %o0, %l0
+    mov         {queued_signal}, %l1
+    stw         %l1, [%l6 + 128]
+    stw         %g0, [%l6 + 132]
+    mov         -1, %l1
+    stw         %l1, [%l6 + 136]
+    stw         %g0, [%l6 + 140]
+    stw         %l0, [%l6 + 144]
+    stw         %g0, [%l6 + 148]
+    SET64       {first_value}, %l1
+    stx         %l1, [%l6 + 152]
+    mov         %l0, %o0
+    mov         {queued_signal}, %o1
+    add         %l6, 128, %o2
+    SYS         106
+    OK
+    SET64       {second_value}, %l1
+    stx         %l1, [%l6 + 152]
+    mov         %l0, %o0
+    mov         {queued_signal}, %o1
+    add         %l6, 128, %o2
+    SYS         106
+    OK
+    mov         %l0, %o0
+    mov         {queued_signal}, %o1
+    SYS         37
+    OK
+    mov         -1, %l2
+    SET64       {first_value}, %l3
+    call        6f
+     nop
+    SET64       {second_value}, %l3
+    call        6f
+     nop
+    mov         0, %l2
+    mov         0, %l3
+    call        6f
+     nop
+    add         %l6, 272, %o0
+    mov         %l6, %o1
+    add         %l6, 256, %o2
+    mov         8, %o3
+    SYS         105
+    FAILED_WITH 11
+    EXIT_OK_OR_FAIL
+6:  add         %l6, 272, %o0
+    mov         %l6, %o1
+    add         %l6, 256, %o2
+    mov         8, %o3
+    SYS         105
+    bcs,pn      %xcc, 9b
+     nop
+    cmp         %o0, {queued_signal}
+    bne,pn      %xcc, 9b
+     nop
+    ldsw        [%l6], %l1
+    cmp         %l1, {queued_signal}
+    bne,pn      %xcc, 9b
+     nop
+    ldsw        [%l6 + 8], %l1
+    cmp         %l1, %l2
+    bne,pn      %xcc, 9b
+     nop
+    ldsw        [%l6 + 16], %l1
+    cmp         %l1, %l0
+    bne,pn      %xcc, 9b
+     nop
+    ldx         [%l6 + 24], %l1
+    cmp         %l1, %l3
+    bne,pn      %xcc, 9b
+     nop
+    retl
+     nop
+
+    .global sparc64_user_test_linux_signal_suspend
+sparc64_user_test_linux_signal_suspend:
+    add         %sp, -272, %sp
+    add         %sp, {bias} + 176, %l6
+1:  rd          %pc, %l1
+    add         %l1, 5f - 1b, %l1
+    stx         %l1, [%l6]
+    mov         0x200, %l1
+    stx         %l1, [%l6 + 8]
+    stx         %g0, [%l6 + 16]
+    stx         %g0, [%l6 + 24]
+    mov         30, %o0
+    mov         %l6, %o1
+    mov         0, %o2
+    mov         0, %o3
+    mov         8, %o4
+    SYS         102
+    OK
+    sethi       %hi(0x20000000), %l1
+    stx         %l1, [%l6 + 32]
+    stx         %g0, [%l6 + 40]
+    mov         1, %o0
+    add         %l6, 32, %o1
+    mov         0, %o2
+    mov         8, %o3
+    SYS         103
+    OK
+    SYS         20
+    mov         %o0, %o1
+    mov         30, %o2
+    SYS         211
+    OK
+    mov         1, %g2
+    add         %l6, 40, %o0
+    mov         8, %o1
+    SYS         107
+    FAILED_WITH 4
+    EXPECT      %g2, 2
+    mov         1, %o0
+    mov         0, %o1
+    add         %l6, 48, %o2
+    mov         8, %o3
+    SYS         103
+    OK
+    ldx         [%l6 + 48], %l1
+    EXPECT      %l1, 0x20000000
+    EXIT_OK_OR_FAIL
+5:  save        %sp, -192, %sp
+    cmp         %i0, 30
+    bne,pn      %xcc, 7f
+     nop
+    ldx         [%i1 + {frame_sigmask}], %l0
+    sethi       %hi(0x20000000), %l1
+    cmp         %l0, %l1
+    bne,pn      %xcc, 7f
+     nop
+    mov         2, %l0
+    stx         %l0, [%i1 + {saved_g2}]
+7:  ret
+     restore
+
+    .global sparc64_user_test_linux_clock
+sparc64_user_test_linux_clock:
+    add         %sp, -240, %sp
+    add         %sp, {bias} + 176, %l6
+    mov         1, %o0
+    mov         %l6, %o1
+    SYS         257
+    OK
+    stx         %g0, [%l6 + 32]
+    SET64       {clock_wait}, %l1
+    stx         %l1, [%l6 + 40]
+    add         %l6, 32, %o0
+    mov         0, %o1
+    SYS         249
+    OK
+    mov         1, %o0
+    add         %l6, 16, %o1
+    SYS         257
+    OK
+    ldx         [%l6 + 16], %l1
+    ldx         [%l6], %l2
+    sub         %l1, %l2, %l1
+    SET64       1000000000, %l2
+    mulx        %l1, %l2, %l1
+    ldx         [%l6 + 24], %l2
+    add         %l1, %l2, %l1
+    ldx         [%l6 + 8], %l2
+    sub         %l1, %l2, %l1
+    ldx         [%l6 + 40], %l2
+    cmp         %l1, %l2
+    blu,pn      %xcc, 9f
+     nop
+    mov         2, %o0
+    add         %l6, 16, %o1
+    SYS         257
+    OK
+    EXIT_OK_OR_FAIL
+
+    .global sparc64_user_test_linux_stat
+sparc64_user_test_linux_stat:
+    add         %sp, -448, %sp
+    add         %sp, {bias} + 176, %l6
+    stb         %g0, [%l6 + 256]
+    mov         1, %o0
+    mov         %l6, %o1
+    SYS         62
+    OK
+    lduw        [%l6 + 16], %l1
+    srl         %l1, 12, %l1
+    and         %l1, 15, %l1
+    EXPECT      %l1, 2
+    lduw        [%l6 + 32], %l1
+    EXPECT      %l1, 0x501
+    stw         %g0, [%l6 + 32]
+    mov         1, %o0
+    add         %l6, 256, %o1
+    mov         %l6, %o2
+    sethi       %hi(0x1000), %o3
+    SYS         289
+    OK
+    lduw        [%l6 + 32], %l1
+    EXPECT      %l1, 0x501
+    sth         %g0, [%l6 + 28]
+    stw         %g0, [%l6 + 128]
+    mov         1, %o0
+    add         %l6, 256, %o1
+    sethi       %hi(0x1000), %o2
+    mov         0x7ff, %o3
+    mov         %l6, %o4
+    SYS         360
+    OK
+    lduh        [%l6 + 28], %l1
+    srl         %l1, 12, %l1
+    and         %l1, 15, %l1
+    EXPECT      %l1, 2
+    lduw        [%l6 + 128], %l1
+    EXPECT      %l1, 5
+    mov         1, %o0
+    mov         0, %o1
+    mov         1, %o2
+    SYS         19
+    FAILED_WITH 29
+    mov         3, %o0
+    mov         %l6, %o1
+    SYS         62
+    FAILED_WITH 9
+    EXIT_OK_OR_FAIL
+
+    .global sparc64_user_test_linux_credentials
+sparc64_user_test_linux_credentials:
+    SYS         49
+    OK
+    mov         1000, %o0
+    SYS         23
+    OK
+    SYS         24
+    bcs,pn      %xcc, 9f
+     nop
+    EXPECT      %o0, 1000
+    mov         0, %o0
+    SYS         23
+    FAILED_WITH 1
+    EXIT_OK_OR_FAIL
+
+    .global sparc64_user_test_linux_move_and_discard
+sparc64_user_test_linux_move_and_discard:
+    mov         0, %o0
+    sethi       %hi(8192), %o1
+    mov         3, %o2
+    mov         0x22, %o3
+    mov         -1, %o4
+    mov         0, %o5
+    SYS         71
+    bcs,pn      %xcc, 9f
+     nop
+    mov         %o0, %l0
+    sethi       %hi(8192), %o1
+    mov         23, %o2
+    SYS         75
+    OK
+    SET64       0x12345678, %l2
+    stx         %l2, [%l0]
+    sethi       %hi(0x100000), %l1
+    sub         %l0, %l1, %l1
+    mov         %l0, %o0
+    sethi       %hi(8192), %o1
+    sethi       %hi(8192), %o2
+    mov         3, %o3
+    mov         %l1, %o4
+    SYS         250
+    bcs,pn      %xcc, 9f
+     nop
+    cmp         %o0, %l1
+    bne,pn      %xcc, 9f
+     nop
+    ldx         [%l1], %l3
+    cmp         %l3, %l2
+    bne,pn      %xcc, 9f
+     nop
+    mov         %l0, %o0
+    sethi       %hi(8192), %o1
+    mov         3, %o2
+    mov         0x32, %o3
+    mov         -1, %o4
+    mov         0, %o5
+    SYS         71
+    bcs,pn      %xcc, 9f
+     nop
+    cmp         %o0, %l0
+    bne,pn      %xcc, 9f
+     nop
+    ldx         [%l0], %l3
+    EXPECT      %l3, 0
+    mov         %l1, %o0
+    sethi       %hi(8192), %o1
+    mov         4, %o2
+    SYS         75
+    OK
+    ldx         [%l1], %l3
+    EXPECT      %l3, 0
+    EXIT_OK_OR_FAIL
     .global sparc64_user_test_end
 sparc64_user_test_end:
     .popsection
@@ -744,7 +1572,37 @@ sparc64_user_test_end:
     enosys = const 90,
     unknown_syscall = const TestProgram::LINUX_UNKNOWN_SYSCALL,
     bias = const STACK_BIAS,
+    syscall_first = const TestProgram::SYSCALL_FIRST,
+    syscall_report = const TestProgram::SYSCALL_REPORT,
+    fsr_version = const FSR_VERSION,
+    thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
+    poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
+    clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
+    signal_fp_kept = const TestProgram::LINUX_SIGNAL_FP_KEPT,
+    signal_fp_changed = const TestProgram::LINUX_SIGNAL_FP_CHANGED,
+    signal_rounding = const 2,
+    frame_fpu = const FRAME_REGS + 160,
+    frame_stack_sp = const FRAME_REGS + 168,
+    frame_stack_size = const FRAME_REGS + 184,
+    frame_sigmask = const FRAME_REGS + 192,
+    saved_g2 = const FRAME_REGS + 2 * 8,
+    saved_g3 = const FRAME_REGS + 3 * 8,
+    saved_g4 = const FRAME_REGS + 4 * 8,
+    saved_g5 = const FRAME_REGS + 5 * 8,
+    saved_tpc = const FRAME_REGS + 136,
+    saved_tnpc = const FRAME_REGS + 144,
+    fault_address = const TestProgram::LINUX_FAULT_ADDRESS,
+    queued_signal = const TestProgram::LINUX_QUEUED_SIGNAL,
+    first_value = const TestProgram::LINUX_QUEUED_VALUES[0],
+    second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
+
+/// Where the test programs' handlers find the interrupted state, from the `siginfo_t` they
+/// get: `struct pt_regs` right after it (`u_regs[16]`, `%g0`-`%o7`, then `TSTATE`, `%pc`,
+/// `%npc`), then the pointer to the FP registers, the `stack_t` and the mask.
+const FRAME_REGS: usize = 128;
+/// `%fsr`'s read-only `ver` field, which differs between CPUs and is not program state.
+const FSR_VERSION: u64 = 0x7 << 17;
 
 unsafe extern "C" {
     static sparc64_user_test_start: u8;
@@ -757,12 +1615,24 @@ unsafe extern "C" {
     static sparc64_user_test_linux_start_end: u8;
     static sparc64_user_test_linux_unknown_syscalls: u8;
     static sparc64_user_test_stack_growth: u8;
-    static sparc64_user_test_linux_pending: u8;
+    static sparc64_user_test_checks: u8;
+    static sparc64_user_test_fp_registers: u8;
+    static sparc64_user_test_linux_thread_pointer: u8;
+    static sparc64_user_test_linux_poll: u8;
+    static sparc64_user_test_linux_signals: u8;
+    static sparc64_user_test_linux_signal_handler: u8;
+    static sparc64_user_test_linux_fault_handler: u8;
+    static sparc64_user_test_linux_signal_queue: u8;
+    static sparc64_user_test_linux_signal_suspend: u8;
+    static sparc64_user_test_linux_clock: u8;
+    static sparc64_user_test_linux_stat: u8;
+    static sparc64_user_test_linux_credentials: u8;
+    static sparc64_user_test_linux_move_and_discard: u8;
     static sparc64_user_test_end: u8;
 }
 
-/// [`crate::Platform::user_test_program`]. The programs past `linux_hello`, and `checks` and
-/// `fp_registers`, are not written for SPARC64 yet: they exit with 1 (D326).
+/// [`crate::Platform::user_test_program`]: every program, the Linux ones in SPARC64's numbers
+/// and values (D418).
 pub(super) fn user_test_program() -> TestProgram {
     let start = (&raw const sparc64_user_test_start) as usize;
     let end = (&raw const sparc64_user_test_end) as usize;
@@ -770,30 +1640,29 @@ pub(super) fn user_test_program() -> TestProgram {
     // SAFETY: the symbols bound the programs' bytes in `.rodata.user_test`, part of the kernel
     // image, read-only and never written, for as long as the kernel runs.
     let code = unsafe { core::slice::from_raw_parts(start as *const u8, end - start) };
-    let pending = at(&raw const sparc64_user_test_linux_pending);
     TestProgram {
         code,
-        checks: pending,
+        checks: at(&raw const sparc64_user_test_checks),
         floating_point: at(&raw const sparc64_user_test_floating_point),
         null_syscalls: at(&raw const sparc64_user_test_null_syscalls),
         spin: at(&raw const sparc64_user_test_spin),
-        fp_registers: pending,
+        fp_registers: at(&raw const sparc64_user_test_fp_registers),
         illegal_instruction: at(&raw const sparc64_user_test_illegal_instruction),
         linux_hello: at(&raw const sparc64_user_test_linux_hello),
         linux_start: at(&raw const sparc64_user_test_linux_start),
         linux_start_end: at(&raw const sparc64_user_test_linux_start_end),
         linux_unknown_syscalls: at(&raw const sparc64_user_test_linux_unknown_syscalls),
         stack_growth: at(&raw const sparc64_user_test_stack_growth),
-        linux_thread_pointer: pending,
-        linux_poll: pending,
-        linux_signals: pending,
-        linux_signal_handler: pending,
-        linux_fault_handler: pending,
-        linux_signal_queue: pending,
-        linux_signal_suspend: pending,
-        linux_clock: pending,
-        linux_stat: pending,
-        linux_credentials: pending,
-        linux_move_and_discard: pending,
+        linux_thread_pointer: at(&raw const sparc64_user_test_linux_thread_pointer),
+        linux_poll: at(&raw const sparc64_user_test_linux_poll),
+        linux_signals: at(&raw const sparc64_user_test_linux_signals),
+        linux_signal_handler: at(&raw const sparc64_user_test_linux_signal_handler),
+        linux_fault_handler: at(&raw const sparc64_user_test_linux_fault_handler),
+        linux_signal_queue: at(&raw const sparc64_user_test_linux_signal_queue),
+        linux_signal_suspend: at(&raw const sparc64_user_test_linux_signal_suspend),
+        linux_clock: at(&raw const sparc64_user_test_linux_clock),
+        linux_stat: at(&raw const sparc64_user_test_linux_stat),
+        linux_credentials: at(&raw const sparc64_user_test_linux_credentials),
+        linux_move_and_discard: at(&raw const sparc64_user_test_linux_move_and_discard),
     }
 }

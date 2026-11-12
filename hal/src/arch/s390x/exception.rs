@@ -625,7 +625,7 @@ s390x_user_test_linux_fault_handler:
 s390x_user_test_linux_signal_queue:
     aghi        %r15, -320
     lgr         %r12, %r15
-    LI64        %r1, 1 << ({queued_signal} - 1)
+    LI64        %r1, 1<<({queued_signal}-1)
     stg         %r1, 272(%r12)
     mvghi       256(%r12), 0
     mvghi       264(%r12), 0

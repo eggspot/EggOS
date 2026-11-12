@@ -23371,3 +23371,26 @@ the license, by an explicit instruction recorded here.
   programs stay position-independent.
 - **Known gaps (to check at build time).** The z10 instructions the programs use (`mvghi`,
   `mvhi`, `mvhhi`) against the CPU model the build picks for the user programs' section.
+
+## D418 SPARC64's test programs, and `argc` past the window save area (M9; D326's and D327's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** SPARC64's `TestProgram` gains `checks`, `fp_registers` and every Linux program
+  past `linux_hello`, hand-written in SPARC's numbers and values: `ta 0x6d` with the number
+  in `%g1`, the carry set on an error with SPARC's positive number in `%o0`; `SIGUSR1` 30,
+  `SIGCHLD` 20; `SA_SIGINFO` `0x200` and `SA_ONSTACK` 1; `rt_sigaction`'s fourth argument a
+  restorer and its fifth the set's size; `SIG_BLOCK` 1 (D416); `struct stat`'s 32-bit
+  `st_rdev` at 32; the thread pointer is `%g7`, which a program sets itself; mappings in
+  whole 8 KiB pairs (D328). Every branch's delay slot is written out. A program keeps its data
+  176 bytes above its biased stack pointer, past its window's save area, which a spill or a
+  signal's delivery writes. The handlers open a window with `save` and return with `ret` and
+  `restore`, as compiled ones do, and find the interrupted state after the `siginfo_t` they
+  get (D327): `u_regs` with the globals they check and change (`%g2` to `%g5`, which every
+  window shares), `%pc` and `%npc`, the pointer to the FP registers, the `stack_t` and the
+  mask. With no move between integer and FP registers before VIS 3, values go through memory,
+  and `fp_registers` leaves `%fsr`'s read-only `ver` field out of its difference word.
+- **Found on the way.** Linux starts a SPARC64 program with `argc` 128 bytes above its biased
+  stack pointer, past its register window's save area, where glibc's `_start` reads it; the
+  kernel put it at the stack pointer, so a real program read its window's spill area as
+  `argc`. `exec` now leaves `START_STACK_GAP` (128 on SPARC64, 0 elsewhere) below it.
+- **Known gaps (to check at build time).** LLVM's acceptance of `ldx`/`stx` on `%fsr` and of
+  `ldd`/`std` on `%f32`-`%f62` in the programs' section.

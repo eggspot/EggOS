@@ -401,7 +401,10 @@ pub fn load_program<P: Platform>(
         stack_pointer: stack.start,
     });
     let start = loader.as_ref().map_or(entry, |loader| loader.entry);
-    Ok(UserContext::new(start, stack.start))
+    Ok(UserContext::new(
+        start,
+        stack.start - crate::linux::abi::START_STACK_GAP,
+    ))
 }
 
 const CLOCK_TICKS_PER_SECOND: u64 = 100;

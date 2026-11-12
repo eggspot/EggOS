@@ -292,6 +292,9 @@ pub const SIGACTION_HAS_RESTORER: bool = true;
 pub const REWRITES_ARGUMENTS: bool = true;
 /// `MINSIGSTKSZ`.
 pub const MIN_SIGNAL_STACK_SIZE: u64 = 4096;
+/// A new program's `argc` is 128 bytes above its stack pointer, past the save area of its
+/// register window, where `_start` reads it (D418).
+pub const START_STACK_GAP: u64 = 128;
 /// The page size programs are told (`AT_PAGESZ`): the MMU's 8 KiB, so that they keep their
 /// mappings in whole pairs (D328).
 pub const REPORTED_PAGE_SIZE: u64 = 8192;

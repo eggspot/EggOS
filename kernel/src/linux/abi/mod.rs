@@ -107,6 +107,11 @@ pub mod signal {
 #[cfg(not(target_arch = "sparc64"))]
 pub const REPORTED_PAGE_SIZE: u64 = eggos_hal::memory::FRAME_SIZE;
 
+/// The bytes between a new program's stack pointer and its `argc`: none everywhere but on
+/// SPARC64, whose register window's save area is there (D418).
+#[cfg(not(target_arch = "sparc64"))]
+pub const START_STACK_GAP: u64 = 0;
+
 /// `clone` takes the flags first and the stack second everywhere but on s390x.
 #[cfg(not(target_arch = "s390x"))]
 pub const CLONE_STACK_FIRST: bool = false;
