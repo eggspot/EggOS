@@ -653,7 +653,6 @@ pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 struct Widgets {
     switch_label: WidgetId,
     on_screen_label: WidgetId,
-    keyboard_no_disk: WidgetId,
     search: WidgetId,
     list: WidgetId,
     panes: [WidgetId; PANES.len()],
@@ -1305,7 +1304,6 @@ impl SettingsWindow {
             widgets: Widgets {
                 switch_label,
                 on_screen_label,
-                keyboard_no_disk,
                 search,
                 list,
                 panes,
@@ -1704,7 +1702,7 @@ impl SettingsWindow {
             tree.set_place(w.dead_keys, line(KEYBOARD_FACTS_X, DEAD_KEYS_LINE));
             tree.set_place(w.try_field, boxed(TRY_FIELD));
             tree.set_place(w.keyboard_line, line(KEYBOARD_FACTS_X, KEYBOARD_LINE));
-            tree.set_place(w.keyboard_no_disk, line(PADDING, NO_DISK_LINE));
+            tree.set_place(w.keyboard_status, line(PADDING, NO_DISK_LINE));
             tree.set_place(w.switch_label, line(SWITCH_KEY_LABEL.0, SWITCH_KEY_LABEL.1));
             tree.set_place(w.switch_key, boxed(SWITCH_KEY));
             tree.set_place(w.on_screen_label, line(ON_SCREEN_LABEL.0, ON_SCREEN_LABEL.1));
@@ -1731,7 +1729,7 @@ impl SettingsWindow {
         tree.set_place(w.dead_keys, line(x, 460));
         tree.set_place(w.try_field, boxed((x, 488, c, row)));
         tree.set_place(w.keyboard_line, line(x, 552));
-        tree.set_place(w.keyboard_no_disk, line(x, 572));
+        tree.set_place(w.keyboard_status, line(x, 572));
         tree.set_place(w.switch_label, line(x, 592));
         tree.set_place(w.switch_key, boxed((x, 616, c, row)));
         tree.set_place(w.on_screen_label, line(x, 672));
