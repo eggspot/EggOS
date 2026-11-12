@@ -51,6 +51,9 @@ impl PickerLayout {
     };
 }
 const SLOTS: usize = EMPTY_ROWS.len();
+const TOUCH_ROW: i32 = 48;
+const LINE_HEIGHT: i32 = 16;
+const TOUCH_CONTROL: i32 = 48;
 
 /// The search field's placeholder, which also names it for agents.
 pub const PLACEHOLDER: &str = "City, region or abbreviation";
@@ -68,6 +71,7 @@ pub enum Reply {
 
 #[derive(Debug, Clone, Copy)]
 struct Widgets {
+    title: WidgetId,
     name: WidgetId,
     facts: WidgetId,
     field: WidgetId,
@@ -184,6 +188,53 @@ impl ZonePicker {
     }
 
     /// [`Self::build`] with the widgets where `layout` puts them.
+    /// Moves the picker to `layout`, or on a narrow page to one column `content` wide from
+    /// `top` with 48 px targets (settings-forms-v0.5.md 2, R1 and R6).
+    pub fn reflow(
+        &self,
+        tree: &mut WidgetTree<CAPACITY>,
+        layout: PickerLayout,
+        narrow: Option<(i32, i32)>,
+    ) {
+        let w = self.widgets;
+        let (zone_line, facts_line, field, count_line, list, row) = match narrow {
+            None => (
+                layout.zone_line,
+                layout.facts_line,
+                layout.field,
+                layout.count_line,
+                layout.list,
+                ROW,
+            ),
+            Some((content, top)) => (
+                top,
+                top + 20,
+                (PADDING, top + 44, content, TOUCH_CONTROL),
+                top + 100,
+                (PADDING, top + 124, content, VISIBLE_ROWS as i32 * TOUCH_ROW),
+                TOUCH_ROW,
+            ),
+        };
+        tree.set_place(w.title, Place::at(PADDING, zone_line, Length::Content, Length::Content));
+        tree.set_place(w.name, Place::right(PADDING, zone_line));
+        tree.set_place(w.facts, Place::right(PADDING, facts_line));
+        tree.set_place(w.field, at(field));
+        tree.set_place(w.count, Place::right(PADDING, count_line));
+        tree.set_place(w.list, at(list));
+        tree.set_row_height(w.list, row);
+        for (index, label) in w.rows.iter().enumerate() {
+            tree.set_place(
+                *label,
+                Place::at(
+                    ROW_LABEL_X,
+                    list.1 + (row - LINE_HEIGHT) / 2 + index as i32 * row,
+                    Length::Px(list.2 - (ROW_LABEL_X - list.0) - ROW_LABEL_END),
+                    Length::Content,
+                ),
+            );
+        }
+    }
+
     pub fn build_at(
         tree: &mut WidgetTree<CAPACITY>,
         pane: WidgetId,
@@ -191,7 +242,7 @@ impl ZonePicker {
         now_s: i64,
         layout: PickerLayout,
     ) -> Self {
-        add(
+        let title = add(
             tree,
             pane,
             Place::at(PADDING, layout.zone_line, Length::Content, Length::Content),
@@ -247,6 +298,7 @@ impl ZonePicker {
         });
         let mut picker = Self {
             widgets: Widgets {
+                title,
                 name,
                 facts,
                 field,

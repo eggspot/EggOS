@@ -23493,3 +23493,12 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** The same per-pane tables for Appearance, Network, Display, Mouse,
   Accessibility, Storage, Date & time, Agents and About (R1 to R10), the list rows' icons and
   summaries, cards in a column, wrapping labels and bottom sheets.
+
+## D425 The Date & time pane in one column on narrow pages (settings-forms-v0.5.md section 2: R1, R3, R6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** On a narrow page `Now` and `Set automatically` stay as rows (R1, R8); `Set to`
+  takes its line with the field under it and `Set` under the field, both the content's width
+  and 48 tall (R3); the status lines follow, then the zone picker in one column: its name and
+  facts lines, the search field full width and 48 tall, the count line, and the list full
+  width with three 48 px rows (R6). `ZonePicker::reflow` moves the picker for either shape
+  (the first run's page keeps its own layout); the pane is 616 tall at 390.

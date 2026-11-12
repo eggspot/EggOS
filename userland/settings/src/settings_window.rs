@@ -651,6 +651,8 @@ pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 
 #[derive(Debug, Clone, Copy)]
 struct Widgets {
+    set_to: WidgetId,
+    remedy: WidgetId,
     switch_label: WidgetId,
     on_screen_label: WidgetId,
     search: WidgetId,
@@ -1302,6 +1304,8 @@ impl SettingsWindow {
         let mut window = Self {
             tree,
             widgets: Widgets {
+                set_to,
+                remedy,
                 switch_label,
                 on_screen_label,
                 search,
@@ -1583,6 +1587,7 @@ impl SettingsWindow {
             Shape::Sidebar { .. } => None,
         };
         self.reflow_keyboard(content);
+        self.reflow_date_and_time(content);
         self.lay_out_frame();
     }
 
@@ -1737,6 +1742,50 @@ impl SettingsWindow {
         tree.set_place(
             w.panes[KEYBOARD],
             Place::at(0, 0, Length::Fill(0), Length::Px(696 + row + 16)),
+        );
+    }
+
+    /// Lays the Date & time pane out in one column `content` wide, or as on the desktop: the
+    /// `Set to` field and `Set` stacked (R3), the zone picker's list with 48 px rows (R6).
+    fn reflow_date_and_time(&mut self, content: Option<i32>) {
+        let w = self.widgets;
+        let line = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
+        let boxed = |(x, y, width, height): (i32, i32, i32, i32)| {
+            Place::at(x, y, Length::Px(width), Length::Px(height))
+        };
+        let Some(c) = content else {
+            self.tree
+                .set_place(w.set_to, line(FIRST_ROW + SET_TO_ROW * SETTING_ROW + TEXT_IN_ROW));
+            self.tree.set_place(w.set_field, boxed(SET_FIELD));
+            self.tree.set_place(w.set_button, boxed(SET_BUTTON));
+            self.tree.set_place(w.status, line(STATUS_LINE));
+            self.tree.set_place(w.remedy, line(REMEDY_LINE));
+            self.zones
+                .reflow(&mut self.tree, crate::zone_picker::PickerLayout::DATE_AND_TIME, None);
+            self.tree.set_place(
+                w.panes[DATE_AND_TIME],
+                Place::at(0, 0, Length::Fill(0), Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
+            );
+            return;
+        };
+        let set_top = FIRST_ROW + SET_TO_ROW * SETTING_ROW;
+        self.tree.set_place(w.set_to, line(set_top));
+        self.tree
+            .set_place(w.set_field, boxed((PADDING, set_top + 24, c, TOUCH_CONTROL)));
+        self.tree
+            .set_place(w.set_button, boxed((PADDING, set_top + 80, c, TOUCH_CONTROL)));
+        let status = set_top + 136;
+        self.tree.set_place(w.status, line(status));
+        self.tree.set_place(w.remedy, line(status + 20));
+        let picker = status + 52;
+        self.zones.reflow(
+            &mut self.tree,
+            crate::zone_picker::PickerLayout::DATE_AND_TIME,
+            Some((c, picker)),
+        );
+        self.tree.set_place(
+            w.panes[DATE_AND_TIME],
+            Place::at(0, 0, Length::Fill(0), Length::Px(picker + 124 + 3 * TOUCH_CONTROL + 16)),
         );
     }
 
@@ -3408,5 +3457,28 @@ mod reflow_tests {
         let pane = window.widgets().rect(w.panes[KEYBOARD]).unwrap();
         let move_up = window.widgets().rect(w.move_up).unwrap();
         assert_eq!((move_up.x - pane.x, move_up.y - pane.y), (MOVE_UP.0, MOVE_UP.1));
+    }
+}
+
+#[cfg(test)]
+mod date_and_time_reflow_tests {
+    use super::*;
+    use eggos_toolkit::geometry::Rect;
+
+    #[test]
+    fn the_date_and_time_pane_stacks_set_to_and_widens_the_zone_list_on_a_phone() {
+        let mut window = SettingsWindow::new(Facts::example());
+        window.tree().resize(390, 752);
+        window.set_form_factor(SettingsForm::Phone, 390);
+        window.open_pane(DATE_AND_TIME);
+        let w = window.widgets;
+        let pane = window.widgets().rect(w.panes[DATE_AND_TIME]).unwrap();
+        let at = |id: WidgetId| {
+            let r = window.widgets().rect(id).unwrap();
+            Rect::new(r.x - pane.x, r.y - pane.y, r.width, r.height)
+        };
+        assert_eq!(at(w.set_field), Rect::new(16, 168, 358, 48));
+        assert_eq!(at(w.set_button), Rect::new(16, 224, 358, 48));
+        assert_eq!(pane.height, 616);
     }
 }
