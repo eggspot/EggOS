@@ -24287,3 +24287,20 @@ the license, by an explicit instruction recorded here.
   means one mapping for both.
 - **Not yet.** Exceptions and interrupts, threads, user mode, secondary harts and the rest of
   `Platform` (RV32 part 3), RAM beyond 896 MiB, and the core's remaining 64-bit assumptions.
+
+## D476 32-bit Arm, part 2: the boot path on QEMU `virt` with a Cortex-A15 (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `hal::arch::arm` boots an ELF image QEMU loads at `0x4040_0000` (the device
+  tree at RAM's start, where QEMU puts it for an ELF kernel) in SVC mode: interrupts masked,
+  `.bss` zeroed, and the LPAE root (D474) given three 1 GiB blocks: RAM's first gigabyte at
+  `0xc000_0000` (the direct map, holding the kernel image linked at `0xc040_0000`, so the
+  image's offset and the direct map's are the same `0x8000_0000`, as on RV32, D475), the same
+  gigabyte at its physical address for the jump, and the physical space's first gigabyte, QEMU
+  `virt`'s devices, at its own address as execute-never device memory. `MAIR0` takes
+  AArch64's attribute bytes, `TTBCR` turns LPAE on with `TTBR0` translating everything and
+  write-back, inner-shareable walks, and `SCTLR` turns on the MMU and both caches; then the
+  jump to the virtual address, the stack, and `early_main`, which writes to the PL011, reads
+  the generic timer (`CNTVCT`, `CNTFRQ`) and powers off through PSCI's `SYSTEM_OFF`.
+- **Not yet.** Exception vectors and modes (IRQ, abort, undefined, supervisor-call stacks),
+  the GIC, threads, user mode, secondary CPUs, the rest of `Platform`, RAM beyond a gigabyte,
+  and the core's remaining 64-bit assumptions.

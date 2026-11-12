@@ -31,6 +31,9 @@ pub(crate) use aarch64::zero;
 #[cfg(all(eggos_kernel, target_arch = "riscv32"))]
 pub mod riscv32;
 
+#[cfg(all(eggos_kernel, target_arch = "arm"))]
+pub mod arm;
+
 #[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
 pub mod loongarch64;
 #[cfg(all(eggos_kernel, target_arch = "loongarch64"))]
