@@ -2,19 +2,25 @@
 //! GPU with `VIRTIO_GPU_F_VIRGL`), for user-space drivers that encode their own command
 //! streams (Mesa's virgl for OpenGL, Venus for Vulkan). Each opener of the render node gets a
 //! [`Context`]; its buffers are 3D resources backed by DMA memory the program may map. A
-//! command stream is posted and the call returns (D438); every other command first settles
-//! what was posted and waits for its own answer, and [`wait`] sleeps until the GPU is done.
-//! The GPU is the display's device, reached through [`crate::display::with_renderer`].
+//! command stream is posted in one of the device's stream slots and the call returns its fence
+//! (D460): several streams are in flight at once, and a fence passes once every stream posted
+//! up to it is finished. Each buffer keeps the fence of the last stream that used it, which
+//! [`Buffer::wait`] and the buffer's release wait for; [`Fence`] is a fence a program holds as
+//! a file. Waits sleep on the console's input key, which the GPU's interrupt wakes, so any
+//! number of threads wait at once. Every other command waits for its own answer. The GPU is
+//! the display's device, reached through [`crate::display::with_renderer`].
 
 use crate::devices::Deadline;
 use crate::devices::dma::DmaRegion;
+use crate::devices::interrupts::DeviceEvents;
+use crate::linux::Errno;
 use crate::process::LentFrames;
 use crate::sync::SpinLock;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::ManuallyDrop;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 pub use eggos_drivers::virtio::gpu::three_d::{
     CapsetInfo, ResourceShape, TexelBox, ThreeDCommand, Transfer, capset_info,
 };
@@ -30,6 +36,8 @@ pub const CAPSET_ROOM: usize = eggos_drivers::virtio::gpu::CAPSET_ROOM;
 pub const COMMAND_STREAM_BYTES: usize = eggos_drivers::virtio::gpu::COMMAND_STREAM_BYTES;
 const FIRST_RESOURCE: u32 = 0x100;
 const DEBUG_NAME: &[u8] = b"eggos";
+const FENCE_TIMEOUT_MS: u64 = 5000;
+const NO_STREAM_IN_FLIGHT: u64 = u64::MAX;
 
 /// A GPU that takes 3D commands, as the display's driver offers it.
 pub trait Renderer {
@@ -39,8 +47,24 @@ pub trait Renderer {
     fn takes_context_init(&self) -> bool;
     /// Whether the device takes blob resources (D439).
     fn takes_blobs(&self) -> bool;
-    /// Where a submission's command stream is written before [`ThreeDCommand::Submit`].
-    fn command_stream(&mut self) -> &mut [u8];
+    /// A stream slot no command stream is in flight in, after collecting the answers that came
+    /// (D460); `None` while every slot is in flight.
+    fn free_stream(&mut self) -> Option<usize>;
+    /// Where `slot`'s command stream is written before [`Self::start_stream`]; empty for a slot
+    /// in flight.
+    fn stream(&mut self, slot: usize) -> &mut [u8];
+    /// Posts the first `length` bytes of `slot`'s stream as `context`'s command stream without
+    /// waiting, and returns its fence.
+    fn start_stream(
+        &mut self,
+        slot: usize,
+        context: u32,
+        length: u32,
+    ) -> Result<u64, &'static str>;
+    /// Collects the answers that came: the fence of the oldest stream still in flight.
+    fn oldest_stream(&mut self) -> Option<u64>;
+    /// Gives up on the streams the device never answered.
+    fn abandon_streams(&mut self);
     /// Sends `command` and waits for its answer until `deadline`; copies the answer's data
     /// into `answer` and says how many bytes it copied.
     fn run(
@@ -49,14 +73,8 @@ pub trait Renderer {
         answer: &mut [u8],
         deadline: &mut Deadline,
     ) -> Result<usize, &'static str>;
-    /// Posts `command` without waiting (D438); [`Self::finish`] collects it.
-    fn start(&mut self, command: &ThreeDCommand<'_>) -> Result<(), &'static str>;
-    /// Whether the posted command is answered (or none is posted).
-    fn finish(&mut self) -> Result<bool, &'static str>;
-    /// Gives up on a posted command the device never answered.
-    fn abandon(&mut self);
     /// The events the device's interrupt raises, when it has one connected.
-    fn events(&self) -> Option<&'static crate::devices::interrupts::DeviceEvents>;
+    fn events(&self) -> Option<&'static DeviceEvents>;
 }
 
 /// Why a rendering call failed.
@@ -79,6 +97,9 @@ pub enum RenderError {
 static PRESENT: AtomicBool = AtomicBool::new(false);
 static NEXT_CONTEXT: AtomicU32 = AtomicU32::new(1);
 static NEXT_RESOURCE: AtomicU32 = AtomicU32::new(FIRST_RESOURCE);
+static OLDEST_IN_FLIGHT: AtomicU64 = AtomicU64::new(NO_STREAM_IN_FLIGHT);
+static COLLECTED_AT: AtomicU64 = AtomicU64::new(0);
+static EVENTS: AtomicPtr<DeviceEvents> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Says a GPU that takes 3D commands is the display's device, so the render node is listed.
 pub fn set_present() {
@@ -132,14 +153,136 @@ pub fn takes_context_init<P: Platform>() -> bool {
         .unwrap_or(false)
 }
 
-/// Waits until the GPU answered the command stream posted last (D438): sleeps on its interrupt
-/// with no lock held when it has one, polls otherwise. `nowait` only looks: `Busy` while it
-/// runs.
-pub fn wait<P: Platform>(nowait: bool) -> Result<(), RenderError> {
-    match crate::display::settle_renderer_sleeping::<P>(nowait) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(RenderError::Busy),
-        Err(_) => Err(RenderError::Device),
+fn events() -> Option<&'static DeviceEvents> {
+    let events = EVENTS.load(Ordering::Acquire);
+    // SAFETY: only ever set from a `&'static DeviceEvents` in `note_collected`.
+    unsafe { events.cast_const().as_ref() }
+}
+
+fn note_collected(renderer: &mut dyn Renderer) -> Option<u64> {
+    let events = renderer.events();
+    if let Some(events) = events {
+        EVENTS.store(core::ptr::from_ref(events).cast_mut(), Ordering::Release);
+        COLLECTED_AT.store(events.raised(), Ordering::SeqCst);
+    }
+    let oldest = renderer.oldest_stream();
+    OLDEST_IN_FLIGHT.store(oldest.unwrap_or(NO_STREAM_IN_FLIGHT), Ordering::SeqCst);
+    oldest
+}
+
+/// Whether the command streams posted up to `fence` are finished, as last collected (D460);
+/// fence 0 stands for no stream and has always passed.
+pub fn fence_passed(fence: u64) -> bool {
+    fence < OLDEST_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// Whether `fence` passed or the GPU answered something since its answers were last
+/// collected, so a waiter looks again: what a wait checks under the futex bucket's lock, so it
+/// only reads atomics.
+pub fn fence_may_have_passed(fence: u64) -> bool {
+    fence_passed(fence)
+        || events().is_some_and(|events| events.raised() != COLLECTED_AT.load(Ordering::SeqCst))
+}
+
+/// Whether the GPU's interrupt wakes fence waiters; without one, a wait polls.
+pub fn wakes_fence_waiters() -> bool {
+    events().is_some()
+}
+
+/// Collects the GPU's answers, so [`fence_passed`] is current; the display's lock is taken
+/// briefly and nothing is waited for.
+pub fn collect<P: Platform>() {
+    let looked = crate::display::with_renderer_now(|renderer| {
+        note_collected(renderer);
+    });
+    if looked.is_ok()
+        && let Some(events) = events()
+    {
+        events.looked_at::<P>();
+    }
+}
+
+/// Waits until `fence` passed (D460): sleeps until the GPU's interrupt when it has one, polls
+/// otherwise, and gives the streams up when the GPU does not answer in time. `nowait` only
+/// looks: `Busy` while it has not passed.
+pub fn wait_fence<P: Platform>(fence: u64, nowait: bool) -> Result<(), RenderError> {
+    let ticks = eggos_hal::time::mul_div_ceil(FENCE_TIMEOUT_MS, P::clock_frequency(), 1000);
+    let end = P::clock_ticks().saturating_add(ticks);
+    loop {
+        if fence_passed(fence) {
+            return Ok(());
+        }
+        collect::<P>();
+        if fence_passed(fence) {
+            return Ok(());
+        }
+        if nowait {
+            return Err(RenderError::Busy);
+        }
+        if P::clock_ticks() >= end {
+            let _ = crate::display::with_renderer_now(|renderer| {
+                renderer.abandon_streams();
+                note_collected(renderer);
+            });
+            return Err(RenderError::Device);
+        }
+        match events() {
+            Some(events) => {
+                events.wake_input_waiters_too();
+                let _ = crate::linux::futex::wait::<P>(
+                    crate::console::INPUT_KEY,
+                    u32::MAX,
+                    end,
+                    || match fence_may_have_passed(fence) {
+                        true => Err(Errno::EAGAIN),
+                        false => Ok(()),
+                    },
+                );
+            }
+            None => crate::thread::yield_now::<P>(),
+        }
+    }
+}
+
+/// A fence a program holds as a file (`VIRTGPU_EXECBUF_FENCE_FD_OUT`, a Linux sync file):
+/// readable once every command stream posted up to it is finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fence {
+    sequence: u64,
+}
+
+impl Fence {
+    /// The fence of the stream that returned `sequence`.
+    pub fn new(sequence: u64) -> Self {
+        Self { sequence }
+    }
+
+    /// The fence that passes when both `self` and `other` passed.
+    pub fn merged(self, other: Fence) -> Self {
+        Self::new(self.sequence.max(other.sequence))
+    }
+
+    /// Its place in the GPU's single timeline.
+    pub fn sequence(self) -> u64 {
+        self.sequence
+    }
+
+    /// Whether it passed, after collecting the GPU's answers.
+    pub fn has_passed<P: Platform>(self) -> bool {
+        if !fence_passed(self.sequence) {
+            collect::<P>();
+        }
+        fence_passed(self.sequence)
+    }
+
+    /// Whether it passed or may have, reading atomics only (see [`fence_may_have_passed`]).
+    pub fn may_have_passed(self) -> bool {
+        fence_may_have_passed(self.sequence)
+    }
+
+    /// Waits until it passed, as [`wait_fence`] does.
+    pub fn wait<P: Platform>(self, nowait: bool) -> Result<(), RenderError> {
+        wait_fence::<P>(self.sequence, nowait)
     }
 }
 
@@ -157,7 +300,8 @@ pub struct Buffer {
     backed: bool,
     memory: Option<ManuallyDrop<DmaRegion>>,
     window_offset: Option<u64>,
-    release: fn(u32, bool) -> bool,
+    last_fence: AtomicU64,
+    release: fn(u32, bool, u64) -> bool,
 }
 
 impl Buffer {
@@ -169,6 +313,20 @@ impl Buffer {
     /// Its size in bytes, whole frames.
     pub fn size(&self) -> u64 {
         self.length
+    }
+
+    /// The fence of the last command stream that used it (0 for none).
+    pub fn last_fence(&self) -> u64 {
+        self.last_fence.load(Ordering::Acquire)
+    }
+
+    /// Waits until the last command stream that used it is finished, as [`wait_fence`] does.
+    pub fn wait<P: Platform>(&self, nowait: bool) -> Result<(), RenderError> {
+        wait_fence::<P>(self.last_fence(), nowait)
+    }
+
+    fn used_by(&self, fence: u64) {
+        self.last_fence.fetch_max(fence, Ordering::AcqRel);
     }
 }
 
@@ -204,7 +362,7 @@ impl LentFrames for Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        let released = (self.release)(self.resource, self.backed);
+        let released = (self.release)(self.resource, self.backed, self.last_fence());
         if let Some(offset) = self.window_offset
             && released
         {
@@ -225,7 +383,10 @@ impl Drop for Buffer {
     }
 }
 
-fn release_host_blob<P: Platform>(resource: u32, _backed: bool) -> bool {
+fn release_host_blob<P: Platform>(resource: u32, _backed: bool, fence: u64) -> bool {
+    if wait_fence::<P>(fence, false).is_err() {
+        return false;
+    }
     let unmapped = send_quietly::<P>(&ThreeDCommand::UnmapBlob {
         context: 0,
         resource,
@@ -289,7 +450,10 @@ fn give_back_window(offset: u64, size: u64) {
     }
 }
 
-fn release_resource<P: Platform>(resource: u32, backed: bool) -> bool {
+fn release_resource<P: Platform>(resource: u32, backed: bool, fence: u64) -> bool {
+    if wait_fence::<P>(fence, false).is_err() {
+        return false;
+    }
     let detached = !backed || send_quietly::<P>(&ThreeDCommand::DetachBacking { resource });
     send_quietly::<P>(&ThreeDCommand::Unref { resource }) && detached
 }
@@ -399,6 +563,7 @@ impl Context {
             backed: true,
             memory: Some(ManuallyDrop::new(memory)),
             window_offset: None,
+            last_fence: AtomicU64::new(0),
             release: release_resource::<P>,
         });
         backed?;
@@ -442,6 +607,7 @@ impl Context {
             backed: false,
             memory: Some(ManuallyDrop::new(memory)),
             window_offset: None,
+            last_fence: AtomicU64::new(0),
             release: release_resource::<P>,
         });
         created?;
@@ -467,9 +633,9 @@ impl Context {
         }
         let size = size.max(1).checked_next_multiple_of(FRAME_SIZE).ok_or(RenderError::NoMemory)?;
         if !stream.is_empty() {
-            self.submit::<P>(stream)?;
+            let fence = self.submit::<P>(stream, &[])?;
+            wait_fence::<P>(fence, false)?;
         }
-        wait::<P>(false)?;
         let resource = NEXT_RESOURCE.fetch_add(1, Ordering::Relaxed);
         command::<P>(&ThreeDCommand::CreateHostBlob {
             context: self.id,
@@ -489,6 +655,7 @@ impl Context {
             backed: false,
             memory: None,
             window_offset: Some(offset),
+            last_fence: AtomicU64::new(0),
             release: release_host_blob::<P>,
         });
         command::<P>(&ThreeDCommand::MapBlob {
@@ -549,26 +716,52 @@ impl Context {
         true
     }
 
-    /// Runs `stream`, a command stream in the context's encoding, and waits until the device
-    /// finished it.
-    pub fn submit<P: Platform>(&self, stream: &[u8]) -> Result<(), RenderError> {
+    /// Posts `stream`, a command stream in the context's encoding, that uses `buffers`, and
+    /// returns its fence without waiting for it (D460); waits only while every stream slot is
+    /// in flight. Each of `buffers` keeps the fence as its last.
+    pub fn submit<P: Platform>(
+        &self,
+        stream: &[u8],
+        buffers: &[Arc<Buffer>],
+    ) -> Result<u64, RenderError> {
         self.ensure_created::<P>()?;
         let length = u32::try_from(stream.len()).map_err(|_| RenderError::Invalid)?;
         if stream.len() > COMMAND_STREAM_BYTES {
             return Err(RenderError::Invalid);
         }
         let context = self.id;
-        wait::<P>(false)?;
-        crate::display::with_renderer::<P, _>(|renderer, _| {
-            renderer.command_stream()[..stream.len()].copy_from_slice(stream);
-            renderer.start(&ThreeDCommand::Submit { context, length })
-        })
-        .map_err(|_| RenderError::NoDevice)?
-        .map_err(|_| RenderError::Device)
+        loop {
+            let posted = crate::display::with_renderer_now(|renderer| {
+                let Some(slot) = renderer.free_stream() else {
+                    return Err(note_collected(renderer).unwrap_or(0));
+                };
+                let Some(target) = renderer.stream(slot).get_mut(..stream.len()) else {
+                    return Ok(Err("the GPU has no room for the command stream"));
+                };
+                target.copy_from_slice(stream);
+                Ok(renderer
+                    .start_stream(slot, context, length)
+                    .inspect(|&fence| {
+                        OLDEST_IN_FLIGHT.fetch_min(fence, Ordering::SeqCst);
+                    }))
+            })
+            .map_err(|_| RenderError::NoDevice)?;
+            match posted {
+                Ok(fence) => {
+                    let fence = fence.map_err(|_| RenderError::Device)?;
+                    for buffer in buffers {
+                        buffer.used_by(fence);
+                    }
+                    return Ok(fence);
+                }
+                Err(oldest) => wait_fence::<P>(oldest, false)?,
+            }
+        }
     }
 
     /// Copies `transfer`'s box of the buffer with `handle` from its backing to the host
-    /// (`to_host`) or back, and waits until it is done.
+    /// (`to_host`) or back, and waits until it is done; a copy back first waits for the last
+    /// command stream that used the buffer.
     pub fn transfer<P: Platform>(
         &self,
         handle: u32,
@@ -576,6 +769,9 @@ impl Context {
         transfer: Transfer,
     ) -> Result<(), RenderError> {
         let buffer = self.buffer(handle).ok_or(RenderError::Invalid)?;
+        if !to_host {
+            buffer.wait::<P>(false)?;
+        }
         let transfer = Transfer {
             resource: buffer.resource,
             ..transfer

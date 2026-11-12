@@ -3,18 +3,20 @@
 //! ([`crate::rendering`]). Its `ioctl`s are DRM's that a render node answers (`VERSION`,
 //! `GET_CAP`, `GEM_CLOSE`) and virtio-gpu's (`include/uapi/drm/virtgpu_drm.h`): parameters,
 //! capability sets, context creation, 3D resources, transfers, command submission and waits;
-//! `mmap` at the offset `VIRTGPU_MAP` gives maps a resource's backing. Every command is
-//! finished when its call returns, so a wait never waits and an out-fence is already
-//! signalled (an `eventfd` that reads 1 stands for it). Blob resources, PRIME sharing and
-//! sync objects are not answered yet.
+//! `mmap` at the offset `VIRTGPU_MAP` gives maps a resource's backing. A command stream is
+//! posted and the call returns (D460): its out-fence is a sync file ([`super::sync_file`])
+//! that turns readable once the stream is finished, and a wait on a buffer waits for the last
+//! stream that used it. Every other command is finished when its call returns. Sync objects
+//! are not answered yet.
 
 use super::Errno;
-use super::descriptors::{EventFile, FileKind, OpenFile, open_file_limit, open_flag};
+use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::thread::LinuxThread;
 use crate::process::{Placement, Process};
 use crate::regions::RegionError;
 use crate::rendering::{
-    CAPSET_ROOM, COMMAND_STREAM_BYTES, Context, RenderError, ResourceShape, TexelBox, Transfer,
+    CAPSET_ROOM, COMMAND_STREAM_BYTES, Context, Fence, RenderError, ResourceShape, TexelBox,
+    Transfer,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -262,12 +264,13 @@ pub fn ioctl<P: Platform>(
                 })
         }
         number::WAIT => {
-            context.buffer(argument.u32_at(0)).ok_or(Errno::ENOENT)?;
+            let buffer = context.buffer(argument.u32_at(0)).ok_or(Errno::ENOENT)?;
             let flags = argument.u32_at(4);
             if flags & !WAIT_NOWAIT != 0 {
                 return Err(Errno::EINVAL);
             }
-            crate::rendering::wait::<P>(flags & WAIT_NOWAIT != 0)
+            buffer
+                .wait::<P>(flags & WAIT_NOWAIT != 0)
                 .map(|()| 0)
                 .map_err(errno)
         }
@@ -438,14 +441,26 @@ fn execbuffer<P: Platform>(
     }
     let handles = argument.u32_at(24) as usize;
     let handle_list = argument.u64_at(16);
+    let mut buffers = Vec::new();
+    buffers.try_reserve_exact(handles).map_err(|_| Errno::ENOMEM)?;
     for index in 0..handles {
         let mut word = [0u8; 4];
         process
             .read_user_memory(handle_list + 4 * index as u64, &mut word)
             .map_err(|_| Errno::EFAULT)?;
-        context
+        let buffer = context
             .buffer(u32::from_ne_bytes(word))
             .ok_or(Errno::ENOENT)?;
+        buffers.push(buffer);
+    }
+    if flags & execbuffer_flag::FENCE_FD_IN != 0 {
+        let descriptor = argument.u32_at(28) as i32;
+        let waited_for = thread
+            .files()
+            .file(u64::try_from(descriptor).map_err(|_| Errno::EBADF)?)?;
+        let FileKind::GpuFence(_) = waited_for.kind() else {
+            return Err(Errno::EINVAL);
+        };
     }
     let mut stream = Vec::new();
     if stream.try_reserve_exact(length).is_err() {
@@ -455,23 +470,25 @@ fn execbuffer<P: Platform>(
     process
         .read_user_memory(argument.u64_at(8), &mut stream)
         .map_err(|_| Errno::EFAULT)?;
-    if length > 0 {
-        context.submit::<P>(&stream).map_err(errno)?;
-    }
+    let fence = match length {
+        0 => buffers.iter().map(|buffer| buffer.last_fence()).max().unwrap_or(0),
+        _ => context.submit::<P>(&stream, &buffers).map_err(errno)?,
+    };
     if flags & execbuffer_flag::FENCE_FD_OUT == 0 {
         return Ok(0);
     }
-    let fence = signalled_fence(process, thread)?;
-    argument.set_u32(28, fence);
+    let descriptor = fence_file(process, thread, Fence::new(fence))?;
+    argument.set_u32(28, descriptor);
     argument.write_back(process, address)
 }
 
-fn signalled_fence<P: Platform>(process: &Process<P>, thread: &LinuxThread) -> Result<u32, Errno> {
-    let counter = super::eventfd::EventFd::new(1, false);
-    let file = Arc::new(OpenFile::new(
-        FileKind::Event(EventFile::EventFd(counter)),
-        open_flag::RDWR,
-    ));
+/// Opens `fence` as a sync file in `thread`'s descriptor table (`O_CLOEXEC`): its descriptor.
+pub fn fence_file<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    fence: Fence,
+) -> Result<u32, Errno> {
+    let file = Arc::new(OpenFile::new(FileKind::GpuFence(fence), open_flag::RDWR));
     let limit = open_file_limit(process);
     thread.files().lock().open(file, true, limit)
 }
@@ -544,7 +561,12 @@ pub fn map_buffer<P: Platform>(
         return Err(Errno::EINVAL);
     }
     process
-        .map_lent_frames(placement, length, attributes, Arc::clone(buffer) as Arc<dyn crate::process::LentFrames>)
+        .map_lent_frames(
+            placement,
+            length,
+            attributes,
+            Arc::clone(buffer) as Arc<dyn crate::process::LentFrames>,
+        )
         .map_err(|error| match error {
             RegionError::Overlaps => Errno::EEXIST,
             RegionError::Invalid => Errno::EINVAL,

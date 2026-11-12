@@ -92,6 +92,7 @@ pub mod signals;
 pub mod socket;
 pub mod stat;
 pub mod statfs;
+pub mod sync_file;
 pub mod sysinfo;
 pub mod terminal;
 pub mod thread;
@@ -1474,6 +1475,7 @@ fn ioctl<P: Platform>(
         FileKind::RenderNode(context) => {
             render_node::ioctl(process, thread, context, request, argument)
         }
+        FileKind::GpuFence(fence) => sync_file::ioctl(process, thread, *fence, request, argument),
         FileKind::Socket(socket) => {
             socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
         }
@@ -1518,6 +1520,7 @@ fn lseek(files: &Descriptors, fd: u64, offset: u64, whence: u64) -> Result<u64, 
         | FileKind::Window(_)
         | FileKind::RenderNode(_)
         | FileKind::GpuBuffer(_)
+        | FileKind::GpuFence(_)
         | FileKind::AgentChannel(_)
         | FileKind::Socket(_)
         | FileKind::InetSocket(_)

@@ -37,6 +37,10 @@ struct FakeGpu {
     cursor_backing: Cell<u64>,
     cursor_image: RefCell<Vec<u32>>,
     cursor_log: RefCell<Vec<Vec<u32>>>,
+    three_d: bool,
+    holds_streams: Cell<bool>,
+    held_streams: RefCell<Vec<(u16, u64, u32)>>,
+    streams: RefCell<Vec<(u32, Vec<u8>)>>,
 }
 
 fn read32(address: u64) -> u32 {
@@ -91,10 +95,14 @@ impl FakeGpu {
             self.answers_left
                 .set(self.answers_left.get().map(|left| left - 1));
             let (request, request_len, _, next) = device.descriptor(head);
-            let (response, response_len, flags, _) = device.descriptor(next);
-            assert_ne!(flags & crate::virtio::queue::DESCRIPTOR_WRITE, 0);
             let request = request.get();
             let kind = read32(request);
+            if kind == three_d::command::SUBMIT_3D {
+                self.take_stream(device, head, request, next);
+                continue;
+            }
+            let (response, response_len, flags, _) = device.descriptor(next);
+            assert_ne!(flags & crate::virtio::queue::DESCRIPTOR_WRITE, 0);
             let fenced = read32(request + 4) & FLAG_FENCE != 0;
             self.log.borrow_mut().push(Command {
                 kind,
@@ -108,6 +116,41 @@ impl FakeGpu {
             write32(response.get() + 4, if fenced { FLAG_FENCE } else { 0 });
             device.put_used(head, response_len.min(DISPLAY_INFO_BYTES as u32));
         }
+    }
+
+    fn take_stream(&self, device: &mut DeviceSide, head: u16, request: u64, next: u16) {
+        let (stream, length, _, answer_next) = device.descriptor(next);
+        let (answer, answer_len, flags, _) = device.descriptor(answer_next);
+        assert_ne!(flags & crate::virtio::queue::DESCRIPTOR_WRITE, 0);
+        assert_eq!(read32(request + 24), length);
+        assert_ne!(read32(request + 4) & FLAG_FENCE, 0);
+        // SAFETY: the stream lies in the test's HostDma, whose device address is its host
+        // address, and the driver does not write it while it is in flight.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(stream.get() as *const u8, length as usize) };
+        self.streams
+            .borrow_mut()
+            .push((read32(request + 16), bytes.to_vec()));
+        match self.holds_streams.get() {
+            true => self
+                .held_streams
+                .borrow_mut()
+                .push((head, answer.get(), answer_len)),
+            false => {
+                write32(answer.get(), three_d::answer::OK_NODATA);
+                device.put_used(head, answer_len);
+            }
+        }
+    }
+
+    fn answer_held_stream(&self, index: usize) {
+        let (head, answer, length) = self.held_streams.borrow_mut().remove(index);
+        write32(answer, three_d::answer::OK_NODATA);
+        self.device
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .put_used(head, length);
     }
 
     fn process_cursor(&self) {
@@ -220,6 +263,17 @@ impl FakeGpu {
     }
 }
 
+const FEATURE_EDID: u64 = 1 << 1;
+
+impl FakeGpu {
+    fn three_d_features(&self) -> u64 {
+        match self.three_d {
+            true => three_d::FEATURE_VIRGL,
+            false => 0,
+        }
+    }
+}
+
 impl Transport for FakeGpu {
     fn device_type(&self) -> u32 {
         device_type::GPU
@@ -231,10 +285,10 @@ impl Transport for FakeGpu {
         self.status.set(status);
     }
     fn device_features(&self) -> u64 {
-        feature::VERSION_1 | 1
+        feature::VERSION_1 | FEATURE_EDID | self.three_d_features()
     }
     fn set_driver_features(&self, features: u64) {
-        assert_eq!(features, feature::VERSION_1);
+        assert_eq!(features, feature::VERSION_1 | self.three_d_features());
     }
     fn max_queue_size(&self, queue: u16) -> u16 {
         match queue {
@@ -639,4 +693,89 @@ fn a_cursor_needs_the_cursor_queue_and_enough_memory() {
         .attach_cursor(HostDma::zeroed(4), &mut polls(10))
         .unwrap_err();
     assert_eq!((error, memory.is_some()), (Error::NoCursor, true));
+}
+
+fn three_d_gpu() -> VirtioGpu<FakeGpu, HostDma> {
+    let fake = FakeGpu {
+        three_d: true,
+        ..FakeGpu::new(Some((64, 48)))
+    };
+    let mut gpu = gpu(fake);
+    gpu.attach_three_d(HostDma::zeroed(THREE_D_BYTES.div_ceil(4096)))
+        .unwrap();
+    gpu
+}
+
+fn post_stream(gpu: &mut VirtioGpu<FakeGpu, HostDma>, context: u32, bytes: &[u8]) -> u64 {
+    let slot = gpu.free_stream().unwrap();
+    gpu.stream(slot).unwrap()[..bytes.len()].copy_from_slice(bytes);
+    gpu.start_stream(slot, context, bytes.len() as u32).unwrap()
+}
+
+#[test]
+fn several_streams_are_in_flight_and_fences_pass_by_the_oldest() {
+    let mut gpu = three_d_gpu();
+    gpu.transport().holds_streams.set(true);
+    let first = post_stream(&mut gpu, 1, &[1, 2, 3, 4]);
+    let second = post_stream(&mut gpu, 2, &[5, 6, 7, 8, 9, 10, 11, 12]);
+    assert!(second > first);
+    assert_eq!(gpu.free_stream(), None);
+    assert_eq!(gpu.oldest_stream(), Some(first));
+    gpu.transport().answer_held_stream(1);
+    assert_eq!(gpu.oldest_stream(), Some(first));
+    assert!(gpu.free_stream().is_some());
+    gpu.transport().answer_held_stream(0);
+    assert_eq!(gpu.oldest_stream(), None);
+    assert!(!gpu.streams_in_flight());
+    assert_eq!(
+        *gpu.transport().streams.borrow(),
+        vec![(1, vec![1, 2, 3, 4]), (2, vec![5, 6, 7, 8, 9, 10, 11, 12])]
+    );
+    assert_eq!(gpu.refused_streams(), 0);
+}
+
+#[test]
+fn a_slot_in_flight_is_neither_written_nor_posted_again() {
+    let mut gpu = three_d_gpu();
+    gpu.transport().holds_streams.set(true);
+    post_stream(&mut gpu, 1, &[1; 8]);
+    assert!(gpu.stream(0).is_none());
+    assert_eq!(gpu.start_stream(0, 1, 8), Err(Error::QueueFull));
+    assert_eq!(gpu.start_stream(STREAM_SLOTS, 1, 8), Err(Error::QueueUnavailable));
+}
+
+#[test]
+fn a_flush_and_other_commands_run_while_streams_are_in_flight() {
+    let mut gpu = three_d_gpu();
+    let mode = gpu.display_mode();
+    gpu.attach_framebuffer(framebuffer(mode), mode, &mut polls(10))
+        .unwrap();
+    gpu.transport().holds_streams.set(true);
+    let fence = post_stream(&mut gpu, 1, &[7; 16]);
+    assert_eq!(gpu.start_flush(&[Rect::new(0, 0, 4, 4)]), Ok(1));
+    assert_eq!(gpu.finish_flush(), Ok(Some(1)));
+    assert_eq!(gpu.flush(&[Rect::new(4, 4, 4, 4)], &mut polls(10)), Ok(1));
+    assert_eq!(gpu.oldest_stream(), Some(fence));
+    gpu.transport().answer_held_stream(0);
+    assert_eq!(gpu.oldest_stream(), None);
+}
+
+#[test]
+fn a_stream_goes_through_the_stream_slots_only() {
+    let mut gpu = three_d_gpu();
+    let submit = ThreeDCommand::Submit {
+        context: 1,
+        length: 4,
+    };
+    assert_eq!(gpu.start_three_d(&submit), Err(Error::QueueUnavailable));
+}
+
+#[test]
+fn streams_left_unanswered_wedge_the_device_when_given_up() {
+    let mut gpu = three_d_gpu();
+    gpu.transport().holds_streams.set(true);
+    post_stream(&mut gpu, 1, &[1; 4]);
+    gpu.abandon_streams();
+    assert!(!gpu.streams_in_flight());
+    assert_eq!(gpu.start_stream(0, 1, 4), Err(Error::TimedOut));
 }

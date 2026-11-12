@@ -9,8 +9,10 @@
 //! transfers, waits for their answers, then sends their flushes.
 //!
 //! A device that offers `VIRTIO_GPU_F_VIRGL` also takes 3D commands (D415): with memory for
-//! them ([`VirtioGpu::attach_three_d`]), [`VirtioGpu::run_three_d`] sends one, a context's
-//! command stream included, and waits for its answer.
+//! them ([`VirtioGpu::attach_three_d`]), [`VirtioGpu::run_three_d`] sends one and waits for its
+//! answer. Contexts' command streams go through [`STREAM_SLOTS`] slots of their own, posted
+//! with [`VirtioGpu::start_stream`] and answered in any order, so several are in flight while
+//! the display keeps flushing (D460): answers are told apart by their chain's head.
 
 use super::queue::{Buffer, SplitQueue};
 use super::{Error, ResetDone, Transport, device_type};
@@ -68,10 +70,15 @@ const CONFIG_NUM_CAPSETS_OFFSET: usize = 12;
 const THREE_D_REQUEST: usize = 0;
 const THREE_D_ANSWER: usize = 256;
 const THREE_D_STREAM: usize = 8192;
-/// The bytes of command stream one [`VirtioGpu::run_three_d`] carries, at most.
+/// The bytes of command stream one [`VirtioGpu::start_stream`] carries, at most.
 pub const COMMAND_STREAM_BYTES: usize = 256 * 1024;
+/// How many command streams may be in flight at once (D460).
+pub const STREAM_SLOTS: usize = 2;
+const STREAM_HEADERS: usize = THREE_D_STREAM + STREAM_SLOTS * COMMAND_STREAM_BYTES;
+const STREAM_HEADER: usize = 128;
+const STREAM_ANSWER: usize = 64;
 /// The DMA memory the 3D commands need ([`VirtioGpu::attach_three_d`]).
-pub const THREE_D_BYTES: usize = THREE_D_STREAM + COMMAND_STREAM_BYTES;
+pub const THREE_D_BYTES: usize = STREAM_HEADERS + STREAM_SLOTS * STREAM_HEADER;
 /// The most bytes of capability set one answer carries.
 pub const CAPSET_ROOM: usize = THREE_D_STREAM - THREE_D_ANSWER - three_d::HEADER_BYTES;
 const FLAG_FENCE: u32 = 1;
@@ -93,6 +100,8 @@ const _: () = assert!(DISPLAY_INFO + DISPLAY_INFO_BYTES <= CURSOR_RING);
 const _: () = assert!(CURSOR_RING + super::queue::memory_size(CURSOR_QUEUE_SIZE) <= CURSOR_REQUEST);
 const _: () = assert!(CURSOR_REQUEST + UPDATE_CURSOR_BYTES <= MEMORY_BYTES);
 const _: () = assert!(THREE_D_REQUEST + three_d::LONGEST_REQUEST <= THREE_D_ANSWER);
+const _: () = assert!(three_d::SUBMIT_BYTES <= STREAM_ANSWER);
+const _: () = assert!(STREAM_ANSWER + three_d::HEADER_BYTES <= STREAM_HEADER);
 
 mod command {
     pub const GET_DISPLAY_INFO: u32 = 0x0100;
@@ -158,14 +167,26 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     three_d: Option<M>,
     posted_three_d: Option<PostedThreeD>,
     answered_three_d: usize,
+    posted_streams: [Option<PostedStream>; STREAM_SLOTS],
+    refused_streams: u64,
 }
 
-/// A 3D command [`VirtioGpu::start_three_d`] posted: the answer type it succeeds with and the
-/// answer's length.
+/// A 3D command [`VirtioGpu::start_three_d`] posted: its chain's head, the answer type it
+/// succeeds with, the answer's length, and whether the device answered it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PostedThreeD {
+    head: u16,
     expected: u32,
     answer_bytes: usize,
+    answered: bool,
+}
+
+/// A command stream [`VirtioGpu::start_stream`] posted and not yet answered: its chain's head
+/// and its fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PostedStream {
+    head: u16,
+    fence: u64,
 }
 
 /// A flush posted by [`VirtioGpu::start_flush`] and not yet answered (D414).
@@ -247,6 +268,8 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             three_d: None,
             posted_three_d: None,
             answered_three_d: 0,
+            posted_streams: [None; STREAM_SLOTS],
+            refused_streams: 0,
         };
         match gpu.query_display(keep_waiting) {
             Ok(mode) => {
@@ -748,14 +771,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     /// Collects the answers of the flush [`Self::start_flush`] posted: `Some` with its count of
     /// rectangles once every command is answered, `None` while some are not.
     pub fn finish_flush(&mut self) -> Result<Option<usize>, Error> {
-        let Some(mut started) = self.started else {
+        if self.started.is_none() {
+            return Ok(Some(0));
+        }
+        self.collect();
+        let Some(started) = self.started else {
             return Ok(Some(0));
         };
-        while started.answered < started.commands && self.queue.pop_used().is_some() {
-            started.answered += 1;
-        }
         if started.answered < started.commands {
-            self.started = Some(started);
             return Ok(None);
         }
         self.started = None;
@@ -813,8 +836,8 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
 
     /// Gives the driver `memory` ([`THREE_D_BYTES`] or more) for the 3D commands, their answers
     /// and the command streams; handed back when the device takes no 3D commands, memory is
-    /// attached already or it is too small. The device reaches it only during
-    /// [`Self::run_three_d`]; it comes back from [`Self::reset`].
+    /// attached already or it is too small. The device reaches it only while a 3D command or a
+    /// command stream is in flight; it comes back from [`Self::reset`].
     pub fn attach_three_d(&mut self, memory: M) -> Result<(), (Error, M)> {
         if !self.takes_three_d() || self.three_d.is_some() {
             return Err((Error::NoThreeD, memory));
@@ -826,25 +849,160 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         Ok(())
     }
 
-    /// Where the next [`ThreeDCommand::Submit`]'s command stream is written, [`COMMAND_STREAM_BYTES`]
-    /// long; `None` before [`Self::attach_three_d`].
-    pub fn command_stream(&mut self) -> Option<&mut [u8]> {
+    /// A stream slot no command stream is in flight in, after collecting the answers that came:
+    /// `None` while all [`STREAM_SLOTS`] are, or before [`Self::attach_three_d`].
+    pub fn free_stream(&mut self) -> Option<usize> {
+        self.three_d.as_ref()?;
+        self.collect();
+        self.posted_streams.iter().position(Option::is_none)
+    }
+
+    /// Where the command stream of `slot` is written before [`Self::start_stream`] posts it,
+    /// [`COMMAND_STREAM_BYTES`] long; `None` before [`Self::attach_three_d`], for a slot past
+    /// [`STREAM_SLOTS`], and while the slot's stream is in flight.
+    pub fn stream(&mut self, slot: usize) -> Option<&mut [u8]> {
+        if self.posted_streams.get(slot)?.is_some() {
+            return None;
+        }
         let memory = self.three_d.as_mut()?;
         // SAFETY: the memory holds at least `THREE_D_BYTES` (checked when attached), owned by
-        // this driver while it lives; the device reads the stream only inside `run_three_d`,
-        // which takes `&mut self`, so never while this borrow lives.
+        // this driver while it lives, and slot `slot`'s stream lies inside it; the device reads
+        // the slot only while a stream posted from it is in flight, which this borrow excludes
+        // (checked above, and posting takes `&mut self`).
         Some(unsafe {
             core::slice::from_raw_parts_mut(
-                memory.as_mut_ptr().wrapping_add(THREE_D_STREAM),
+                memory
+                    .as_mut_ptr()
+                    .wrapping_add(THREE_D_STREAM + slot * COMMAND_STREAM_BYTES),
                 COMMAND_STREAM_BYTES,
             )
         })
     }
 
-    /// Posts `command` on the control queue without waiting (D438): a [`ThreeDCommand::Submit`]
-    /// carries the first `length` bytes of [`Self::command_stream`]. [`Self::finish_three_d`]
+    /// Posts the first `length` bytes of `slot`'s stream ([`Self::stream`]) as `context`'s
+    /// command stream without waiting, and returns its fence: the device answers it once it
+    /// finished it, in any order with the other streams ([`Self::oldest_stream`]). Refused
+    /// while the slot is in flight and while the device is treated as wedged.
+    pub fn start_stream(&mut self, slot: usize, context: u32, length: u32) -> Result<u64, Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        if length as usize > COMMAND_STREAM_BYTES {
+            return Err(Error::MemoryTooSmall);
+        }
+        match self.posted_streams.get(slot) {
+            Some(None) => {}
+            Some(Some(_)) => return Err(Error::QueueFull),
+            None => return Err(Error::QueueUnavailable),
+        }
+        let (pointer, base) = match self.three_d.as_ref() {
+            Some(memory) => (memory.as_mut_ptr(), memory.dma_addr()),
+            None => return Err(Error::NoThreeD),
+        };
+        self.fence_id = self.fence_id.wrapping_add(1);
+        let fence = self.fence_id;
+        let mut request = [0u8; three_d::LONGEST_REQUEST];
+        let request_bytes =
+            three_d::encode(&ThreeDCommand::Submit { context, length }, fence, &mut request);
+        let header = STREAM_HEADERS + slot * STREAM_HEADER;
+        // SAFETY: the slot's header lies inside the memory, which holds at least
+        // `THREE_D_BYTES`, owned by this driver; the device does not own it now, as no stream
+        // of this slot is in flight (checked above); the request fits before the answer
+        // (asserted).
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                request.as_ptr(),
+                pointer.wrapping_add(header),
+                request_bytes,
+            );
+            pointer
+                .wrapping_add(header + STREAM_ANSWER)
+                .cast::<u32>()
+                .write_volatile(0);
+        }
+        let at = |offset: usize| base.checked_add(offset as u64).ok_or(Error::MemoryTooSmall);
+        let head = self.queue.submit(&[
+            Buffer {
+                addr: at(header)?,
+                len: request_bytes as u32,
+                device_writes: false,
+            },
+            Buffer {
+                addr: at(THREE_D_STREAM + slot * COMMAND_STREAM_BYTES)?,
+                len: length,
+                device_writes: false,
+            },
+            Buffer {
+                addr: at(header + STREAM_ANSWER)?,
+                len: three_d::HEADER_BYTES as u32,
+                device_writes: true,
+            },
+        ])?;
+        self.posted_streams[slot] = Some(PostedStream { head, fence });
+        if self.queue.should_notify() {
+            self.transport.notify(CONTROL_QUEUE);
+        }
+        Ok(fence)
+    }
+
+    /// Collects the answers that came and returns the fence of the oldest command stream still
+    /// in flight: every stream with an older fence is finished; `None` when none is in flight.
+    pub fn oldest_stream(&mut self) -> Option<u64> {
+        self.collect();
+        self.posted_streams.iter().flatten().map(|posted| posted.fence).min()
+    }
+
+    /// How many command streams the device answered with an error: their slots are freed and
+    /// their fences pass like the others'.
+    pub fn refused_streams(&self) -> u64 {
+        self.refused_streams
+    }
+
+    /// Gives up on the command streams the device never answered: it is treated as wedged, as
+    /// when a wait times out.
+    pub fn abandon_streams(&mut self) {
+        if self.posted_streams.iter().any(Option::is_some) {
+            self.posted_streams = [None; STREAM_SLOTS];
+            self.unanswered = true;
+        }
+    }
+
+    /// Whether a command stream is in flight.
+    pub fn streams_in_flight(&self) -> bool {
+        self.posted_streams.iter().any(Option::is_some)
+    }
+
+    fn collect(&mut self) -> usize {
+        let mut others = 0;
+        while let Some(used) = self.queue.pop_used() {
+            let stream = self
+                .posted_streams
+                .iter()
+                .position(|posted| posted.is_some_and(|posted| posted.head == used.head));
+            if let Some(slot) = stream {
+                self.posted_streams[slot] = None;
+                let answer =
+                    self.three_d_word(STREAM_HEADERS + slot * STREAM_HEADER + STREAM_ANSWER);
+                if answer != three_d::answer::OK_NODATA {
+                    self.refused_streams += 1;
+                }
+                continue;
+            }
+            match (self.posted_three_d.as_mut(), self.started.as_mut()) {
+                (Some(posted), _) if posted.head == used.head && !posted.answered => {
+                    posted.answered = true;
+                }
+                (_, Some(started)) => started.answered += 1,
+                _ => others += 1,
+            }
+        }
+        others
+    }
+
+    /// Posts `command` on the control queue without waiting (D438); [`Self::finish_three_d`]
     /// collects the answer, so the caller may sleep on the device's interrupt meanwhile. Refused
-    /// while a flush or another 3D command is posted.
+    /// while a flush or another 3D command is posted, and for a [`ThreeDCommand::Submit`], which
+    /// goes through [`Self::start_stream`] (D460).
     pub fn start_three_d(&mut self, command: &ThreeDCommand<'_>) -> Result<(), Error> {
         if self.unanswered {
             return Err(Error::TimedOut);
@@ -856,15 +1014,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             Some(memory) => (memory.as_mut_ptr(), memory.dma_addr()),
             None => return Err(Error::NoThreeD),
         };
-        let stream = match *command {
-            ThreeDCommand::Submit { length, .. } => {
-                if length as usize > COMMAND_STREAM_BYTES {
-                    return Err(Error::MemoryTooSmall);
-                }
-                Some(length)
-            }
-            _ => None,
-        };
+        if let ThreeDCommand::Submit { .. } = *command {
+            return Err(Error::QueueUnavailable);
+        }
         let capset_room = match *command {
             ThreeDCommand::Capset { .. } => CAPSET_ROOM,
             _ => 0,
@@ -898,26 +1050,16 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             len: answer_bytes as u32,
             device_writes: true,
         };
-        let submitted = match stream {
-            Some(length) => self.queue.submit(&[
-                request,
-                Buffer {
-                    addr: at(THREE_D_STREAM)?,
-                    len: length,
-                    device_writes: false,
-                },
-                answer,
-            ]),
-            None => self.queue.submit(&[request, answer]),
-        };
-        submitted?;
+        let head = self.queue.submit(&[request, answer])?;
+        self.posted_three_d = Some(PostedThreeD {
+            head,
+            expected: three_d::expected_answer(command),
+            answer_bytes,
+            answered: false,
+        });
         if self.queue.should_notify() {
             self.transport.notify(CONTROL_QUEUE);
         }
-        self.posted_three_d = Some(PostedThreeD {
-            expected: three_d::expected_answer(command),
-            answer_bytes,
-        });
         Ok(())
     }
 
@@ -925,10 +1067,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     /// answered (or when none is posted), `false` while it is not; an error when the device
     /// refused it.
     pub fn finish_three_d(&mut self) -> Result<bool, Error> {
+        if self.posted_three_d.is_none() {
+            return Ok(true);
+        }
+        self.collect();
         let Some(posted) = self.posted_three_d else {
             return Ok(true);
         };
-        if self.queue.pop_used().is_none() {
+        if !posted.answered {
             return Ok(false);
         }
         self.posted_three_d = None;
@@ -1122,9 +1268,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         }
         let mut answered = 0;
         while answered < count {
-            if self.queue.pop_used().is_some() {
-                answered += 1;
-            } else if !keep_waiting() {
+            let collected = self.collect();
+            answered += collected;
+            if collected == 0 && answered < count && !keep_waiting() {
                 self.unanswered = true;
                 return Err(Error::TimedOut);
             }

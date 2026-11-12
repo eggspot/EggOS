@@ -427,6 +427,7 @@ fn is_woken_by_input(kind: &FileKind) -> bool {
             | FileKind::Window(_)
             | FileKind::InetSocket(_)
             | FileKind::AgentChannel(_)
+            | FileKind::GpuFence(_)
     )
 }
 
@@ -459,6 +460,7 @@ pub fn wake_deadline<P: Platform>(kind: &FileKind) -> Option<Deadline> {
         FileKind::Event(EventFile::TimerFd(timer)) => timer.next_tick::<P>(),
         FileKind::Event(EventFile::Epoll(epoll)) => epoll.next_wake::<P>(0),
         FileKind::AgentChannel(_) => Some(super::agent_channel::next_poll::<P>()),
+        FileKind::GpuFence(_) if !crate::rendering::wakes_fence_waiters() => Some(soon::<P>()),
         _ => None,
     }
 }
@@ -505,6 +507,7 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         | FileKind::MemoryDevice(..) => requested & (OUTPUT_EVENTS | INPUT_EVENTS),
         FileKind::RenderNode(_) => requested & OUTPUT_EVENTS,
         FileKind::GpuBuffer(_) => requested & (OUTPUT_EVENTS | INPUT_EVENTS),
+        FileKind::GpuFence(fence) => super::sync_file::events(fence.may_have_passed(), requested),
         FileKind::Path(_) => event::NVAL,
         FileKind::Pipe(end) => end.events(requested),
         FileKind::PseudoTerminal(end) => end.events(requested),
@@ -529,6 +532,9 @@ fn events<P: Platform>(
         None => event::NVAL,
         Some(FileKind::Event(EventFile::TimerFd(timer))) => timer.events::<P>(requested),
         Some(FileKind::Event(EventFile::Epoll(epoll))) => epoll.events::<P>(requested, pending, 0),
+        Some(FileKind::GpuFence(fence)) => {
+            super::sync_file::events(fence.has_passed::<P>(), requested)
+        }
         Some(kind) => events_of(kind, requested, readable, pending),
     }
 }

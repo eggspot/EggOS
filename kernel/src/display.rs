@@ -315,7 +315,6 @@ impl Display {
     /// Waits, polling, for a posted flush before anything else uses the device; gives it up at
     /// `deadline`.
     fn settle(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
-        self.settle_renderer(deadline)?;
         while self.posted {
             if self.finish_flush()?.is_some() {
                 return Ok(());
@@ -333,20 +332,6 @@ impl Display {
         Ok(())
     }
 
-    /// Waits, polling, for a posted 3D command (D438) before anything else uses the device;
-    /// gives it up at `deadline`.
-    fn settle_renderer(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
-        let Some(renderer) = self.scanout.renderer() else {
-            return Ok(());
-        };
-        while !renderer.finish()? {
-            if !deadline.keep_waiting() {
-                renderer.abandon();
-                return Err("the display did not answer a 3D command");
-            }
-        }
-        Ok(())
-    }
 
     /// Whether the desktop draws into the display's own buffer, which flushes scale or turn.
     fn draws_off_device(&self) -> bool {
@@ -860,56 +845,26 @@ pub fn with_renderer<P: Platform, R>(
     Ok(work(renderer, &mut deadline))
 }
 
+/// Lends `work` the display device's 3D commands as they are, posted flushes and command
+/// streams left in flight (D460): for collecting answers and posting streams. Refused as
+/// [`with_renderer`] is.
+pub fn with_renderer_now<R>(
+    work: impl FnOnce(&mut dyn crate::rendering::Renderer) -> R,
+) -> Result<R, &'static str> {
+    let mut display = DISPLAY.lock();
+    let display = display.as_mut().ok_or("no display")?;
+    let renderer = display
+        .scanout
+        .renderer()
+        .ok_or("the display's device takes no 3D commands")?;
+    Ok(work(renderer))
+}
+
 /// Hands the display's device `bytes` of its firmware (D444).
 pub fn load_firmware(bytes: &[u8]) -> Result<(), &'static str> {
     let mut display = DISPLAY.lock();
     let display = display.as_mut().ok_or("no display")?;
     display.scanout.load_firmware(bytes)
-}
-
-/// Waits until a posted 3D command is answered (D438), with the display's lock let go while
-/// the device works: sleeps on its interrupt, or polls on a device without one. With
-/// `nowait`, only looks. Whether it is answered (`false` only with `nowait`).
-pub fn settle_renderer_sleeping<P: Platform>(nowait: bool) -> Result<bool, &'static str> {
-    let mut deadline = Deadline::after::<P>(RENDER_TIMEOUT_MS);
-    let events = {
-        let mut display = DISPLAY.lock();
-        let Some(renderer) = display.as_mut().and_then(|display| display.scanout.renderer()) else {
-            return Ok(true);
-        };
-        if renderer.finish()? {
-            return Ok(true);
-        }
-        if nowait {
-            return Ok(false);
-        }
-        renderer.events()
-    };
-    let Some(events) = events else {
-        let mut display = DISPLAY.lock();
-        return match display.as_mut() {
-            Some(display) => display.settle_renderer(&mut deadline).map(|()| true),
-            None => Ok(true),
-        };
-    };
-    let mut seen = events.raised();
-    loop {
-        let finished = DISPLAY
-            .lock()
-            .as_mut()
-            .and_then(|display| display.scanout.renderer().map(|renderer| renderer.finish()))
-            .unwrap_or(Ok(true))?;
-        if finished {
-            return Ok(true);
-        }
-        if !deadline.sleep_until_raised(events, &mut seen) {
-            let mut display = DISPLAY.lock();
-            return match display.as_mut() {
-                Some(display) => display.settle_renderer(&mut deadline).map(|()| true),
-                None => Ok(true),
-            };
-        }
-    }
 }
 
 /// Shows what was drawn on the display since the last flush ([`Display::flush`]); 0 without a

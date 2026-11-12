@@ -494,22 +494,31 @@ mod gpu {
             self.gpu.takes_blobs()
         }
 
-        fn command_stream(&mut self) -> &mut [u8] {
-            self.gpu.command_stream().unwrap_or_default()
+        fn free_stream(&mut self) -> Option<usize> {
+            self.gpu.free_stream()
         }
 
-        fn start(&mut self, command: &ThreeDCommand<'_>) -> Result<(), &'static str> {
+        fn stream(&mut self, slot: usize) -> &mut [u8] {
+            self.gpu.stream(slot).unwrap_or_default()
+        }
+
+        fn start_stream(
+            &mut self,
+            slot: usize,
+            context: u32,
+            length: u32,
+        ) -> Result<u64, &'static str> {
             self.gpu
-                .start_three_d(command)
+                .start_stream(slot, context, length)
                 .map_err(virtio::Error::description)
         }
 
-        fn finish(&mut self) -> Result<bool, &'static str> {
-            self.gpu.finish_three_d().map_err(virtio::Error::description)
+        fn oldest_stream(&mut self) -> Option<u64> {
+            self.gpu.oldest_stream()
         }
 
-        fn abandon(&mut self) {
-            self.gpu.abandon_three_d();
+        fn abandon_streams(&mut self) {
+            self.gpu.abandon_streams();
         }
 
         fn events(&self) -> Option<&'static DeviceEvents> {

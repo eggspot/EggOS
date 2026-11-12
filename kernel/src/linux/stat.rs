@@ -440,7 +440,7 @@ fn descriptor_status(files: &Descriptors, fd: u64) -> Result<Status, Errno> {
             blocks: 0,
             ..CONSOLE
         }),
-        FileKind::Event(_) => Ok(EVENT_FILE),
+        FileKind::Event(_) | FileKind::GpuFence(_) => Ok(EVENT_FILE),
     }
 }
 

@@ -33,6 +33,8 @@ pub const NAME_CAPACITY: usize = 64;
 pub const LONGEST_REQUEST: usize = CREATE_CONTEXT_BYTES;
 /// The common header's length, before a command's own fields and an answer's data.
 pub const HEADER_BYTES: usize = 24;
+/// A [`ThreeDCommand::Submit`] request's length.
+pub const SUBMIT_BYTES: usize = 32;
 
 const CREATE_CONTEXT_BYTES: usize = 96;
 const RESOURCE_BYTES: usize = 32;
@@ -42,7 +44,6 @@ const MAP_BLOB_BYTES: usize = 40;
 const TRANSFER_BYTES: usize = 72;
 const ATTACH_BACKING_BYTES: usize = 48;
 const CAPSET_BYTES: usize = 32;
-const SUBMIT_BYTES: usize = 32;
 const CONTEXT_FIELD: usize = 16;
 const FLAG_FENCE: u32 = 1;
 const CONTEXT_INIT_CAPSET_MASK: u32 = 0xff;

@@ -23960,3 +23960,27 @@ the license, by an explicit instruction recorded here.
   their signatures with the rest.
 - **Not yet.** Zero copy (the window server compositing from the GPU's frames, D442's
   "Not yet"), feedback objects (version 4), and multi-plane formats.
+
+## D460 Several command streams in flight, with real fences (M11, D438's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** D438 posted one command stream at a time and refused flushes while it ran, and
+  an out-fence was an `eventfd` already signalled, so a GL program waited for each frame's
+  stream before writing the next and the desktop's flushes waited behind a game's frames.
+- **Decision.** The virtio-gpu driver gives command streams `STREAM_SLOTS` slots of their
+  own (2 × 256 KiB, the 3D area growing from 264 KiB to 520 KiB), each with its own request and
+  answer; `start_stream` posts one fenced and returns its fence. Answers are told apart by
+  their chain's head, so streams finish in any order while flushes, 2D commands and the other
+  3D commands run beside them (the device answers a fenced command only once it finished it).
+  The kernel keeps the oldest fence still in flight: a fence passes once it is older. Each
+  buffer keeps the fence of the last stream that named it in `EXECBUFFER`; `VIRTGPU_WAIT`,
+  a copy back from the host and the buffer's release (detach and unref, then freeing its
+  memory) wait for it. The out-fence is a sync file (`FileKind::GpuFence`), readable once its
+  fence passed, with `SYNC_IOC_MERGE` and `SYNC_IOC_FILE_INFO`; an in-fence must be one, and
+  needs no wait, as all streams share one timeline the device runs in order.
+- **Waits.** A fence wait sleeps on the console's input key, whose waiters the GPU's
+  interrupt now also wakes, so any number of threads wait at once (a device's events keep one
+  waiter); under the bucket's lock it only reads atomics: whether the fence passed or the
+  interrupt was raised since the answers were last collected. Without an interrupt it polls,
+  and `poll` looks again soon. After 5 s the streams are given up and the device is treated as
+  wedged, as a flush that times out is.
+- **Not yet.** Per-context timelines (`ring_idx`), sync objects, and zero-copy composition.

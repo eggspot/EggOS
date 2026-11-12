@@ -131,6 +131,8 @@ pub enum FileKind {
     RenderNode(Arc<crate::rendering::Context>),
     /// A GPU buffer handed out as a file, Linux's `dma-buf` (D441).
     GpuBuffer(Arc<crate::rendering::Buffer>),
+    /// A GPU fence handed out as a file, Linux's sync file (D460).
+    GpuFence(crate::rendering::Fence),
     /// The agent channel's one opener (`/dev/agent`, D136).
     AgentChannel(super::agent_channel::AgentChannelEnd),
     /// An `AF_UNIX` stream socket (D138).
@@ -218,6 +220,7 @@ impl FileKind {
             | Self::Window(_)
             | Self::RenderNode(_)
             | Self::GpuBuffer(_)
+            | Self::GpuFence(_)
             | Self::AgentChannel(_)
             | Self::Socket(_)
             | Self::InetSocket(_)

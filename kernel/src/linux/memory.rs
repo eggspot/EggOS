@@ -174,9 +174,10 @@ fn mapped_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
         | FileKind::MemoryFile(_)
         | FileKind::Regular(_)
         | FileKind::MemoryDevice(MemoryDevice::Zero, _) => Ok(open),
-        FileKind::Snapshot(_) | FileKind::MemoryDevice(..) | FileKind::Event(_) => {
-            Err(Errno::ENODEV)
-        }
+        FileKind::Snapshot(_)
+        | FileKind::MemoryDevice(..)
+        | FileKind::Event(_)
+        | FileKind::GpuFence(_) => Err(Errno::ENODEV),
         _ => Err(Errno::EBADF),
     }
 }

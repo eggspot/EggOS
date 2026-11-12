@@ -660,6 +660,7 @@ fn descriptor_target(kind: &FileKind) -> Option<Vec<u8>> {
         FileKind::Window(_) => text.bytes(b"/dev/window")?,
         FileKind::RenderNode(_) => text.bytes(b"/dev/dri/renderD128")?,
         FileKind::GpuBuffer(_) => text.bytes(b"/dmabuf:")?,
+        FileKind::GpuFence(_) => text.bytes(b"anon_inode:sync_file")?,
         FileKind::AgentChannel(_) => text.bytes(b"/dev/agent")?,
         FileKind::Pipe(end) => write!(text, "pipe:[{}]", end.inode()).ok()?,
         FileKind::Socket(socket) => write!(text, "socket:[{}]", socket.inode()).ok()?,

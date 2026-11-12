@@ -10,7 +10,7 @@
 
 use crate::thread::Parker;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use eggos_hal::{DeviceLine, Platform};
 
 /// What a device line's interrupt does.
@@ -82,7 +82,7 @@ pub fn handle<P: Platform>(line: DeviceLine) {
 pub struct DeviceEvents {
     raised: AtomicU64,
     waiter: AtomicPtr<Parker>,
-    wakes_input_waiters: bool,
+    wakes_input_waiters: AtomicBool,
     masked_line: AtomicUsize,
 }
 
@@ -97,7 +97,7 @@ impl DeviceEvents {
         Self {
             raised: AtomicU64::new(0),
             waiter: AtomicPtr::new(core::ptr::null_mut()),
-            wakes_input_waiters: false,
+            wakes_input_waiters: AtomicBool::new(false),
             masked_line: AtomicUsize::new(0),
         }
     }
@@ -113,8 +113,24 @@ impl DeviceEvents {
     /// and `poll` rather than through a driver's thread, such as the agent channel (D220).
     pub const fn waking_input_waiters() -> Self {
         Self {
-            wakes_input_waiters: true,
+            wakes_input_waiters: AtomicBool::new(true),
             ..Self::new()
+        }
+    }
+
+    /// Has every later raise also wake the threads waiting on the console's input key, as
+    /// [`Self::waking_input_waiters`] does: for a device threads wait on through the input key
+    /// besides its one waiter, such as the GPU's fence waiters (D460).
+    pub fn wake_input_waiters_too(&self) {
+        self.wakes_input_waiters.store(true, Ordering::Release);
+    }
+
+    /// Says a thread that does not wait through [`Self::wait`] looked at the device: unmasks
+    /// the masked line, as each wait does.
+    pub fn looked_at<P: Platform>(&self) {
+        let masked = self.masked_line.load(Ordering::Acquire);
+        if let Some(line) = masked.checked_sub(1).and_then(DeviceLine::from_index) {
+            P::unmask_device_interrupt(line);
         }
     }
 
@@ -133,7 +149,7 @@ impl DeviceEvents {
             // back itself, or waits for this unpark when it finds it taken.
             unsafe { Parker::unpark::<P>(waiter) };
         }
-        if self.wakes_input_waiters {
+        if self.wakes_input_waiters.load(Ordering::Acquire) {
             crate::console::wake_input_waiters::<P>();
         }
     }

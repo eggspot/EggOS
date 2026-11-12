@@ -80,7 +80,7 @@ fn usage_of(kind: &FileKind) -> (Usage, (u32, u32)) {
         FileKind::Pipe(_) => pseudo(magic::PIPEFS),
         FileKind::Socket(_) | FileKind::InetSocket(_) => pseudo(magic::SOCKFS),
         FileKind::MemoryFile(_) => pseudo(magic::TMPFS),
-        FileKind::GpuBuffer(_) => pseudo(magic::ANON_INODE_FS),
+        FileKind::GpuBuffer(_) | FileKind::GpuFence(_) => pseudo(magic::ANON_INODE_FS),
         FileKind::Event(_) => pseudo(magic::ANON_INODE_FS),
         FileKind::Console
         | FileKind::PseudoTerminal(_)
