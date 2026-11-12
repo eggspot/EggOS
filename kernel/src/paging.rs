@@ -706,10 +706,14 @@ impl<F: Format> PageTables<F> {
         }
     }
 
-    /// Entry `index` (below [`Format::entries`]) of the table at physical `table`.
+    /// Entry `index` (below [`Format::entries`]) of the table at physical `table`, of
+    /// [`Format::ENTRY_BYTES`] bytes (D474).
     fn entry_at(&self, table: u64, index: usize) -> TableEntry {
-        let table = (table as usize).wrapping_add(self.physical_memory_offset) as *mut u64;
-        TableEntry(table.wrapping_add(index))
+        let table = (table as usize).wrapping_add(self.physical_memory_offset) as *mut u8;
+        TableEntry {
+            place: table.wrapping_add(index * F::ENTRY_BYTES),
+            narrow: F::ENTRY_BYTES == NARROW_ENTRY_BYTES,
+        }
     }
 }
 
@@ -725,21 +729,37 @@ pub enum PageChange {
     Inaccessible,
 }
 
-/// One entry of a table this module allocated.
-struct TableEntry(*mut u64);
+const NARROW_ENTRY_BYTES: usize = 4;
+
+/// One entry of a table this module allocated: eight bytes, or four in a format whose entries
+/// are 32 bits (RV32's Sv32, D474), whose value is then the entry's low half.
+struct TableEntry {
+    place: *mut u8,
+    narrow: bool,
+}
 
 impl TableEntry {
     fn read(&self) -> u64 {
-        // SAFETY: the pointer is an aligned entry inside a table frame that `new_table` took
-        // from the frame allocator (which owns it from then on) and zeroed, reached through the
-        // physical memory offset the tables were given. Volatile, because the page-table
-        // walker reads the entries behind the compiler's back.
-        unsafe { self.0.read_volatile() }
+        // SAFETY: the pointer is an aligned entry of the format's width inside a table frame
+        // that `new_table` took from the frame allocator (which owns it from then on) and
+        // zeroed, reached through the physical memory offset the tables were given. Volatile,
+        // because the page-table walker reads the entries behind the compiler's back.
+        unsafe {
+            match self.narrow {
+                true => u64::from(self.place.cast::<u32>().read_volatile()),
+                false => self.place.cast::<u64>().read_volatile(),
+            }
+        }
     }
 
     fn write(&self, value: u64) {
         // SAFETY: as in `read`; the tables own the frame, so nothing else writes it.
-        unsafe { self.0.write_volatile(value) }
+        unsafe {
+            match self.narrow {
+                true => self.place.cast::<u32>().write_volatile(value as u32),
+                false => self.place.cast::<u64>().write_volatile(value),
+            }
+        }
     }
 }
 

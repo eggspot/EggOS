@@ -11,9 +11,11 @@
 //! each architecture's encoding.
 
 pub mod aarch64;
+pub mod arm;
 pub mod loongarch64;
 pub mod mips64;
 pub mod powerpc64;
+pub mod riscv32;
 pub mod riscv64;
 pub mod s390x;
 pub mod sparc64;
@@ -240,6 +242,9 @@ pub trait Format {
     /// being 8 KiB (SPARC64, D328): the kernel then keeps both pages of a pair mapped, from one
     /// physically contiguous, 8 KiB-aligned block, and alike.
     const PAIRED_PAGES: bool = false;
+    /// The bytes of one entry: 8, but 4 for RV32's Sv32 (D474), whose tables hold 1,024 entries
+    /// of 32 bits; an entry's value is then its low 32 bits.
+    const ENTRY_BYTES: usize = 8;
 
     /// Which root translates `virt`; `None` if `virt` is not a valid (canonical) address.
     fn root(virt: u64) -> Option<usize>;

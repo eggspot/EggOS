@@ -24247,3 +24247,25 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Scenes (`UISceneDelegate`), touch events as `UITouch`, Auto Layout, storyboards
   for iOS, view controllers' presentation, the iOS bundle's own Info.plist keys in the layer,
   and x86_64 machines (iOS programs are arm64 only).
+
+## D474 32-bit Arm and RV32, part 1: their page-table formats, and entries of either width (M9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** M9's 32-bit ports need the core free of its 64-bit assumptions; the first is
+  the page-table code, which every architecture shares (D29) and which took every entry to be
+  eight bytes in a 512-entry table.
+- **Decision.** `Format` gains `ENTRY_BYTES` (8 by default), and the kernel's page-table code
+  reads and writes each entry at that width, the value being a narrow entry's low half. Two
+  formats join: `paging::arm::ArmLpae`, 32-bit Arm with the Large Physical Address
+  Extension's long descriptors (Armv7-A from the Cortex-A7 and A15 on, and AArch32), which are
+  AArch64's descriptors at three levels with a four-entry root, `TTBR0` alone translating the
+  whole space and the kernel in the top gigabyte; and `paging::riscv32::Riscv32Sv32`, RV32's
+  Sv32, two levels of 1,024 four-byte entries resolving 10 bits each, 4 KiB pages and 4 MiB
+  megapages, a 22-bit physical page number (34-bit physical addresses), the kernel in the top
+  gigabyte. Both are host-tested like the others.
+- **Why LPAE, not the short descriptors.** Short descriptors cap physical addresses at 32 bits
+  (or 40 only through supersections) and differ from every other format here; LPAE's are the
+  64-bit format the core already builds, on every Armv7-A core with virtualisation support and
+  QEMU's `virt` with a Cortex-A15, which is where 32-bit Arm runs Linux distributions today.
+- **Not yet.** The HAL modules for `arm` and `riscv32` (boot, vectors, timers, context switch)
+  and the rest of the core's assumptions (pointers kept in `u64`, the direct map's size, the
+  Linux ABI's 32-bit system-call tables).
