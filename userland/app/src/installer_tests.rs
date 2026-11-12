@@ -1550,3 +1550,18 @@ fn a_linux_program_needing_a_gui_library_installs_as_a_windowed_app_and_others_a
     }
     assert_eq!(kinds, [false, false, false, true]);
 }
+
+#[test]
+fn an_android_package_is_named_as_one_and_refused() {
+    let zip = zip(&[
+        stored("AndroidManifest.xml", b"\x03\x00\x08\x00binary xml"),
+        stored("classes.dex", b"dex\n035\0"),
+    ]);
+    let mut files = host_with("/media/host/Notes.apk", &zip);
+    assert_eq!(
+        plan(&mut files, b"/media/host/Notes.apk", None, X86_64)
+            .unwrap_err()
+            .problem,
+        Problem::NotRunnable(NotRunnable::AndroidPackage)
+    );
+}

@@ -23860,3 +23860,13 @@ the license, by an explicit instruction recorded here.
   permission model; the DEX code's method bodies and the ahead-of-time compiler to the CPU's
   own code; then the framework: `Activity`, views on the toolkit, and the intents and App
   Actions that make an app AI-usable (D21).
+
+## D451 An `.apk` is named as an Android app when installing (M15, D450's next; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** An APK is a zip, so `app install`, Files' `Install` and the installer window took
+  one for an archive and refused it as holding no program. The archive scan now stops at an
+  `AndroidManifest.xml` entry and refuses with `NotRunnable::AndroidPackage`: `Could not install
+  Notes: it is an Android app package (.apk), and installing Android apps is not built yet`,
+  the same words in the CLI, the GUI and the `app_install` tool; host-tested.
+- **Next.** Installing it: the Android layer's component, the manifest shown (D450), the
+  ABI's native libraries kept, and the ahead-of-time compiler.

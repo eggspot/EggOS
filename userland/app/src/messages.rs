@@ -121,6 +121,9 @@ fn not_runnable(line: &mut Line, reason: NotRunnable) {
     let _ = match reason {
         NotRunnable::NotAProgram => line.write_str("not a program EggOS can run"),
         NotRunnable::Library => line.write_str("it is a library, not a program"),
+        NotRunnable::AndroidPackage => line.write_str(
+            "it is an Android app package (.apk), and installing Android apps is not built yet",
+        ),
         NotRunnable::ThirtyTwoBit => {
             line.write_str("it is a 32-bit program, and EggOS runs 64-bit programs only")
         }

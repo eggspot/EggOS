@@ -1063,6 +1063,8 @@ fn shown_name(name: &[u8], role: Role) -> &[u8] {
     }
 }
 
+const ANDROID_MANIFEST: &[u8] = b"AndroidManifest.xml";
+
 fn scan(
     zip: &mut impl Reader,
     wanted: Option<&[u8]>,
@@ -1080,6 +1082,9 @@ fn scan(
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
         if is_reserved(entry.name()) {
             return Err(Problem::ReservedName);
+        }
+        if entry.name() == ANDROID_MANIFEST {
+            return Err(Problem::NotRunnable(NotRunnable::AndroidPackage));
         }
         if entry.is_metadata() || entry.is_directory() {
             continue;

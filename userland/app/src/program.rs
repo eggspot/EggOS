@@ -46,6 +46,9 @@ pub enum NotRunnable {
     LayerNotOnThisCpu(Source),
     /// A Windows or macOS program whose layer is not installed (D18).
     LayerMissing(Source),
+    /// An Android app package (`.apk`, D451): its code is compiled ahead of time by the Android
+    /// layer, which does not install app packages yet.
+    AndroidPackage,
 }
 
 impl NotRunnable {
