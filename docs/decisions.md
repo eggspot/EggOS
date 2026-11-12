@@ -23758,3 +23758,18 @@ the license, by an explicit instruction recorded here.
   stepping (any is asked, as the kernel does not read the device's stepping yet), and the
   power wells and the DC-state enables that let the firmware save power, which come with mode
   setting.
+
+## D445 Intel mode setting, part 1: EDID and the DisplayPort AUX channels (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `drivers::edid` reads a display's EDID base block (header and checksum, maker,
+  product, name, and the first detailed timing as its preferred mode with its blanking, sync
+  and refresh), host-tested on a 1920x1080 block. `gpu::intel_aux` drives each digital port's
+  AUX channel (control and data registers, bytes packed most significant first, a 1.6 ms time
+  out, deferrals retried): native DPCD reads, the receiver capabilities (revision, highest link
+  rate, lanes), and the EDID over I2C on AUX at 0x50 in 16-byte reads. At probe the Intel
+  display asks ports A to D and `/proc/driver/display` lists what answered: `port A AUO
+  B140HAN preferred 1920x1080@60 dp 2.70 x4`.
+- **Next (part 2).** The link training (clock recovery and channel equalisation with the
+  sink's voltage swing and pre-emphasis requests), the port's PLL for the chosen rate, the
+  transcoder's timings from the EDID and the pipe's source size: a mode the firmware did not
+  set, and a second screen. HDMI's EDID over GMBUS with its TMDS PLL after that.

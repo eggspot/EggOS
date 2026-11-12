@@ -223,6 +223,30 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.regs.write32(MASTER_INTERRUPT, master | MASTER_ENABLE);
     }
 
+    /// What the sink on digital port `port` (0 is port A) says over its AUX channel (D445): its
+    /// link capabilities and its EDID, each when it answers.
+    pub fn probe_sink(
+        &self,
+        port: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> (Option<super::intel_aux::LinkCapabilities>, Option<crate::edid::Edid>) {
+        let mut dpcd = [0u8; super::intel_aux::MOST_READ];
+        let link = super::intel_aux::read_dpcd(
+            &self.regs,
+            port,
+            super::intel_aux::RECEIVER_CAPABILITIES,
+            &mut dpcd,
+            keep_waiting,
+        )
+        .ok()
+        .and_then(|()| super::intel_aux::link_capabilities(&dpcd));
+        let mut block = [0u8; crate::edid::BLOCK_BYTES];
+        let edid = super::intel_aux::read_edid(&self.regs, port, &mut block, keep_waiting)
+            .ok()
+            .and_then(|()| crate::edid::Edid::parse(&block));
+        (link, edid)
+    }
+
     /// Loads the display microcontroller's firmware (D444): its program into the DMC's program
     /// memory, word by word, then the register writes that start it.
     pub fn load_dmc(&self, dmc: &super::intel_dmc::Dmc<'_>) {

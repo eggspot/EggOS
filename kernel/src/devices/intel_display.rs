@@ -108,7 +108,11 @@ struct IntelDisplay {
     hotspot: (u32, u32),
     events: Option<&'static DeviceEvents>,
     posted_rects: usize,
+    sinks: alloc::string::String,
 }
+
+const DIGITAL_PORTS: usize = 4;
+const SINK_ANSWER_MS: u64 = 50;
 
 static FOUND_DEVICE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 const FIRMWARE_FOLDER: &str = "/usr/lib/firmware/i915";
@@ -242,6 +246,10 @@ impl Scanout for IntelDisplay {
 
     fn abandon_flush(&mut self) {}
 
+    fn sinks(&self) -> alloc::string::String {
+        self.sinks.clone()
+    }
+
     fn load_firmware(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
         let dmc = eggos_drivers::gpu::intel_dmc::parse(bytes, 0, 0).ok_or("not display firmware for this device")?;
         self.engine.load_dmc(&dmc);
@@ -354,9 +362,36 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         hotspot: (0, 0),
         events: None,
         posted_rects: 0,
+        sinks: alloc::string::String::new(),
     };
     FOUND_DEVICE.store(u32::from(function.device_id), core::sync::atomic::Ordering::Release);
     let mut scanout = scanout;
+    for port in 0..DIGITAL_PORTS {
+        let mut deadline = probe.deadline(SINK_ANSWER_MS);
+        let (link, edid) = scanout.engine.probe_sink(port, &mut || deadline.keep_waiting());
+        if link.is_none() && edid.is_none() {
+            continue;
+        }
+        let port_name = (b'A' + port as u8) as char;
+        let _ = core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!("port {port_name}"));
+        if let Some(edid) = edid {
+            let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
+            let _ = core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!(" {maker} {}", edid.name()));
+            if let Some(mode) = edid.preferred {
+                let _ = core::fmt::Write::write_fmt(
+                    &mut scanout.sinks,
+                    format_args!(" preferred {}x{}@{}", mode.width, mode.height, mode.refresh_mhz() / 1000),
+                );
+            }
+        }
+        if let Some(link) = link {
+            let _ = core::fmt::Write::write_fmt(
+                &mut scanout.sinks,
+                format_args!(" dp {}.{} x{}", link.rate_centigbps / 100, link.rate_centigbps % 100, link.lanes),
+            );
+        }
+        scanout.sinks.push('\n');
+    }
     if super::message_interrupts::connect(probe, id, &VBLANK_EVENTS).is_ok() {
         scanout.engine.interrupt_on_vblank(function.device_id);
         scanout.events = Some(&VBLANK_EVENTS);

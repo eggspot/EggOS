@@ -124,6 +124,10 @@ pub trait Scanout: Send {
     }
     /// Gives up on a started flush the device never answered.
     fn abandon_flush(&mut self) {}
+    /// What the device found connected (D445): one line per screen; empty by default.
+    fn sinks(&self) -> alloc::string::String {
+        alloc::string::String::new()
+    }
     /// Hands the device firmware it runs on its own (Intel's DMC, D444). Not taken by default.
     fn load_firmware(&mut self, _bytes: &[u8]) -> Result<(), &'static str> {
         Err("this display takes no firmware")
@@ -802,7 +806,16 @@ pub fn status_text() -> alloc::string::String {
         true => "yes",
         false => "no",
     };
-    alloc::format!("{}x{} scale {} changeable {changeable}", mode.width, mode.height, display.scale())
+    let sinks = display.scanout.sinks();
+    match sinks.is_empty() {
+        true => alloc::format!("{}x{} scale {} changeable {changeable}", mode.width, mode.height, display.scale()),
+        false => alloc::format!(
+            "{}x{} scale {} changeable {changeable}\n{sinks}",
+            mode.width,
+            mode.height,
+            display.scale()
+        ),
+    }
 }
 
 /// The scale the display shows at; 1 without a display.
