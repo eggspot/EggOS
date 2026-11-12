@@ -24075,3 +24075,19 @@ the license, by an explicit instruction recorded here.
   framebuffer and the desktop's screen arrangement.
 - **Not yet.** Extending the desktop; the cursor on the mirror (the cursor plane is the
   first pipe's); display 11 and later (D465); HDMI sinks (D466); hot plug.
+
+## D465 Intel display 11's combo PHY clocks, so Ice Lake lights a second screen too (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** On display 11 (Ice Lake, Jasper and Elkhart Lake) a combo port's DisplayPort
+  clock comes from a combo PLL: `intel_combo_phy` works its settings out from the reference
+  clock the straps name (24, 19.2 or 38.4 MHz, the last halved): the oscillator at 8.1 GHz as
+  a whole and a 15-bit fractional multiple, and the P and K dividers that bring it to half the
+  link rate (5 and 2 for 1.62 Gbps, 3 and 2 for 2.7, 3 and 1 for 5.4, 2 and 1 for 8.1).
+  `set_mode` takes a combo PLL the firmware left off, powers it, writes its two configuration
+  registers, enables it until it locks, routes it to the port and turns the port's clock on;
+  the transcoder, M/N, link training and planes are display 9's (D447), which display 11
+  keeps. The engine learns the device's display version at `take`, and the kernel lights a
+  mirror (D464) on display 9 and 11.
+- **Not yet.** Ice Lake's Type-C ports (the MG PHY and its PLLs, the FIA's lane assignment
+  and Type-C cold), the combo PHY's drive tables (training keeps the drive the PHY was
+  initialised with), and display 12 and later (Tiger Lake on: their clock routing moved).

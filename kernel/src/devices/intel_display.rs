@@ -333,7 +333,7 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
     // global GTT, mapped as device memory by `map_window` for as long as the kernel runs; only
     // this driver drives the display engine.
     let regs = unsafe { Mmio::new(base, length) };
-    let (engine, plane) = DisplayEngine::take(regs, length).map_err(|refusal| ProbeError::Refused(refusal.description()))?;
+    let (engine, plane) = DisplayEngine::take(regs, length, function.device_id).map_err(|refusal| ProbeError::Refused(refusal.description()))?;
     let LitPlane { width, height, stride_bytes, surface, .. } = plane;
     let stride = intel::stride_for(width);
     let buffer_bytes = (stride as u64 * u64::from(height)).next_multiple_of(intel::GTT_PAGE);
@@ -403,7 +403,7 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         scanout.sinks.push('\n');
     }
     if let Some((port, link, timing)) = second_screen
-        && intel::is_display_9(function.device_id)
+        && intel::sets_modes(function.device_id)
         && let Some(pipe) = scanout.engine.free_pipe()
         && eggos_drivers::gpu::intel_modeset::fits_link(
             timing.clock_khz,

@@ -5,10 +5,20 @@
 
 use crate::io::RegisterIo;
 
-/// Whether device `device` has a display-9 engine (Skylake to Comet Lake), whose PLLs and
-/// ports [`DisplayEngine::set_mode`] programs.
+/// Whether device `device` has a display-9 engine (Skylake to Comet Lake).
 pub fn is_display_9(device: u16) -> bool {
     is_supported(device) && !DISPLAY_11_AND_LATER.contains(&((device >> 8) as u8))
+}
+
+/// Whether device `device` has a display-11 engine (Ice Lake, Jasper and Elkhart Lake).
+pub fn is_display_11(device: u16) -> bool {
+    DISPLAY_11.contains(&((device >> 8) as u8))
+}
+
+/// Whether [`DisplayEngine::set_mode`] lights a port on device `device`: display 9's and 11's
+/// (D447, D465).
+pub fn sets_modes(device: u16) -> bool {
+    is_display_9(device) || is_display_11(device)
 }
 
 /// Intel's PCI vendor id.
@@ -89,6 +99,18 @@ const SCALER_PIPE_STRIDE: usize = 0x800;
 const SCALER_ENABLE: u32 = 1 << 31;
 const SCALER_FILTER_BILINEAR: u32 = 3 << 23;
 const DIGITAL_PORTS: usize = 5;
+const DISPLAY_11: [u8; 2] = [0x8a, 0x4e];
+const COMBO_PORTS: usize = 2;
+const COMBO_PLL_ENABLES: [usize; 2] = [0x46010, 0x46014];
+const COMBO_PLL_CONFIGURATION: usize = 0x16_4000;
+const COMBO_PLL_STRIDE: usize = 8;
+const PLL_POWER_ENABLE: u32 = 1 << 27;
+const PLL_POWER_STATE: u32 = 1 << 26;
+const PLL_LOCKED: u32 = 1 << 30;
+const PORT_CLOCK_ROUTING: usize = 0x16_4280;
+const PORT_CLOCK_OFF_SHIFT: u32 = 10;
+const STRAPS: usize = 0x51004;
+const REFERENCE_SHIFT: u32 = 29;
 const DISPLAY_11_AND_LATER: [u8; 8] = [0x8a, 0x4e, 0x9a, 0x4c, 0x46, 0xa7, 0x4f, 0x56];
 
 const PLANE_ENABLE: u32 = 1 << 31;
@@ -196,16 +218,19 @@ pub struct DisplayEngine<R: RegisterIo> {
     gtt_offset: usize,
     pipe: usize,
     mirrors: u8,
+    display_11: bool,
 }
 
 impl<R: RegisterIo> DisplayEngine<R> {
-    /// The engine behind `regs`, `bar_bytes` long, and the plane the firmware lit on it.
-    pub fn take(regs: R, bar_bytes: usize) -> Result<(Self, LitPlane), Refusal> {
+    /// The engine of device `device` behind `regs`, `bar_bytes` long, and the plane the
+    /// firmware lit on it.
+    pub fn take(regs: R, bar_bytes: usize, device: u16) -> Result<(Self, LitPlane), Refusal> {
         let mut engine = Self {
             regs,
             gtt_offset: bar_bytes / 2,
             pipe: 0,
             mirrors: 0,
+            display_11: is_display_11(device),
         };
         let lit = (0..MAX_PIPES)
             .find(|&pipe| engine.plane(PLANE_CTL, pipe) & PLANE_ENABLE != 0)
@@ -319,11 +344,12 @@ impl<R: RegisterIo> DisplayEngine<R> {
         crate::display_port::train(&mut link, lanes, rate)
     }
 
-    /// Lights pipe `pipe` on DisplayPort port `port` (B to D, 1 to 3) with `timing` over `lanes`
-    /// lanes at link rate code `rate`, showing the surface at global-GTT address `surface`,
-    /// rows `stride_bytes` long (D447, display 9): the port's PLL set to the rate and routed
-    /// to it, the transcoder's timings, M/N, clock and function, the link trained, then the
-    /// pipe and its plane on. Polls while `keep_waiting` says to.
+    /// Lights pipe `pipe` on DisplayPort port `port` with `timing` over `lanes` lanes at link
+    /// rate code `rate`, showing the surface at global-GTT address `surface`, rows
+    /// `stride_bytes` long (D447): the port's PLL set to the rate and routed to it (display 9's
+    /// shared PLL for ports B to D, or display 11's combo PLL for ports A and B, D465), the
+    /// transcoder's timings, M/N, clock and function, the link trained, then the pipe and its
+    /// plane on. Polls while `keep_waiting` says to.
     #[allow(clippy::too_many_arguments)]
     pub fn set_mode(
         &self,
@@ -336,25 +362,15 @@ impl<R: RegisterIo> DisplayEngine<R> {
         stride_bytes: u32,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), ModeError> {
-        use super::intel_modeset::{m_n, skylake_link_rate, symbol_clock_khz, timing_registers, TRANSFER_UNIT};
-        if port == 0 || port > 3 || pipe >= MAX_PIPES - 1 {
+        use super::intel_modeset::{m_n, symbol_clock_khz, timing_registers, TRANSFER_UNIT};
+        if pipe >= MAX_PIPES - 1 {
             return Err(ModeError::Unsupported);
         }
-        let code = skylake_link_rate(rate).ok_or(ModeError::Unsupported)?;
         let symbol_khz = symbol_clock_khz(rate).ok_or(ModeError::Unsupported)?;
-        let pll = DPLL_FOR_PORTS;
-        let field = 6 * pll as u32;
-        let control = self.regs.read32(DPLL_CTRL1) & !(0x3f << field);
-        self.regs.write32(DPLL_CTRL1, control | 1 << field | code << (field + 1));
-        self.regs.write32(DPLL_ENABLES[pll], PLL_ENABLE);
-        while self.regs.read32(DPLL_STATUS) & 1 << (8 * pll) == 0 {
-            if !keep_waiting() {
-                return Err(ModeError::PllUnlocked);
-            }
+        match self.display_11 {
+            true => self.clock_combo_port(port, rate, keep_waiting)?,
+            false => self.clock_display_9_port(port, rate, keep_waiting)?,
         }
-        let route = 3 * port as u32;
-        let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
-        self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
         let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
         for (index, value) in timing_registers(timing).iter().enumerate() {
             let at = match index {
@@ -388,6 +404,78 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.regs.write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
         self.regs.write32(at(PLANE_CTL), PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
         self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
+        Ok(())
+    }
+
+    fn clock_display_9_port(
+        &self,
+        port: usize,
+        rate: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
+        if port == 0 || port > 3 {
+            return Err(ModeError::Unsupported);
+        }
+        let code = super::intel_modeset::skylake_link_rate(rate).ok_or(ModeError::Unsupported)?;
+        let pll = DPLL_FOR_PORTS;
+        let field = 6 * pll as u32;
+        let control = self.regs.read32(DPLL_CTRL1) & !(0x3f << field);
+        self.regs.write32(DPLL_CTRL1, control | 1 << field | code << (field + 1));
+        self.regs.write32(DPLL_ENABLES[pll], PLL_ENABLE);
+        while self.regs.read32(DPLL_STATUS) & 1 << (8 * pll) == 0 {
+            if !keep_waiting() {
+                return Err(ModeError::PllUnlocked);
+            }
+        }
+        let route = 3 * port as u32;
+        let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
+        self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
+        Ok(())
+    }
+
+    /// Display 11's combo ports A and B (D465): a combo PLL the firmware left off is powered,
+    /// set to the rate from the reference clock the straps name, enabled until it locks, then
+    /// routed to the port and the port's clock turned on.
+    fn clock_combo_port(
+        &self,
+        port: usize,
+        rate: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
+        use super::intel_combo_phy::{for_display_port, reference_khz};
+        if port >= COMBO_PORTS {
+            return Err(ModeError::Unsupported);
+        }
+        let reference = reference_khz(self.regs.read32(STRAPS) >> REFERENCE_SHIFT & 0x7)
+            .ok_or(ModeError::Unsupported)?;
+        let settings = for_display_port(rate, reference).ok_or(ModeError::Unsupported)?;
+        let pll = (0..COMBO_PLL_ENABLES.len())
+            .find(|&pll| self.regs.read32(COMBO_PLL_ENABLES[pll]) & PLL_ENABLE == 0)
+            .ok_or(ModeError::Unsupported)?;
+        let enable = COMBO_PLL_ENABLES[pll];
+        let wait_for = |bit: u32, keep_waiting: &mut dyn FnMut() -> bool| {
+            while self.regs.read32(enable) & bit == 0 {
+                if !keep_waiting() {
+                    return Err(ModeError::PllUnlocked);
+                }
+            }
+            Ok(())
+        };
+        self.regs.write32(enable, PLL_POWER_ENABLE);
+        wait_for(PLL_POWER_STATE, keep_waiting)?;
+        let configuration = COMBO_PLL_CONFIGURATION + pll * COMBO_PLL_STRIDE;
+        self.regs.write32(configuration, settings.configuration_0());
+        self.regs.write32(configuration + 4, settings.configuration_1());
+        self.regs.write32(enable, PLL_POWER_ENABLE | PLL_ENABLE);
+        wait_for(PLL_LOCKED, keep_waiting)?;
+        let field = 2 * port as u32;
+        let routing = self.regs.read32(PORT_CLOCK_ROUTING) & !(0x3 << field);
+        self.regs.write32(PORT_CLOCK_ROUTING, routing | (pll as u32) << field);
+        let routed = self.regs.read32(PORT_CLOCK_ROUTING);
+        self.regs.write32(
+            PORT_CLOCK_ROUTING,
+            routed & !(1 << (PORT_CLOCK_OFF_SHIFT + port as u32)),
+        );
         Ok(())
     }
 
@@ -496,6 +584,8 @@ mod tests {
         }
     }
 
+    const SKYLAKE: u16 = 0x1912;
+
     fn lit_on_pipe_b(control: u32) -> Registers {
         let regs = Registers::default();
         regs.write32(PLANE_CTL + PIPE_STRIDE, control);
@@ -508,7 +598,7 @@ mod tests {
     #[test]
     fn the_lit_plane_is_found_with_its_size_stride_and_surface() {
         let control = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
-        let (_, plane) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20).ok().unwrap();
+        let (_, plane) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20, SKYLAKE).ok().unwrap();
         assert_eq!(
             plane,
             LitPlane {
@@ -525,15 +615,15 @@ mod tests {
     fn tiled_or_rgb_ordered_planes_and_dark_engines_are_refused() {
         let xrgb = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
         assert_eq!(
-            DisplayEngine::take(lit_on_pipe_b(xrgb | (1 << PLANE_TILING_SHIFT)), 16 << 20).err(),
+            DisplayEngine::take(lit_on_pipe_b(xrgb | (1 << PLANE_TILING_SHIFT)), 16 << 20, SKYLAKE).err(),
             Some(Refusal::UnsupportedPlane)
         );
         assert_eq!(
-            DisplayEngine::take(lit_on_pipe_b(xrgb | PLANE_ORDER_RGBX), 16 << 20).err(),
+            DisplayEngine::take(lit_on_pipe_b(xrgb | PLANE_ORDER_RGBX), 16 << 20, SKYLAKE).err(),
             Some(Refusal::UnsupportedPlane)
         );
         assert_eq!(
-            DisplayEngine::take(Registers::default(), 16 << 20).err(),
+            DisplayEngine::take(Registers::default(), 16 << 20, SKYLAKE).err(),
             Some(Refusal::NothingLit)
         );
     }
@@ -541,7 +631,7 @@ mod tests {
     #[test]
     fn a_flip_writes_the_stride_before_the_surface_and_maps_pages_into_the_gtt() {
         let control = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
-        let (engine, _) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20).ok().unwrap();
+        let (engine, _) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20, SKYLAKE).ok().unwrap();
         engine.flip(0x3fc0_0000, stride_for(1366));
         assert_eq!(engine.regs.read32(PLANE_STRIDE + PIPE_STRIDE), 5504 / 64);
         assert_eq!(engine.regs.read32(PLANE_SURF + PIPE_STRIDE), 0x3fc0_0000);
