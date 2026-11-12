@@ -23394,3 +23394,15 @@ the license, by an explicit instruction recorded here.
   `argc`. `exec` now leaves `START_STACK_GAP` (128 on SPARC64, 0 elsewhere) below it.
 - **Known gaps (to check at build time).** LLVM's acceptance of `ldx`/`stx` on `%fsr` and of
   `ldd`/`std` on `%f32`-`%f62` in the programs' section.
+
+## D419 The Components pane's disabled row buttons explain themselves (D300's deviation; docs/ux/components-v0.3.md section 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** Each row's button carries a tooltip that shows only while the button is disabled,
+  in the words of the reason: `Another component is installing` (`is being removed`, `is
+  updating`) while another row works, `This component is being removed` (`is installing`,
+  `is updating`) on the row that works elsewhere, `Cancelling` once its install is cancelled,
+  and `Download the component store first` without a store. The words live in
+  `eggos_components::messages` beside the states, so the CLI and the pane say the same thing.
+  On a phone a long-press shows it (toolkit v0.5 2.4); on a wearable tooltips stay off.
+- **Toolkit.** `set_text` and `text_of` now take a tooltip, so its words can follow the state,
+  and a hidden tooltip (`set_shown(false)`) no longer shows on hover or long-press.

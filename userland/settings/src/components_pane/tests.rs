@@ -318,6 +318,12 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
     assert_eq!(rect(&window, ids.rows[3].panel).y, 308);
     for row in [0, 1, 3] {
         assert!(!window.widgets().is_enabled(row_button(&window, row)));
+        let tip = widgets(&window).rows[row].tip;
+        assert_eq!(
+            window.widgets().text_of(tip),
+            Some(messages::OTHER_INSTALLING_REASON)
+        );
+        assert!(window.widgets().is_shown(tip));
     }
     let next = window.show_installed(Ok(()), read(&["desktop", "builtin-apps", "windows-apps"]));
     assert_eq!(next, None);
@@ -326,6 +332,7 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
         row_texts("Windows apps", "Installed \u{b7} 1.8 MB", "Remove")
     );
     assert_eq!(rect(&window, ids.rows[3].panel).y, 268);
+    assert!(!window.widgets().is_shown(widgets(&window).rows[3].tip));
     assert_eq!(
         window.components_pane().store_lines(window.widgets())[2],
         "3 of 4 installed \u{b7} 5.5 MB on disk"

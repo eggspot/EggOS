@@ -43,7 +43,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     fn tooltip_of(&self, owner: WidgetId) -> Option<WidgetId> {
         self.ids().find(|&id| {
             self.node(id).is_some_and(|node| {
-                node.parent == Some(owner) && matches!(node.kind, Kind::Tooltip(_))
+                node.parent == Some(owner) && node.shown && matches!(node.kind, Kind::Tooltip(_))
             })
         })
     }

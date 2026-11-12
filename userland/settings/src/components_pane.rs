@@ -26,7 +26,7 @@ use eggos_toolkit::widget::{Kind, Length, Place};
 /// The most rows the pane shows: the most components a store offers.
 pub const ROWS: usize = MAX_COMPONENTS;
 /// The widgets the pane adds to its container.
-pub const WIDGETS: usize = 4 + 6 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1 + PLAN_LINES;
+pub const WIDGETS: usize = 4 + 7 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1 + PLAN_LINES;
 /// The plan lines the edition confirmation shows, one a component (docs/ux/components-v0.5.md
 /// section 4, D331); a longer plan's last line says how many more.
 const PLAN_LINES: usize = 6;
@@ -177,6 +177,7 @@ struct RowWidgets {
     summary: WidgetId,
     button: WidgetId,
     update: WidgetId,
+    tip: WidgetId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -268,6 +269,7 @@ struct Look {
     button: &'static str,
     action: &'static str,
     enabled: bool,
+    reason: &'static str,
     update: Option<UpdateLook>,
 }
 
@@ -414,6 +416,13 @@ impl ComponentsPane {
                 at(ROW_BUTTON.0, ROW_BUTTON.1, ROW_BUTTON.2, ROW_BUTTON.3),
                 Kind::button("Install", false),
             );
+            let tip = add(
+                tree,
+                button,
+                Place::at(0, 0, Length::Content, Length::Content),
+                Kind::tooltip("", ""),
+            );
+            tree.set_shown(tip, false);
             RowWidgets {
                 panel,
                 title,
@@ -421,6 +430,7 @@ impl ComponentsPane {
                 summary,
                 button,
                 update,
+                tip,
             }
         });
         let first = label(tree, pane, line_at(NOTE_X, 0, NOTE_WIDTH));
@@ -1337,6 +1347,7 @@ impl ComponentsPane {
                 button: "Cancel",
                 action: "Cancel installing",
                 enabled: !cancelled,
+                reason: messages::CANCELLING_REASON,
                 update: None,
             };
         }
@@ -1347,6 +1358,7 @@ impl ComponentsPane {
                 button: "Remove",
                 action: "Remove",
                 enabled: false,
+                reason: messages::BEING_REMOVED_REASON,
                 update: None,
             };
         }
@@ -1357,6 +1369,7 @@ impl ComponentsPane {
                 button: "Install",
                 action: "Install",
                 enabled: false,
+                reason: messages::INSTALLING_REASON,
                 update: None,
             };
         }
@@ -1372,6 +1385,7 @@ impl ComponentsPane {
                 button: "Remove",
                 action: "Remove",
                 enabled: false,
+                reason: messages::UPDATING_REASON,
                 update: Some(UpdateLook {
                     line: messages::updating_state(percent),
                     button: "Cancel",
@@ -1397,6 +1411,7 @@ impl ComponentsPane {
                 button: "Remove",
                 action: "Remove",
                 enabled: !others_busy,
+                reason: self.busy_reason(),
                 update,
             };
         }
@@ -1410,7 +1425,23 @@ impl ComponentsPane {
             button: "Install",
             action: "Install",
             enabled: can_install,
+            reason: match self.read.store {
+                Some(_) => self.busy_reason(),
+                None => messages::NO_STORE_REASON,
+            },
             update: None,
+        }
+    }
+
+    fn busy_reason(&self) -> &'static str {
+        let removing = self.to_remove().is_some()
+            || self.read.rows.iter().any(|row| row.state == REMOVING);
+        let updating = matches!(self.work, Work::Updating { .. })
+            || self.read.rows.iter().any(|row| row.state == UPDATING);
+        match (removing, updating) {
+            (true, _) => messages::OTHER_REMOVING_REASON,
+            (false, true) => messages::OTHER_UPDATING_REASON,
+            (false, false) => messages::OTHER_INSTALLING_REASON,
         }
     }
 
@@ -1536,6 +1567,8 @@ impl ComponentsPane {
             tree.set_shown(row_widgets.update, look.update.is_some());
             tree.set_text(row_widgets.button, look.button);
             tree.set_enabled(row_widgets.button, look.enabled);
+            tree.set_text(row_widgets.tip, look.reason);
+            tree.set_shown(row_widgets.tip, !look.enabled);
             tree.set_accessible_name(
                 row_widgets.button,
                 &format!("{} {}", look.action, component.title),

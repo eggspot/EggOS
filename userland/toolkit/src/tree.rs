@@ -378,7 +378,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
-    /// Replaces the text of label, button, checkbox, text field or text area `id`.
+    /// Replaces the text of label, button, checkbox, tooltip, text field or text area `id`.
     pub fn set_text(&mut self, id: WidgetId, words: &str) {
         if self.text_of(id) == Some(words) {
             return;
@@ -398,6 +398,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.change(id, |kind| match kind {
             Kind::Label { text, .. } => text.set(words),
             Kind::Button { text, .. } | Kind::Checkbox { text, .. } => text.set(words),
+            Kind::Tooltip(tip) => tip.text.set(words),
             Kind::TextField(field) => {
                 field.text.set(words);
                 field.caret = field.text.len();
@@ -426,6 +427,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         match self.kind(id)? {
             Kind::Label { text, .. } => Some(text.as_str()),
             Kind::Button { text, .. } | Kind::Checkbox { text, .. } => Some(text.as_str()),
+            Kind::Tooltip(tip) => Some(tip.text.as_str()),
             Kind::TextField(field) => Some(field.text.as_str()),
             Kind::TextArea(area) => self.stores.get(area.store).map(Store::text),
             _ => None,

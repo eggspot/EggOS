@@ -419,6 +419,24 @@ pub const FAILED_STATE: &str = "Failed";
 /// The state of a component another program is installing.
 pub const INSTALLING_ELSEWHERE_STATE: &str = "Installing...";
 
+/// Why a row's button is disabled, its tooltip (docs/ux/components-v0.3.md section 6): another
+/// component is installing.
+pub const OTHER_INSTALLING_REASON: &str = "Another component is installing";
+/// Another component is being removed.
+pub const OTHER_REMOVING_REASON: &str = "Another component is being removed";
+/// Another component is updating.
+pub const OTHER_UPDATING_REASON: &str = "Another component is updating";
+/// This component is being removed.
+pub const BEING_REMOVED_REASON: &str = "This component is being removed";
+/// Another program is installing this component.
+pub const INSTALLING_REASON: &str = "This component is installing";
+/// This component is updating.
+pub const UPDATING_REASON: &str = "This component is updating";
+/// Its install is being cancelled.
+pub const CANCELLING_REASON: &str = "Cancelling";
+/// There is no store to install from.
+pub const NO_STORE_REASON: &str = "Download the component store first";
+
 /// The Updates band's line before any check (docs/ux/components-v0.5.md section 2).
 pub const NOT_CHECKED: &str = "Not checked yet";
 /// The Updates band's line while a check runs.
