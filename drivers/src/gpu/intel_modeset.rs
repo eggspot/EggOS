@@ -61,6 +61,32 @@ pub fn symbol_clock_khz(rate: u8) -> Option<u32> {
     }
 }
 
+/// Whether `pixel_khz` pixels at `bits_per_pixel` fit a link of `lanes` lanes at
+/// `rate_centigbps` (2.70 Gbps is 270), whose 8b/10b coding carries 8 bits in 10 (D464).
+pub fn fits_link(pixel_khz: u32, bits_per_pixel: u32, rate_centigbps: u32, lanes: u32) -> bool {
+    let needed = u64::from(pixel_khz) * u64::from(bits_per_pixel);
+    let carried = u64::from(lanes) * u64::from(rate_centigbps) * 8_000;
+    needed <= carried
+}
+
+/// Where a `source`-sized picture sits, scaled to fill as much of a `screen`-sized one as it
+/// can while keeping its shape (D464): its size and its top-left corner, centred, the bars
+/// on the sides or above and below.
+pub fn fitted(source: (u32, u32), screen: (u32, u32)) -> ((u32, u32), (u32, u32)) {
+    if source.0 == 0 || source.1 == 0 {
+        return (screen, (0, 0));
+    }
+    let wide_by_height = u64::from(source.0) * u64::from(screen.1) / u64::from(source.1);
+    let size = match wide_by_height <= u64::from(screen.0) {
+        true => (wide_by_height as u32, screen.1),
+        false => (
+            screen.0,
+            (u64::from(source.1) * u64::from(screen.0) / u64::from(source.0)) as u32,
+        ),
+    };
+    (size, ((screen.0 - size.0) / 2, (screen.1 - size.1) / 2))
+}
+
 /// The display-9 PLL's `DPLL_CTRL1` link-rate code for link rate code `rate`.
 pub fn skylake_link_rate(rate: u8) -> Option<u32> {
     match rate {
@@ -73,6 +99,20 @@ pub fn skylake_link_rate(rate: u8) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_picture_fills_the_screen_keeping_its_shape_between_bars() {
+        assert_eq!(fitted((1920, 1080), (1920, 1080)), ((1920, 1080), (0, 0)));
+        assert_eq!(fitted((1280, 800), (1920, 1080)), ((1728, 1080), (96, 0)));
+        assert_eq!(fitted((1920, 1080), (1280, 1024)), ((1280, 720), (0, 152)));
+    }
+
+    #[test]
+    fn a_mode_fits_a_link_only_within_its_payload() {
+        assert!(fits_link(148_500, 24, 270, 2));
+        assert!(!fits_link(148_500, 24, 162, 2));
+        assert!(fits_link(533_250, 24, 540, 4));
+    }
     use super::*;
 
     fn full_hd() -> Timing {

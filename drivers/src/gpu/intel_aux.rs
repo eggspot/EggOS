@@ -225,6 +225,18 @@ pub struct LinkCapabilities {
     pub lanes: u8,
 }
 
+impl LinkCapabilities {
+    /// Its link rate as the DPCD's code (`0x0a` for 2.70 Gbps), as mode setting takes it.
+    pub fn rate_code(&self) -> u8 {
+        match self.rate_centigbps {
+            162 => 0x06,
+            270 => 0x0a,
+            540 => 0x14,
+            _ => 0x1e,
+        }
+    }
+}
+
 /// The capabilities in DPCD bytes 0 to 2.
 pub fn link_capabilities(dpcd: &[u8]) -> Option<LinkCapabilities> {
     let rate = match *dpcd.get(1)? {

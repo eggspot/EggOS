@@ -24054,3 +24054,24 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** A dimmed scrim over the page behind a sheet and a tap above it closing it
   (the phone shell's own sheets do both); the Wi-Fi join note as a sheet (its rows keep their
   button, D434).
+
+## D464 The kernel lights a second screen on Intel display 9: a mirror through the pipe scaler (M13, D447's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** D447 wrote Intel mode setting but nothing called it, so a monitor plugged
+  into a laptop stayed dark. The kernel's display (D112) is one framebuffer the desktop draws;
+  extending the desktop across two screens is the desktop's work (M12), lighting the screen
+  is the driver's.
+- **Decision.** At probe, the first sink on a port the firmware did not light that answers
+  with DisplayPort link capabilities and an EDID preferred timing is lit, on display 9 only
+  (the engine whose PLLs `set_mode` programs), on a free pipe, when the timing fits the link
+  (24 bits a pixel within the lanes' 8b/10b payload). The new pipe mirrors the first screen:
+  its source is the first screen's size, and the pipe scaler fits that picture to the
+  monitor's timing, keeping its shape between bars; the pipe's plane shows the same buffer,
+  and every flip writes the lit pipe's and its mirrors' planes, so both screens change at
+  their vertical blanks. `/proc/driver/display` lists the mirror with the sinks.
+- **Why a mirror first.** It needs no change above the driver: the desktop, the window server
+  and the input's coordinates stay one screen's, and presenting a talk or a TV is what a
+  second screen is plugged in for most often. Extending the desktop needs a second
+  framebuffer and the desktop's screen arrangement.
+- **Not yet.** Extending the desktop; the cursor on the mirror (the cursor plane is the
+  first pipe's); display 11 and later (D465); HDMI sinks (D466); hot plug.

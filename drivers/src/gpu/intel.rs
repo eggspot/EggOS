@@ -5,6 +5,12 @@
 
 use crate::io::RegisterIo;
 
+/// Whether device `device` has a display-9 engine (Skylake to Comet Lake), whose PLLs and
+/// ports [`DisplayEngine::set_mode`] programs.
+pub fn is_display_9(device: u16) -> bool {
+    is_supported(device) && !DISPLAY_11_AND_LATER.contains(&((device >> 8) as u8))
+}
+
 /// Intel's PCI vendor id.
 pub const VENDOR_INTEL: u16 = 0x8086;
 /// The bytes of one global-GTT page.
@@ -76,6 +82,13 @@ const PIPE_INTERRUPT_IDENTITY: usize = 0x44408;
 const PIPE_INTERRUPT_ENABLE: usize = 0x4440c;
 const PIPE_INTERRUPT_STRIDE: usize = 0x10;
 const PIPE_VBLANK: u32 = 1;
+const SCALER_CONTROL: usize = 0x68180;
+const SCALER_WINDOW_POSITION: usize = 0x68170;
+const SCALER_WINDOW_SIZE: usize = 0x68174;
+const SCALER_PIPE_STRIDE: usize = 0x800;
+const SCALER_ENABLE: u32 = 1 << 31;
+const SCALER_FILTER_BILINEAR: u32 = 3 << 23;
+const DIGITAL_PORTS: usize = 5;
 const DISPLAY_11_AND_LATER: [u8; 8] = [0x8a, 0x4e, 0x9a, 0x4c, 0x46, 0xa7, 0x4f, 0x56];
 
 const PLANE_ENABLE: u32 = 1 << 31;
@@ -182,6 +195,7 @@ pub struct DisplayEngine<R: RegisterIo> {
     regs: R,
     gtt_offset: usize,
     pipe: usize,
+    mirrors: u8,
 }
 
 impl<R: RegisterIo> DisplayEngine<R> {
@@ -191,6 +205,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             regs,
             gtt_offset: bar_bytes / 2,
             pipe: 0,
+            mirrors: 0,
         };
         let lit = (0..MAX_PIPES)
             .find(|&pipe| engine.plane(PLANE_CTL, pipe) & PLANE_ENABLE != 0)
@@ -389,10 +404,48 @@ impl<R: RegisterIo> DisplayEngine<R> {
     }
 
     /// Shows the surface at global-GTT address `surface`, rows `stride_bytes` long, from the next
-    /// vertical blank.
+    /// vertical blank, on the lit pipe and every pipe mirroring it (D464).
     pub fn flip(&self, surface: u32, stride_bytes: u32) {
-        self.set_plane(PLANE_STRIDE, stride_bytes / STRIDE_UNIT);
-        self.set_plane(PLANE_SURF, surface & SURFACE_MASK);
+        let shown = |pipe: &usize| *pipe == self.pipe || self.mirrors & 1 << *pipe != 0;
+        for pipe in (0..MAX_PIPES).filter(shown) {
+            let at = |register: usize| register + pipe * PIPE_STRIDE;
+            self.regs.write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
+            self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
+        }
+    }
+
+    /// The digital ports the firmware lit, a bit each (port A is bit 0): their buffers on.
+    pub fn lit_ports(&self) -> u8 {
+        let on = |port: &usize| {
+            self.regs.read32(DDI_BUF_CTL + port * PORT_REGISTER_STRIDE) & DDI_BUF_ENABLE != 0
+        };
+        (0..DIGITAL_PORTS)
+            .filter(on)
+            .fold(0, |ports, port| ports | 1 << port)
+    }
+
+    /// A pipe [`Self::set_mode`] may light: not the lit one and not on.
+    pub fn free_pipe(&self) -> Option<usize> {
+        (0..MAX_PIPES - 1).find(|&pipe| {
+            pipe != self.pipe
+                && self.regs.read32(PIPE_CONF + pipe * PIPE_STRIDE) & PIPE_CONF_ENABLE == 0
+        })
+    }
+
+    /// Has pipe `pipe`, lit by [`Self::set_mode`] with `timing`, show the lit pipe's
+    /// `source`-sized picture scaled to its screen, keeping its shape, through the pipe's
+    /// scaler, and follow every flip from now on (D464): a mirror of the first screen.
+    pub fn mirror(&mut self, pipe: usize, source: (u32, u32), timing: &crate::edid::Timing) {
+        let (size, at) = super::intel_modeset::fitted(source, (timing.width, timing.height));
+        let pair = |high: u32, low: u32| (high & 0x1fff) << 16 | (low & 0x1fff);
+        let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
+        self.regs.write32(transcoder + PIPE_SOURCE, pair(source.0 - 1, source.1 - 1));
+        self.regs.write32(PLANE_SIZE + pipe * PIPE_STRIDE, pair(source.1 - 1, source.0 - 1));
+        let scaler = pipe * SCALER_PIPE_STRIDE;
+        self.regs.write32(SCALER_WINDOW_POSITION + scaler, at.0 << 16 | at.1);
+        self.regs.write32(SCALER_WINDOW_SIZE + scaler, size.0 << 16 | size.1);
+        self.regs.write32(SCALER_CONTROL + scaler, SCALER_ENABLE | SCALER_FILTER_BILINEAR);
+        self.mirrors |= 1 << pipe;
     }
 
     /// Whether the plane scans out `surface` now.

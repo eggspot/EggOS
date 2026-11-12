@@ -113,6 +113,8 @@ struct IntelDisplay {
 
 const DIGITAL_PORTS: usize = 4;
 const SINK_ANSWER_MS: u64 = 50;
+const MODE_SET_MS: u64 = 500;
+const BITS_PER_PIXEL: u32 = 24;
 
 static FOUND_DEVICE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 const FIRMWARE_FOLDER: &str = "/usr/lib/firmware/i915";
@@ -366,11 +368,19 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
     };
     FOUND_DEVICE.store(u32::from(function.device_id), core::sync::atomic::Ordering::Release);
     let mut scanout = scanout;
+    let lit_ports = scanout.engine.lit_ports();
+    let mut second_screen = None;
     for port in 0..DIGITAL_PORTS {
         let mut deadline = probe.deadline(SINK_ANSWER_MS);
         let (link, edid) = scanout.engine.probe_sink(port, &mut || deadline.keep_waiting());
         if link.is_none() && edid.is_none() {
             continue;
+        }
+        if let (Some(link), Some(timing)) = (link, edid.and_then(|edid| edid.preferred))
+            && lit_ports & 1 << port == 0
+            && second_screen.is_none()
+        {
+            second_screen = Some((port, link, timing));
         }
         let port_name = (b'A' + port as u8) as char;
         let _ = core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!("port {port_name}"));
@@ -391,6 +401,36 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
             );
         }
         scanout.sinks.push('\n');
+    }
+    if let Some((port, link, timing)) = second_screen
+        && intel::is_display_9(function.device_id)
+        && let Some(pipe) = scanout.engine.free_pipe()
+        && eggos_drivers::gpu::intel_modeset::fits_link(
+            timing.clock_khz,
+            BITS_PER_PIXEL,
+            link.rate_centigbps,
+            u32::from(link.lanes),
+        )
+    {
+        let mut deadline = probe.deadline(MODE_SET_MS);
+        let lit = scanout.engine.set_mode(
+            pipe,
+            port,
+            &timing,
+            usize::from(link.lanes),
+            link.rate_code(),
+            scanout.buffers[0].surface,
+            stride,
+            &mut || deadline.keep_waiting(),
+        );
+        if lit.is_ok() {
+            scanout.engine.mirror(pipe, (width, height), &timing);
+            let port_name = (b'A' + port as u8) as char;
+            let _ = core::fmt::Write::write_fmt(
+                &mut scanout.sinks,
+                format_args!("port {port_name} mirrors the first screen on pipe {pipe}\n"),
+            );
+        }
     }
     if super::message_interrupts::connect(probe, id, &VBLANK_EVENTS).is_ok() {
         scanout.engine.interrupt_on_vblank(function.device_id);
