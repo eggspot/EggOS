@@ -64,6 +64,61 @@ pub enum Native {
     AddView,
     /// `LinearLayout.setOrientation(int)`.
     SetOrientation,
+    /// An exception's constructor with its message first (D504).
+    ExceptionInit,
+    /// `Throwable.getMessage()`: its message, or null.
+    GetMessage,
+}
+
+const THROWABLE: &str = "Ljava/lang/Throwable;";
+const EXCEPTION: &str = "Ljava/lang/Exception;";
+const ERROR: &str = "Ljava/lang/Error;";
+const RUNTIME_EXCEPTION: &str = "Ljava/lang/RuntimeException;";
+const ILLEGAL_ARGUMENT: &str = "Ljava/lang/IllegalArgumentException;";
+const INDEX_OUT_OF_BOUNDS: &str = "Ljava/lang/IndexOutOfBoundsException;";
+/// Java's `NullPointerException`, which the layer throws for a null object (D504).
+pub const NULL_POINTER: &str = "Ljava/lang/NullPointerException;";
+/// `ArithmeticException`, for a division by zero.
+pub const ARITHMETIC: &str = "Ljava/lang/ArithmeticException;";
+/// `ArrayIndexOutOfBoundsException`.
+pub const ARRAY_INDEX: &str = "Ljava/lang/ArrayIndexOutOfBoundsException;";
+/// `NegativeArraySizeException`.
+pub const NEGATIVE_ARRAY_SIZE: &str = "Ljava/lang/NegativeArraySizeException;";
+/// `ClassCastException`.
+pub const CLASS_CAST: &str = "Ljava/lang/ClassCastException;";
+/// `OutOfMemoryError`.
+pub const OUT_OF_MEMORY: &str = "Ljava/lang/OutOfMemoryError;";
+
+/// The framework's exception classes and their superclasses.
+const EXCEPTION_PARENTS: [(&str, &str); 16] = [
+    (THROWABLE, OBJECT),
+    (EXCEPTION, THROWABLE),
+    (ERROR, THROWABLE),
+    (RUNTIME_EXCEPTION, EXCEPTION),
+    ("Ljava/io/IOException;", EXCEPTION),
+    (ARITHMETIC, RUNTIME_EXCEPTION),
+    (NULL_POINTER, RUNTIME_EXCEPTION),
+    (CLASS_CAST, RUNTIME_EXCEPTION),
+    ("Ljava/lang/IllegalStateException;", RUNTIME_EXCEPTION),
+    (ILLEGAL_ARGUMENT, RUNTIME_EXCEPTION),
+    ("Ljava/lang/NumberFormatException;", ILLEGAL_ARGUMENT),
+    (INDEX_OUT_OF_BOUNDS, RUNTIME_EXCEPTION),
+    (ARRAY_INDEX, INDEX_OUT_OF_BOUNDS),
+    (NEGATIVE_ARRAY_SIZE, RUNTIME_EXCEPTION),
+    ("Ljava/lang/UnsupportedOperationException;", RUNTIME_EXCEPTION),
+    (OUT_OF_MEMORY, ERROR),
+];
+
+/// The superclass of framework class `class`, when the layer knows it (D504).
+pub fn framework_superclass(class: &str) -> Option<&'static str> {
+    EXCEPTION_PARENTS
+        .iter()
+        .find(|(named, _)| *named == class)
+        .map(|(_, parent)| *parent)
+}
+
+fn is_exception(class: &str) -> bool {
+    EXCEPTION_PARENTS.iter().any(|(named, _)| *named == class)
 }
 
 /// The framework's implementation of `class`'s method `name` with short signature `shorty`
@@ -89,6 +144,9 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "setOnClickListener") if view => Native::SetOnClickListener,
         (_, "addView") if view => Native::AddView,
         (_, "setOrientation") if view => Native::SetOrientation,
+        (_, "<init>") if is_exception(class) && shorty.starts_with("VL") => Native::ExceptionInit,
+        (_, "<init>") if is_exception(class) => Native::Nothing,
+        (_, "getMessage" | "getLocalizedMessage") if is_exception(class) => Native::GetMessage,
         _ => return None,
     })
 }
@@ -207,8 +265,11 @@ pub fn is_instance(dex: &Dex<'_>, class: &str, wanted: &str) -> Option<bool> {
         if class == wanted {
             return Some(true);
         }
-        let index = dex.class_index(&class)?;
-        match dex.superclass(index) {
+        let parent = match dex.class_index(&class) {
+            Some(index) => dex.superclass(index),
+            None => Some(String::from(framework_superclass(&class)?)),
+        };
+        match parent {
             Some(parent) => class = parent,
             None => return Some(false),
         }

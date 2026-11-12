@@ -31,6 +31,42 @@ pub struct Code<'a> {
     pub outs: u16,
     pub tries: u16,
     pub instructions: &'a [u8],
+    /// The `try` items and the handler list after them, to the file's end (D504).
+    pub try_blocks: &'a [u8],
+}
+
+/// What catches an exception thrown at one place (D504): each typed handler's type index and
+/// code-unit address, in order, then the catch-all's address if there is one; `None` when no
+/// `try` block covers the place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Catches {
+    /// The `try` item's handler offset, the same for every place the item covers.
+    pub handler_offset: u16,
+    pub typed: Vec<(u32, u32)>,
+    pub catch_all: Option<u32>,
+}
+
+const TRY_ITEM_BYTES: usize = 8;
+const MOST_HANDLERS: usize = 64;
+
+fn sleb(bytes: &[u8], at: &mut usize) -> Option<i32> {
+    let mut value = 0i64;
+    let mut shift = 0;
+    loop {
+        let byte = *bytes.get(*at)?;
+        *at += 1;
+        value |= i64::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            if shift < 64 && byte & 0x40 != 0 {
+                value |= -1i64 << shift;
+            }
+            return i32::try_from(value).ok();
+        }
+        if shift >= 35 {
+            return None;
+        }
+    }
 }
 
 impl Code<'_> {
@@ -43,6 +79,35 @@ impl Code<'_> {
     pub fn unit(&self, at: usize) -> Option<u16> {
         let bytes = self.instructions.get(2 * at..2 * at + 2)?;
         Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    /// What catches an exception thrown by the instruction at code unit `at`.
+    pub fn catches(&self, at: usize) -> Option<Catches> {
+        let blocks = self.try_blocks;
+        let item = (0..usize::from(self.tries)).find(|&index| {
+            let start = word(blocks, index * TRY_ITEM_BYTES).unwrap_or(0) as usize;
+            let count = usize::from(half(blocks, index * TRY_ITEM_BYTES + 4).unwrap_or(0));
+            (start..start + count).contains(&at)
+        })?;
+        let handler_offset = half(blocks, item * TRY_ITEM_BYTES + 6)?;
+        let list = usize::from(self.tries) * TRY_ITEM_BYTES;
+        let mut cursor = list + usize::from(handler_offset);
+        let size = sleb(blocks, &mut cursor)?;
+        let mut typed = Vec::new();
+        for _ in 0..(size.unsigned_abs() as usize).min(MOST_HANDLERS) {
+            let kind = uleb(blocks, &mut cursor)?;
+            let address = uleb(blocks, &mut cursor)?;
+            typed.push((kind, address));
+        }
+        let catch_all = match size <= 0 {
+            true => Some(uleb(blocks, &mut cursor)?),
+            false => None,
+        };
+        Some(Catches {
+            handler_offset,
+            typed,
+            catch_all,
+        })
     }
 }
 
@@ -243,12 +308,19 @@ impl<'a> Dex<'a> {
         let at = offset as usize;
         let units = word(self.bytes, at + 12)? as usize;
         let start = at + CODE_HEADER_BYTES;
+        let end = start.checked_add(units.checked_mul(2)?)?;
+        let tries = half(self.bytes, at + 6)?;
+        let try_start = match tries != 0 && units % 2 == 1 {
+            true => end + 2,
+            false => end,
+        };
         Some(Code {
             registers: half(self.bytes, at)?,
             ins: half(self.bytes, at + 2)?,
             outs: half(self.bytes, at + 4)?,
-            tries: half(self.bytes, at + 6)?,
-            instructions: self.bytes.get(start..start.checked_add(units.checked_mul(2)?)?)?,
+            tries,
+            instructions: self.bytes.get(start..end)?,
+            try_blocks: self.bytes.get(try_start..).unwrap_or_default(),
         })
     }
 

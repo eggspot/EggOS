@@ -10,8 +10,9 @@
 //! class), strings, objects with their instance and static fields, arrays, casts and `throw`,
 //! float and double arithmetic, comparisons and conversions with SSE (D503), the object work,
 //! division and Java's float conversions through the runtime's helpers ([`helper`]), for
-//! x86_64 (D471, D472, D499); a method using anything else (`filled-new-array`, method handles)
-//! is refused with the opcode and place, and the layer reports it.
+//! x86_64 (D471, D472, D499); exceptions are caught by the method's `try` blocks or passed to
+//! its caller (D504). A method using anything else (`filled-new-array`, method handles) is
+//! refused with the opcode and place, and the layer reports it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -104,8 +105,15 @@ pub mod helper {
     pub const DOUBLE_TO_INT: usize = 22;
     /// `double-to-long`.
     pub const DOUBLE_TO_LONG: usize = 23;
+    /// Not a helper but a word (D504): the exception being thrown, 0 for none. Compiled code
+    /// looks at it after every call, and goes to the handler that catches it or returns.
+    pub const PENDING_EXCEPTION: usize = 24;
+    /// Whether the pending exception is of the type with the index in the first word.
+    pub const CATCHES: usize = 25;
+    /// `move-exception`: the pending exception, no longer pending.
+    pub const TAKE_EXCEPTION: usize = 26;
     /// How many helpers come before the methods.
-    pub const COUNT: usize = 24;
+    pub const COUNT: usize = 27;
 }
 
 /// The entry-table place of the method with index `method` in the DEX file's method table.

@@ -292,6 +292,7 @@ mod tests {
             outs: 0,
             tries: 0,
             instructions: bytes,
+            try_blocks: &[],
         }
     }
 

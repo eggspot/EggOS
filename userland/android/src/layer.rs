@@ -190,50 +190,79 @@ extern "sysv64" fn new_instance(words: *const u64, table: *const usize) -> u64 {
     })
 }
 
-extern "sysv64" fn field_get(words: *const u64, _: *const usize) -> u64 {
+fn pending_slot(table: *const usize) -> *mut usize {
+    table.cast_mut().wrapping_add(helper::PENDING_EXCEPTION)
+}
+
+fn pending(table: *const usize) -> u64 {
+    // SAFETY: `table` is the layer's entry table, made from a mutable leaked block, whose
+    // pending-exception word only the app's one thread reads and writes.
+    unsafe { pending_slot(table).read() as u64 }
+}
+
+fn set_pending(table: *const usize, exception: u64) {
+    // SAFETY: as in `pending`.
+    unsafe { pending_slot(table).write(exception as usize) };
+}
+
+/// Throws a new exception of framework class `class` (D504): it becomes pending, and the
+/// compiled code that called the helper goes to its handler or returns.
+fn raise(table: *const usize, class: &str) -> u64 {
+    let exception = new_object(Object {
+        class: String::from(class),
+        ..Object::default()
+    });
+    set_pending(table, exception);
+    0
+}
+
+extern "sysv64" fn field_get(words: *const u64, table: *const usize) -> u64 {
     let [target, field] = arguments::<2>(words);
     let Some(target) = object(target) else {
-        stop(&[b"android: NullPointerException reading a field"]);
+        return raise(table, framework::NULL_POINTER);
     };
     target.fields.get(&(field as u32)).copied().unwrap_or(0)
 }
 
-extern "sysv64" fn field_put(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn field_put(words: *const u64, table: *const usize) -> u64 {
     let [target, field, value] = arguments::<3>(words);
     let Some(target) = object(target) else {
-        stop(&[b"android: NullPointerException writing a field"]);
+        return raise(table, framework::NULL_POINTER);
     };
     target.fields.insert(field as u32, value);
     0
 }
 
-fn divisor_of(word: u64) -> u64 {
-    match word {
-        0 => stop(&[b"android: ArithmeticException: divide by zero"]),
-        word => word,
+extern "sysv64" fn divide_int(words: *const u64, table: *const usize) -> u64 {
+    let [left, right] = arguments::<2>(words);
+    match right as u32 as i32 {
+        0 => raise(table, framework::ARITHMETIC),
+        divisor => (left as u32 as i32).wrapping_div(divisor) as u32 as u64,
     }
 }
 
-extern "sysv64" fn divide_int(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn remainder_int(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
-    let divisor = divisor_of(u64::from(right as u32)) as u32 as i32;
-    (left as u32 as i32).wrapping_div(divisor) as u32 as u64
+    match right as u32 as i32 {
+        0 => raise(table, framework::ARITHMETIC),
+        divisor => (left as u32 as i32).wrapping_rem(divisor) as u32 as u64,
+    }
 }
 
-extern "sysv64" fn remainder_int(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn divide_long(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
-    let divisor = divisor_of(u64::from(right as u32)) as u32 as i32;
-    (left as u32 as i32).wrapping_rem(divisor) as u32 as u64
+    match right as i64 {
+        0 => raise(table, framework::ARITHMETIC),
+        divisor => (left as i64).wrapping_div(divisor) as u64,
+    }
 }
 
-extern "sysv64" fn divide_long(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn remainder_long(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
-    (left as i64).wrapping_div(divisor_of(right) as i64) as u64
-}
-
-extern "sysv64" fn remainder_long(words: *const u64, _: *const usize) -> u64 {
-    let [left, right] = arguments::<2>(words);
-    (left as i64).wrapping_rem(divisor_of(right) as i64) as u64
+    match right as i64 {
+        0 => raise(table, framework::ARITHMETIC),
+        divisor => (left as i64).wrapping_rem(divisor) as u64,
+    }
 }
 
 fn entry_at(address: usize) -> Entry {
@@ -272,7 +301,7 @@ fn initialize(class: &str, table: *const usize) {
 extern "sysv64" fn invoke_virtual(words: *const u64, table: *const usize) -> u64 {
     let [method, receiver] = arguments::<2>(words);
     let Some(class) = object(receiver).map(|receiver| receiver.class.clone()) else {
-        stop(&[b"android: NullPointerException calling a method"]);
+        return raise(table, framework::NULL_POINTER);
     };
     let key = (class, method as u32);
     let cached = state().dispatch.get(&key).copied();
@@ -312,14 +341,14 @@ extern "sysv64" fn static_put(words: *const u64, table: *const usize) -> u64 {
 
 const LARGEST_ARRAY: usize = 1 << 24;
 
-extern "sysv64" fn new_array(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn new_array(words: *const u64, table: *const usize) -> u64 {
     let [length, index] = arguments::<2>(words);
     let length = length as u32 as i32;
     if length < 0 {
-        stop(&[b"android: NegativeArraySizeException"]);
+        return raise(table, framework::NEGATIVE_ARRAY_SIZE);
     }
     if length as usize > LARGEST_ARRAY {
-        stop(&[b"android: OutOfMemoryError: array too large"]);
+        return raise(table, framework::OUT_OF_MEMORY);
     }
     let class = state().dex.type_name(index as u32).unwrap_or_default();
     new_object(Object {
@@ -329,38 +358,57 @@ extern "sysv64" fn new_array(words: *const u64, _: *const usize) -> u64 {
     })
 }
 
-fn elements_of(array: u64) -> &'static mut Object {
+fn elements_of(array: u64, table: *const usize) -> Option<&'static mut Object> {
     match object(array) {
-        Some(array) if array.elements.is_some() => array,
-        Some(_) => stop(&[b"android: ClassCastException: not an array"]),
-        None => stop(&[b"android: NullPointerException using an array"]),
+        Some(array) if array.elements.is_some() => Some(array),
+        Some(_) => {
+            raise(table, framework::CLASS_CAST);
+            None
+        }
+        None => {
+            raise(table, framework::NULL_POINTER);
+            None
+        }
     }
 }
 
-fn element_index(array: &Object, index: u64) -> usize {
+fn element_index(array: &Object, index: u64, table: *const usize) -> Option<usize> {
     let length = array.elements.as_ref().map_or(0, Vec::len);
     match usize::try_from(index as u32 as i32) {
-        Ok(index) if index < length => index,
-        _ => stop(&[b"android: ArrayIndexOutOfBoundsException"]),
+        Ok(index) if index < length => Some(index),
+        _ => {
+            raise(table, framework::ARRAY_INDEX);
+            None
+        }
     }
 }
 
-extern "sysv64" fn array_length(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn array_length(words: *const u64, table: *const usize) -> u64 {
     let [array] = arguments::<1>(words);
-    elements_of(array).elements.as_ref().map_or(0, Vec::len) as u64
+    elements_of(array, table)
+        .and_then(|array| array.elements.as_ref())
+        .map_or(0, |elements| elements.len() as u64)
 }
 
-extern "sysv64" fn array_get(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn array_get(words: *const u64, table: *const usize) -> u64 {
     let [array, index] = arguments::<2>(words);
-    let array = elements_of(array);
-    let index = element_index(array, index);
+    let Some(array) = elements_of(array, table) else {
+        return 0;
+    };
+    let Some(index) = element_index(array, index, table) else {
+        return 0;
+    };
     array.elements.as_ref().map_or(0, |elements| elements[index])
 }
 
-extern "sysv64" fn array_put(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn array_put(words: *const u64, table: *const usize) -> u64 {
     let [array, index, value] = arguments::<3>(words);
-    let array = elements_of(array);
-    let index = element_index(array, index);
+    let Some(array) = elements_of(array, table) else {
+        return 0;
+    };
+    let Some(index) = element_index(array, index, table) else {
+        return 0;
+    };
     let value = framework::array_element(&array.class, value);
     if let Some(elements) = array.elements.as_mut() {
         elements[index] = value;
@@ -368,25 +416,61 @@ extern "sysv64" fn array_put(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn throw(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn throw(words: *const u64, table: *const usize) -> u64 {
     let [exception] = arguments::<1>(words);
-    let Some(exception) = object(exception) else {
-        stop(&[b"android: NullPointerException thrown"]);
+    match object(exception) {
+        Some(_) => set_pending(table, exception),
+        None => {
+            raise(table, framework::NULL_POINTER);
+        }
+    }
+    0
+}
+
+extern "sysv64" fn catches(words: *const u64, table: *const usize) -> u64 {
+    let [index] = arguments::<1>(words);
+    let Some(exception) = object(pending(table)) else {
+        return 0;
     };
-    stop(&[b"android: uncaught ", exception.class.as_bytes()])
+    let wanted = class_of(index);
+    u64::from(framework::is_instance(&state().dex, &exception.class, &wanted) == Some(true))
+}
+
+extern "sysv64" fn take_exception(_: *const u64, table: *const usize) -> u64 {
+    let exception = pending(table);
+    set_pending(table, 0);
+    exception
+}
+
+extern "sysv64" fn exception_init(words: *const u64, _: *const usize) -> u64 {
+    let [this, message] = arguments::<2>(words);
+    let text = object(message).and_then(|message| message.text.clone());
+    if let Some(this) = object(this)
+        && this.text.is_none()
+    {
+        this.text = text;
+    }
+    0
+}
+
+extern "sysv64" fn get_message(words: *const u64, _: *const usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    match object(this).and_then(|this| this.text.clone()) {
+        Some(text) => new_string(text),
+        None => 0,
+    }
 }
 
 fn class_of(index: u64) -> String {
     state().dex.type_name(index as u32).unwrap_or_default()
 }
 
-extern "sysv64" fn check_cast(words: *const u64, _: *const usize) -> u64 {
+extern "sysv64" fn check_cast(words: *const u64, table: *const usize) -> u64 {
     let [value, index] = arguments::<2>(words);
     if let Some(value) = object(value) {
         let wanted = class_of(index);
         if framework::is_instance(&state().dex, &value.class, &wanted) == Some(false) {
-            let class = value.class.as_bytes();
-            stop(&[b"android: ClassCastException: ", class, b" is no ", wanted.as_bytes()]);
+            return raise(table, framework::CLASS_CAST);
         }
     }
     0
@@ -628,6 +712,8 @@ fn native_entry(native: Native) -> Entry {
         Native::GetString => get_string,
         Native::AddView => add_view,
         Native::SetOrientation => set_orientation,
+        Native::ExceptionInit => exception_init,
+        Native::GetMessage => get_message,
     }
 }
 
@@ -657,6 +743,8 @@ fn helpers() -> [Entry; helper::COUNT] {
     entries[helper::FLOAT_TO_LONG] = float_to_long;
     entries[helper::DOUBLE_TO_INT] = double_to_int;
     entries[helper::DOUBLE_TO_LONG] = double_to_long;
+    entries[helper::CATCHES] = catches;
+    entries[helper::TAKE_EXCEPTION] = take_exception;
     entries
 }
 
@@ -692,8 +780,27 @@ fn method_named(dex: &Dex<'_>, class: u32, name: &str) -> Option<u32> {
         .find(|&index| dex.method_name(index).as_deref() == Some(name))
 }
 
-fn call(table: &[usize], method: u32, words: &[u64]) -> u64 {
-    entry_at(table[method_entry(method)])(words.as_ptr(), table.as_ptr())
+fn table() -> *const usize {
+    state().table as *const usize
+}
+
+/// Calls the code at `address` from the layer with `words`; an exception it leaves pending
+/// was caught by nothing, which ends the app as Java ends a thread's uncaught one (D504).
+fn call_at(address: usize, words: &[u64]) -> u64 {
+    let result = entry_at(address)(words.as_ptr(), table());
+    if let Some(exception) = object(pending(table())) {
+        let class = exception.class.clone();
+        let message = exception.text.clone().unwrap_or_default();
+        stop(&[b"android: uncaught ", class.as_bytes(), b": ", message.as_bytes()]);
+    }
+    result
+}
+
+fn call(method: u32, words: &[u64]) -> u64 {
+    // SAFETY: `table()` is the entry table, with an entry for every method of the DEX file;
+    // `method` is one of them.
+    let address = unsafe { table().wrapping_add(method_entry(method)).read() };
+    call_at(address, words)
 }
 
 fn compiled_method(class: &str, name: &str) -> Option<usize> {
@@ -724,8 +831,7 @@ fn click(view: u64) {
         return;
     };
     if let Some(address) = compiled_method(&class, &name) {
-        let words = [receiver, view];
-        entry_at(address)(words.as_ptr(), state().table as *const usize);
+        call_at(address, &[receiver, view]);
     }
 }
 
@@ -861,10 +967,11 @@ pub fn run(startup: &Startup) -> i32 {
         table: 0,
     };
     STATE.store(Box::leak(Box::new(state)), Ordering::Release);
-    let mut table: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
-    table.extend(targets.into_iter().map(target_address));
-    let table: &'static [usize] = Box::leak(table.into_boxed_slice());
-    state().table = table.as_ptr() as usize;
+    let mut entries: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
+    entries.extend(targets.into_iter().map(target_address));
+    entries[helper::PENDING_EXCEPTION] = 0;
+    let entries: &'static mut [usize] = Box::leak(entries.into_boxed_slice());
+    state().table = entries.as_mut_ptr() as usize;
     let Some(class) = dex.class_index(&activity) else {
         stop(&[b"android: the app does not define its activity ", activity.as_bytes()]);
     };
@@ -873,17 +980,17 @@ pub fn run(startup: &Startup) -> i32 {
     {
         stop(&[b"android: ", activity.as_bytes(), b" is not an activity"]);
     }
-    initialize(&activity, table.as_ptr());
+    initialize(&activity, table());
     let this = new_object(Object {
         class: activity.clone(),
         ..Object::default()
     });
     state().activity = this;
     if let Some(init) = method_named(&dex, class, "<init>") {
-        call(table, init, &[this]);
+        call(init, &[this]);
     }
     if let Some(on_create) = method_named(&dex, class, "onCreate") {
-        call(table, on_create, &[this, 0]);
+        call(on_create, &[this, 0]);
     }
     show(&manifest.package)
 }

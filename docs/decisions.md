@@ -24798,3 +24798,29 @@ the license, by an explicit instruction recorded here.
   double, which is exact.
 - **Not yet.** `strictfp` differences do not exist on SSE (Java 17 made every method strict), so
   none remain; the aarch64 and riscv64 back ends, and the rest of D499's list.
+
+## D504 The Android layer, part 5: exceptions caught (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Exceptions travel as a pending exception rather than by unwinding: the entry
+  table gets a word of data (`helper::PENDING_EXCEPTION`) that `throw` and every runtime helper
+  that fails sets, and compiled code compares it with zero after every call it makes (to a
+  method or a helper). A set word sends it to the stub for that place: for a place inside a
+  `try` block (`Code::catches` reads the block's handler list), each typed handler's type is
+  asked through `helper::CATCHES` and the first that matches is jumped to, or the catch-all;
+  outside one, or when nothing matches, the method returns and its caller's compare does the
+  same. `move-exception` takes the pending exception (`helper::TAKE_EXCEPTION`). Stubs are
+  shared by every place of one `try` block. The layer's own calls (constructors, `onCreate`,
+  click handlers) end the app with the exception's class and message when one is still
+  pending, as an uncaught exception ends a thread.
+- **The runtime throws Java's exceptions** where it stopped the app before:
+  `NullPointerException` for a null object (fields, calls, arrays, `throw null`),
+  `ArithmeticException` for a division by zero, `ArrayIndexOutOfBoundsException`,
+  `NegativeArraySizeException`, `ClassCastException`, `OutOfMemoryError` for an array past
+  16 million elements. The framework knows `java.lang`'s exception classes and their
+  superclasses, so `catch (RuntimeException e)` catches a `NullPointerException`, and their
+  constructors with a message and `getMessage`.
+- **Costs.** A compare and a never-taken branch after each call, in exchange for no unwind
+  tables and no unwinder.
+- **Not yet.** `finally` blocks are catch-alls the compiler already handles; stack traces,
+  `ExceptionInInitializerError` around a failing static initializer, and exceptions crossing
+  the framework's own code.

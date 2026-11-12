@@ -10,9 +10,10 @@
 //! writes the method's index first and its own words after it, for the dispatch helper (D499).
 
 use crate::{CompileError, Compiled, helper, method_entry};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use eggos_android_package::dalvik::{self, Instruction};
-use eggos_android_package::dex::Code;
+use eggos_android_package::dex::{Catches, Code};
 
 const EAX: u8 = 0;
 const ECX: u8 = 1;
@@ -53,6 +54,7 @@ struct Emitter {
     code: Vec<u8>,
     fixups: Vec<(usize, usize, usize)>,
     frame_bytes: u32,
+    called: bool,
 }
 
 fn slot(register: u32) -> i32 {
@@ -169,6 +171,33 @@ impl Emitter {
     fn call_entry(&mut self, entry: usize) {
         self.bytes(&[WIDE, 0x89, 0xe7, 0x4c, 0x89, 0xe6, 0x41, 0xff, 0x94, 0x24]);
         self.bytes(&((entry * SLOT_BYTES) as u32).to_le_bytes());
+        self.called = true;
+    }
+
+    fn pending_check(&mut self) -> usize {
+        self.bytes(&[WIDE_EXTENDED_BASE, 0x83, 0xbc, 0x24]);
+        self.bytes(&((helper::PENDING_EXCEPTION * SLOT_BYTES) as u32).to_le_bytes());
+        self.bytes(&[0x00, 0x0f, 0x85]);
+        let field = self.code.len();
+        self.bytes(&[0; 4]);
+        field
+    }
+
+    fn handler_stub(&mut self, catches: Option<&Catches>) {
+        if let Some(catches) = catches {
+            for &(kind, address) in &catches.typed {
+                self.argument_constant(0, i64::from(kind));
+                self.call_entry(helper::CATCHES);
+                self.bytes(&[0x85, 0xc0]);
+                self.jump_to(&[0x0f, 0x85], address as usize, address as usize);
+            }
+            if let Some(address) = catches.catch_all {
+                self.jump_to(&[0xe9], address as usize, address as usize);
+                return;
+            }
+        }
+        self.bytes(&[0x31, 0xc0]);
+        self.epilogue();
     }
 }
 
@@ -423,9 +452,12 @@ pub fn compile(code: &Code<'_>) -> Result<Compiled, CompileError> {
         code: Vec::new(),
         fixups: Vec::new(),
         frame_bytes: 0,
+        called: false,
     };
     emitter.prologue(code.registers, code.ins, code.outs);
     let mut places = Vec::new();
+    let mut checks: Vec<(usize, Option<u16>)> = Vec::new();
+    let mut handlers: BTreeMap<Option<u16>, Option<Catches>> = BTreeMap::new();
     let mut at = 0;
     while at < code.length() {
         if let Some(length) = dalvik::payload_length(code, at) {
@@ -434,8 +466,25 @@ pub fn compile(code: &Code<'_>) -> Result<Compiled, CompileError> {
         }
         let instruction = dalvik::decode(code, at).ok_or(CompileError::Truncated)?;
         places.push((at as u32, emitter.code.len() as u32));
+        emitter.called = false;
         emit(&mut emitter, code, &instruction, at)?;
+        if emitter.called {
+            let catches = code.catches(at);
+            let key = catches.as_ref().map(|catches| catches.handler_offset);
+            handlers.entry(key).or_insert(catches);
+            checks.push((emitter.pending_check(), key));
+        }
         at += instruction.length;
+    }
+    let mut stubs = BTreeMap::new();
+    for (key, catches) in &handlers {
+        stubs.insert(*key, emitter.code.len());
+        emitter.handler_stub(catches.as_ref());
+    }
+    for &(field, key) in &checks {
+        let stub = stubs[&key] as i64;
+        let relative = (stub - (field as i64 + 4)) as i32;
+        emitter.code[field..field + 4].copy_from_slice(&relative.to_le_bytes());
     }
     for &(field, from, target) in &emitter.fixups {
         let index = places
@@ -517,7 +566,7 @@ fn emit(
         0x0a => emitter.store(Width::Int, EAX, a),
         0x0b | 0x0c => emitter.store(Width::Long, EAX, a),
         0x0d => {
-            emitter.bytes(&[0x31, 0xc0]);
+            emitter.call_entry(helper::TAKE_EXCEPTION);
             emitter.store(Width::Long, EAX, a);
         }
         0x0e => {
@@ -784,6 +833,7 @@ mod tests {
             outs: 1,
             tries: 0,
             instructions: bytes,
+            try_blocks: &[],
         }
     }
 
@@ -929,6 +979,35 @@ mod tests {
         let call = [[0x41, 0xff, 0x94, 0x24].as_slice(), &entry].concat();
         assert!(contains(&compiled.code, &call));
         assert!(contains(&compiled.code, &[0x0f, 0xb7, 0xc0]));
+    }
+
+    #[test]
+    fn a_throw_inside_a_try_block_checks_the_pending_exception_and_jumps_to_its_handler() {
+        let bytes = units(&[0x0027, 0x000e, 0x000d, 0x000e]);
+        let mut blocks = Vec::new();
+        blocks.extend_from_slice(&0u32.to_le_bytes());
+        blocks.extend_from_slice(&1u16.to_le_bytes());
+        blocks.extend_from_slice(&1u16.to_le_bytes());
+        blocks.extend_from_slice(&[1, 0x01, 7, 2]);
+        let code = Code {
+            registers: 3,
+            ins: 1,
+            outs: 1,
+            tries: 1,
+            instructions: &bytes,
+            try_blocks: &blocks,
+        };
+        let compiled = compile(&code).unwrap();
+        let slot = ((helper::PENDING_EXCEPTION * 8) as u32).to_le_bytes();
+        let compare = [WIDE_EXTENDED_BASE, 0x83, 0xbc, 0x24];
+        let check = [compare.as_slice(), &slot, &[0, 0x0f, 0x85]].concat();
+        assert!(contains(&compiled.code, &check));
+        let entry = ((helper::CATCHES * 8) as u32).to_le_bytes();
+        let catches = [[0x41, 0xff, 0x94, 0x24].as_slice(), &entry].concat();
+        assert!(contains(&compiled.code, &catches));
+        let take = ((helper::TAKE_EXCEPTION * 8) as u32).to_le_bytes();
+        let taken = [[0x41, 0xff, 0x94, 0x24].as_slice(), &take].concat();
+        assert!(contains(&compiled.code, &taken));
     }
 
     #[test]
