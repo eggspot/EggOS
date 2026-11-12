@@ -187,3 +187,95 @@ mod tests {
         assert_eq!(pixels[10 * 48 + 17], colour::SHELL);
     }
 }
+
+const PANE_ROW: i32 = 56;
+const STROKE: i32 = 2;
+
+fn frame(canvas: &mut Canvas<'_>, rect: Rect, ink: u32) {
+    canvas.fill(Rect::new(rect.x, rect.y, rect.width, STROKE), ink);
+    canvas.fill(Rect::new(rect.x, rect.bottom() - STROKE, rect.width, STROKE), ink);
+    canvas.fill(Rect::new(rect.x, rect.y, STROKE, rect.height), ink);
+    canvas.fill(Rect::new(rect.right() - STROKE, rect.y, STROKE, rect.height), ink);
+}
+
+/// Pane `pane`'s 24 px line icon (docs/ux/settings-forms-v0.5.md 1.1), its top left at `at`.
+pub fn pane_icon(canvas: &mut Canvas<'_>, pane: usize, at: (i32, i32), ink: u32) {
+    let (x, y) = at;
+    let r = |dx: i32, dy: i32, w: i32, h: i32| Rect::new(x + dx, y + dy, w, h);
+    match pane {
+        0 => {
+            frame(canvas, r(4, 6, 16, 12), ink);
+            canvas.fill(r(4, 6, 16, 3), ink);
+        }
+        1 => {
+            for (inset, width) in [(2, 20), (6, 12), (10, 4)] {
+                canvas.fill(r(inset, 4 + inset, width, STROKE), ink);
+            }
+            canvas.fill(r(11, 18, 2, 2), ink);
+        }
+        2 => {
+            frame(canvas, r(3, 4, 18, 12), ink);
+            canvas.fill(r(11, 16, 2, 4), ink);
+            canvas.fill(r(8, 20, 8, 2), ink);
+        }
+        3 => {
+            frame(canvas, r(2, 6, 20, 12), ink);
+            for column in 0..4 {
+                canvas.fill(r(5 + 4 * column, 9, 2, 2), ink);
+                canvas.fill(r(5 + 4 * column, 13, 2, 2), ink);
+            }
+        }
+        4 => {
+            frame(canvas, r(7, 4, 10, 16), ink);
+            canvas.fill(r(7, 10, 10, 1), ink);
+        }
+        5 => {
+            frame(canvas, r(9, 2, 6, 6), ink);
+            canvas.fill(r(11, 8, 2, 8), ink);
+            canvas.fill(r(4, 10, 16, 2), ink);
+            canvas.fill(r(8, 16, 2, 6), ink);
+            canvas.fill(r(14, 16, 2, 6), ink);
+        }
+        6 => {
+            frame(canvas, r(3, 5, 18, 8), ink);
+            frame(canvas, r(3, 13, 18, 8), ink);
+        }
+        7 => {
+            frame(canvas, r(4, 4, 16, 16), ink);
+            canvas.fill(r(11, 7, 2, 6), ink);
+            canvas.fill(r(11, 11, 5, 2), ink);
+        }
+        8 => {
+            egg(canvas, r(7, 3, 11, 16), 0);
+            canvas.fill(r(16, 16, 4, 4), ink);
+        }
+        9 => {
+            for (dx, dy) in [(4, 4), (13, 4), (4, 13), (13, 13)] {
+                canvas.fill(r(dx, dy, 7, 7), ink);
+            }
+        }
+        10 => {
+            frame(canvas, r(8, 4, 12, 12), ink);
+            frame(canvas, r(4, 8, 12, 12), ink);
+        }
+        _ => {
+            frame(canvas, r(4, 4, 16, 16), ink);
+            canvas.fill(r(11, 7, 2, 2), ink);
+            canvas.fill(r(11, 10, 2, 7), ink);
+        }
+    }
+}
+
+/// The phone's pane list marks (docs/ux/settings-forms-v0.5.md 1.1): each shown pane's icon at
+/// its row's left and a `>` at its right, for the panes whose bits `shown` sets, in order, one
+/// 56 px row each from `rect`'s top.
+pub fn pane_list_marks(canvas: &mut Canvas<'_>, rect: Rect, shown: u32) {
+    let palette = canvas.palette();
+    let mut row = 0;
+    for pane in (0..32).filter(|pane| shown & 1 << pane != 0) {
+        let top = rect.y + row * PANE_ROW;
+        pane_icon(canvas, pane, (rect.x + 16, top + 16), palette.text);
+        canvas.text(rect.right() - 32, top + 20, ">", palette.text_dim, 1);
+        row += 1;
+    }
+}

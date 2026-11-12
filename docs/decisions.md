@@ -23572,3 +23572,23 @@ the license, by an explicit instruction recorded here.
   devices table starts under it, the column's width, filling the pane; the egg and its lines
   stay as they are. The desktop shape puts both back.
 - **Not yet.** The table's 48 px rows and its sideways pan on a narrow page.
+
+## D433 The phone's pane list: icons, chevrons and summaries (settings-forms-v0.5.md 1.1 and its ask 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** The design asks the toolkit's list for rows with an icon and a second line.
+  A summary is text made at run time, and widening `Kind::List` to hold twelve of them would
+  grow every widget of every window (the kind is an enum), against D24.
+- **Decision.** The list page draws them beside the list instead: one `Kind::Custom` painter
+  (`art::pane_list_marks`, given the shown rows' bits) draws each shown pane's 24 px line icon
+  at its row's left and a `>` at its right, and twelve dim labels, one per pane, sit under the
+  names of the shown rows; neither takes the pointer, so a tap still reaches the list. The
+  list's text starts at x 56 there (`set_list_text_x`). `pane_summary(pane, facts)` writes each
+  summary from what the window already holds (the profile and theme, the adapter's state, the
+  size and scale, the hand and scrolling, the accessibility switches, the clock's mode and
+  zone, the version and architecture), at most 40 characters. Filtering moves them with the
+  rows; the sidebar shapes hide them. The window holds 13 more widgets (`CAPACITY` 223 and the
+  dialog's 339).
+- **Deviations.** The name stays centred in its 56 px row and the summary sits at its row + 38
+  rather than + 10 and + 30, as the list draws its own text; Storage, Agents and Keyboard show
+  a fixed description where the design counts disks, agents and layouts, which the window does
+  not read until the pane opens; the marks do not scroll with a list that scrolls (landscape).

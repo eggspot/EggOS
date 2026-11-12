@@ -427,6 +427,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.layout();
     }
 
+    /// Starts list `id`'s text `text_x` from its left edge, as a list with icons asks.
+    pub fn set_list_text_x(&mut self, id: WidgetId, text_x: i32) {
+        self.change(id, |kind| {
+            if let Kind::List(list) = kind {
+                list.text_x = text_x;
+            }
+        });
+    }
+
     /// Gives list `id` rows `height` tall, as a window that changes its form asks.
     pub fn set_row_height(&mut self, id: WidgetId, height: i32) {
         if matches!(self.kind(id), Some(Kind::List(list)) if list.row_height == height) {

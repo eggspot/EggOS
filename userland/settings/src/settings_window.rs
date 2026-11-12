@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 210
+pub const CAPACITY: usize = 223
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -71,6 +71,10 @@ const PAGE_BAR: i32 = 56;
 const WEARABLE_ROW: i32 = 48;
 const WEARABLE_BAR: i32 = 48;
 const BAR_TITLE: (i32, i32) = (56, 20);
+const PAGE_TEXT_X: i32 = 56;
+const SIDEBAR_TEXT_X: i32 = 16;
+const PAGE_SUMMARY_TOP: i32 = 38;
+const WEARABLE_SUMMARY_TOP: i32 = 32;
 /// A narrow pane's content is at most this wide (settings-forms-v0.5.md 2).
 const PAGE_CONTENT_MAX: i32 = 480;
 /// A control's height on a narrow page: a finger's target.
@@ -753,12 +757,77 @@ pub enum Page {
 
 #[derive(Debug, Clone, Copy)]
 struct Frame {
+    marks: WidgetId,
+    summaries: [WidgetId; PANES.len()],
     sidebar: WidgetId,
     pane_area: WidgetId,
     scroll: WidgetId,
     bar: WidgetId,
     back: WidgetId,
     title: WidgetId,
+}
+
+/// The one-line summary under pane `pane`'s name on a phone's list page, from `facts` the
+/// window holds (docs/ux/settings-forms-v0.5.md 1.1): at most 40 characters.
+pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
+    let mut text = Text::<48>::new();
+    let _ = match pane {
+        APPEARANCE => write!(
+            text,
+            "{} layout, {}",
+            PROFILE_LABELS[facts.profile.min(PROFILE_LABELS.len() - 1)],
+            THEME_LABELS[(facts.theme.number() as usize).min(THEME_LABELS.len() - 1)]
+        ),
+        NETWORK => match facts.network_adapter.as_ref() {
+            Some(adapter) if adapter.link_up => write!(text, "Connected"),
+            Some(_) => write!(text, "Offline"),
+            None => write!(text, "No network adapter"),
+        },
+        DISPLAY => write!(
+            text,
+            "{} \u{d7} {}, scale {}",
+            facts.resolution.0, facts.resolution.1, facts.scale
+        ),
+        KEYBOARD => write!(text, "Layouts, repeat and the on-screen keyboard"),
+        MOUSE => write!(
+            text,
+            "{} hand{}",
+            if facts.input.left_handed { "Left" } else { "Right" },
+            if facts.input.natural_scrolling { ", natural scrolling" } else { "" }
+        ),
+        ACCESSIBILITY => {
+            let on = [
+                (facts.display.high_contrast, "High contrast", "high contrast"),
+                (facts.display.reduce_motion, "Reduce motion", "reduce motion"),
+                (facts.keys.sticky_keys, "Sticky keys", "sticky keys"),
+                (facts.keys.slow_keys, "Slow keys", "slow keys"),
+            ];
+            let mut written = 0;
+            for (_, first, later) in on.iter().filter(|(on, _, _)| *on) {
+                let _ = match written {
+                    0 => write!(text, "{first}"),
+                    _ => write!(text, ", {later}"),
+                };
+                written += 1;
+            }
+            match written {
+                0 => write!(text, "Default"),
+                _ => Ok(()),
+            }
+        }
+        STORAGE => write!(text, "Disks, checks and formatting"),
+        DATE_AND_TIME => write!(
+            text,
+            "{}, {}",
+            if facts.time_automatic { "Automatic" } else { "Set by hand" },
+            eggos_calendar::zone::ZONES.get(facts.time_zone).map_or("UTC", |(name, _)| *name)
+        ),
+        AGENTS => write!(text, "Which agents may act for you"),
+        WINDOWS => write!(text, "Registry of Windows programs"),
+        COMPONENTS => write!(text, "Install and remove parts of EggOS"),
+        _ => write!(text, "EggOS {}, {}", facts.version, facts.architecture.as_str()),
+    };
+    text
 }
 
 /// The Settings window's widgets and what they show.
@@ -986,7 +1055,24 @@ impl SettingsWindow {
             Place::at(BAR_TITLE.0, BAR_TITLE.1, Length::Fill(16), Length::Content),
             Kind::label("", Token::Text),
         );
+        let marks = build.add(
+            Some(sidebar),
+            Place::at(0, PAGE_LIST_TOP, Length::Fill(0), Length::Fill(0)),
+            Kind::Custom {
+                painter: art::pane_list_marks,
+                data: 0,
+            },
+        );
+        let summaries = core::array::from_fn(|_| {
+            build.add(
+                Some(sidebar),
+                Place::at(0, 0, Length::Content, Length::Content),
+                Kind::label("", Token::TextDim),
+            )
+        });
         let frame = Frame {
+            marks,
+            summaries,
             sidebar,
             pane_area,
             scroll,
@@ -1363,6 +1449,10 @@ impl SettingsWindow {
         };
         window.tree.set_accessible_name(frame.back, "Back");
         window.tree.set_shown(frame.bar, false);
+        window.tree.set_shown(frame.marks, false);
+        for summary in frame.summaries {
+            window.tree.set_shown(summary, false);
+        }
         window.show_keyboard(facts.keyboard, facts.caps_lock);
         window.show_layout_set();
         window
@@ -1665,6 +1755,54 @@ impl SettingsWindow {
         self.page
     }
 
+    fn shown_rows(&self) -> u32 {
+        match self.tree.kind(self.widgets.list) {
+            Some(Kind::List(list)) => list.shown,
+            _ => 0,
+        }
+    }
+
+    /// Puts the list page's icons, chevrons and summaries beside its shown rows (D433), or
+    /// hides them in the sidebar shapes.
+    fn mark_rows(&mut self) {
+        let frame = self.frame;
+        let list = self.widgets.list;
+        let pages = self.shape == Shape::Pages && self.page == Page::List;
+        let wearable = self.form == SettingsForm::Wearable;
+        let shown = self.shown_rows();
+        let marked = pages && !wearable;
+        self.tree.set_shown(frame.marks, marked);
+        self.tree.change(frame.marks, |kind| {
+            if let Kind::Custom { data, .. } = kind {
+                *data = shown;
+            }
+        });
+        let text_x = match (pages, wearable) {
+            (true, false) => PAGE_TEXT_X,
+            _ => SIDEBAR_TEXT_X,
+        };
+        self.tree.set_list_text_x(list, text_x);
+        let (top, row, x, below) = match wearable {
+            true => (0, WEARABLE_ROW, PADDING, WEARABLE_SUMMARY_TOP),
+            false => (PAGE_LIST_TOP, PAGE_ROW, PAGE_TEXT_X, PAGE_SUMMARY_TOP),
+        };
+        let mut position = 0;
+        for (pane, summary) in frame.summaries.iter().enumerate() {
+            let on = pages && shown & 1 << pane != 0;
+            self.tree.set_shown(*summary, on);
+            if !on {
+                continue;
+            }
+            let words = pane_summary(pane, &self.facts);
+            self.tree.set_text(*summary, words.as_str());
+            self.tree.set_place(
+                *summary,
+                Place::at(x, top + position * row + below, Length::Fill(48), Length::Content),
+            );
+            position += 1;
+        }
+    }
+
     fn lay_out_frame(&mut self) {
         let frame = self.frame;
         let search = self.widgets.search;
@@ -1746,6 +1884,7 @@ impl SettingsWindow {
                 );
             }
         }
+        self.mark_rows();
     }
 
     /// Lays the Keyboard pane out in one column `content` wide (settings-forms-v0.5.md 2, its
@@ -1899,6 +2038,12 @@ impl SettingsWindow {
     }
 
     fn open_page(&mut self, pane: usize) -> Option<Request> {
+        let request = self.open_page_only(pane);
+        self.mark_rows();
+        request
+    }
+
+    fn open_page_only(&mut self, pane: usize) -> Option<Request> {
         let request = self.show_pane(pane);
         if self.shape == Shape::Pages {
             self.page = Page::Pane;
@@ -2563,6 +2708,7 @@ impl SettingsWindow {
             shown &= every_pane_but_windows();
         }
         self.tree.set_shown_items(self.widgets.list, shown);
+        self.mark_rows();
         shown
     }
 
@@ -3591,5 +3737,36 @@ mod date_and_time_reflow_tests {
         assert_eq!(at(w.set_field), Rect::new(16, 168, 358, 48));
         assert_eq!(at(w.set_button), Rect::new(16, 224, 358, 48));
         assert_eq!(pane.height, 616);
+    }
+}
+
+#[cfg(test)]
+mod list_page_tests {
+    use super::*;
+
+    #[test]
+    fn a_phone_s_list_rows_carry_their_summaries_and_the_sidebar_none() {
+        let mut window = SettingsWindow::new(Facts::example());
+        window.tree().resize(390, 752);
+        window.set_form_factor(SettingsForm::Phone, 390);
+        let summary = window.frame.summaries[DISPLAY];
+        assert!(window.widgets().is_shown(summary));
+        assert_eq!(
+            window.widgets().text_of(summary),
+            Some(pane_summary(DISPLAY, &window.facts).as_str())
+        );
+        assert!(window.widgets().is_shown(window.frame.marks));
+        window.tree().resize(640, 440);
+        window.set_form_factor(SettingsForm::Desktop, 640);
+        assert!(!window.widgets().is_shown(summary));
+        assert!(!window.widgets().is_shown(window.frame.marks));
+    }
+
+    #[test]
+    fn every_summary_fits_forty_characters() {
+        let facts = Facts::example();
+        for pane in 0..PANES.len() {
+            assert!(pane_summary(pane, &facts).as_str().chars().count() <= 40, "{pane}");
+        }
     }
 }
