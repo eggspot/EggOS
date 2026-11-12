@@ -385,6 +385,8 @@ pub struct PendingReport {
     second_y: Option<i32>,
     second_down: Option<bool>,
     pending: bool,
+    /// The accelerometer's last x and y, until its z completes a reading (D435).
+    acceleration: (i32, i32),
 }
 
 struct Source {
@@ -1388,6 +1390,12 @@ impl InputState {
                 report.pending = true;
             }
 
+            (event_type::ABS, absolute::ACCELERATION_X) => report.acceleration.0 = event.value,
+            (event_type::ABS, absolute::ACCELERATION_Y) => report.acceleration.1 = event.value,
+            (event_type::ABS, absolute::ACCELERATION_Z) => {
+                let (x, y) = report.acceleration;
+                crate::orientation::note(x, y, event.value);
+            }
             (event_type::SYN, SYN_REPORT) if report.pending => {
                 self.end_report(capabilities, report, screen, sink)
             }

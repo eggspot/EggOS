@@ -6,6 +6,7 @@
 pub mod hid;
 pub mod hid_report;
 pub mod layout;
+pub mod orientation;
 pub mod ps2;
 
 pub use eggos_terminal::{key, keymap};
@@ -74,6 +75,11 @@ pub mod relative {
 pub mod absolute {
     pub const X: u16 = 0x00;
     pub const Y: u16 = 0x01;
+    /// An accelerometer's reading along the screen's x, y and z axes (D435), in the sensor's
+    /// own units; the codes of Linux's `ABS_RX` to `ABS_RZ`, which no pointer here uses.
+    pub const ACCELERATION_X: u16 = 0x03;
+    pub const ACCELERATION_Y: u16 = 0x04;
+    pub const ACCELERATION_Z: u16 = 0x05;
     /// The multi-touch protocol's slot the next events are about (D296).
     pub const MT_SLOT: u16 = 0x2f;
     /// A touch's position on the screen.

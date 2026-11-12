@@ -14,6 +14,9 @@ const PAGE_KEYBOARD: u16 = 0x07;
 const PAGE_BUTTON: u16 = 0x09;
 const PAGE_CONSUMER: u16 = 0x0c;
 const PAGE_DIGITIZER: u16 = 0x0d;
+const PAGE_SENSOR: u16 = 0x20;
+const USAGE_ACCELERATION_X: u16 = 0x0453;
+const USAGE_ACCELERATION_Z: u16 = 0x0455;
 const USAGE_X: u16 = 0x30;
 const USAGE_Y: u16 = 0x31;
 const USAGE_WHEEL: u16 = 0x38;
@@ -323,6 +326,12 @@ impl Decoder {
                 let value = sign_extend(raw, field.size, field);
                 let usage = if field.is_variable() { field.usage_of(index) } else { field.usage_minimum.saturating_add(raw as u16) };
                 match (field.page, field.is_variable()) {
+                    (PAGE_SENSOR, true)
+                        if (USAGE_ACCELERATION_X..=USAGE_ACCELERATION_Z).contains(&usage) =>
+                    {
+                        let axis = absolute::ACCELERATION_X + (usage - USAGE_ACCELERATION_X);
+                        send(RawEvent::new(event_type::ABS, axis, value));
+                    }
                     (PAGE_KEYBOARD, true) if (FIRST_MODIFIER..=LAST_MODIFIER).contains(&usage) => {
                         keyboard_seen = true;
                         if value != 0 {

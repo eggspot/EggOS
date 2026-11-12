@@ -286,6 +286,19 @@ pub enum RotationRefused {
     NoMemory,
 }
 
+/// Turns the screen to `degrees` (the way up an accelerometer took, D435) and the desktop to
+/// its new size, keeping `display.rotation` as it is.
+pub fn turn_screen<P: Platform>(degrees: u32) {
+    let Some(rotation) = crate::display::Rotation::of_degrees(degrees) else {
+        return;
+    };
+    if let Ok(Some(mode)) = crate::display::set_rotation(rotation) {
+        with_windows::<P, _>(|desktop, _, damage, events| {
+            desktop.resize(mode.width, mode.height, damage, events);
+        });
+    }
+}
+
 /// Makes `display.rotation` the value numbered `index` in
 /// [`eggos_settings_file::DISPLAY_ROTATIONS`] and turns the screen at once: the display's
 /// picture, then the desktop at its new size.
@@ -294,7 +307,10 @@ pub fn set_rotation_setting<P: Platform>(index: u32) -> Result<(), RotationRefus
         return Err(RotationRefused::NoSuchValue);
     }
     CHOSEN_ROTATION.store(index as u8, Ordering::Relaxed);
-    let degrees = eggos_settings_file::rotation_degrees(index as usize);
+    let degrees = match index == 0 && crate::orientation::has_sensor() {
+        true => crate::orientation::facing().degrees(),
+        false => eggos_settings_file::rotation_degrees(index as usize),
+    };
     let rotation = crate::display::Rotation::of_degrees(degrees).ok_or(RotationRefused::NoSuchValue)?;
     match crate::display::set_rotation(rotation) {
         Ok(Some(mode)) => {
@@ -1414,6 +1430,7 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
     AGENT_CONNECTED.store(crate::agent_channel::is_connected(), Ordering::Relaxed);
     read_stored_updates::<P>();
     follow_display_size::<P>();
+    crate::orientation::apply_if_automatic::<P>();
     let drawn = display::draw(|framebuffer| {
         SCREEN
             .lock()

@@ -32,6 +32,7 @@ pub mod interrupt;
 pub mod linux;
 pub mod memory;
 pub mod net;
+pub mod orientation;
 pub mod paging;
 pub mod process;
 pub mod random;

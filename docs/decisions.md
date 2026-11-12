@@ -23609,3 +23609,23 @@ the license, by an explicit instruction recorded here.
   design's, and nothing on the row needs to be learnt. Making a panel row pressable (a toolkit
   `Kind::Panel` that answers `Activated`) would let the design's row stand; recorded for the
   build pass.
+
+## D435 An accelerometer turns the screen while `display.rotation` is `auto` (M12's orientation sensor; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** `display.rotation`'s `auto` (D330) kept the screen upright: no sensor said
+  which way up a tablet or a phone is held.
+- **Decision.** The sensors that laptops, tablets and phones carry speak HID's sensor page
+  (0x20, HID Usage Tables 1.4, chapter 22) over USB or I2C. `hid_report` decodes an
+  accelerometer's data fields (usages 0x0453 to 0x0455, the acceleration along x, y and z)
+  into absolute events with codes of their own (`ACCELERATION_X` to `_Z`, Linux's `ABS_RX` to
+  `ABS_RZ`, which no pointer here reports). The kernel's input state hands each completed
+  reading to `orientation::note`, which runs the drivers' `OrientationTracker` (host-tested):
+  the axis in the screen's plane that leads by half again names the edge that is up, a flat
+  or diagonal device keeps what it shows, and a new way up must hold for three readings. The
+  desktop's loop then turns the screen to it while the setting is `auto`
+  (`terminal::turn_screen`, the same path `SET_ROTATION` takes), and choosing `auto` turns to
+  the way up already sensed. The other values still lock the picture.
+- **Not yet.** Sensors that send nothing until their reporting state is set (HID sensor
+  feature reports), I2C-HID and ACPI-described sensors (the kernel has no I2C controller
+  driver yet), the sensor as a device in `devices` and in Settings' Display pane line, and
+  apps that hold one orientation (their manifest asking portrait or landscape).
