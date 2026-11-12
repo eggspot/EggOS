@@ -128,6 +128,7 @@ eggos_secondary_start:
     csrc    sstatus, t0
     lla     t0, exception_entry
     csrw    stvec, t0
+    mv      a1, a0
     mv      a0, s1
     call    {secondary_main}
 12: wfi
@@ -203,16 +204,30 @@ static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
 static BOOT_HART: AtomicU64 = AtomicU64::new(0);
 
 /// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
-/// with the boot page table: switches to the kernel's page tables, sets this hart's timer and
-/// interrupts up (D41), then calls the entry.
-extern "C" fn secondary_main(start: &CpuStart) -> ! {
+/// with the boot page table, with the hart's id: switches to the kernel's page tables, sets this
+/// hart's timer and external interrupts up (D41, D536), leaves its id in `sscratch` for
+/// `set_cpu_local`, then calls the entry.
+extern "C" fn secondary_main(start: &CpuStart, hart: u64) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this hart uses at the addresses it uses now, as they did for the boot hart;
     // interrupts are masked (HSM starts the hart with `sstatus.SIE` clear).
     unsafe { Riscv64::activate_page_tables(&start.page_table_roots[..1]) };
     timer::init();
+    console_input::prepare_hart(plic_context_of(hart));
+    // SAFETY: `sscratch` holds a user context only once this hart first enters user mode,
+    // long after `set_cpu_local` read the id back.
+    unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) hart, options(nomem, nostack)) };
     (start.entry)(start.argument)
 }
+
+/// The supervisor-mode PLIC context of hart `hart`, which the device tree names.
+fn plic_context_of(hart: u64) -> Option<usize> {
+    // SAFETY: as in `memory_map`.
+    unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) }
+}
+
+static BOOT_CPU_LOCAL_SET: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// An SBI call (SBI spec v2.0, chapter 3): returns the error (`a0`) and value (`a1`).
 ///
@@ -324,10 +339,7 @@ impl Platform for Riscv64 {
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        let hart = BOOT_HART.load(Ordering::Relaxed);
-        // SAFETY: as in `memory_map`.
-        let context =
-            unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
+        let context = plic_context_of(BOOT_HART.load(Ordering::Relaxed));
         console_input::enable(context)?;
         uart0().enable_receive_interrupt();
         Ok(())
@@ -341,19 +353,16 @@ impl Platform for Riscv64 {
             true => aplic::source_of_specifier(specifier.cells())?,
             false => (plic::source_of_specifier(specifier.cells())?, aplic::SourceMode::LevelHigh),
         };
-        let hart = BOOT_HART.load(Ordering::Relaxed);
-        // SAFETY: as in `memory_map`.
-        let context =
-            unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
+        let context = plic_context_of(BOOT_HART.load(Ordering::Relaxed));
         console_input::route_device(context, source, mode)
     }
 
     fn release_device_interrupt(line: crate::DeviceLine) {
-        let hart = BOOT_HART.load(Ordering::Relaxed);
-        // SAFETY: as in `memory_map`.
-        let context =
-            unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
-        console_input::release_device(context, line);
+        console_input::release_device(line);
+    }
+
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        console_input::steer_device(line, cpu, plic_context_of(cpu))
     }
 
     fn exit(status: ExitStatus) -> ! {
@@ -696,6 +705,25 @@ impl Platform for Riscv64 {
         // SAFETY: the kernel never uses thread-local storage, so nothing else reads or writes
         // `tp` while in the kernel (D40); the trap entry neither saves nor changes it.
         unsafe { core::arch::asm!("mv tp, {}", in(reg) block, options(nomem, nostack)) };
+        let hart = match BOOT_CPU_LOCAL_SET.swap(true, Ordering::Relaxed) {
+            false => BOOT_HART.load(Ordering::Relaxed),
+            true => {
+                let hart: u64;
+                // SAFETY: reading `sscratch` has no side effects; on a secondary hart it still
+                // holds the id `secondary_main` left there.
+                unsafe {
+                    core::arch::asm!("csrr {}, sscratch", out(reg) hart, options(nomem, nostack))
+                };
+                hart
+            }
+        };
+        let context = plic_context_of(hart).map_or(u64::MAX, |context| context as u64);
+        // SAFETY: the caller guarantees `block` is a lasting per-CPU block with a `HalCpuLocal`
+        // at `HAL_CPU_LOCAL_OFFSET`, which only the HAL uses.
+        let local = unsafe {
+            &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal)
+        };
+        local.plic_context.store(context, Ordering::Relaxed);
     }
 
     #[inline]

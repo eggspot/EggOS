@@ -76,6 +76,16 @@ impl<R: RegisterIo> IoApic<R> {
         self.write(low, entry);
     }
 
+    /// Sends line `line` to the local APIC `destination` from now on, keeping the rest of its
+    /// entry (D536).
+    pub fn set_destination(&self, line: u32, destination: u8) {
+        if line >= self.lines() {
+            return;
+        }
+        let high = FIRST_REDIRECTION + line * 2 + 1;
+        self.write(high, u32::from(destination) << DESTINATION_SHIFT);
+    }
+
     /// Masks (`masked`) or unmasks line `line`, keeping the rest of its entry (D413): a
     /// level-triggered device line is masked while its driver looks at the device.
     pub fn set_masked(&self, line: u32, masked: bool) {
@@ -109,6 +119,18 @@ mod tests {
         apic.set_masked(5, true);
         let writes = apic.regs.writes();
         assert_eq!(writes.last(), Some(&(REGISTER_WINDOW, 0x0000_a033 | REDIRECTION_MASKED)));
+    }
+
+    #[test]
+    fn a_new_destination_rewrites_only_the_entry_s_high_half() {
+        let apic = IoApic::new(FakeRegs::default());
+        apic.regs
+            .script_reads(REGISTER_WINDOW, &[TWENTY_FOUR_LINES]);
+        apic.set_destination(4, 2);
+        assert_eq!(
+            apic.regs.writes()[1..],
+            [(REGISTER_SELECT, 0x19), (REGISTER_WINDOW, 2 << 24)]
+        );
     }
 
     #[test]

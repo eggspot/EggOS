@@ -367,6 +367,26 @@ pub(super) fn release_device_interrupt(line: crate::DeviceLine) {
     }
 }
 
+/// Sends `line`'s shared interrupt to the CPU whose MPIDR affinity is `cpu` (D536): through
+/// its router on a GICv3, else to the CPU interface that CPU reported when it set its
+/// interrupts up.
+pub(super) fn steer_device_interrupt(
+    line: crate::DeviceLine,
+    cpu: u64,
+) -> Result<(), &'static str> {
+    let id = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    if is_gicv3() {
+        gicv3_distributor().set_route(id, cpu);
+        return Ok(());
+    }
+    let interface = GIC_CPUS
+        .iter()
+        .position(|entry| entry.load(Ordering::Acquire) == cpu + 1)
+        .ok_or("the CPU has not set its interrupts up")?;
+    distributor().set_targets(id, 1 << interface);
+    Ok(())
+}
+
 /// This CPU's MPIDR affinity, as the device tree's `/cpus` and the PSCI calls give it: Aff3 in
 /// bits 39:32, Aff2-Aff0 in bits 23:0.
 pub(super) fn affinity() -> u64 {

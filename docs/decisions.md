@@ -25398,3 +25398,38 @@ the license, by an explicit instruction recorded here.
   sum on every offloading adapter.
 - **Not yet.** Segmentation offloads (TSO, UFO), which need larger transmit buffers, and other
   adapters' offloads (the Ethernet and Wi-Fi drivers keep whole checksums).
+
+## D536 Device interrupts spread over the CPUs (M5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** Lines are still routed to the boot CPU as devices are found, because device
+  probing runs before the other CPUs start. Once they are online, the kernel
+  (`devices::interrupts::spread`, called by `init::run` right after `start_cpus`) hands every
+  connected line out to the online CPUs in turn, starting with the first after the boot CPU.
+  Every line connected later (`Probe::interrupt_connected` → `interrupts::follow`) takes the
+  next turn. A line moves in one of two ways:
+  - at its interrupt controller, through the new `Platform::steer_device_interrupt`: x86_64's
+    I/O APIC rewrites the entry's destination half (`IoApic::set_destination`); AArch64
+    rewrites a GICv3 SPI's `GICD_IROUTER` (`set_route`) or a GICv2 SPI's target byte, naming
+    the CPU interface the CPU recorded when it set its interrupts up (`set_targets`); RISC-V
+    rewrites an APLIC source's target (`Aplic::set_target`), or enables a PLIC source in the
+    new hart's supervisor context and disables it in the old one;
+  - for a message-signalled line, by writing the HAL's new message (`Platform::message_for`:
+    on x86_64 the same vector with the target's APIC ID in the address) into entry 0 of the
+    device's MSI-X table, which the driver records when it connects the line
+    (`interrupts::connect_message`, `MessageTable`).
+  After a move the line's events are raised once, so the driver looks at the device for an
+  interrupt the move may have lost. A line that cannot move stays where it is.
+- **What the CPUs need.** x86_64 shares its IDT and device vectors across CPUs, so a line keeps
+  its vector. On RISC-V each secondary hart now prepares itself as it starts
+  (`console_input::prepare_hart`): it gives its PLIC context every priority, or turns on its
+  IMSIC with the first 256 identities enabled, and sets `sie.SEIE`. Each hart claims in its own
+  PLIC context, which `set_cpu_local` keeps in the hart's per-CPU block
+  (`HalCpuLocal::plic_context`). The entry code passes the hart id, and `secondary_main` leaves
+  it in `sscratch` for `set_cpu_local`, which runs before the hart's first trip to user mode.
+- **Why round robin and not by load.** Each device has one driver thread woken by its line.
+  Spreading the lines once keeps the cost of a move off every interrupt. By-load balancing
+  needs the scheduler's load figures per CPU, which belong to M4's balancing work.
+- **Not yet.** Plain MSI (no MSI-X), which needs the configuration space after probing, stays
+  on the boot CPU. So do the other architectures (LoongArch64, MIPS64, POWER, s390x,
+  SPARC64), x2APIC IDs above 255 without interrupt remapping, and APLIC sources above 255.
+  Moving lines when CPUs go offline, and balancing by load, are also not done.

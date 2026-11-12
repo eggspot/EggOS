@@ -1,8 +1,10 @@
-//! Device interrupt lines: each line is a vector of the boot CPU's local APIC, from
-//! [`FIRST_DEVICE_VECTOR`] on, raised either by a message a PCI function writes to the local
-//! APIC's address (MSI-X or MSI; Intel SDM vol. 3A, 11.11: fixed delivery, edge-triggered,
-//! physical destination) or by an I/O APIC input, a PCI function's legacy INTx pin (D413). A
-//! line is taken from a bitmap and given back when its driver lets the device go. An I/O APIC
+//! Device interrupt lines: each line is a vector of a local APIC, the boot CPU's until the
+//! kernel spreads the lines over the CPUs (D536), from [`FIRST_DEVICE_VECTOR`] on, raised either
+//! by a message a PCI function writes to the local APIC's address (MSI-X or MSI; Intel SDM vol.
+//! 3A, 11.11: fixed delivery, edge-triggered, physical destination) or by an I/O APIC input, a
+//! PCI function's legacy INTx pin (D413). Every CPU shares the vectors, so a line keeps its
+//! vector wherever it goes. A line is taken from a bitmap and given back when its driver lets
+//! the device go. An I/O APIC
 //! line is level-triggered and its driver quiets the device only when its thread looks, so the
 //! input is masked when its interrupt arrives and unmasked when the driver waits again.
 
@@ -39,17 +41,44 @@ fn vector_of(line: DeviceLine) -> u8 {
     FIRST_DEVICE_VECTOR + line.index() as u8
 }
 
+fn message(line: DeviceLine, apic_id: u8) -> InterruptMessage {
+    InterruptMessage {
+        address: MESSAGE_ADDRESS | u64::from(apic_id) << DESTINATION_ID_SHIFT,
+        data: u32::from(vector_of(line)),
+    }
+}
+
+fn apic_id_of(cpu: u64) -> Result<u8, &'static str> {
+    u8::try_from(cpu).map_err(|_| "messages and the I/O APIC name APIC IDs up to 255 only")
+}
+
 /// Takes a free device line and the message that raises it on the boot CPU.
 pub(super) fn take() -> Result<(DeviceLine, InterruptMessage), &'static str> {
     let line = take_line()?;
-    let destination = u64::from(timer::boot_apic_id()) << DESTINATION_ID_SHIFT;
-    Ok((
-        line,
-        InterruptMessage {
-            address: MESSAGE_ADDRESS | destination,
-            data: u32::from(vector_of(line)),
-        },
-    ))
+    Ok((line, message(line, timer::boot_apic_id())))
+}
+
+/// The message that raises the taken message line `line` on the CPU whose APIC ID is `cpu`
+/// (D536).
+pub(super) fn message_for(line: DeviceLine, cpu: u64) -> Result<InterruptMessage, &'static str> {
+    if TAKEN.load(Ordering::Acquire) & 1 << line.index() == 0 {
+        return Err("the line is not taken");
+    }
+    if PINS[line.index()].load(Ordering::Acquire) != NO_PIN {
+        return Err("the line is an I/O APIC input");
+    }
+    Ok(message(line, apic_id_of(cpu)?))
+}
+
+/// Sends the I/O APIC input behind `line` to the CPU whose APIC ID is `cpu` (D536).
+pub(super) fn steer(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
+    let global = PINS[line.index()].load(Ordering::Acquire);
+    if global == NO_PIN {
+        return Err("the line is message-signalled: its device takes a new message");
+    }
+    let apic_id = apic_id_of(cpu)?;
+    with_input(global, |input, controller| controller.set_destination(input, apic_id))
+        .ok_or("no I/O APIC receives that interrupt")
 }
 
 type Controller = eggos_drivers::interrupt::IoApic<eggos_drivers::io::Mmio>;

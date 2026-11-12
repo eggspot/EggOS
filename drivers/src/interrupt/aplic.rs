@@ -81,6 +81,15 @@ impl<R: RegisterIo> Aplic<R> {
         self.regs.write32(SET_ENABLE_NUMBER, source);
     }
 
+    /// Has `source` arrive at hart index `hart` as identity `identity` from now on, leaving its
+    /// mode and enable alone (D536).
+    pub fn set_target(&self, source: u32, hart: u32, identity: u32) {
+        self.regs.write32(
+            Self::per_source(TARGETS, source),
+            hart << HART_INDEX_SHIFT | identity & IDENTITY_MASK,
+        );
+    }
+
     /// Stops `source` from interrupting.
     pub fn disable(&self, source: u32) {
         self.regs.write32(CLEAR_ENABLE_NUMBER, source);
@@ -127,6 +136,9 @@ mod tests {
         assert_eq!((&regs).read32(0x0004 + 4 * 9), 6);
         assert_eq!((&regs).read32(0x3004 + 4 * 9), 2 << 18 | 10);
         assert_eq!((&regs).read32(SET_ENABLE_NUMBER), 10);
+        aplic.set_target(10, 3, 10);
+        assert_eq!((&regs).read32(0x3004 + 4 * 9), 3 << 18 | 10);
+        assert_eq!((&regs).read32(0x0004 + 4 * 9), 6);
         aplic.disable(10);
         assert_eq!((&regs).read32(CLEAR_ENABLE_NUMBER), 10);
     }

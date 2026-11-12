@@ -182,11 +182,20 @@ impl<R: RegisterIo> Gicv3Distributor<R> {
             configuration |= ICFGR_EDGE_TRIGGERED << shift;
         }
         self.regs.write32(configuration_word, configuration);
+        self.set_route(id, affinity);
+        self.regs.write32(GICD_ISENABLER + word, bit);
+    }
+
+    /// Sends shared interrupt `id` to the CPU with MPIDR affinity `affinity` from now on,
+    /// leaving the rest of its setup alone (D536).
+    pub fn set_route(&self, id: u32, affinity: u64) {
+        if !(FIRST_SPI_ID..=MAX_SPI_ID).contains(&id) {
+            return;
+        }
         let route = affinity_routing_value(affinity);
         let router = GICD_IROUTER + id as usize * 8;
         self.regs.write32(router, route as u32);
         self.regs.write32(router + 4, (route >> 32) as u32);
-        self.regs.write32(GICD_ISENABLER + word, bit);
     }
 }
 
@@ -330,6 +339,17 @@ mod tests {
         assert_eq!(
             find_redistributor(&regs, 2 * REDISTRIBUTOR_BYTES, 1),
             Some(REDISTRIBUTOR_BYTES)
+        );
+    }
+
+    #[test]
+    fn steering_a_shared_interrupt_rewrites_only_its_router() {
+        let distributor = Gicv3Distributor::new(FakeRegs::default());
+        distributor.set_route(40, 0x01_0000_0002);
+        distributor.set_route(27, 0x0000_0002);
+        assert_eq!(
+            distributor.regs.writes(),
+            vec![(GICD_IROUTER + 40 * 8, 2), (GICD_IROUTER + 40 * 8 + 4, 1)]
         );
     }
 

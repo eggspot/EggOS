@@ -4,7 +4,7 @@
 //! through the I/O APIC (D413). Message interrupts need no acknowledging at
 //! an interrupt controller; each driver clears its device's own cause when it looks.
 
-use super::interrupts::{self, DeviceEvents, Handler};
+use super::interrupts::{self, DeviceEvents, Handler, MessageTable};
 use super::{DeviceId, Identity, Probe, ProbeError};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci::{msi, msix, msix::MsixTable};
@@ -43,16 +43,19 @@ pub fn connect(
     }
     let (line, message) = probe.message_interrupt()?;
     let enabled = enable_message(probe, node, function.address, (found_msix, found_msi), message);
-    if let Err(refused) = enabled {
-        probe.release_interrupt(line);
-        return Err(refused);
-    }
+    let table = match enabled {
+        Ok(table) => table,
+        Err(refused) => {
+            probe.release_interrupt(line);
+            return Err(refused);
+        }
+    };
     let config = probe
         .pci_config()
         .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let command = config.read32(function.address, COMMAND);
     config.write32(function.address, COMMAND, command | COMMAND_INTX_DISABLE);
-    finish(probe, id, line, events)
+    finish(probe, id, line, events, table)
 }
 
 fn enable_message(
@@ -61,7 +64,7 @@ fn enable_message(
     address: eggos_drivers::pci::Address,
     (found_msix, found_msi): (Option<msix::Msix>, Option<msi::Msi>),
     message: eggos_hal::InterruptMessage,
-) -> Result<(), ProbeError> {
+) -> Result<Option<MessageTable>, ProbeError> {
     if let Some(capability) = found_msix {
         let bar = node.regions[usize::from(capability.bar)];
         let table_end = u64::from(capability.table_offset) + capability.table_bytes() as u64;
@@ -75,13 +78,18 @@ fn enable_message(
         // SAFETY: `map_window` mapped the table as device memory for good, inside the BAR the
         // capability names; only this driver reaches it.
         let registers = unsafe { Mmio::new(table, capability.table_bytes()) };
+        let kept = MessageTable {
+            address: table,
+            bytes: capability.table_bytes(),
+            entries: capability.entries,
+        };
         let table = MsixTable::new(registers, capability.entries);
         table.set(0, message.address, message.data);
         let config = probe
             .pci_config()
             .ok_or(ProbeError::Refused("no PCI configuration space"))?;
         capability.enable(config, address);
-        return Ok(());
+        return Ok(Some(kept));
     }
     let Some(capability) = found_msi else {
         return Err(ProbeError::Refused("the function has neither MSI-X nor MSI"));
@@ -90,7 +98,7 @@ fn enable_message(
         .pci_config()
         .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     match capability.enable(config, address, message.address, message.data as u16) {
-        true => Ok(()),
+        true => Ok(None),
         false => Err(ProbeError::Refused("the function's MSI takes only 32-bit addresses")),
     }
 }
@@ -116,7 +124,7 @@ fn connect_pin(
     let command = config.read32(address, COMMAND);
     config.write32(address, COMMAND, command & !COMMAND_INTX_DISABLE);
     events.set_masked_line(line);
-    finish(probe, id, line, events)
+    finish(probe, id, line, events, None)
 }
 
 fn finish(
@@ -124,16 +132,22 @@ fn finish(
     id: DeviceId,
     line: eggos_hal::DeviceLine,
     events: &'static DeviceEvents,
+    table: Option<MessageTable>,
 ) -> Result<(), ProbeError> {
     let handler = Handler {
         acknowledge: acknowledge_nothing,
         context: 0,
         events,
     };
-    if let Err(refused) = interrupts::connect(line, handler) {
+    let connected = match table {
+        Some(table) => interrupts::connect_message(line, handler, table),
+        None => interrupts::connect(line, handler),
+    };
+    if let Err(refused) = connected {
         probe.release_interrupt(line);
         return Err(ProbeError::Refused(refused));
     }
+    probe.interrupt_connected(line);
     if let Some(node) = probe.table().get_mut(id) {
         node.delivery = super::Delivery::Interrupts;
     }

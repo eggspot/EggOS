@@ -128,6 +128,24 @@ pub trait Platform: 'static {
     /// nothing more and may be handed out again (D413). Nothing by default.
     fn release_device_interrupt(_line: DeviceLine) {}
 
+    /// Moves `line`, which the HAL routes at an interrupt controller (a GIC shared peripheral
+    /// interrupt, a PLIC or APLIC source, an I/O APIC input), to the CPU with hardware id `cpu`
+    /// (from [`Self::cpus`]), which must run the kernel's code (D536). An interrupt the line
+    /// raised while it moved may be lost, so the caller has the driver look once after. Fails
+    /// for a message-signalled line, whose device takes [`Self::message_for`]'s message
+    /// instead, and on a machine that keeps device interrupts on the boot CPU (the default).
+    fn steer_device_interrupt(_line: DeviceLine, _cpu: u64) -> Result<(), &'static str> {
+        Err("this machine keeps device interrupts on the boot CPU")
+    }
+
+    /// The message that raises the message-signalled `line` ([`Self::message_interrupt`]) on
+    /// the CPU with hardware id `cpu` (from [`Self::cpus`]) instead, for the kernel to write to
+    /// the device (D536). Fails for a line routed at an interrupt controller and on a machine
+    /// that keeps message-signalled interrupts on the boot CPU (the default).
+    fn message_for(_line: DeviceLine, _cpu: u64) -> Result<InterruptMessage, &'static str> {
+        Err("this machine keeps message-signalled interrupts on the boot CPU")
+    }
+
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 

@@ -212,6 +212,9 @@ pub trait Probe {
     /// Disconnects and gives back `line` ([`crate::devices::interrupts::disconnect`], D413).
     /// Nothing by default.
     fn release_interrupt(&mut self, _line: DeviceLine) {}
+    /// Says `line` was just connected, so it can join the CPUs' turns
+    /// ([`crate::devices::interrupts::follow`], D536). Nothing by default.
+    fn interrupt_connected(&mut self, _line: DeviceLine) {}
 }
 
 /// A driver built into the kernel.
@@ -641,6 +644,10 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
 
     fn release_interrupt(&mut self, line: DeviceLine) {
         interrupts::disconnect::<P>(line);
+    }
+
+    fn interrupt_connected(&mut self, line: DeviceLine) {
+        interrupts::follow::<P>(line);
     }
 }
 

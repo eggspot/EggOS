@@ -13,16 +13,17 @@
 //!
 //! Each CPU has a per-CPU block pointer ([`crate::Platform::set_cpu_local`]) in a register only
 //! the kernel uses: `TPIDR_EL1` on AArch64, `tp` on RISC-V (while in the kernel; `sscratch`
-//! stays free for the user-mode trap entry), the GS base on x86_64. The block starts with its own
-//! address, then the HAL's part ([`HalCpuLocal`], at [`HAL_CPU_LOCAL_OFFSET`]); the rest is the
-//! kernel's.
+//! stays free for the user-mode trap entry, and before the first one carries a secondary hart's
+//! id from its entry code to `set_cpu_local`, D536), the GS base on x86_64. The block starts
+//! with its own address, then the HAL's part ([`HalCpuLocal`], at [`HAL_CPU_LOCAL_OFFSET`]); the
+//! rest is the kernel's.
 //!
 //! Each CPU sets its own interrupt controller and timer up before it runs the kernel's code
 //! (D41): the boot CPU's entry code before `kernel_main`, a secondary CPU's entry code before
 //! [`CpuStart::entry`]. From then on its timer works ([`crate::Platform::set_timer_deadline`]
 //! arms this CPU's) and other CPUs can wake it ([`crate::Platform::wake_cpu`]).
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 use crate::atomic::AtomicU64;
 use core::cell::UnsafeCell;
 #[cfg(target_arch = "x86_64")]
@@ -78,6 +79,11 @@ pub struct HalCpuLocal {
     #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     pub(crate) x86: X86CpuTables,
+    /// RISC-V: the PLIC context in which this hart claims its external interrupts (D536);
+    /// `u64::MAX` for none. Written by the hart itself in `set_cpu_local`.
+    #[cfg(target_arch = "riscv64")]
+    #[allow(dead_code)]
+    pub(crate) plic_context: AtomicU64,
 }
 
 impl HalCpuLocal {
@@ -85,6 +91,8 @@ impl HalCpuLocal {
         Self {
             #[cfg(target_arch = "x86_64")]
             timer_deadline: AtomicU64::new(u64::MAX),
+            #[cfg(target_arch = "riscv64")]
+            plic_context: AtomicU64::new(u64::MAX),
             #[cfg(target_arch = "x86_64")]
             x86: X86CpuTables(UnsafeCell::new(X86Tables {
                 gdt: [0; GDT_ENTRIES],
@@ -256,6 +264,12 @@ pub(crate) const CONTEXT_TOP_OFFSET: usize =
 #[cfg_attr(not(eggos_kernel), allow(dead_code))]
 pub(crate) const ENTRY_STACK_TOP_OFFSET: usize =
     X86_TABLES_OFFSET + core::mem::offset_of!(X86Tables, entry_stack_top);
+
+/// Where the RISC-V hart's PLIC context is in a per-CPU block.
+#[cfg(target_arch = "riscv64")]
+#[cfg_attr(not(eggos_kernel), allow(dead_code))]
+pub(crate) const PLIC_CONTEXT_OFFSET: usize =
+    HAL_CPU_LOCAL_OFFSET + core::mem::offset_of!(HalCpuLocal, plic_context);
 
 /// Where the x86_64 timer's deadline is in a per-CPU block.
 #[cfg(target_arch = "x86_64")]

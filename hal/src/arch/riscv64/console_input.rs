@@ -4,6 +4,12 @@
 //! Architecture, D532), the same sources go through it instead: each routed to the boot hart's
 //! IMSIC with its source number as its identity, which the hart enables, and claims and clears
 //! through its own CSRs (`siselect`/`sireg` and `stopei`).
+//!
+//! The kernel then spreads the device lines over the harts (D536): each secondary hart takes
+//! every priority in its own PLIC context, or enables the first [`PREPARED_IDENTITIES`]
+//! identities of its IMSIC, as it starts; a line moves by enabling its source in the new
+//! hart's context and disabling it in the old one, or by a new APLIC target. Each hart claims
+//! in its own context, which it keeps in its per-CPU block.
 
 use super::DIRECT_MAP_OFFSET;
 use crate::interrupt::SourceLines;
@@ -39,6 +45,12 @@ const EXTERNAL_ENABLES: u64 = 0xc0;
 const IDENTITY_SHIFT: u64 = 16;
 const IDENTITY_MASK: u64 = 0x7ff;
 const ENABLE_BITS: u32 = 64;
+/// The IMSIC identities every secondary hart enables, so a line whose source is below it can be
+/// steered to any hart.
+pub(super) const PREPARED_IDENTITIES: u32 = 256;
+
+static SOURCE_CONTEXTS: [AtomicUsize; crate::DeviceLine::COUNT] =
+    [const { AtomicUsize::new(NO_CONTEXT) }; crate::DeviceLine::COUNT];
 
 /// Whether interrupts go through the AIA (D532): the device tree named a supervisor APLIC.
 pub(super) fn uses_aia() -> bool {
@@ -167,6 +179,59 @@ fn context_plic(context: Option<usize>) -> Result<Plic<Mmio>, &'static str> {
     Ok(plic)
 }
 
+/// Sets the calling secondary hart, whose supervisor-mode context is `context`, up to take the
+/// device lines the kernel steers to it (D536), with interrupts still masked.
+pub(super) fn prepare_hart(context: Option<usize>) {
+    if uses_aia() {
+        write_indirect(EXTERNAL_DELIVERY, 1);
+        write_indirect(EXTERNAL_THRESHOLD, 0);
+        for register in 0..PREPARED_IDENTITIES / ENABLE_BITS {
+            write_indirect(EXTERNAL_ENABLES + 2 * u64::from(register), u64::MAX);
+        }
+    } else {
+        let Some(context) = context.filter(|&context| context < MAPPED_CONTEXTS) else {
+            return;
+        };
+        plic(context).set_threshold(EVERY_PRIORITY_ABOVE_ZERO);
+    }
+    // SAFETY: setting `sie.SEIE` only lets this hart take the external interrupts its PLIC
+    // context or IMSIC delivers, which `interrupt` handles, once the kernel unmasks them.
+    unsafe { core::arch::asm!("csrs sie, {}", in(reg) SIE_SEIE, options(nomem, nostack)) };
+}
+
+/// Sends `line` to hart `hart`, whose supervisor-mode context is `context` (D536).
+pub(super) fn steer_device(
+    line: crate::DeviceLine,
+    hart: u64,
+    context: Option<usize>,
+) -> Result<(), &'static str> {
+    let source = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    if let Some(aplic) = aplic() {
+        if source >= PREPARED_IDENTITIES {
+            return Err("the source's identity is past the ones every hart enables");
+        }
+        let hart = u32::try_from(hart).map_err(|_| "the hart's index is past the APLIC's")?;
+        aplic.set_target(source, hart, source);
+        return Ok(());
+    }
+    let target = context
+        .filter(|&context| context < MAPPED_CONTEXTS)
+        .ok_or("the hart has no PLIC context the kernel maps")?;
+    let slot = &SOURCE_CONTEXTS[line.index()];
+    let current = match slot.load(Ordering::Acquire) {
+        NO_CONTEXT => CONTEXT.load(Ordering::Relaxed),
+        steered => steered,
+    };
+    if current != target {
+        plic(target).enable(source, DEVICE_PRIORITY);
+        if current < MAPPED_CONTEXTS {
+            plic(current).disable(source);
+        }
+        slot.store(target, Ordering::Release);
+    }
+    Ok(())
+}
+
 /// Routes UART0's source to `context`, the calling hart's supervisor-mode context.
 pub(super) fn enable(context: Option<usize>) -> Result<(), &'static str> {
     if uses_aia() {
@@ -203,8 +268,10 @@ pub(super) fn route_device(
     Ok(line)
 }
 
-/// Gives `line` back: its source stops interrupting the boot hart's context (D413).
-pub(super) fn release_device(context: Option<usize>, line: crate::DeviceLine) {
+/// Gives `line` back: its source stops interrupting the context it was routed or steered to
+/// (D413).
+pub(super) fn release_device(line: crate::DeviceLine) {
+    let steered = SOURCE_CONTEXTS[line.index()].swap(NO_CONTEXT, Ordering::AcqRel);
     let Some(source) = DEVICE_LINES.release(line) else {
         return;
     };
@@ -213,9 +280,23 @@ pub(super) fn release_device(context: Option<usize>, line: crate::DeviceLine) {
         enable_identity(source, false);
         return;
     }
-    if let Ok(plic) = context_plic(context) {
-        plic.disable(source);
+    let context = match steered {
+        NO_CONTEXT => CONTEXT.load(Ordering::Relaxed),
+        steered => steered,
+    };
+    if context < MAPPED_CONTEXTS {
+        plic(context).disable(source);
     }
+}
+
+fn this_hart_context() -> usize {
+    // SAFETY: a hart takes external interrupts only once the kernel unmasks them, after
+    // `set_cpu_local` ran on it, so `tp` holds its block, whose `plic_context` is an aligned
+    // `AtomicU64`.
+    let context = unsafe {
+        <super::Riscv64 as crate::Platform>::cpu_local_u64::<{ crate::cpu::PLIC_CONTEXT_OFFSET }>()
+    };
+    usize::try_from(context).unwrap_or(NO_CONTEXT)
 }
 
 /// Claims the pending external interrupt and handles it: UART0's goes to the kernel as console
@@ -234,8 +315,8 @@ pub(super) fn interrupt(pc: u64) {
             deliver_source(identity, pc);
         }
     }
-    let context = CONTEXT.load(Ordering::Relaxed);
-    if context == NO_CONTEXT {
+    let context = this_hart_context();
+    if context >= MAPPED_CONTEXTS {
         return;
     }
     let plic = plic(context);

@@ -665,6 +665,17 @@ impl Platform for X86_64 {
         message_interrupts::release(line);
     }
 
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        message_interrupts::steer(line, cpu)
+    }
+
+    fn message_for(
+        line: crate::DeviceLine,
+        cpu: u64,
+    ) -> Result<crate::InterruptMessage, &'static str> {
+        message_interrupts::message_for(line, cpu)
+    }
+
     fn exit(_status: ExitStatus) -> ! {
         // ACPI S5 has no exit status; the QEMU runner reads the verdict from the console. If
         // the tables are missing or malformed we fall through and halt.

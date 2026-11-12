@@ -7,11 +7,19 @@
 //! ([`Handler::acknowledge`], so a level-triggered line drops before the HAL ends the interrupt)
 //! and raises the device's events, which wakes the thread waiting on them. Everything else
 //! happens in that thread.
+//!
+//! Lines are routed to the boot CPU as devices are found; once the other CPUs are online,
+//! [`spread`] hands the connected lines out to the online CPUs in turn, and every line
+//! connected after goes to the next CPU (D536). A line at an interrupt controller moves through
+//! the HAL; a message-signalled one by writing the HAL's new message into its device's MSI-X
+//! entry ([`MessageTable`]). A line that cannot move stays where it is.
 
 use eggos_hal::atomic::AtomicU64;
 use crate::thread::Parker;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use eggos_drivers::io::Mmio;
+use eggos_drivers::pci::msix::MsixTable;
 use eggos_hal::{DeviceLine, Platform};
 
 /// What a device line's interrupt does.
@@ -26,27 +34,68 @@ pub struct Handler {
     pub events: &'static DeviceEvents,
 }
 
+/// Where a message-signalled line's device keeps its message: entry 0 of an MSI-X table of
+/// `entries` entries, `bytes` long, mapped as device memory for good at `address` (D536).
+#[derive(Debug, Clone, Copy)]
+pub struct MessageTable {
+    pub address: usize,
+    pub bytes: usize,
+    pub entries: u16,
+}
+
 static HANDLERS: [AtomicPtr<Handler>; DeviceLine::COUNT] =
     [const { AtomicPtr::new(core::ptr::null_mut()) }; DeviceLine::COUNT];
 
-/// Makes `handler` the handler of `line`, for good. Refused when the line has one already.
+static MESSAGE_TABLES: [AtomicPtr<MessageTable>; DeviceLine::COUNT] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; DeviceLine::COUNT];
+
+static SPREADING: AtomicBool = AtomicBool::new(false);
+
+static NEXT_CPU: AtomicUsize = AtomicUsize::new(1);
+
+/// Makes `handler` the handler of `line`, for good. Refused when the line has one already. The
+/// line stays where the HAL routed it until [`follow`].
 pub fn connect(line: DeviceLine, handler: Handler) -> Result<(), &'static str> {
+    connect_with(line, handler, None)
+}
+
+/// [`connect`] for a message-signalled line whose device keeps its message in `table`, so the
+/// line can move to another CPU (D536).
+pub fn connect_message(
+    line: DeviceLine,
+    handler: Handler,
+    table: MessageTable,
+) -> Result<(), &'static str> {
+    connect_with(line, handler, Some(table))
+}
+
+fn connect_with(
+    line: DeviceLine,
+    handler: Handler,
+    table: Option<MessageTable>,
+) -> Result<(), &'static str> {
     let slot = HANDLERS
         .get(line.index())
         .ok_or("no such device interrupt line")?;
     let handler = Box::into_raw(Box::new(handler));
-    match slot.compare_exchange(
-        core::ptr::null_mut(),
-        handler,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    ) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // SAFETY: made just above by `Box::into_raw` and never shared.
-            drop(unsafe { Box::from_raw(handler) });
-            Err("the device interrupt line is in use")
-        }
+    let taken = slot
+        .compare_exchange(core::ptr::null_mut(), handler, Ordering::AcqRel, Ordering::Acquire)
+        .is_err();
+    if taken {
+        // SAFETY: made just above by `Box::into_raw` and never shared.
+        drop(unsafe { Box::from_raw(handler) });
+        return Err("the device interrupt line is in use");
+    }
+    let table = table.map_or(core::ptr::null_mut(), |table| Box::into_raw(Box::new(table)));
+    MESSAGE_TABLES[line.index()].store(table, Ordering::Release);
+    Ok(())
+}
+
+/// Sends `line`, just connected, to the next CPU in turn once [`spread`] has run; nothing
+/// before, when [`spread`] moves it with the others (D536).
+pub fn follow<P: Platform>(line: DeviceLine) {
+    if SPREADING.load(Ordering::Acquire) {
+        steer_to_next_cpu::<P>(line);
     }
 }
 
@@ -57,7 +106,61 @@ pub fn disconnect<P: Platform>(line: DeviceLine) {
     if let Some(slot) = HANDLERS.get(line.index()) {
         slot.store(core::ptr::null_mut(), Ordering::Release);
     }
+    if let Some(slot) = MESSAGE_TABLES.get(line.index()) {
+        slot.store(core::ptr::null_mut(), Ordering::Release);
+    }
     P::release_device_interrupt(line);
+}
+
+/// Hands every connected line out to the online CPUs in turn, starting with the first after
+/// the boot CPU, and has every line connected from now on follow (D536). Called once the other
+/// CPUs are online; nothing moves on a machine with one.
+pub fn spread<P: Platform>() {
+    if SPREADING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    for index in 0..DeviceLine::COUNT {
+        let connected = !HANDLERS[index].load(Ordering::Acquire).is_null();
+        if connected && let Some(line) = DeviceLine::from_index(index) {
+            steer_to_next_cpu::<P>(line);
+        }
+    }
+}
+
+fn steer_to_next_cpu<P: Platform>(line: DeviceLine) {
+    let cpus = crate::cpu::CPUS.all();
+    let online = cpus.iter().filter(|cpu| cpu.is_online()).count();
+    if online < 2 {
+        return;
+    }
+    let turn = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % online;
+    if let Some(cpu) = cpus.iter().filter(|cpu| cpu.is_online()).nth(turn) {
+        steer::<P>(line, cpu.hardware_id());
+    }
+}
+
+/// Moves `line` to the CPU with hardware id `cpu`: at the HAL, or by its device's new message.
+/// Its events are raised once after a move, so the driver looks at the device for an interrupt
+/// the move may have lost. Whether it moved.
+pub fn steer<P: Platform>(line: DeviceLine, cpu: u64) -> bool {
+    let table = MESSAGE_TABLES[line.index()].load(Ordering::Acquire);
+    // SAFETY: a stored table is a leaked box, never changed or freed.
+    let moved = match unsafe { table.as_ref() } {
+        Some(table) => P::message_for(line, cpu).is_ok_and(|message| {
+            // SAFETY: the table is a function's MSI-X table, mapped as device memory for good
+            // by the driver that connected the line, which writes only its entry 0, and only
+            // when it sets the line up, before connecting it.
+            let registers = unsafe { Mmio::new(table.address, table.bytes) };
+            MsixTable::new(registers, table.entries).set(0, message.address, message.data)
+        }),
+        None => P::steer_device_interrupt(line, cpu).is_ok(),
+    };
+    let handler = HANDLERS[line.index()].load(Ordering::Acquire);
+    // SAFETY: a connected handler is a leaked box, never changed or freed.
+    if moved && let Some(handler) = unsafe { handler.as_ref() } {
+        handler.events.raise::<P>();
+    }
+    moved
 }
 
 /// Handles the interrupt of `line`, which this CPU took: its handler quiets the device and
@@ -209,6 +312,25 @@ mod tests {
         assert_eq!(ACKNOWLEDGED.load(Ordering::Relaxed), 1);
         assert_eq!(EVENTS.raised(), before + 1);
         assert_eq!(EVENTS.wait::<P>(before, u64::MAX), before + 1);
+    }
+
+    #[test]
+    fn a_line_the_machine_cannot_move_stays_and_raises_nothing() {
+        static STAYING: DeviceEvents = DeviceEvents::new();
+        let line = DeviceLine::from_index(DeviceLine::COUNT - 3).unwrap();
+        let handler = Handler {
+            acknowledge: count_acknowledge,
+            context: 0,
+            events: &STAYING,
+        };
+        let table = MessageTable {
+            address: 0,
+            bytes: 0,
+            entries: 0,
+        };
+        connect_message(line, handler, table).unwrap();
+        assert!(!steer::<P>(line, 1));
+        assert_eq!(STAYING.raised(), 0);
     }
 
     #[test]

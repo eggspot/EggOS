@@ -144,6 +144,14 @@ impl<R: RegisterIo> Gicv2Distributor<R> {
         self.enable_interrupt(id, priority);
     }
 
+    /// Sends shared interrupt `id` to the CPU interfaces in `targets` from now on, leaving the
+    /// rest of its setup alone (D536).
+    pub fn set_targets(&self, id: u32, targets: u8) {
+        if (FIRST_SPI_ID..=MAX_INTERRUPT_ID).contains(&id) {
+            self.regs.write8(GICD_ITARGETSR + id as usize, targets);
+        }
+    }
+
     /// The calling CPU's interface, as a target list with one bit set (bit n for CPU interface
     /// n), for [`Self::send_sgi`]. 0 on a uniprocessor GIC, which has no targets to name.
     pub fn this_cpu_target(&self) -> u8 {
@@ -220,6 +228,14 @@ mod tests {
             vec![(GICD_CTLR, 1), (0x400 + 27, 0x80), (0x100, 1 << 27)]
         );
         assert_eq!(gicd.regs.reads_of(GICD_ISENABLER), 0);
+    }
+
+    #[test]
+    fn steering_an_spi_rewrites_only_its_target_byte() {
+        let gicd = Gicv2Distributor::new(FakeRegs::default());
+        gicd.set_targets(40, 0b0100);
+        gicd.set_targets(27, 0b0100);
+        assert_eq!(gicd.regs.writes(), vec![(0x800 + 40, 0b0100)]);
     }
 
     #[test]

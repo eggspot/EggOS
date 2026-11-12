@@ -538,6 +538,10 @@ impl Platform for Aarch64 {
         timer::release_device_interrupt(line);
     }
 
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        timer::steer_device_interrupt(line, cpu)
+    }
+
     fn exit(_status: ExitStatus) -> ! {
         psci_system_call(PSCI_SYSTEM_OFF);
         Self::halt()

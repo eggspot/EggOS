@@ -54,6 +54,7 @@ pub fn run<P: Platform, W: Write>(
     memory: &mut Memory<P>,
 ) -> Result<Outcome, core::fmt::Error> {
     let online = start_cpus::<P>(memory);
+    crate::devices::interrupts::spread::<P>();
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();

@@ -337,7 +337,7 @@ pub fn connect_interrupt(
         .table()
         .get(parent_id)
         .ok_or(ProbeError::Refused("no such device"))?;
-    let handler = match transport {
+    let connection = match transport {
         AnyTransport::Mmio(_) => {
             let specifier = node.interrupts[0].ok_or(ProbeError::Refused(
                 "the virtio-mmio slot names no interrupt",
@@ -355,6 +355,7 @@ pub fn connect_interrupt(
                     context: base,
                     events,
                 },
+                None,
             )
         }
         AnyTransport::Ccw(_) => {
@@ -381,6 +382,11 @@ pub fn connect_interrupt(
                 msix.table_bytes() as u64,
             ))?;
             let (line, message) = probe.message_interrupt()?;
+            let kept = interrupts::MessageTable {
+                address: table,
+                bytes: msix.table_bytes(),
+                entries: msix.entries,
+            };
             // SAFETY: `map_window` mapped the table as device memory for good, inside the BAR the
             // capability names; only this driver reaches it.
             let table = MsixTable::new(
@@ -402,10 +408,17 @@ pub fn connect_interrupt(
                     context: 0,
                     events,
                 },
+                Some(kept),
             )
         }
     };
-    interrupts::connect(handler.0, handler.1).map_err(ProbeError::Refused)?;
+    let (line, handler, table) = connection;
+    match table {
+        Some(table) => interrupts::connect_message(line, handler, table),
+        None => interrupts::connect(line, handler),
+    }
+    .map_err(ProbeError::Refused)?;
+    probe.interrupt_connected(line);
     if let Some(node) = probe.table().get_mut(id) {
         node.delivery = super::Delivery::Interrupts;
     }
