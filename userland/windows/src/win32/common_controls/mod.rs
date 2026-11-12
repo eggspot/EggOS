@@ -37,6 +37,8 @@ mod toolbar;
 pub(in crate::win32) mod tooltip;
 mod tree_view;
 
+pub use tab_control::step_in_dialog as step_tab_in_dialog;
+
 use super::gui::{self, Gui, with};
 use super::{Bool, TRUE, heap, paint};
 use crate::gui::message;

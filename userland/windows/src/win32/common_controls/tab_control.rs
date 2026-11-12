@@ -158,6 +158,42 @@ fn select_with_notifications(window: usize, index: usize) -> bool {
     true
 }
 
+/// Ctrl+Tab (or Ctrl+Shift+Tab, `backwards`) in dialog `dialog` (D404): its first shown,
+/// enabled tab control selects the next (previous) tab, wrapping, as a property sheet does;
+/// whether there was one.
+pub fn step_in_dialog(dialog: usize, backwards: bool) -> bool {
+    let found = with(|gui| {
+        let (handles, count) = windows::tree(&gui.windows, dialog);
+        handles[1..count].iter().copied().find(|&handle| {
+            gui.windows.get(handle).is_some_and(|window| {
+                window.shown
+                    && window.enabled()
+                    && super::kind_of(window) == Some(CommonKind::TabControl)
+            })
+        })
+    })
+    .flatten();
+    let Some(control) = found else {
+        return false;
+    };
+    let next = with_state::<TabState, _>(control, |_, state| {
+        let count = state.tabs.count();
+        if count == 0 {
+            return None;
+        }
+        let here = state.tabs.selected().unwrap_or(0);
+        Some(match backwards {
+            true => (here + count - 1) % count,
+            false => (here + 1) % count,
+        })
+    })
+    .flatten();
+    if let Some(index) = next {
+        select_with_notifications(control, index);
+    }
+    true
+}
+
 /// The procedure of every tab control.
 pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     match number {

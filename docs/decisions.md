@@ -23006,3 +23006,23 @@ the license, by an explicit instruction recorded here.
   twice (D361's batch, unbuilt); the second declarations are gone.
 - **Not yet.** `LVS_OWNERDATA` virtual lists (their rows exist only as callbacks),
   callback texts in agents' tree, and `LVN_ODCACHEHINT`.
+
+## D404 Ctrl+Tab turns a dialog's tab pages, and part 13's breadth is closed (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Microsoft's keyboard guidance for property sheets and `IsDialogMessage`)
+
+- **Question.** D231 listed "Ctrl+Tab in dialogs" among the common controls' missing
+  breadth: in a dialog with tab pages, Ctrl+Tab moved the focus like Tab instead of turning
+  the page, which every Windows user expects from property sheets.
+- **Decision.** `IsDialogMessageW` takes Ctrl+Tab (Ctrl+Shift+Tab backwards) to the
+  dialog's first shown, enabled tab control, which selects the next tab, wrapping, with
+  `TCN_SELCHANGING` (the parent may refuse) and `TCN_SELCHANGE`, as a click does; a dialog
+  without one keeps Tab's focus move. A focused tab control keeps its own Ctrl+Tab
+  (D178's `key_target`).
+- **Part 13's breadth.** With D348-D404 the layer covers the common controls' messages,
+  notifications, custom draw, label editing, tips, callbacks, ANSI forms and destroy
+  notifications. What stays is recorded, not hidden: non-rectangular windows
+  (`SetWindowRgn` with elliptic, rounded or polygon regions needs a shape request in the
+  window server and real regions in GDI, whose regions are still bounding rectangles),
+  toolbars' standard bitmaps (`TB_ADDBITMAP` with `HINST_COMMCTRL` needs our own drawn
+  set), image lists' overlays and drag images, header drag-and-drop reordering
+  (`HDS_DRAGDROP`) and `LVS_OWNERDATA` (D403). They wait for the programs that need them,
+  as M15's compatibility runs find them.

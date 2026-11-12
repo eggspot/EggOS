@@ -418,7 +418,15 @@ pub fn dialog_message(dialog: usize, message: &crate::gui::queue::Message) -> bo
     if !inside {
         return false;
     }
+    let control_held =
+        with(|gui| gui.keyboard_state()[VK_CONTROL] & KEY_DOWN_BIT != 0).unwrap_or(false);
     match (message.message, message.wparam) {
+        (message::KEY_DOWN, VK_TAB)
+            if control_held
+                && super::common_controls::step_tab_in_dialog(
+                    dialog,
+                    with(|gui| gui.shift_held()).unwrap_or(false),
+                ) => {}
         (message::KEY_DOWN, VK_TAB) => {
             let next = with(|gui| {
                 let root = windows::root_of(&gui.windows, dialog)?;
