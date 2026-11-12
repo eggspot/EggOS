@@ -398,19 +398,28 @@ fn acpi_table_from(rsdp: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     if rsdp == 0 {
         return None;
     }
-    crate::acpi::find_table(rsdp, signature, &|address, length| {
-        let end = address.checked_add(length as u64)?;
-        if address == 0 || end > BOOT_DIRECT_MAP_END {
-            return None;
-        }
-        // SAFETY: the firmware's ACPI tables are RAM the boot direct map covers (checked), which
-        // nothing writes.
-        Some(unsafe {
-            core::slice::from_raw_parts(
-                (address as usize).wrapping_add(DIRECT_MAP_OFFSET) as *const u8,
-                length,
-            )
-        })
+    crate::acpi::find_table(rsdp, signature, &read_acpi_memory)
+}
+
+/// Every validated ACPI table with `signature` under the RSDP at physical `rsdp` (D538).
+fn acpi_tables_from(rsdp: u64, signature: &[u8; 4], each: &mut dyn FnMut(&'static [u8])) {
+    if rsdp != 0 {
+        crate::acpi::find_tables(rsdp, signature, &read_acpi_memory, each);
+    }
+}
+
+fn read_acpi_memory(address: u64, length: usize) -> Option<&'static [u8]> {
+    let end = address.checked_add(length as u64)?;
+    if address == 0 || end > BOOT_DIRECT_MAP_END {
+        return None;
+    }
+    // SAFETY: the firmware's ACPI tables are RAM the boot direct map covers (checked), which
+    // nothing writes.
+    Some(unsafe {
+        core::slice::from_raw_parts(
+            (address as usize).wrapping_add(DIRECT_MAP_OFFSET) as *const u8,
+            length,
+        )
     })
 }
 
@@ -685,6 +694,12 @@ impl Platform for Aarch64 {
 
     fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
         acpi_table_from(crate::handoff::handoff::<Self>()?.rsdp, signature)
+    }
+
+    fn acpi_tables(signature: &[u8; 4], table: &mut dyn FnMut(&'static [u8])) {
+        if let Some(handoff) = crate::handoff::handoff::<Self>() {
+            acpi_tables_from(handoff.rsdp, signature, table);
+        }
     }
 
     fn acpi_dsdt() -> Option<&'static [u8]> {

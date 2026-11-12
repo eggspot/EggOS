@@ -837,6 +837,42 @@ impl Platform for X86_64 {
         acpi_table(signature)
     }
 
+    fn acpi_tables(signature: &[u8; 4], table: &mut dyn FnMut(&'static [u8])) {
+        acpi_tables(signature, table);
+    }
+
+    fn acpi_interrupt_model() -> Option<u64> {
+        Some(ACPI_APIC_MODEL)
+    }
+
+    fn read_io_port(port: u16, width: u32) -> Option<u32> {
+        match width {
+            // SAFETY: only the ACPI interpreter calls this, for a `SystemIO` region the
+            // firmware's AML declares: the ports of the firmware's own devices, which its
+            // methods read.
+            8 => Some(u32::from(unsafe { port::in8(port) })),
+            // SAFETY: as above.
+            16 => Some(u32::from(unsafe { port::in16(port) })),
+            // SAFETY: as above.
+            32 => Some(unsafe { port::in32(port) }),
+            _ => None,
+        }
+    }
+
+    fn write_io_port(port: u16, width: u32, value: u32) -> bool {
+        match width {
+            // SAFETY: as in `read_io_port`: a port of a `SystemIO` region the firmware
+            // declares, written as its own methods write it.
+            8 => unsafe { port::out8(port, value as u8) },
+            // SAFETY: as above.
+            16 => unsafe { port::out16(port, value as u16) },
+            // SAFETY: as above.
+            32 => unsafe { port::out32(port, value) },
+            _ => return false,
+        }
+        true
+    }
+
     fn acpi_dsdt() -> Option<&'static [u8]> {
         let fadt = acpi_table(b"FACP").and_then(acpi::parse_fadt)?;
         table(fadt.dsdt, b"DSDT")
@@ -1269,6 +1305,28 @@ fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
     let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
     let root_table = table(root_address, signature_of(root))?;
     acpi::root_table_entries(root_table, root).find_map(|address| table(address, signature))
+}
+
+/// What `\_PIC` is given for the APIC interrupt model (ACPI 6.5, 5.8.1).
+const ACPI_APIC_MODEL: u64 = 1;
+
+/// Every validated ACPI table with `signature` that the root table lists, in its order.
+fn acpi_tables(signature: &[u8; 4], each: &mut dyn FnMut(&'static [u8])) {
+    let Some(root) = pvh_rsdp()
+        .and_then(acpi::parse_rsdp)
+        .or_else(bios_area_rsdp)
+    else {
+        return;
+    };
+    let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
+    let Some(root_table) = table(root_address, signature_of(root)) else {
+        return;
+    };
+    for address in acpi::root_table_entries(root_table, root) {
+        if let Some(found) = table(address, signature) {
+            each(found);
+        }
+    }
 }
 
 /// Reads the ACPI tables for the S5 sleep type and the PM1 control ports.

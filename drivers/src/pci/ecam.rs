@@ -19,8 +19,8 @@ pub const fn ecam_length(start_bus: u8, end_bus: u8) -> u64 {
 
 /// Configuration space through a mapped ECAM window. Accesses outside it (a bus out of range,
 /// an offset past 4 KiB or unaligned, a device or function number too large) read all ones and
-/// write nothing, as an absent function does.
-#[derive(Debug)]
+/// write nothing, as an absent function does. A copy reaches the same window.
+#[derive(Debug, Clone)]
 pub struct Ecam {
     base: usize,
     start_bus: u8,

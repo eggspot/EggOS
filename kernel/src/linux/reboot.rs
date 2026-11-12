@@ -155,7 +155,10 @@ pub fn take_machine_down<P: Platform>(action: Action) -> ! {
         let _ = writeln!(crate::console::PlatformConsole::<P>::new(), "{line}");
     }
     match action {
-        Action::PowerOff => P::exit(ExitStatus::Success),
+        Action::PowerOff => {
+            crate::devices::acpi_namespace::prepare_to_power_off();
+            P::exit(ExitStatus::Success)
+        }
         Action::Restart => P::restart(),
         Action::None | Action::Halt => P::halt(),
     }

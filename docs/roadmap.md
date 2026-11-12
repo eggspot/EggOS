@@ -1212,7 +1212,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | Driver | Status |
 |--------|--------|
 | PL011 UART (Arm), transmit and interrupt-driven receive | **done** |
-| ACPI tables: RSDP/RSDT/XSDT/FADT, `\_S5` from the DSDT (power-off), MADT local APICs (CPU discovery), I/O APICs and interrupt source overrides | **done** (full AML interpreter: code written, unbuilt, D537; its use by the kernel: planned, M5) |
+| ACPI tables: RSDP/RSDT/XSDT/FADT, `\_S5` from the DSDT (power-off), MADT local APICs (CPU discovery), I/O APICs and interrupt source overrides | **done** (full AML interpreter: code written, unbuilt, D537; the namespace loaded at boot, `_PIC`, `_STA`/`_INI`, absent devices left out, `_PTS` before power-off: code written, unbuilt, D538; the embedded controller's region and ACPI events (GPEs, `Notify` handling): planned) |
 | Flattened device tree: memory nodes and reservations, `/cpus`, `/chosen` seeds (taken and removed, D56), a hart's PLIC context, every node for device discovery (`compatible`, `reg`, interrupts through `interrupt-parent` and `interrupts-extended`, status, DMA coherence, D110) | **done** (`ranges` translation: planned, M5) |
 | PCI Express: the MCFG, ECAM configuration space, enumeration through bridges, BAR sizing, the capability list (D110) | **done** on x86_64 (PCI on aarch64 and riscv64, a BAR allocator, MSI-X: planned, M5) |
 | NS16550 UART (MMIO, any `reg-shift`, and x86 port I/O), transmit and interrupt-driven receive | **done** |

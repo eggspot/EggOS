@@ -270,6 +270,34 @@ pub trait Platform: 'static {
         None
     }
 
+    /// Every validated ACPI table with `signature` the root table lists, in its order: the
+    /// SSDTs, for the ACPI interpreter (D538). By default the one [`Self::acpi_table`] finds.
+    fn acpi_tables(signature: &[u8; 4], table: &mut dyn FnMut(&'static [u8])) {
+        if let Some(found) = Self::acpi_table(signature) {
+            table(found);
+        }
+    }
+
+    /// What the ACPI interpreter tells the firmware's `\_PIC` about the interrupt controller
+    /// the kernel uses (D538): 1 for the I/O APIC on x86_64; `None` where firmware has no
+    /// `\_PIC` to tell (the default).
+    fn acpi_interrupt_model() -> Option<u64> {
+        None
+    }
+
+    /// Reads `width` bits (8, 16 or 32) from I/O port `port`, for the ACPI interpreter's
+    /// `SystemIO` regions (D538), on a machine with an I/O port space (x86_64); `None` elsewhere
+    /// (the default) or for another width. Only firmware-described ports are reached this way.
+    fn read_io_port(_port: u16, _width: u32) -> Option<u32> {
+        None
+    }
+
+    /// Writes `value`'s low `width` bits (8, 16 or 32) to I/O port `port`, as
+    /// [`Self::read_io_port`] reads: whether it was written.
+    fn write_io_port(_port: u16, _width: u32, _value: u32) -> bool {
+        false
+    }
+
     /// The configuration space of a PCI host bridge the firmware serves without ECAM (POWER's
     /// PHBs through OPAL, D312), set up for the kernel's enumeration; `None` elsewhere.
     fn firmware_pci() -> Option<&'static dyn eggos_drivers::pci::ConfigSpace> {

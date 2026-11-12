@@ -25480,3 +25480,38 @@ the license, by an explicit instruction recorded here.
   plain mutex), real waiting on mutexes and events (one thread runs AML at a time), and
   connection fields for GPIO and serial-bus regions. The kernel's use comes in part 2
   (D538).
+
+## D538 An AML interpreter of our own, part 2: the kernel runs the namespace (M5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `devices::acpi_namespace::start` runs in `discover_and_probe`, after PCI
+  discovery and before the ACPI devices go into the table. In order, it:
+  - loads the DSDT and every SSDT (`Platform::acpi_tables`, new: x86_64 walks the root table,
+    AArch64 uses `acpi::find_tables`);
+  - maps every system-memory operation region the tables declare;
+  - calls `\_PIC` with the HAL's interrupt model (`Platform::acpi_interrupt_model`, new: 1 for
+    the I/O APIC on x86_64, none elsewhere);
+  - runs `initialize_devices`.
+
+  `acpi_bus::discover` leaves out every device at or below one whose `_STA` says it is
+  absent, so drivers never bind to hardware the firmware turned off. `take_machine_down` runs
+  `\_PTS(5)` before the HAL enters S5. The boot report says how many tables loaded, how many
+  devices were asked and the first load error.
+- **The host.** `KernelHost` reaches:
+  - system memory only inside the regions mapped at boot, because device windows can be
+    mapped only on the boot CPU before the others start, so a region made inside a method at
+    an address no table declared fails cleanly;
+  - I/O ports through the HAL (`Platform::read_io_port`/`write_io_port`, new, x86_64 only);
+  - PCI configuration space through segment 0's ECAM window (`Ecam` is now `Clone`), with
+    8- and 16-bit writes done as read-modify-write of their 32-bit word.
+
+  `Sleep` and `Stall` wait on the clock, because AML runs at boot before the scheduler and at
+  power-off after the other CPUs are parked. `Timer` converts the clock to 100 ns units. The
+  last 32 notifications are kept (`acpi_namespace::notifications`). The namespace lives behind
+  a `SleepLock` that spins, since it is taken at boot and power-off only.
+- **Three front-ends (D22).** The namespace is not a user capability of its own. Its effects
+  (devices present or absent, powering off) show through the existing device list and power
+  front-ends.
+- **Not yet.** The embedded controller's region (`EmbeddedControl`, which needs an EC driver),
+  ACPI events (SCI, GPE blocks, `_Lxx`/`_Exx`, and acting on `Notify`), `_PRT` routing through
+  the interpreter instead of the static walk, `_CRS` from methods for every device, sleep
+  states other than S5, and the global lock's handshake with firmware.

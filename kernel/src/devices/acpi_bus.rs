@@ -72,7 +72,7 @@ fn i2c_target(device: &aml::Device<'_>, declared: &[Declared]) -> Option<I2cTarg
     })
 }
 
-pub(super) fn discover(dsdt: &[u8], table: &mut DeviceTable) {
+pub(super) fn discover(dsdt: &[u8], table: &mut DeviceTable, present: &dyn Fn(&[u8]) -> bool) {
     let Some(definitions) = dsdt.get(eggos_hal::acpi::TABLE_HEADER_LENGTH..) else {
         return;
     };
@@ -100,6 +100,9 @@ pub(super) fn discover(dsdt: &[u8], table: &mut DeviceTable) {
         }
         let mut path = [0u8; PATH_BYTES];
         device.path.write(&mut path);
+        if !present(text(&path)) {
+            return;
+        }
         let mut node = DeviceNode::new(Identity::Acpi {
             hid: id,
             cid: compatible,

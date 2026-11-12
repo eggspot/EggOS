@@ -22,6 +22,7 @@
 //!   quiets the device and wakes the driver's thread.
 
 mod acpi_bus;
+pub mod acpi_namespace;
 mod channel_bus;
 pub mod dma;
 mod fdt_bus;
@@ -584,6 +585,8 @@ pub struct Report {
     pub dropped: usize,
     /// Why the firmware's description could not be read, if it could not.
     pub discovery_error: Option<&'static str>,
+    /// What loading the ACPI namespace did, on a machine with ACPI (D538).
+    pub acpi: Option<acpi_namespace::Started>,
 }
 
 struct BootProbe<'a, P: Platform> {
@@ -688,8 +691,13 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     {
         report.discovery_error = Some(error);
     }
+    let configuration = probe.ecam.clone();
+    let mut map = |region| window::map::<P>(probe.memory, region).ok();
+    if let Some(started) = acpi_namespace::start::<P>(&mut map, configuration) {
+        report.acpi = Some(started);
+    }
     if let Some(dsdt) = P::acpi_dsdt() {
-        acpi_bus::discover(dsdt, probe.table);
+        acpi_bus::discover(dsdt, probe.table, &acpi_namespace::is_present);
     }
     if let Some(channels) = P::channel_subsystem()
         && let Err(error) = channel_bus::discover(channels, probe.table)

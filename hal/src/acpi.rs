@@ -523,6 +523,35 @@ pub fn find_table(rsdp: u64, signature: &[u8; 4], read: PhysicalReader<'_>) -> O
     root_table_entries(root_table, root).find_map(|address| table_at(address, signature, read))
 }
 
+/// Calls `each` with every validated table with `signature` that the root table under the RSDP
+/// at `rsdp` lists, in its order (D538).
+pub fn find_tables(
+    rsdp: u64,
+    signature: &[u8; 4],
+    read: PhysicalReader<'_>,
+    each: &mut dyn FnMut(&'static [u8]),
+) {
+    let Some(root) = read(rsdp, RSDP_V2_LENGTH)
+        .or_else(|| read(rsdp, RSDP_V1_LENGTH))
+        .and_then(parse_rsdp)
+    else {
+        return;
+    };
+    let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
+    let root_signature = match root {
+        RootTable::Rsdt(_) => b"RSDT",
+        RootTable::Xsdt(_) => b"XSDT",
+    };
+    let Some(root_table) = table_at(root_address, root_signature, read) else {
+        return;
+    };
+    for address in root_table_entries(root_table, root) {
+        if let Some(found) = table_at(address, signature, read) {
+            each(found);
+        }
+    }
+}
+
 /// The validated table with `signature` at physical `address`, read through `read`.
 pub fn table_at(address: u64, signature: &[u8; 4], read: PhysicalReader<'_>) -> Option<&'static [u8]> {
     if address == 0 {

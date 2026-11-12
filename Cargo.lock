@@ -252,6 +252,7 @@ dependencies = [
 name = "eggos-kernel"
 version = "0.4.0"
 dependencies = [
+ "eggos-acpi",
  "eggos-android-log",
  "eggos-android-properties",
  "eggos-app-manifest",
