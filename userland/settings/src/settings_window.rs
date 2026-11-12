@@ -71,6 +71,10 @@ const PAGE_BAR: i32 = 56;
 const WEARABLE_ROW: i32 = 48;
 const WEARABLE_BAR: i32 = 48;
 const BAR_TITLE: (i32, i32) = (56, 20);
+/// A narrow pane's content is at most this wide (settings-forms-v0.5.md 2).
+const PAGE_CONTENT_MAX: i32 = 480;
+/// A control's height on a narrow page: a finger's target.
+const TOUCH_CONTROL: i32 = 48;
 const LIST_TOP: i32 = 44;
 const SIDEBAR_ROW: i32 = 32;
 const PADDING: i32 = 16;
@@ -647,6 +651,9 @@ pub const CONTROL_SIDES: [&str; 3] = ["Right", "Left", "Right"];
 
 #[derive(Debug, Clone, Copy)]
 struct Widgets {
+    switch_label: WidgetId,
+    on_screen_label: WidgetId,
+    keyboard_no_disk: WidgetId,
     search: WidgetId,
     list: WidgetId,
     panes: [WidgetId; PANES.len()],
@@ -1078,7 +1085,7 @@ impl SettingsWindow {
             Kind::button("Move down", false),
         );
         let remove = build.add(Some(keyboard), at(REMOVE), Kind::button("Remove", false));
-        build.label(
+        let switch_label = build.label(
             keyboard,
             SWITCH_KEY_LABEL.0,
             SWITCH_KEY_LABEL.1,
@@ -1090,7 +1097,7 @@ impl SettingsWindow {
             at(SWITCH_KEY),
             Kind::dropdown("Switch key", &SwitchKey::LABELS, facts.switch_key.number()),
         );
-        build.label(
+        let on_screen_label = build.label(
             keyboard,
             ON_SCREEN_LABEL.0,
             ON_SCREEN_LABEL.1,
@@ -1296,6 +1303,9 @@ impl SettingsWindow {
         let mut window = Self {
             tree,
             widgets: Widgets {
+                switch_label,
+                on_screen_label,
+                keyboard_no_disk,
                 search,
                 list,
                 panes,
@@ -1570,6 +1580,11 @@ impl SettingsWindow {
             Shape::Sidebar { .. } => crate::components_pane::Layout::Desktop,
         };
         self.components.set_layout(&mut self.tree, layout);
+        let content = match shape {
+            Shape::Pages => Some((pane_width - 2 * PADDING).min(PAGE_CONTENT_MAX)),
+            Shape::Sidebar { .. } => None,
+        };
+        self.reflow_keyboard(content);
         self.lay_out_frame();
     }
 
@@ -1664,6 +1679,67 @@ impl SettingsWindow {
                 );
             }
         }
+    }
+
+    /// Lays the Keyboard pane out in one column `content` wide (settings-forms-v0.5.md 2, its
+    /// worked example), or as on the desktop.
+    fn reflow_keyboard(&mut self, content: Option<i32>) {
+        let w = self.widgets;
+        let tree = &mut self.tree;
+        let boxed = |(x, y, width, height): (i32, i32, i32, i32)| {
+            Place::at(x, y, Length::Px(width), Length::Px(height))
+        };
+        let line = |x: i32, y: i32| Place::at(x, y, Length::Content, Length::Content);
+        let Some(c) = content else {
+            tree.set_place(w.layouts, boxed(LAYOUT_LIST));
+            tree.set_row_height(w.layouts, LAYOUT_ROW);
+            for (row, title) in w.layout_titles.iter().enumerate() {
+                tree.set_place(*title, line(LAYOUT_LABEL_X, LAYOUT_LABEL_TOP + row as i32 * LAYOUT_ROW));
+            }
+            tree.set_place(w.add_layout, boxed(ADD_LAYOUT));
+            tree.set_place(w.move_up, boxed(MOVE_UP));
+            tree.set_place(w.move_down, boxed(MOVE_DOWN));
+            tree.set_place(w.remove, boxed(REMOVE));
+            tree.set_place(w.third_level, line(KEYBOARD_FACTS_X, THIRD_LEVEL_LINE));
+            tree.set_place(w.dead_keys, line(KEYBOARD_FACTS_X, DEAD_KEYS_LINE));
+            tree.set_place(w.try_field, boxed(TRY_FIELD));
+            tree.set_place(w.keyboard_line, line(KEYBOARD_FACTS_X, KEYBOARD_LINE));
+            tree.set_place(w.keyboard_no_disk, line(PADDING, NO_DISK_LINE));
+            tree.set_place(w.switch_label, line(SWITCH_KEY_LABEL.0, SWITCH_KEY_LABEL.1));
+            tree.set_place(w.switch_key, boxed(SWITCH_KEY));
+            tree.set_place(w.on_screen_label, line(ON_SCREEN_LABEL.0, ON_SCREEN_LABEL.1));
+            tree.set_place(w.on_screen_keyboard, boxed(ON_SCREEN));
+            tree.set_place(
+                w.panes[KEYBOARD],
+                Place::at(0, 0, Length::Fill(0), Length::Px(PANE_HEIGHT)),
+            );
+            return;
+        };
+        let x = PADDING;
+        let half = (c - 8) / 2;
+        let row = TOUCH_CONTROL;
+        tree.set_place(w.layouts, boxed((x, 64, c, 4 * row)));
+        tree.set_row_height(w.layouts, row);
+        for (index, title) in w.layout_titles.iter().enumerate() {
+            tree.set_place(*title, line(LAYOUT_LABEL_X, 64 + index as i32 * row + 16));
+        }
+        tree.set_place(w.add_layout, boxed((x, 264, c, row)));
+        tree.set_place(w.move_up, boxed((x, 320, half, row)));
+        tree.set_place(w.move_down, boxed((x + 8 + half, 320, half, row)));
+        tree.set_place(w.remove, boxed((x, 376, c, row)));
+        tree.set_place(w.third_level, line(x, 440));
+        tree.set_place(w.dead_keys, line(x, 460));
+        tree.set_place(w.try_field, boxed((x, 488, c, row)));
+        tree.set_place(w.keyboard_line, line(x, 552));
+        tree.set_place(w.keyboard_no_disk, line(x, 572));
+        tree.set_place(w.switch_label, line(x, 592));
+        tree.set_place(w.switch_key, boxed((x, 616, c, row)));
+        tree.set_place(w.on_screen_label, line(x, 672));
+        tree.set_place(w.on_screen_keyboard, boxed((x, 696, c, row)));
+        tree.set_place(
+            w.panes[KEYBOARD],
+            Place::at(0, 0, Length::Fill(0), Length::Px(696 + row + 16)),
+        );
     }
 
     fn open_page(&mut self, pane: usize) -> Option<Request> {
@@ -3300,5 +3376,39 @@ mod form_tests {
         assert!(window.go_back());
         assert_eq!(window.widgets().focus(), Some(list));
         assert!(!window.go_back());
+    }
+}
+
+#[cfg(test)]
+mod reflow_tests {
+    use super::*;
+    use eggos_toolkit::geometry::Rect;
+
+    #[test]
+    fn the_keyboard_pane_folds_into_one_column_on_a_phone() {
+        let mut window = SettingsWindow::new(Facts::example());
+        window.tree().resize(390, 752);
+        window.set_form_factor(SettingsForm::Phone, 390);
+        window.open_pane(KEYBOARD);
+        let w = window.widgets;
+        let pane = window.widgets().rect(w.panes[KEYBOARD]).unwrap();
+        let at = |id: WidgetId| {
+            let r = window.widgets().rect(id).unwrap();
+            Rect::new(r.x - pane.x, r.y - pane.y, r.width, r.height)
+        };
+        assert_eq!(at(w.layouts), Rect::new(16, 64, 358, 192));
+        assert_eq!(at(w.add_layout), Rect::new(16, 264, 358, 48));
+        assert_eq!(at(w.move_up), Rect::new(16, 320, 175, 48));
+        assert_eq!(at(w.move_down), Rect::new(199, 320, 175, 48));
+        assert_eq!(at(w.remove), Rect::new(16, 376, 358, 48));
+        assert_eq!(at(w.try_field), Rect::new(16, 488, 358, 48));
+        assert_eq!(at(w.switch_key), Rect::new(16, 616, 358, 48));
+        assert_eq!(at(w.on_screen_keyboard), Rect::new(16, 696, 358, 48));
+        assert_eq!(pane.height, 760);
+        window.tree().resize(640, 440);
+        window.set_form_factor(SettingsForm::Desktop, 640);
+        let pane = window.widgets().rect(w.panes[KEYBOARD]).unwrap();
+        let move_up = window.widgets().rect(w.move_up).unwrap();
+        assert_eq!((move_up.x - pane.x, move_up.y - pane.y), (MOVE_UP.0, MOVE_UP.1));
     }
 }

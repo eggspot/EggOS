@@ -23479,3 +23479,17 @@ the license, by an explicit instruction recorded here.
 - **Deviations.** The notes keep the desktop's places on a phone (the design's x 24, the bar
   `width - 48` and stacked buttons are not built), and the wearable's read-only lines are not
   built.
+
+## D424 Settings on every device class, part 2 begun: the Keyboard pane in one column (settings-forms-v0.5.md section 2's worked example; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** On a narrow page (`Shape::Pages`) the Keyboard pane takes the design's worked
+  example: content `C` = the page width less 32, at most 480 (`PAGE_CONTENT_MAX`); the layouts
+  list `C` wide with rows of 48; `Add a layout...`, `Remove`, the try field and both dropdowns
+  `C` wide and 48 tall; `Move up` and `Move down` an equal pair sharing a row; the right
+  column's lines folded under the left (R5); the switch and on-screen labels over their
+  dropdowns (R2); the pane 760 tall at 390. Back on the desktop shape every place returns to
+  the desktop constants. `set_form_factor` runs it with the shape, beside the Components
+  pane's layout (D423).
+- **Not yet.** The same per-pane tables for Appearance, Network, Display, Mouse,
+  Accessibility, Storage, Date & time, Agents and About (R1 to R10), the list rows' icons and
+  summaries, cards in a column, wrapping labels and bottom sheets.
