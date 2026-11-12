@@ -370,11 +370,27 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
     let mut scanout = scanout;
     let lit_ports = scanout.engine.lit_ports();
     let mut second_screen = None;
+    let mut hdmi_screen = None;
+    let mut mirrored = false;
     for port in 0..DIGITAL_PORTS {
         let mut deadline = probe.deadline(SINK_ANSWER_MS);
         let (link, edid) = scanout.engine.probe_sink(port, &mut || deadline.keep_waiting());
-        if link.is_none() && edid.is_none() {
-            continue;
+        let (edid, hdmi) = match (link, edid) {
+            (None, None) => {
+                let mut deadline = probe.deadline(SINK_ANSWER_MS);
+                match scanout.engine.probe_hdmi_sink(port, &mut || deadline.keep_waiting()) {
+                    Some(edid) => (Some(edid), true),
+                    None => continue,
+                }
+            }
+            (_, edid) => (edid, false),
+        };
+        if hdmi
+            && lit_ports & 1 << port == 0
+            && hdmi_screen.is_none()
+            && let Some(timing) = edid.and_then(|edid| edid.preferred)
+        {
+            hdmi_screen = Some((port, timing));
         }
         if let (Some(link), Some(timing)) = (link, edid.and_then(|edid| edid.preferred))
             && lit_ports & 1 << port == 0
@@ -383,7 +399,11 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
             second_screen = Some((port, link, timing));
         }
         let port_name = (b'A' + port as u8) as char;
-        let _ = core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!("port {port_name}"));
+        let kind = if hdmi { " hdmi" } else { "" };
+        let _ = core::fmt::Write::write_fmt(
+            &mut scanout.sinks,
+            format_args!("port {port_name}{kind}"),
+        );
         if let Some(edid) = edid {
             let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
             let _ = core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!(" {maker} {}", edid.name()));
@@ -424,11 +444,35 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
             &mut || deadline.keep_waiting(),
         );
         if lit.is_ok() {
+            mirrored = true;
             scanout.engine.mirror(pipe, (width, height), &timing);
             let port_name = (b'A' + port as u8) as char;
             let _ = core::fmt::Write::write_fmt(
                 &mut scanout.sinks,
                 format_args!("port {port_name} mirrors the first screen on pipe {pipe}\n"),
+            );
+        }
+    }
+    if let Some((port, timing)) = hdmi_screen
+        && !mirrored
+        && intel::is_display_9(function.device_id)
+        && let Some(pipe) = scanout.engine.free_pipe()
+    {
+        let mut deadline = probe.deadline(MODE_SET_MS);
+        let lit = scanout.engine.set_mode_hdmi(
+            pipe,
+            port,
+            &timing,
+            scanout.buffers[0].surface,
+            stride,
+            &mut || deadline.keep_waiting(),
+        );
+        if lit.is_ok() {
+            scanout.engine.mirror(pipe, (width, height), &timing);
+            let port_name = (b'A' + port as u8) as char;
+            let _ = core::fmt::Write::write_fmt(
+                &mut scanout.sinks,
+                format_args!("port {port_name} (hdmi) mirrors the first screen on pipe {pipe}\n"),
             );
         }
     }

@@ -24091,3 +24091,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Ice Lake's Type-C ports (the MG PHY and its PLLs, the FIA's lane assignment
   and Type-C cold), the combo PHY's drive tables (training keeps the drive the PHY was
   initialised with), and display 12 and later (Tiger Lake on: their clock routing moved).
+
+## D466 HDMI on Intel display 9: EDID over GMBUS and the HDMI PLL (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** A port whose AUX channel does not answer is asked over GMBUS, the display
+  engine's own I2C controller, on its pin pair (B, C and D are 5, 4 and 6 on display 9): an
+  index cycle at offset 0 and a 128-byte read at 0x50, four bytes a word, then a stop and the
+  pins let go however it ended. A sink that answers is listed as `hdmi`. `set_mode_hdmi`
+  lights it: the HDMI PLL's oscillator is five times the pixel clock times a divider, chosen
+  (even dividers first) to lie within 1% above or 6% below 8.4, 9.0 or 9.6 GHz, closest to
+  one; the divider splits into the PLL's P, Q and K dividers, and the oscillator is written
+  as a whole and fractional multiple of the 24 MHz reference. A free PLL (2 or 3) in HDMI mode
+  is locked and routed to the port, the transcoder takes the timing in HDMI mode at 8 bits a
+  colour, the port's buffer turns on with no link to train, then the pipe and its plane. The
+  kernel mirrors the first screen on it (D464) when no DisplayPort sink took the mirror.
+- **Not yet.** HDMI 2.0's scrambling above 340 MHz, infoframes (AVI, audio), audio, deep
+  colour, HDMI on display 11 and later, and the level shifter some boards put on the port.
