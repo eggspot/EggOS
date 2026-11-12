@@ -8,6 +8,7 @@
 //! or enters an `LC_UNIXTHREAD` program's `start` with `argc` and the vectors on the stack.
 
 use crate::appkit;
+use crate::bundled::{self, LONGEST_PATH as LONGEST_LIBRARY_PATH, Search};
 use crate::dyld_info::{self, DyldInfo, Location, Table};
 use crate::fixups::{ChainedFixups, Source};
 use crate::foundation;
@@ -20,12 +21,18 @@ use crate::macho::{
 use crate::objc;
 use crate::swift;
 use core::ffi::{c_char, c_int};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_runtime::errno::Errno;
 use eggos_runtime::startup::Startup;
 #[cfg(target_arch = "aarch64")]
 use eggos_translation_loader::install_record::LAYER_OPTION;
 
 const STANDARD_ERROR: usize = 2;
+const MOST_LIBRARY_DEPTH: usize = 16;
+const MOST_RUN_PATHS: usize = 16;
+const BUNDLED_LIBRARY: &[u8] = b"the app's library";
+
+static MISSING: AtomicUsize = AtomicUsize::new(0);
 const CANNOT_EXECUTE: i32 = 126;
 const EXECUTABLE_PATH: &[u8] = b"executable_path=";
 const LAYER_ARGUMENTS: usize = 2;
@@ -213,12 +220,11 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
             "starts at an LC_UNIXTHREAD entry, which EggOS does not run translated yet",
         ));
     }
-    for library in program.libraries() {
-        if Library::provided(library.path).is_none() && !library.weak {
-            return Err(Failure::Library(library.path));
-        }
-    }
+    let carries_libraries = program
+        .libraries()
+        .any(|library| Library::provided(library.path).is_none());
     let uses_objc = program.objc.present()
+        || carries_libraries
         || program
             .libraries()
             .any(|library| Library::provided(library.path).is_some_and(Library::is_objc));
@@ -239,6 +245,37 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     });
     if uses_appkit && !appkit::set_up() {
         return Err(Failure::Memory);
+    }
+    let executable_folder = bundled::folder_of(path.to_bytes());
+    let mut expanded = [[0u8; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS];
+    let mut run_paths: [&[u8]; MOST_RUN_PATHS] = [&[]; MOST_RUN_PATHS];
+    let run_path_count = expand_run_paths(
+        &program,
+        executable_folder,
+        executable_folder,
+        &mut expanded,
+        &mut run_paths,
+    );
+    let search = Search {
+        executable_folder,
+        loader_folder: executable_folder,
+        run_paths: &run_paths[..run_path_count],
+    };
+    let mut carried = [None; macho::MAX_LIBRARIES];
+    for (slot, library) in program.libraries().enumerate() {
+        if Library::provided(library.path).is_some() {
+            continue;
+        }
+        if translated {
+            return Err(Failure::Translation(
+                "carries its own libraries, which EggOS does not load translated yet",
+            ));
+        }
+        match load_library(library.path, &search, 0) {
+            Ok(index) => carried[slot] = Some(index),
+            Err(_) if library.weak => {}
+            Err(failure) => return Err(failure),
+        }
     }
     let fixups = match program.chained_fixups {
         Some(range) => Some(ChainedFixups::parse(&program, range).map_err(Failure::Invalid)?),
@@ -279,8 +316,8 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     };
     let mut binder = Binder {
         program: &program,
-        missing: 0,
         translated,
+        carried,
     };
     if let Some(fixups) = fixups {
         let imports = bind_imports(&mut binder, &fixups)?;
@@ -351,6 +388,21 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     if uses_objc {
         objc::run_load_methods();
     }
+    let initializer_arguments = (
+        argument_count(&startup) as c_int,
+        arguments,
+        environment,
+        apple,
+    );
+    if !translated {
+        // SAFETY: every image is mapped, bound, rebased and protected, the process is set up,
+        // and no program code has run but `+load` methods: the libraries' initializers run
+        // first, then the executable's, as dyld runs them.
+        unsafe {
+            bundled::run_initializers(initializer_arguments);
+            bundled::run_initializers_of(&program, base, initializer_arguments);
+        }
+    }
     let entry = base + program.entry as usize;
     #[cfg(target_arch = "aarch64")]
     if translated {
@@ -388,12 +440,30 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
 
 struct Binder<'p, 'a> {
     program: &'p MachO<'a>,
-    missing: usize,
     translated: bool,
+    /// For each library ordinal (from 1), the app's own library loaded for it (D409).
+    carried: [Option<usize>; macho::MAX_LIBRARIES],
 }
 
 impl<'a> Binder<'_, 'a> {
     fn address_of(&mut self, source: Source, weak: bool, name: &'a [u8]) -> Result<u64, Failure> {
+        let carried = match source {
+            Source::Library(ordinal) => ordinal
+                .checked_sub(1)
+                .and_then(|slot| self.carried.get(slot).copied().flatten()),
+            _ => None,
+        };
+        if let Some(index) = carried {
+            let found = bundled::symbol(index, name, &resolve);
+            // SAFETY: the file's mapping stays for as long as the program runs.
+            let name: &'static [u8] =
+                unsafe { core::slice::from_raw_parts(name.as_ptr(), name.len()) };
+            return match (found, weak) {
+                (Some(address), _) => Ok(address),
+                (None, true) => Ok(0),
+                (None, false) => missing_stub(BUNDLED_LIBRARY, name),
+            };
+        }
         let library = match source {
             Source::Library(ordinal) => Some(
                 self.program
@@ -409,6 +479,10 @@ impl<'a> Binder<'_, 'a> {
         let library = library.and_then(Library::provided);
         let found = library
             .and_then(|_| resolve(name))
+            .or_else(|| match source {
+                Source::Flat => bundled::search_all(name, &resolve),
+                _ => None,
+            })
             .filter(|_| !self.translated || translated_binds_natively(name));
         // SAFETY: the file's mapping stays for as long as the program runs, so the name does
         // too.
@@ -420,16 +494,168 @@ impl<'a> Binder<'_, 'a> {
                 objc::bind_missing_class(library.name(), name).ok_or(Failure::TooManyMissing)?
             }
             (None, library) => {
-                if self.missing == libsystem::MISSING_STUBS {
-                    return Err(Failure::TooManyMissing);
-                }
-                self.missing += 1;
                 let library = library.unwrap_or(Library::System);
-                libsystem::bind_missing(self.missing - 1, library.name(), name)
+                missing_stub(library.name(), name)?
             }
         })
     }
 }
+
+fn missing_stub(library: &'static [u8], name: &'static [u8]) -> Result<u64, Failure> {
+    let slot = MISSING.fetch_add(1, Ordering::AcqRel);
+    if slot >= libsystem::MISSING_STUBS {
+        return Err(Failure::TooManyMissing);
+    }
+    Ok(libsystem::bind_missing(slot, library, name))
+}
+
+fn expand_run_paths<'e>(
+    image: &MachO<'_>,
+    executable_folder: &[u8],
+    loader_folder: &[u8],
+    expanded: &'e mut [[u8; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS],
+    out: &mut [&'e [u8]; MOST_RUN_PATHS],
+) -> usize {
+    let search = Search {
+        executable_folder,
+        loader_folder,
+        run_paths: &[],
+    };
+    let mut lengths = [0usize; MOST_RUN_PATHS];
+    let mut count = 0;
+    for run_path in image.rpaths().take(MOST_RUN_PATHS) {
+        if let Some(length) = bundled::expand(run_path, &search, &mut expanded[count]) {
+            lengths[count] = length;
+            count += 1;
+        }
+    }
+    for (index, path) in expanded.iter().enumerate().take(count) {
+        out[index] = &path[..lengths[index]];
+    }
+    count
+}
+
+/// Maps the app's own library linked as `linked`, found from `search`, and the libraries it
+/// carries in turn, as dyld does: its fixups, imports and Objective-C metadata, then its
+/// protection; the index `bundled` keeps it under.
+fn load_library(
+    linked: &'static [u8],
+    search: &Search<'_>,
+    depth: usize,
+) -> Result<usize, Failure> {
+    if let Some(index) = bundled::find(linked) {
+        return Ok(index);
+    }
+    if depth > MOST_LIBRARY_DEPTH {
+        return Err(Failure::Library(linked));
+    }
+    let mut file = None;
+    let located = bundled::locate(linked, search, &mut |candidate| {
+        file = read_file(candidate).ok();
+        file.is_some()
+    });
+    let (Some((path, length)), Some(file)) = (located, file) else {
+        return Err(Failure::Library(linked));
+    };
+    let cpu = macho::host_cpu().ok_or(Failure::OtherCpus([None; 4]))?;
+    let (slice, translated) = select_slice(file, cpu)?;
+    if translated {
+        return Err(Failure::Library(linked));
+    }
+    let library = MachO::parse_library(slice).map_err(Failure::Invalid)?;
+    if library.thread_locals.is_some() {
+        return Err(Failure::Invalid(InvalidMachO(
+            "carries a library with thread-local variables, which EggOS does not load yet",
+        )));
+    }
+    let folder = bundled::folder_of(&path[..length]);
+    let mut expanded = [[0u8; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS];
+    let mut own_paths: [&[u8]; MOST_RUN_PATHS] = [&[]; MOST_RUN_PATHS];
+    let own_count = expand_run_paths(
+        &library,
+        search.executable_folder,
+        folder,
+        &mut expanded,
+        &mut own_paths,
+    );
+    let mut all_paths: [&[u8]; MOST_RUN_PATHS] = [&[]; MOST_RUN_PATHS];
+    let mut all_count = 0;
+    for run_path in own_paths[..own_count].iter().chain(search.run_paths) {
+        if all_count < MOST_RUN_PATHS {
+            all_paths[all_count] = run_path;
+            all_count += 1;
+        }
+    }
+    let own_search = Search {
+        executable_folder: search.executable_folder,
+        loader_folder: folder,
+        run_paths: &all_paths[..all_count],
+    };
+    let mut carried = [None; macho::MAX_LIBRARIES];
+    for (slot, dependency) in library.libraries().enumerate() {
+        if Library::provided(dependency.path).is_some() {
+            continue;
+        }
+        match load_library(dependency.path, &own_search, depth + 1) {
+            Ok(index) => carried[slot] = Some(index),
+            Err(_) if dependency.weak => {}
+            Err(failure) => return Err(failure),
+        }
+    }
+    let size = library.mapped_size() as usize;
+    let base = linux::map_anonymous(0, size, PROT_READ | PROT_WRITE, false)
+        .map_err(|_| Failure::Memory)?;
+    // SAFETY: a new private mapping of `size` zeroed bytes that only this library uses until
+    // its code runs.
+    let image = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, size) };
+    copy_segments(&library, slice, image);
+    let mut binder = Binder {
+        program: &library,
+        translated: false,
+        carried,
+    };
+    match library.chained_fixups {
+        Some(range) => {
+            let fixups = ChainedFixups::parse(&library, range).map_err(Failure::Invalid)?;
+            let imports = bind_imports(&mut binder, &fixups)?;
+            fixups
+                .apply(&library, image, base as u64, imports)
+                .map_err(Failure::Invalid)?;
+        }
+        None => {
+            if let Some(info) = library.dyld_info {
+                apply_dyld_info(&mut binder, info, image, base as u64)?;
+            }
+        }
+    }
+    let slide = (base as isize).wrapping_sub(library.base_address() as isize);
+    if library.objc.present() {
+        // SAFETY: the library is mapped, bound and rebased, still writable everywhere, and
+        // none of its code has run.
+        unsafe { objc::register_image(slide, &library.objc) }.map_err(Failure::Invalid)?;
+    }
+    protect(&library, base)?;
+    let slid = |section: crate::macho::SectionRange| {
+        (
+            base + (section.address - library.base_address()) as usize,
+            section.size as usize,
+        )
+    };
+    objc::exception::add_image(
+        base,
+        size,
+        library.unwind_info.map(slid),
+        library.eh_frame.map(slid),
+    );
+    bundled::add(bundled::Image {
+        linked,
+        base,
+        macho: library,
+        dependencies: carried,
+    })
+    .ok_or(Failure::Memory)
+}
+
 
 #[cfg(target_arch = "aarch64")]
 fn translated_binds_natively(name: &[u8]) -> bool {

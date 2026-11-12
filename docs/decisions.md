@@ -23143,3 +23143,31 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** `std::bad_cast` and `std::bad_typeid` thrown, ambiguous-base and
   non-public-source checks in `__dynamic_cast` (it takes the first public match), and
   UDCalc, which needs its bundled Sparkle framework loaded (D409).
+
+## D409 An app's own libraries on macOS: frameworks and dylibs by `@rpath`, and initializers (batch part 16's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: dyld's documented search for `@rpath`, `@executable_path` and `@loader_path`, the export trie's format in `<mach-o/loader.h>`, and the order dyld runs initializers in)
+
+- **Question.** The macOS layer bound imports only to the libraries it provides itself, so an
+  app that carries a framework in its bundle (UDCalc's Sparkle, and most real Mac apps)
+  could not start; and no image's initializers (C++ static constructors,
+  `__attribute__((constructor))`) ran at all.
+- **Decision.** `macho.rs` parses libraries (`MH_DYLIB`, `MH_BUNDLE`) as well as
+  executables, with their export trie, run paths (`LC_RPATH`) and initializer sections
+  (`__mod_init_func`, `__init_offsets`). A library the layer does not provide is looked for
+  as dyld looks: `@rpath/` through the run paths of the image that links it and of the
+  images above it, `@executable_path/` and `@loader_path/` expanded, any other path as it
+  is (`bundled.rs`). Each is mapped like the executable, its own libraries first: its
+  chained fixups or `LC_DYLD_INFO` opcodes, its imports bound to the layer or to the other
+  carried libraries, its Objective-C metadata registered before the executable's (an app's
+  class may subclass a framework's), its unwind tables added, its pages protected. Imports
+  from a carried library are found in its export trie (`export_trie.rs`, host-tested):
+  offsets from its header, absolute symbols, re-exports followed to another library or the
+  layer, and a resolver's stub; a flat-namespace import that the layer lacks is looked for
+  in every carried library. Missing symbols share one table of stubs across images.
+- **Initializers** run after `+load`, before `main`: every carried library's, in the order
+  they were loaded (so dependencies first), then the executable's, each called with
+  `argc`, `argv`, `envp` and the Apple strings, as dyld calls them.
+- **Not yet.** Libraries of translated (x86_64 on Arm) programs and a translated program's
+  initializers; thread-local variables in a carried library; `dlopen` of an app's library at
+  run time; `LC_LOAD_UPWARD_DYLIB` cycles beyond the depth limit; two-level namespace
+  checks for a symbol exported twice; code signatures (ignored, as everywhere in the
+  layer).

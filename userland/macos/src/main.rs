@@ -49,6 +49,11 @@ mod dyld_info;
     test,
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
+mod export_trie;
+#[cfg(any(
+    test,
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 mod fixups;
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 use eggos_c_format as format;
@@ -88,6 +93,8 @@ mod raising_methods;
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod spawn_actions;
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
+mod bundled;
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod start;
 #[cfg(any(

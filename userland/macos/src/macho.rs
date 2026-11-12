@@ -43,6 +43,11 @@ const SEGMENT_ALIGNMENT: u64 = 4096;
 const LC_REQ_DYLD: u32 = 0x8000_0000;
 const SECTION_SIZE: usize = 80;
 const SECTION_TYPE: u32 = 0xff;
+const S_MOD_INIT_FUNC_POINTERS: u32 = 0x09;
+const S_INIT_FUNC_OFFSETS: u32 = 0x16;
+const MH_DYLIB: u32 = 6;
+const MH_BUNDLE: u32 = 8;
+const MAX_RPATHS: usize = 8;
 const S_THREAD_LOCAL_REGULAR: u32 = 0x11;
 const S_THREAD_LOCAL_ZEROFILL: u32 = 0x12;
 const MAX_THREAD_LOCAL_SIZE: u64 = 16 << 20;
@@ -376,6 +381,16 @@ pub struct MachO<'a> {
     pub bytes: &'a [u8],
     pub cpu: Cpu,
     pub pie: bool,
+    /// Whether it is a library (`MH_DYLIB` or `MH_BUNDLE`) rather than an executable (D409).
+    pub library: bool,
+    /// Its export trie, a library's symbols (D409).
+    pub exports: Option<Range>,
+    rpaths: [Option<&'a [u8]>; MAX_RPATHS],
+    rpath_count: usize,
+    /// Its initializers: `__mod_init_func`'s pointers (D409).
+    pub initializers: Option<SectionRange>,
+    /// Its initializers as 32-bit offsets from the header (`__init_offsets`, D409).
+    pub initializer_offsets: Option<SectionRange>,
     segments: [Segment; MAX_SEGMENTS],
     segment_count: usize,
     segment_commands: usize,
@@ -396,16 +411,37 @@ pub struct MachO<'a> {
 impl<'a> MachO<'a> {
     /// Parses and checks the executable in `bytes` (one slice).
     pub fn parse(bytes: &'a [u8]) -> Result<Self, InvalidMachO> {
+        Self::parse_as(bytes, false)
+    }
+
+    /// Parses and checks the library (`MH_DYLIB` or `MH_BUNDLE`) in `bytes` (one slice), as an
+    /// app's own framework is (D409).
+    pub fn parse_library(bytes: &'a [u8]) -> Result<Self, InvalidMachO> {
+        Self::parse_as(bytes, true)
+    }
+
+    /// The paths the image adds to the search for `@rpath/` libraries (`LC_RPATH`).
+    pub fn rpaths(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
+        self.rpaths[..self.rpath_count].iter().flatten().copied()
+    }
+
+    fn parse_as(bytes: &'a [u8], library: bool) -> Result<Self, InvalidMachO> {
         let invalid = InvalidMachO;
         if u32_at(bytes, 0) != Some(MH_MAGIC_64) {
             return Err(invalid("not a 64-bit Mach-O file"));
         }
         let field = |offset| u32_at(bytes, offset).ok_or(invalid("truncated header"));
         let cpu = Cpu::of(field(4)?, field(8)?);
-        if field(12)? != MH_EXECUTE {
-            return Err(invalid(
-                "not an executable (a library, bundle or object file)",
-            ));
+        let file_type = field(12)?;
+        let fits = match library {
+            true => file_type == MH_DYLIB || file_type == MH_BUNDLE,
+            false => file_type == MH_EXECUTE,
+        };
+        if !fits {
+            return Err(invalid(match library {
+                true => "not a library (an executable or object file)",
+                false => "not an executable (a library, bundle or object file)",
+            }));
         }
         let command_count = field(16)? as usize;
         let commands_size = field(20)? as usize;
@@ -417,7 +453,13 @@ impl<'a> MachO<'a> {
         let mut parsed = Self {
             bytes,
             cpu,
-            pie: flags & MH_PIE != 0,
+            pie: library || flags & MH_PIE != 0,
+            library,
+            exports: None,
+            rpaths: [None; MAX_RPATHS],
+            rpath_count: 0,
+            initializers: None,
+            initializer_offsets: None,
             segments: [Segment::default(); MAX_SEGMENTS],
             segment_count: 0,
             segment_commands: 0,
@@ -473,12 +515,15 @@ impl<'a> MachO<'a> {
                     parsed.chained_fixups = Some(range_in(command, bytes.len())?);
                 }
                 command::DYLD_EXPORTS_TRIE => {
-                    range_in(command, bytes.len())?;
+                    parsed.exports = Some(range_in(command, bytes.len())?);
                 }
                 command::DYLD_INFO | command::DYLD_INFO_ONLY => {
                     let size = bytes.len();
                     range_at(command, 24, size)?;
-                    range_at(command, 40, size)?;
+                    let exports = range_at(command, 40, size)?;
+                    if parsed.exports.is_none() && exports.size > 0 {
+                        parsed.exports = Some(exports);
+                    }
                     parsed.dyld_info = Some(DyldInfo {
                         rebase: range_at(command, 8, size)?,
                         bind: range_at(command, 16, size)?,
@@ -499,7 +544,14 @@ impl<'a> MachO<'a> {
                         return Err(invalid("is encrypted"));
                     }
                 }
-                command::RPATH | command::VERSION_MIN_MACOSX => {}
+                command::RPATH => {
+                    let path = string_in(command, 8).ok_or(invalid("bad run path"))?;
+                    if let Some(slot) = parsed.rpaths.get_mut(parsed.rpath_count) {
+                        *slot = Some(path);
+                        parsed.rpath_count += 1;
+                    }
+                }
+                command::VERSION_MIN_MACOSX => {}
                 other if other & LC_REQ_DYLD != 0 && !is_known_optional(other) => {
                     return Err(invalid("needs a load command EggOS does not know"));
                 }
@@ -508,6 +560,7 @@ impl<'a> MachO<'a> {
             at = end;
         }
         parsed.entry = match (entry, thread_pc) {
+            (None, None) if library => 0,
             (Some(offset), None) => offset,
             (None, Some(pc)) => {
                 parsed.start = Start::Thread;
@@ -552,6 +605,16 @@ impl<'a> MachO<'a> {
         for index in 0..sections {
             let at = SEGMENT_COMMAND_SIZE + index * SECTION_SIZE;
             let kind = u32_at(command, at + 64).unwrap_or(0) & SECTION_TYPE;
+            if kind == S_MOD_INIT_FUNC_POINTERS || kind == S_INIT_FUNC_OFFSETS {
+                let range = Some(SectionRange {
+                    address: u64_at(command, at + 32).unwrap_or(0),
+                    size: u64_at(command, at + 40).unwrap_or(0),
+                });
+                match kind == S_MOD_INIT_FUNC_POINTERS {
+                    true => self.initializers = range,
+                    false => self.initializer_offsets = range,
+                }
+            }
             if kind == S_THREAD_LOCAL_REGULAR || kind == S_THREAD_LOCAL_ZEROFILL {
                 let address = u64_at(command, at + 32).unwrap_or(0);
                 let size = u64_at(command, at + 40).unwrap_or(0);
@@ -676,7 +739,7 @@ impl<'a> MachO<'a> {
         if !self.pie && text.vmaddr < SEGMENT_ALIGNMENT {
             return Err(invalid("a fixed-address program at address 0"));
         }
-        let entry_in_code = segments.iter().any(|segment| {
+        let entry_in_code = self.library || segments.iter().any(|segment| {
             segment.initprot & VM_PROT_EXECUTE != 0
                 && self.entry >= segment.fileoff
                 && self.entry < segment.fileoff + segment.filesize
