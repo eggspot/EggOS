@@ -949,7 +949,22 @@ fn install<F: Files, C: Console>(
         }
         let mut shown = u64::MAX;
         let installing = messages::installing(component);
-        let installed = manager::install(files, store, component, &mut |copied, total| {
+        let name = component.name.clone();
+        let installed = manager::install_reporting(files, store, component, &mut |files, copied, total| {
+            if crate::state::cancel_requested(files) {
+                return false;
+            }
+            crate::state::record_job(
+                files,
+                &crate::state::Job {
+                    pid,
+                    kind: "installing".into(),
+                    name: name.clone(),
+                    phase: "copying".into(),
+                    done: copied,
+                    total,
+                },
+            );
             let percent = copied.saturating_mul(100) / total.max(1);
             if terminal && percent != shown {
                 shown = percent;
@@ -961,6 +976,7 @@ fn install<F: Files, C: Console>(
             }
             true
         });
+        crate::state::end_job(files);
         if !json {
             out.console.write_output(b"\n");
         }

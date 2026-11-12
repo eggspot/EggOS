@@ -685,6 +685,17 @@ pub fn install<F: Files>(
     component: &Component,
     progress: &mut dyn FnMut(u64, u64) -> bool,
 ) -> Result<(), Failure> {
+    install_reporting(files, store, component, &mut |_, done, total| progress(done, total))
+}
+
+/// [`install`], with the file system handed to `progress`, so a job can record its bytes and
+/// look for a request to cancel as it copies (D453).
+pub fn install_reporting<F: Files>(
+    files: &mut F,
+    store: &Store,
+    component: &Component,
+    progress: &mut dyn FnMut(&mut F, u64, u64) -> bool,
+) -> Result<(), Failure> {
     prepare_folders(files)?;
     tidy(files);
     let total = component.size_bytes();
@@ -727,7 +738,7 @@ fn copy_component<F: Files>(
     component: &Component,
     staging: &str,
     total: u64,
-    progress: &mut dyn FnMut(u64, u64) -> bool,
+    progress: &mut dyn FnMut(&mut F, u64, u64) -> bool,
 ) -> Result<(), Failure> {
     let source = files
         .open(store.path.as_bytes())
@@ -740,9 +751,9 @@ fn copy_component<F: Files>(
         if result.is_err() {
             break;
         }
-        result = copy_file(files, source, file, &root, &mut buffer, &mut |_, piece| {
+        result = copy_file(files, source, file, &root, &mut buffer, &mut |files, piece| {
             done += piece;
-            progress(done, total)
+            progress(files, done, total)
         })
         .map_err(|failure| match failure {
             Failure::Damaged(_) => {

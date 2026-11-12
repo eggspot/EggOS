@@ -23882,3 +23882,16 @@ the license, by an explicit instruction recorded here.
   read, and UIKit's first classes (`UIApplicationMain`, `UIWindow`, `UIView`,
   `UIViewController`) over the toolkit, as AppKit's were (D17's iOS apps distributed outside
   the App Store).
+
+## D453 `component install` reports as a job and stops when asked (components-v0.5.md section 6's backend, ask 1 for install; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Done.** `manager::install_reporting` hands the file system to the copy's progress, as
+  updates' already did (D299), and `install` keeps its old shape over it. `component install`
+  now records each component's copy in `/run/eggos/component-job` (`installing`, its name,
+  `copying`, bytes done of total), stops at its next piece when `component cancel` asked
+  (the staged copy deleted, nothing installed: `Cancelled.`), and clears the job when each
+  component ends; `component list` shows the row `installing 42 %` to any front-end, so an
+  install the CLI started is visible, and cancellable, from Settings.
+- **Next.** The Components pane starting installs and removes as `/bin/component` children
+  (`ComponentJob::Install` and `Remove`) instead of in its window's tick, its bar and
+  `Cancel` read from the job file, and `Finishing...` while the copy is moved into place.
