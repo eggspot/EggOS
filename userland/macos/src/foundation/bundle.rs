@@ -19,6 +19,7 @@ use crate::objc::{Runtime, methods, sel, send, send2};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const INFO_PLIST: &[u8] = b"/Contents/Info.plist";
+const IOS_INFO_PLIST: &[u8] = b"/Info.plist";
 const RESOURCES: &[u8] = b"/Contents/Resources";
 const OWN_ICON: &[u8] = b"/app.icon";
 const LARGEST_INFO: usize = 64 * 1024;
@@ -89,11 +90,16 @@ fn joined(first: &[u8], second: &[u8], out: &mut [u8; LONGEST_PATH]) -> Option<u
 }
 
 fn read_info() -> &'static [u8] {
-    let Some(bundle) = info_plist::bundle_path(executable_path()) else {
-        return b"";
+    let executable = executable_path();
+    let (bundle, plist) = match info_plist::bundle_path(executable) {
+        Some(bundle) => (bundle, INFO_PLIST),
+        None => match info_plist::ios_bundle_path(executable) {
+            Some(bundle) => (bundle, IOS_INFO_PLIST),
+            None => return b"",
+        },
     };
     let mut path = [0u8; LONGEST_PATH];
-    let Some(length) = joined(bundle, INFO_PLIST, &mut path) else {
+    let Some(length) = joined(bundle, plist, &mut path) else {
         return b"";
     };
     let Ok(fd) = linux::open(&path[..=length], linux::O_RDONLY | linux::O_CLOEXEC, 0) else {
@@ -118,7 +124,8 @@ fn read_info() -> &'static [u8] {
     &bytes[..filled]
 }
 
-fn info_plist_bytes() -> &'static [u8] {
+/// The bundle's `Info.plist` as read, an XML or binary property list; empty without one.
+pub fn info_plist_bytes() -> &'static [u8] {
     let address = INFO_ADDRESS.load(Ordering::Acquire);
     if address != 0 {
         // SAFETY: a permanent block `read_info` filled, published below.

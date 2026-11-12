@@ -452,9 +452,9 @@ pub fn accepts_first_responder(view: Id) -> bool {
 
 pub fn define(runtime: &mut Runtime) -> bool {
     let responder = methods![
-        "mouseDown:" => nothing_with,
-        "mouseUp:" => nothing_with,
-        "mouseDragged:" => nothing_with,
+        "mouseDown:" => crate::uikit::touches_began,
+        "mouseUp:" => crate::uikit::touches_ended,
+        "mouseDragged:" => crate::uikit::touches_moved,
         "mouseMoved:" => nothing_with,
         "rightMouseDown:" => nothing_with,
         "rightMouseUp:" => nothing_with,

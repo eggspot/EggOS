@@ -29,6 +29,14 @@ pub fn bundle_path(executable: &[u8]) -> Option<&[u8]> {
     (!name.is_empty() && !name.contains(&b'/') && bundle.ends_with(BUNDLE_SUFFIX)).then_some(bundle)
 }
 
+/// The bundle folder of the program at `executable` when it is an iOS app's, whose bundle is
+/// flat: `<bundle>.app/<name>`, with `Info.plist` beside the program (D501).
+pub fn ios_bundle_path(executable: &[u8]) -> Option<&[u8]> {
+    let slash = executable.iter().rposition(|&byte| byte == b'/')?;
+    let (bundle, name) = (&executable[..slash], &executable[slash + 1..]);
+    (!name.is_empty() && bundle.ends_with(BUNDLE_SUFFIX)).then_some(bundle)
+}
+
 /// Calls `each` with every key of the top-level dictionary whose value is a string, and that
 /// value as UTF-8, from an XML or a binary property list (values longer than `scratch` are
 /// skipped).
@@ -89,6 +97,15 @@ mod tests {
         let mut count = 0;
         for_each_string(PLIST, &mut small, |_, _| count += 1);
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn an_ios_program_sits_at_its_bundle_s_top() {
+        assert_eq!(
+            ios_bundle_path(b"/Applications/Notes/Notes.app/Notes"),
+            Some(&b"/Applications/Notes/Notes.app"[..])
+        );
+        assert_eq!(ios_bundle_path(b"/usr/bin/hello"), None);
     }
 
     #[test]

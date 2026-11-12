@@ -24719,3 +24719,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Other resource types (drawables, dimensions, colours, styles), configurations
   beyond the default, `ConstraintLayout`'s constraints and other layouts' rules, text input
   in `EditText`, images, lists (`RecyclerView`), fragments, more activities and intents.
+
+## D501 iOS apps, part 2: scenes, touches and target-action (M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** UIKit in the macOS layer (D473) runs apps written for scenes and touches:
+  - **Scenes.** The bundle's `Info.plist` is read from an iOS app's flat bundle too
+    (`<name>.app/Info.plist` beside the program). When it names a scene delegate
+    (`UIApplicationSceneManifest`, the first application-role configuration), after the app
+    delegate's launch `UIApplicationMain` makes a window scene and its session, makes the
+    delegate and sends it `scene:willConnectToSession:options:`, then
+    `sceneWillEnterForeground:` and `sceneDidBecomeActive:` when it answers them.
+    `-[UIWindow initWithWindowScene:]` makes a 390x844 window, the size of a current phone's
+    screen in points, and `windowScene` answers the scene. Class names given as Swift's
+    `Module.Class` (the app delegate's too) are found under their Objective-C names
+    (`_TtC5MyApp13SceneDelegate`).
+  - **Touches.** `UITouch` is a class of the layer's: its place in any view
+    (`locationInView:` through `convertPoint:fromView:`), phase, view and window. A view's
+    `mouseDown:`, `mouseDragged:` and `mouseUp:` that nothing overrides send
+    `touchesBegan:withEvent:`, `touchesMoved:withEvent:` and `touchesEnded:withEvent:` with a
+    set of one touch when the view's class answers them; AppKit apps' views do not, so nothing
+    changes for them. `UIEvent` is the event.
+  - **Controls.** `UIControl` stands on `NSControl` and `UIImageView` on `NSImageView`;
+    `addTarget:action:forControlEvents:` for a touch up inside or a primary action sets the
+    control's target and action, so a button's tap calls the app as AppKit's click does.
+- **Not yet.** Several touches at once (multi-touch screens), gesture recognizers, Auto Layout,
+  iOS storyboards and view controllers' presentation, safe areas, and the scene's own
+  `UIScreen` and size classes.

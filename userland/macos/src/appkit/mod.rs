@@ -219,6 +219,7 @@ pub fn set_up() -> bool {
             && controllers::define(runtime)
             && storyboard::define(runtime)
             && panel::define(runtime)
+            && crate::uikit::define(runtime)
     });
     defined && drawing::set_up()
 }

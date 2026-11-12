@@ -310,7 +310,7 @@ mod runtime {
         constants::string(index)
     }
 
-    pub use super::bundle::{LONGEST_PATH, app_name, info_string, own_icon_path};
+    pub use super::bundle::{LONGEST_PATH, app_name, info_plist_bytes, info_string, own_icon_path};
     pub use super::constants::{
         APPLICATION_DID_FINISH_LAUNCHING, APPLICATION_WILL_FINISH_LAUNCHING,
         APPLICATION_WILL_TERMINATE, PASTEBOARD_NAME_GENERAL, PASTEBOARD_TYPE_STRING,
