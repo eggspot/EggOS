@@ -16,3 +16,4 @@ pub mod nvidia_falcon;
 pub mod nvidia_fwsec;
 pub mod nvidia_gsp;
 pub mod nvidia_gsp_boot;
+pub mod nvidia_gsp_queue;

@@ -18,6 +18,7 @@ use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
 use eggos_drivers::io::RegisterIo;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_drivers::gpu::nvidia_gsp_boot::{self, SharedMemory, SystemImages, WprLayout};
+use eggos_drivers::gpu::nvidia_gsp_queue::{self, Queues, SequencerStep, SystemInfo};
 use eggos_drivers::dma::DmaMemory;
 use super::dma::DmaRegion;
 use eggos_hal::PhysicalRange;
@@ -49,6 +50,10 @@ const LARGEST_GSP_FILE: u64 = 64 << 20;
 const GSP_FILE_RETRY: core::time::Duration = core::time::Duration::from_secs(10);
 const GSP_POLLS: u32 = 50_000_000;
 const PAGED_CHUNK_BYTES: usize = 4 << 20;
+const CONFIG_MIRROR: (u32, u32) = (0x8_8000, 0x1000);
+const USER_ADDRESS_TOP: u64 = 0x7fff_ffff_f000;
+const FRAMEBUFFER_BAR: usize = 1;
+const INSTANCE_MEMORY_BAR: usize = 3;
 
 struct GspTarget {
     registers: usize,
@@ -57,6 +62,7 @@ struct GspTarget {
     family: &'static str,
     fb_bytes: u64,
     bios_start: u64,
+    system: SystemInfo,
 }
 
 static GSP_TARGET: SpinLock<Option<GspTarget>> = SpinLock::new(None);
@@ -135,7 +141,18 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
             (Some(name), Some(family)) if chip.runs_gsp() => {
                 let _ = write!(line, " chip {name} gsp nvidia/{name}/gsp ({family})");
                 if wpr2_ready && chip.architecture() >= AMPERE {
-                    match keep_gsp_target(probe, node.regions[0], name, family) {
+                    let a = function.address;
+                    let system = SystemInfo {
+                        registers: node.regions[0].start,
+                        framebuffer: node.regions[FRAMEBUFFER_BAR].start,
+                        instance_memory: node.regions[INSTANCE_MEMORY_BAR].start,
+                        pci_id: u64::from(a.bus) << 8
+                            | u64::from(a.device) << 3
+                            | u64::from(a.function),
+                        user_address_top: USER_ADDRESS_TOP,
+                        config_mirror: CONFIG_MIRROR,
+                    };
+                    match keep_gsp_target(probe, node.regions[0], (name, family), system) {
                         Ok(()) => line.push_str(", gsp-rm boots once its firmware is there"),
                         Err(reason) => {
                             let _ = write!(line, ", gsp-rm cannot boot: {reason}");
@@ -182,8 +199,8 @@ fn video_memory(regs: &eggos_drivers::io::Mmio) -> (u64, u64) {
 fn keep_gsp_target(
     probe: &mut dyn Probe,
     registers: PhysicalRange,
-    chip: &'static str,
-    family: &'static str,
+    (chip, family): (&'static str, &'static str),
+    system: SystemInfo,
 ) -> Result<(), &'static str> {
     let length = usize::try_from(registers.len()).map_err(|_| "BAR 0 is too large")?;
     let base = probe
@@ -200,6 +217,7 @@ fn keep_gsp_target(
         family,
         fb_bytes,
         bios_start,
+        system,
     });
     Ok(())
 }
@@ -250,12 +268,14 @@ fn paged_copy(bytes: &[u8], kept: &mut Vec<DmaRegion>) -> Result<Vec<u64>, &'sta
 /// metadata, libos's regions and the queues' shared memory; GSP's Falcon reset into RISC-V
 /// with libos's arguments in its mailboxes; SEC2's booter, signed for the fuse, run with the
 /// metadata's address, which copies GSP-RM into WPR2 and starts it; then the boot binary's
-/// version told and the RISC-V core seen running. The memory stays GSP-RM's for good.
+/// version told and the RISC-V core seen running. The memory stays GSP-RM's for good. The
+/// system information and the registry wait in the command queue before the booter runs
+/// (D523); GSP-RM's messages are then read, its CPU sequencer requests run (`delay` waits a
+/// number of microseconds), until it says it finished starting.
 fn boot_gsp(
     target: &GspTarget,
-    gsp: &[u8],
-    boot_file: &[u8],
-    booter_file: &[u8],
+    (gsp, boot_file, booter_file): (&[u8], &[u8], &[u8]),
+    delay: &mut dyn FnMut(u32),
 ) -> Result<(), &'static str> {
     let firmware = nvidia_gsp::gsp_firmware(gsp, target.family).ok_or("not a GSP firmware file")?;
     let (image_at, image_bytes) = firmware.image;
@@ -296,6 +316,23 @@ fn boot_gsp(
     let mut queues = allocate(shared.bytes as usize)?;
     let queues_address = device_address(&queues);
     shared.initialize(dma_bytes(&mut queues), queues_address);
+    // SAFETY: the region maps `len()` bytes for the CPU for good; GSP-RM reaches it too, which
+    // the queues' volatile accesses and pointer protocol allow for.
+    let queue_memory = unsafe {
+        let start = DmaMemory::as_mut_ptr(&queues) as usize;
+        eggos_drivers::io::Mmio::new(start, DmaMemory::len(&queues))
+    };
+    let mut channel = Queues::new(queue_memory, shared);
+    let system = nvidia_gsp_queue::system_info(&target.system);
+    channel
+        .send(nvidia_gsp_queue::function::SET_SYSTEM_INFO, &system)
+        .map_err(nvidia_gsp_queue::QueueError::description)?;
+    channel
+        .send(
+            nvidia_gsp_queue::function::SET_REGISTRY,
+            &nvidia_gsp_queue::registry(&nvidia_gsp_queue::DEFAULT_REGISTRY),
+        )
+        .map_err(nvidia_gsp_queue::QueueError::description)?;
     let rm_arguments = dma_copy(&shared.rm_arguments(queues_address))?;
     regions[3] = (device_address(&rm_arguments), nvidia_gsp_boot::PAGE_BYTES);
     let libos = dma_copy(&nvidia_gsp_boot::libos_arguments(&regions))?;
@@ -342,12 +379,84 @@ fn boot_gsp(
         return Err("the booter reported an error");
     }
     gsp_falcon.set_os_version(boot.app_version);
+    gsp_falcon.announce_command();
     let mut keep_waiting = polls();
     while !gsp_falcon.riscv_active() {
         if !keep_waiting() {
             return Err("GSP's RISC-V core did not start");
         }
         core::hint::spin_loop();
+    }
+    let mut keep_waiting = polls();
+    loop {
+        let message = channel
+            .receive()
+            .map_err(nvidia_gsp_queue::QueueError::description)?;
+        let Some(message) = message else {
+            if !keep_waiting() {
+                return Err("GSP-RM did not finish starting");
+            }
+            core::hint::spin_loop();
+            continue;
+        };
+        match message.function {
+            nvidia_gsp_queue::event::INIT_DONE => return Ok(()),
+            nvidia_gsp_queue::event::RUN_CPU_SEQUENCER => {
+                let steps = nvidia_gsp_queue::sequencer_steps(&message.payload)
+                    .ok_or("GSP-RM sent an unknown sequencer operation")?;
+                run_sequencer(&regs, target.length, &gsp_falcon, &steps, delay)?;
+            }
+            nvidia_gsp_queue::event::OS_ERROR_LOG => return Err("GSP-RM reported an error"),
+            _ => {}
+        }
+    }
+}
+
+/// Runs GSP-RM's CPU sequencer `steps` on BAR 0 (`length` bytes, behind `regs`) and GSP's
+/// Falcon (D523).
+fn run_sequencer(
+    regs: &eggos_drivers::io::Mmio,
+    length: usize,
+    gsp: &nvidia_falcon::Falcon<eggos_drivers::io::Mmio>,
+    steps: &[SequencerStep],
+    delay: &mut dyn FnMut(u32),
+) -> Result<(), &'static str> {
+    let place = |address: u32| {
+        let address = address as usize;
+        (address % 4 == 0 && address + 4 <= length)
+            .then_some(address)
+            .ok_or("GSP-RM's sequencer named a register outside BAR 0")
+    };
+    for step in steps {
+        match *step {
+            SequencerStep::Write { address, value } => regs.write32(place(address)?, value),
+            SequencerStep::Modify { address, mask, value } => {
+                let at = place(address)?;
+                regs.write32(at, regs.read32(at) & !mask | value);
+            }
+            SequencerStep::Poll { address, mask, value, .. } => {
+                let at = place(address)?;
+                let mut keep_waiting = polls();
+                while regs.read32(at) & mask != value {
+                    if !keep_waiting() {
+                        return Err("a register GSP-RM's sequencer waits for never changed");
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+            SequencerStep::Delay { microseconds } => delay(microseconds),
+            SequencerStep::Store { address, .. } => {
+                place(address)?;
+            }
+            SequencerStep::CoreReset => gsp
+                .reset(&mut polls())
+                .map_err(nvidia_falcon::FalconError::description)?,
+            SequencerStep::CoreStart => gsp.start(),
+            SequencerStep::CoreWaitForHalt => gsp
+                .wait_for_halt(&mut polls())
+                .map_err(nvidia_falcon::FalconError::description)?,
+            SequencerStep::CoreResume => return Err("GSP-RM asked to resume, not written yet"),
+        }
     }
     Ok(())
 }
@@ -372,9 +481,14 @@ pub fn start_gsp<P: eggos_hal::Platform>() -> bool {
             }
             crate::thread::sleep::<P>(GSP_FILE_RETRY);
         };
-        let line = match boot_gsp(&target, &gsp, &boot, &booter) {
-            Ok(()) => alloc::format!("nvidia {} gsp-rm {version} running\n", target.chip),
-            Err(reason) => alloc::format!("nvidia {} gsp-rm did not start: {reason}\n", target.chip),
+        let mut delay = |microseconds: u32| {
+            crate::thread::sleep::<P>(core::time::Duration::from_micros(microseconds.into()));
+        };
+        let line = match boot_gsp(&target, (&gsp, &boot, &booter), &mut delay) {
+            Ok(()) => alloc::format!("nvidia {} gsp-rm {version} started\n", target.chip),
+            Err(reason) => {
+                alloc::format!("nvidia {} gsp-rm did not start: {reason}\n", target.chip)
+            }
         };
         SUMMARY.lock().push_str(&line);
     })

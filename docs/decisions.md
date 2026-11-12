@@ -25147,3 +25147,26 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Turing (its booter loads through the older non-PKC path with a separate
   non-secure part), reading GSP-RM's messages (the init-done event) and sending its first
   calls, GSP-RM's logs, the unload booter for shutdown, and suspend and resume.
+
+## D523 NVIDIA's GSP boot, part 5: GSP-RM's message queues, its first calls and its start (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from NVIDIA's MIT-licensed open GPU kernel modules and nouveau's MIT-licensed r535 code)
+
+- **Decision.** `eggos_drivers::gpu::nvidia_gsp_queue` speaks GSP-RM's queues in the shared
+  memory D522 set up: elements of whole 4 KiB entries, a 48-byte header whose checksum folds the
+  element's 64-bit words to zero, a sequence number and the entry count, then the 32-byte
+  remote call header (version 3.0, `VRPC`, length, function, result) and the payload. Sending
+  writes the entries at the command queue's write pointer (wrapping, refused while GSP-RM's
+  read pointer leaves no room) and then moves the pointer; receiving reads a whole message at
+  the status queue's read pointer and hands its entries back. Accesses go through
+  `RegisterIo`, so the kernel's are volatile on the DMA memory GSP-RM shares.
+- **The first calls and the start.** Before the booter runs, the system information (BAR 0,
+  the framebuffer and instance memory BARs, the PCI function, the top of a process's address
+  space, the configuration space mirror at `0x88000`) and the registry (PCIe resets allowed,
+  configuration space saved, device id check skipped) wait in the command queue. Once GSP's
+  RISC-V core runs, the driver rings the doorbell and reads messages until "init done";
+  "run CPU sequencer" requests are run (register writes, read-modify-writes, polls, delays,
+  Falcon reset, start and wait for halt, every register checked to lie in BAR 0), an error
+  log ends the boot with an error, and other events are skipped for now.
+- **Not yet.** Replies to calls (results and continuation records), the static information
+  call, GSP-RM's object allocation and control calls, the display through them, and the
+  sequencer's resume step.
+- `nvidia_falcon` gained `start` and `wait_for_halt`, which `run` and `run_secure` now share.

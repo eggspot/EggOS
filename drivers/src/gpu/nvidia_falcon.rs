@@ -40,6 +40,7 @@ const ENGINE: usize = 0x3c0;
 const BOOT_CORE_CONTROL: usize = RISCV + 0x668;
 const RISCV_CPU_CONTROL: usize = RISCV + 0x388;
 const OS_VERSION: usize = 0x080;
+const QUEUE_HEAD: usize = 0xc00;
 const BOOT_CONFIG_VALID: u32 = 1;
 const CORE_SELECT_RISCV: u32 = 1 << 4;
 const BOOT_ROM_FETCH: u32 = 1 << 8;
@@ -180,6 +181,31 @@ impl<R: RegisterIo> Falcon<R> {
         self.write(MAILBOX_1, (arguments >> 32) as u32);
     }
 
+    /// Starts the core at its boot vector, through the control register's alias when the
+    /// engine has it enabled.
+    pub fn start(&self) {
+        match self.read(CPU_CONTROL) & ALIAS_ENABLED != 0 {
+            true => self.write(CPU_CONTROL_ALIAS, START_CPU),
+            false => self.write(CPU_CONTROL, START_CPU),
+        }
+    }
+
+    /// Waits, while `keep_waiting` allows, for the core to halt.
+    pub fn wait_for_halt(&self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), FalconError> {
+        while self.read(CPU_CONTROL) & HALTED == 0 {
+            if !keep_waiting() {
+                return Err(FalconError::DidNotHalt);
+            }
+            core::hint::spin_loop();
+        }
+        Ok(())
+    }
+
+    /// Rings GSP's command queue doorbell (D523): a new command waits.
+    pub fn announce_command(&self) {
+        self.write(QUEUE_HEAD, 0);
+    }
+
     /// Tells the RISC-V firmware the boot binary's version.
     pub fn set_os_version(&self, version: u32) {
         self.write(OS_VERSION, version);
@@ -234,16 +260,8 @@ impl<R: RegisterIo> Falcon<R> {
         self.write(MAILBOX_0, program.mailboxes.0);
         self.write(MAILBOX_1, program.mailboxes.1);
         self.write(BOOT_VECTOR, program.entry);
-        match self.read(CPU_CONTROL) & ALIAS_ENABLED != 0 {
-            true => self.write(CPU_CONTROL_ALIAS, START_CPU),
-            false => self.write(CPU_CONTROL, START_CPU),
-        }
-        while self.read(CPU_CONTROL) & HALTED == 0 {
-            if !keep_waiting() {
-                return Err(FalconError::DidNotHalt);
-            }
-            core::hint::spin_loop();
-        }
+        self.start();
+        self.wait_for_halt(keep_waiting)?;
         Ok((self.read(MAILBOX_0), self.read(MAILBOX_1)))
     }
 
@@ -327,16 +345,8 @@ impl<R: RegisterIo> Falcon<R> {
         self.write(BOOT_VECTOR, program.imem_virtual);
         self.write(MAILBOX_0, mailboxes.0);
         self.write(MAILBOX_1, mailboxes.1);
-        match self.read(CPU_CONTROL) & ALIAS_ENABLED != 0 {
-            true => self.write(CPU_CONTROL_ALIAS, START_CPU),
-            false => self.write(CPU_CONTROL, START_CPU),
-        }
-        while self.read(CPU_CONTROL) & HALTED == 0 {
-            if !keep_waiting() {
-                return Err(FalconError::DidNotHalt);
-            }
-            core::hint::spin_loop();
-        }
+        self.start();
+        self.wait_for_halt(keep_waiting)?;
         Ok((self.read(MAILBOX_0), self.read(MAILBOX_1)))
     }
 

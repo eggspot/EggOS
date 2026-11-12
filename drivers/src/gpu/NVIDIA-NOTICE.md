@@ -32,7 +32,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-## GSP-RM's boot (`nvidia_gsp_boot.rs`, D522)
+## GSP-RM's boot and queues (`nvidia_gsp_boot.rs`, D522; `nvidia_gsp_queue.rs`, D523)
 
 The WPR2 layout, the WPR metadata, radix3, libos's memory regions, the RM arguments and the
 queue headers follow NVIDIA's open GPU kernel modules (`kernel_gsp_tu102.c`,
@@ -43,3 +43,9 @@ chosen by the fuse are as nouveau's `include/nvfw/fw.h`, `include/nvfw/hs.h`,
 `nvkm/subdev/gsp/ga102.c` and `nvkm/falcon/ga100.c` describe them; those files carry the MIT
 licence, copyright Red Hat Inc. and NVIDIA Corporation, with the same terms as above. No other
 code from them or from the Linux kernel is used; EggOS's code is its own, written from them.
+
+The queue element and remote call layouts, the function and event numbers, the system
+information, registry and CPU sequencer formats (D523) follow the r535 headers of NVIDIA's open
+GPU kernel modules (`rpc_global_enums.h`, `rpc_headers.h`, `message_queue_priv.h`) as nouveau's
+MIT-licensed `nvkm/subdev/gsp/rm/r535/` files (copyright Red Hat Inc. and NVIDIA Corporation)
+use them.
