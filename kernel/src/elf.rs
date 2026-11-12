@@ -7,13 +7,44 @@
 //! use, and arithmetic that could overflow is checked too. What the program headers mean (how
 //! segments become mappings) is the loader's business ([`crate::linux::exec`]).
 //!
-//! Only 64-bit images in the kernel's own byte order: the programs it runs natively (D17)
-//! share it, so every field reads in native order, little-endian today and big-endian on the
-//! big-endian ports (D318). Formats are from the System V ABI's "Object Files" chapter (the
-//! ELF-64 specification).
+//! Only images of the kernel's own class and byte order: the programs it runs natively (D17)
+//! share them, so every field reads in native order, little-endian today and big-endian on
+//! the big-endian ports (D318), and addresses are 64-bit, or 32-bit on the 32-bit ports
+//! (D488). Formats are from the System V ABI's "Object Files" chapter (the ELF-32 and ELF-64
+//! specifications).
 
 /// `EI_DATA` of the kernel's own byte order: `ELFDATA2LSB` (1) or `ELFDATA2MSB` (2).
 const NATIVE_DATA: u8 = if cfg!(target_endian = "big") { 2 } else { 1 };
+
+/// Whether the kernel's programs are ELF-64 images; ELF-32 ones on the 32-bit ports (D488).
+pub const CLASS_64: bool = crate::linux::abi::WORD_BYTES == 8;
+
+/// `EI_CLASS` of the kernel's programs: `ELFCLASS64` (2) or `ELFCLASS32` (1).
+const NATIVE_CLASS: u8 = if CLASS_64 { 2 } else { 1 };
+
+/// Bytes of an address, an offset or a size in the kernel's class of image.
+const ADDRESS: usize = if CLASS_64 { 8 } else { 4 };
+
+mod field {
+    use super::{ADDRESS, CLASS_64};
+
+    pub const ENTRY: usize = 24;
+    pub const PROGRAM_HEADER_OFFSET: usize = ENTRY + ADDRESS;
+    pub const SECTION_HEADER_OFFSET: usize = PROGRAM_HEADER_OFFSET + ADDRESS;
+    pub const FLAGS: usize = SECTION_HEADER_OFFSET + ADDRESS;
+    pub const HEADER_SIZE: usize = FLAGS + 4;
+    pub const PROGRAM_HEADER_SIZE: usize = HEADER_SIZE + 2;
+    pub const PROGRAM_HEADER_COUNT: usize = PROGRAM_HEADER_SIZE + 2;
+
+    pub const KIND: usize = 0;
+    pub const SEGMENT_FLAGS: usize = if CLASS_64 { 4 } else { 24 };
+    pub const OFFSET: usize = if CLASS_64 { 8 } else { 4 };
+    pub const VIRT: usize = OFFSET + ADDRESS;
+    pub const PHYS: usize = VIRT + ADDRESS;
+    pub const FILE_SIZE: usize = PHYS + ADDRESS;
+    pub const MEMORY_SIZE: usize = FILE_SIZE + ADDRESS;
+    pub const ALIGN: usize = if CLASS_64 { MEMORY_SIZE + ADDRESS } else { 28 };
+}
 
 /// The `e_machine` of each architecture, and the kernel's own.
 pub mod machine {
@@ -30,6 +61,8 @@ pub mod machine {
     pub const S390: u16 = 22;
     /// SPARC V9, 64-bit (D327).
     pub const SPARCV9: u16 = 43;
+    /// 32-bit Arm (D488).
+    pub const ARM: u16 = 40;
 
     /// The machine the kernel runs on: the only one whose programs it runs natively (D17).
     pub const NATIVE: u16 = crate::linux::abi::ELF_MACHINE;
@@ -52,10 +85,11 @@ pub mod segment {
     pub const READ: u32 = 4;
 }
 
-/// The size of the file header (`Elf64_Ehdr`).
-pub const HEADER_SIZE: usize = 64;
-/// The size of a program header (`Elf64_Phdr`), the only `e_phentsize` accepted.
-pub const PROGRAM_HEADER_SIZE: usize = 56;
+/// The size of the file header (`Elf64_Ehdr`, or `Elf32_Ehdr` on the 32-bit ports).
+pub const HEADER_SIZE: usize = if CLASS_64 { 64 } else { 52 };
+/// The size of a program header (`Elf64_Phdr`, or `Elf32_Phdr`), the only `e_phentsize`
+/// accepted.
+pub const PROGRAM_HEADER_SIZE: usize = if CLASS_64 { 56 } else { 32 };
 /// The most program headers accepted: a page of them, as Linux allows, so a hostile count
 /// cannot make the loader walk far (this also refuses `PN_XNUM`'s extended count).
 pub const MAX_PROGRAM_HEADERS: u16 = (4096 / PROGRAM_HEADER_SIZE) as u16;
@@ -86,7 +120,8 @@ pub struct Elf<'a> {
     program_header_count: u16,
 }
 
-/// One program header (`Elf64_Phdr`), as read: not yet checked against the image.
+/// One program header (`Elf64_Phdr` or `Elf32_Phdr`), as read: not yet checked against the
+/// image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProgramHeader {
     pub kind: u32,
@@ -102,15 +137,18 @@ pub struct ProgramHeader {
 }
 
 impl<'a> Elf<'a> {
-    /// Checks `image`'s file header: an ELF-64 image in the kernel's byte order of `machine`, an executable
-    /// or position-independent file, with program headers of the standard size that lie
+    /// Checks `image`'s file header: an image of the kernel's class and byte order for
+    /// `machine`, an executable or position-independent file, with program headers of the standard size that lie
     /// within the image.
     pub fn parse(image: &'a [u8], machine: u16) -> Result<Self, InvalidElf> {
         if image.len() < HEADER_SIZE || image[..4] != *b"\x7fELF" {
             return Err(InvalidElf("not an ELF image"));
         }
-        if image[4] != 2 {
-            return Err(InvalidElf("not a 64-bit ELF image"));
+        if image[4] != NATIVE_CLASS {
+            return Err(InvalidElf(match CLASS_64 {
+                true => "not a 64-bit ELF image",
+                false => "not a 32-bit ELF image",
+            }));
         }
         if image[5] != NATIVE_DATA {
             return Err(InvalidElf("an ELF image in the other byte order"));
@@ -126,12 +164,12 @@ impl<'a> Elf<'a> {
         if u16_at(image, 18) != machine {
             return Err(InvalidElf("an ELF image for another machine"));
         }
-        let entry = u64_at(image, 24);
-        let program_header_offset = u64_at(image, 32);
-        if usize::from(u16_at(image, 54)) != PROGRAM_HEADER_SIZE {
+        let entry = address_at(image, field::ENTRY);
+        let program_header_offset = address_at(image, field::PROGRAM_HEADER_OFFSET);
+        if usize::from(u16_at(image, field::PROGRAM_HEADER_SIZE)) != PROGRAM_HEADER_SIZE {
             return Err(InvalidElf("program headers of an unknown size"));
         }
-        let program_header_count = u16_at(image, 56);
+        let program_header_count = u16_at(image, field::PROGRAM_HEADER_COUNT);
         if program_header_count == 0 || program_header_count > MAX_PROGRAM_HEADERS {
             return Err(InvalidElf("no program headers, or too many"));
         }
@@ -208,13 +246,13 @@ impl<'a> Elf<'a> {
             .0
             .iter()
             .map(|header| ProgramHeader {
-                kind: u32_at(header, 0),
-                flags: u32_at(header, 4),
-                offset: u64_at(header, 8),
-                virt: u64_at(header, 16),
-                file_size: u64_at(header, 32),
-                memory_size: u64_at(header, 40),
-                align: u64_at(header, 48),
+                kind: u32_at(header, field::KIND),
+                flags: u32_at(header, field::SEGMENT_FLAGS),
+                offset: address_at(header, field::OFFSET),
+                virt: address_at(header, field::VIRT),
+                file_size: address_at(header, field::FILE_SIZE),
+                memory_size: address_at(header, field::MEMORY_SIZE),
+                align: address_at(header, field::ALIGN),
             })
     }
 }
@@ -227,7 +265,7 @@ impl ProgramHeader {
     }
 }
 
-/// The little-endian `u16` at `offset` of `bytes`, which the caller has checked holds it.
+/// The native-order `u16` at `offset` of `bytes`, which the caller has checked holds it.
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
     u16::from_ne_bytes([bytes[offset], bytes[offset + 1]])
 }
@@ -238,16 +276,27 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_ne_bytes(word)
 }
 
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    let mut word = [0; 8];
-    word.copy_from_slice(&bytes[offset..offset + 8]);
-    u64::from_ne_bytes(word)
+fn address_at(bytes: &[u8], offset: usize) -> u64 {
+    match CLASS_64 {
+        true => u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap()),
+        false => u64::from(u32_at(bytes, offset)),
+    }
+}
+
+fn put_address(bytes: &mut [u8], offset: usize, value: u64) {
+    match CLASS_64 {
+        true => bytes[offset..offset + 8].copy_from_slice(&value.to_ne_bytes()),
+        false => bytes[offset..offset + 4].copy_from_slice(&(value as u32).to_ne_bytes()),
+    }
 }
 
 /// Builds small ELF images, for the loader's tests and the boot self-test that runs the HAL's
 /// test program as a Linux program: there is no file system to load one from yet (M7).
 pub mod build {
-    use super::{HEADER_SIZE, PROGRAM_HEADER_SIZE, ProgramHeader};
+    use super::{
+        HEADER_SIZE, NATIVE_CLASS, NATIVE_DATA, PROGRAM_HEADER_SIZE, ProgramHeader, field,
+        put_address,
+    };
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -268,26 +317,29 @@ pub mod build {
             .fold(table_end, usize::max);
         let mut image = vec![0u8; end];
         image[..4].copy_from_slice(b"\x7fELF");
-        image[4..7].copy_from_slice(&[2, 1, 1]);
-        image[16..18].copy_from_slice(&kind.to_le_bytes());
-        image[18..20].copy_from_slice(&machine.to_le_bytes());
-        image[20..24].copy_from_slice(&1u32.to_le_bytes());
-        image[24..32].copy_from_slice(&entry.to_le_bytes());
-        image[32..40].copy_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
-        image[52..54].copy_from_slice(&(HEADER_SIZE as u16).to_le_bytes());
-        image[54..56].copy_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_le_bytes());
-        image[56..58].copy_from_slice(&(headers.len() as u16).to_le_bytes());
+        image[4..7].copy_from_slice(&[NATIVE_CLASS, NATIVE_DATA, 1]);
+        let put_u16 = |image: &mut [u8], at: usize, value: u16| {
+            image[at..at + 2].copy_from_slice(&value.to_ne_bytes());
+        };
+        put_u16(&mut image, 16, kind);
+        put_u16(&mut image, 18, machine);
+        image[20..24].copy_from_slice(&1u32.to_ne_bytes());
+        put_address(&mut image, field::ENTRY, entry);
+        put_address(&mut image, field::PROGRAM_HEADER_OFFSET, HEADER_SIZE as u64);
+        put_u16(&mut image, field::HEADER_SIZE, HEADER_SIZE as u16);
+        put_u16(&mut image, field::PROGRAM_HEADER_SIZE, PROGRAM_HEADER_SIZE as u16);
+        put_u16(&mut image, field::PROGRAM_HEADER_COUNT, headers.len() as u16);
         for (index, header) in headers.iter().enumerate() {
             let at = HEADER_SIZE + index * PROGRAM_HEADER_SIZE;
             let entry = &mut image[at..at + PROGRAM_HEADER_SIZE];
-            entry[0..4].copy_from_slice(&header.kind.to_le_bytes());
-            entry[4..8].copy_from_slice(&header.flags.to_le_bytes());
-            entry[8..16].copy_from_slice(&header.offset.to_le_bytes());
-            entry[16..24].copy_from_slice(&header.virt.to_le_bytes());
-            entry[24..32].copy_from_slice(&header.virt.to_le_bytes());
-            entry[32..40].copy_from_slice(&header.file_size.to_le_bytes());
-            entry[40..48].copy_from_slice(&header.memory_size.to_le_bytes());
-            entry[48..56].copy_from_slice(&header.align.to_le_bytes());
+            entry[field::KIND..][..4].copy_from_slice(&header.kind.to_ne_bytes());
+            entry[field::SEGMENT_FLAGS..][..4].copy_from_slice(&header.flags.to_ne_bytes());
+            put_address(entry, field::OFFSET, header.offset);
+            put_address(entry, field::VIRT, header.virt);
+            put_address(entry, field::PHYS, header.virt);
+            put_address(entry, field::FILE_SIZE, header.file_size);
+            put_address(entry, field::MEMORY_SIZE, header.memory_size);
+            put_address(entry, field::ALIGN, header.align);
         }
         for (offset, bytes) in contents {
             image[*offset..offset + bytes.len()].copy_from_slice(bytes);

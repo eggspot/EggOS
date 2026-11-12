@@ -78,6 +78,9 @@ pub const MINIMUM_ADDRESS: u64 = 0x1_0000;
 const MAX_ALIGN: u64 = 1 << 30;
 /// [`pie_base`]'s smallest alignment.
 const PIE_ALIGN: u64 = 2 << 20;
+/// Bytes of a pointer on the program's stack: `argc`, `argv`, `envp` and the auxiliary
+/// vector's entries are each one (D488).
+const WORD: u64 = super::abi::WORD_BYTES as u64;
 
 /// Auxiliary vector types (`AT_*`, from `getauxval(3)` and the psABIs).
 pub mod auxv {
@@ -103,11 +106,12 @@ pub mod auxv {
     pub const MINSIGSTKSZ: u64 = 51;
 }
 
-/// The string `AT_PLATFORM` points to, as Linux names this machine: `x86_64` and `aarch64`;
-/// RISC-V Linux gives none, so neither does EggOS there (D188).
+/// The string `AT_PLATFORM` points to, as Linux names this machine: `x86_64`, `aarch64` and
+/// `v7l` on 32-bit Arm (D488); RISC-V Linux gives none, so neither does EggOS there (D188).
 pub const PLATFORM: Option<&[u8]> = match elf::machine::NATIVE {
     elf::machine::X86_64 => Some(b"x86_64"),
     elf::machine::AARCH64 => Some(b"aarch64"),
+    elf::machine::ARM => Some(b"v7l"),
     _ => None,
 };
 
@@ -812,7 +816,7 @@ impl InitialStack {
             argument_bytes,
             platform_bytes,
             16 + 15,
-            words.saturating_mul(8).saturating_add(15),
+            words.saturating_mul(WORD).saturating_add(15),
         ]
         .iter()
         .fold(0u64, |sum, &size| sum.saturating_add(size));
@@ -824,7 +828,7 @@ impl InitialStack {
         let arguments_at = environment_at - argument_bytes;
         let platform_at = arguments_at - platform_bytes;
         let random_at = (platform_at - 16) & !15;
-        let start = (random_at - words * 8) & !15;
+        let start = (random_at - words * WORD) & !15;
         let mut bytes = vec![0u8; (top - start) as usize];
         let mut put = |address: u64, data: &[u8]| {
             let at = (address - start) as usize;
@@ -844,8 +848,10 @@ impl InitialStack {
         }
         let mut word_at = start;
         let mut put_word = |word: u64| {
-            put(word_at, &word.to_le_bytes());
-            word_at += 8;
+            let mut bytes = [0; 8];
+            super::abi::put_word(&mut bytes, word);
+            put(word_at, &bytes[..WORD as usize]);
+            word_at += WORD;
         };
         put_word(arguments.len() as u64);
         for (list, mut address) in lists {
@@ -1475,14 +1481,14 @@ impl Strings {
         let mut count = 0;
         loop {
             let at = (count as u64)
-                .checked_mul(8)
+                .checked_mul(WORD)
                 .and_then(|offset| list.checked_add(offset))
                 .ok_or(Errno::EFAULT)?;
             let mut pointer = [0; 8];
             process
-                .read_user_memory(at, &mut pointer)
+                .read_user_memory(at, &mut pointer[..WORD as usize])
                 .map_err(|_| Errno::EFAULT)?;
-            let pointer = u64::from_ne_bytes(pointer);
+            let pointer = super::abi::word(&pointer);
             if pointer == 0 {
                 return Ok(count);
             }
@@ -1534,7 +1540,7 @@ impl Strings {
     }
 
     fn finish_string(&mut self) -> Result<(), Errno> {
-        self.charge(1 + 8)?;
+        self.charge(1 + WORD)?;
         self.ends.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         self.ends.push(self.bytes.len());
         Ok(())

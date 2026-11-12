@@ -24463,3 +24463,16 @@ the license, by an explicit instruction recorded here.
   at the second (padded on 64-bit), the size at the third, or the other way round on MIPS: 24
   bytes on 64-bit programs, 12 on 32-bit ones. `rt_sigaction`, `sigaltstack` and every signal
   frame's `uc_stack` take these sizes; the 32-bit frames themselves are D490's work.
+
+## D488 The Linux layer's word size, part 4: ELF-32 programs and the initial stack (M9, the 32-bit audit; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** The ELF reader takes images of the kernel's own class, as it already takes only
+  its own byte order: ELF-64 on the 64-bit ports, ELF-32 on RV32 and 32-bit Arm (52-byte file
+  header, 32-byte program headers whose flags come after the sizes). One table of field
+  offsets serves both, addresses read at the class's width; an image of the other class is
+  `ENOEXEC`, as Linux refuses a 64-bit program on a 32-bit kernel. `elf::build` writes the same
+  class and native byte order, so the boot self-test's program is right on every port (it wrote
+  little-endian before, wrong on the big-endian ones). On the initial stack `argc`, the `argv`
+  and `envp` pointers and each auxiliary vector entry are words of the program's width, in
+  native order; `execve` reads its pointer lists the same way and charges a word per string.
+  32-bit Arm's `AT_PLATFORM` is `v7l`, as Linux gives on ARMv7 little-endian; `e_machine` 40.
