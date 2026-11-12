@@ -12,6 +12,7 @@ mod bench;
 mod ci_artifact;
 mod cocoa_app;
 mod swift_app;
+mod udcalc_app;
 mod components;
 mod dynamic_linking;
 mod elf;
@@ -182,6 +183,11 @@ commands:
                          SHA-256), and boot the release image: install it from its .zip,
                          open it, move its player and eat the food, read its element tree,
                          open its About panel, quit with Cmd+Q, and compare the frames
+  udcalc-app --arch <arch>
+                         download UDCalc 0.2.0, a Mac calculator carrying its Sparkle
+                         framework (test data, pinned SHA-256), and boot the release image:
+                         install it, open it, type 12+30=, find 42 in its element tree, open
+                         its About panel and quit with Cmd+Q
   swift-app --arch <arch>
                          download Minesweeper, a real Swift Mac app (test data, pinned
                          SHA-256), and boot the release image: install it from its .zip,
@@ -870,6 +876,12 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("swift-app") => {
             for arch in arch()? {
                 swift_app::check(arch)?;
+            }
+            Ok(())
+        }
+        Some("udcalc-app") => {
+            for arch in arch()? {
+                udcalc_app::check(arch)?;
             }
             Ok(())
         }

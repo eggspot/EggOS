@@ -164,7 +164,8 @@ works.
 - **Known limits.** The game has no sound and no saved state, so nothing else is exercised. The
   layer's AppKit is the core of AppKit (`docs/macos-programs.md`): compiled nibs load (D232),
   but apps with table and scroll views or images, or C++ exceptions, like the runner-up UDCalc,
-  do not run yet (D233's and D234's "Not yet").
+  do not run yet (D233's and D234's "Not yet"). UDCalc's check, `cargo xtask udcalc-app`
+  (D410), is written in code-only mode and joins this table when its first run passes.
 
 ## Mousepad (Linux, GTK 3)
 

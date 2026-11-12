@@ -23171,3 +23171,20 @@ the license, by an explicit instruction recorded here.
   run time; `LC_LOAD_UPWARD_DYLIB` cycles beyond the depth limit; two-level namespace
   checks for a symbol exported twice; code signatures (ignored, as everywhere in the
   layer).
+
+## D410 UDCalc's check, `cargo xtask udcalc-app` (batch part 16's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: UDCalc's GitHub releases and license)
+
+- **Question.** D234 named UDCalc 0.2.0 (BSD-2-Clause), the runner-up of D175's research,
+  as the next Mac app once nibs and bundled frameworks load, with its own check and CI job.
+- **Decision.** `cargo xtask udcalc-app --arch <arch>` downloads
+  `UDCalc-macOS-0.2.0.zip` from the author's GitHub release (`ashalkhakov/UDCalc`), pinned
+  to the SHA-256 GitHub publishes for the asset, and boots the release kernel: `app
+  install` and `app open` (its Sparkle framework loading from the bundle through D409 and its
+  window from its nibs), `12+30=` typed on the keyboard, `wm show` finding an element named
+  or valued exactly `42`, `About UDCalc` through `wm menu --choose`, Esc, Cmd+Q, and `wm
+  list` without its window. The CI job `udcalc-app` runs it on aarch64 and x86_64; like
+  `swift-app` (D389) it stays out of `check`'s needs until its first run passes, since UDCalc
+  also needs `NSStackView`, Auto Layout and more that the first run will list.
+- **Not yet.** Its row in `docs/compatibility.md` (after the first passing run), frame
+  comparisons with a host render, and Sparkle's update check (it reaches the network; the
+  test has none).

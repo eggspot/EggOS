@@ -7,6 +7,7 @@ pub mod android_dynamic;
 pub mod autohotkey;
 pub mod cocoa_app;
 pub mod swift_app;
+pub mod udcalc_app;
 pub mod components;
 pub mod disks;
 pub mod dynamic_linking;

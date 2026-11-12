@@ -743,6 +743,50 @@ jobs:
       - name: A real Swift Mac app, Minesweeper, installs from its .zip, opens a cell, starts a new game and quits inside EggOS
         run: cargo xtask swift-app --arch ${{ matrix.arch }}
 
+  udcalc-app:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/eggspot/eggos-ci:main
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: actions/cache@v6
+        with:
+          path: target/udcalc-app
+          key: udcalc-app-${{ matrix.arch }}-${{ hashFiles('xtask/src/udcalc_app.rs') }}
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: target
+          key: target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+          restore-keys: |
+            target-${{ runner.os }}-qemu-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            target-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+
+      - name: UDCalc, a Mac calculator carrying its Sparkle framework, installs, opens, computes 12+30, shows its About panel and quits inside EggOS
+        run: cargo xtask udcalc-app --arch ${{ matrix.arch }}
+
   gtk-app:
     needs: changes
     if: needs.changes.outputs.code == 'true'

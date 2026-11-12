@@ -896,7 +896,8 @@ yet" naming what it left.
     panel's icon and credits, code written, unbuilt, D375; raising instead of re-creating,
     code written, unbuilt, D376; the alert's element tree, code written, unbuilt, D377; scroll views and tables for
     agents, code written, unbuilt, D378);
-  - part 16's rest: UDCalc on macOS (D234; an app's own frameworks and dylibs and every
+  - part 16's rest, code written, unbuilt (D234; UDCalc's check `udcalc-app`, code written,
+    unbuilt, D410; an app's own frameworks and dylibs and every
     image's initializers, code written, unbuilt, D409; a C++ test program and
     `__dynamic_cast`, code written, unbuilt, D408; C++ exceptions and the libc++abi basics, code written, unbuilt,
     D380);
