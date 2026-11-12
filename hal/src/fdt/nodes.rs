@@ -105,6 +105,12 @@ pub struct Node<'a> {
     pub msi_parent: Option<u32>,
     /// A RISC-V APLIC's raw `riscv,children`: the interrupt domains it delegates to (D532).
     pub aia_children: &'a [u8],
+    /// A `simple-framebuffer`'s `width` and `height` in pixels, `stride` in bytes and raw
+    /// `format` string (D542).
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub stride: Option<u32>,
+    pub format: &'a [u8],
 }
 
 impl<'a> Node<'a> {
@@ -135,6 +141,10 @@ impl<'a> Node<'a> {
             opal_msi_ranges: &[],
             msi_parent: None,
             aia_children: &[],
+            width: None,
+            height: None,
+            stride: None,
+            format: &[],
         }
     }
 
@@ -407,6 +417,10 @@ enum Property {
     OpalMsiRanges,
     MsiParent,
     AiaChildren,
+    Width,
+    Height,
+    Stride,
+    Format,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -433,6 +447,10 @@ fn property(name: &[u8]) -> Option<Property> {
         b"ibm,opal-msi-ranges" => OpalMsiRanges,
         b"msi-parent" => MsiParent,
         b"riscv,children" => AiaChildren,
+        b"width" => Width,
+        b"height" => Height,
+        b"stride" => Stride,
+        b"format" => Format,
         _ => return None,
     })
 }
@@ -464,6 +482,10 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::OpalMsiRanges => node.opal_msi_ranges = value,
         Property::MsiParent => node.msi_parent = cell,
         Property::AiaChildren => node.aia_children = value,
+        Property::Width => node.width = cell,
+        Property::Height => node.height = cell,
+        Property::Stride => node.stride = cell,
+        Property::Format => node.format = value,
     }
 }
 

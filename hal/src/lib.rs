@@ -344,10 +344,13 @@ pub trait Platform: 'static {
     }
 
     /// The framebuffer the firmware's graphics output left set up, when EggOS's UEFI loader
-    /// started the kernel and found one it can draw into (D236); `None` otherwise.
+    /// started the kernel and found one it can draw into (D236), else the device tree's
+    /// `simple-framebuffer` (D542); `None` otherwise.
     fn boot_framebuffer() -> Option<handoff::Framebuffer> {
         handoff::handoff::<Self>()
             .map(|handoff| handoff.framebuffer)
+            .filter(handoff::Framebuffer::is_usable)
+            .or_else(|| Self::device_tree().and_then(fdt::simple_framebuffer))
             .filter(handoff::Framebuffer::is_usable)
     }
 

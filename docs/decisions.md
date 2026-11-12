@@ -25587,3 +25587,20 @@ the license, by an explicit instruction recorded here.
   of the link's speed.
 - **Not yet.** IPv6 and UDP segmentation, receive-side coalescing
   (`GUEST_TSO4`/mergeable buffers), and segmentation on the Ethernet and Wi-Fi adapters.
+
+## D542 The device tree's `simple-framebuffer`: the screen the firmware lit on Apple silicon, Snapdragon and other Arm and RISC-V boards (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the device tree binding `simple-framebuffer.yaml`)
+
+- **Decision.** `Platform::boot_framebuffer` falls back, when no UEFI loader passed a
+  framebuffer, to the first enabled `simple-framebuffer` node of the device tree
+  (`fdt::simple_framebuffer`). That is what m1n1 leaves on Apple silicon and what U-Boot
+  leaves on Snapdragon, Rockchip, Allwinner and other boards whose GPUs are Arm Mali or
+  Qualcomm Adreno. The node gives the framebuffer's memory (`reg`), `width`, `height`,
+  `stride` in bytes and `format`. `a8r8g8b8` and `x8r8g8b8` are the kernel's BGRX, and
+  `a8b8g8r8` and `x8b8g8r8` its RGBX. The node walker now keeps those four properties. The
+  kernel's boot-framebuffer display (D236) then draws into it unchanged, so these machines
+  get the desktop at the firmware's mode before any driver of their own display engine
+  exists.
+- **Not yet.** 16-bit formats (`r5g6b5`), the framebuffer's clocks and regulators (bindings
+  may name them so the OS keeps them on; firmware leaves them on and EggOS does not turn
+  them off), and the vendors' own display engines (Apple's DCP, Qualcomm's DPU, Rockchip's
+  VOP), which mode setting and second screens need.

@@ -1268,6 +1268,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_simple_framebuffer_gives_its_memory_size_stride_and_pixel_order() {
+        let tree = |format: &[u8], status: &[u8]| {
+            let mut b = Builder::default();
+            b.begin("")
+                .cells("#address-cells", &[2])
+                .cells("#size-cells", &[2])
+                .begin("chosen")
+                .cells("#address-cells", &[2])
+                .cells("#size-cells", &[2])
+                .prop("ranges", &[])
+                .begin("framebuffer@9e000000")
+                .prop("compatible", b"simple-framebuffer\0")
+                .cells("reg", &[0, 0x9e00_0000, 0, 0x7f_8000])
+                .cells("width", &[1920])
+                .cells("height", &[1080])
+                .cells("stride", &[7680])
+                .prop("format", format)
+                .prop("status", status)
+                .end()
+                .end()
+                .end();
+            b.build()
+        };
+        let framebuffer = simple_framebuffer(&tree(b"x8r8g8b8\0", b"okay\0")).unwrap();
+        assert_eq!(framebuffer.address, 0x9e00_0000);
+        assert_eq!(framebuffer.size, 0x7f_8000);
+        assert_eq!((framebuffer.width, framebuffer.height), (1920, 1080));
+        assert_eq!(framebuffer.stride_pixels, 1920);
+        assert_eq!(framebuffer.format, crate::handoff::pixel_format::BGRX);
+        assert!(framebuffer.is_usable());
+        assert_eq!(simple_framebuffer(&tree(b"r5g6b5\0", b"okay\0")), None);
+        assert_eq!(simple_framebuffer(&tree(b"x8r8g8b8\0", b"disabled\0")), None);
+    }
+
+    #[test]
     fn a_malformed_tree_keeps_its_seeds() {
         let mut b = Builder::default();
         b.begin("").begin("chosen").prop("rng-seed", &[0xa5; 32]);
@@ -1327,6 +1362,35 @@ pub fn supervisor_aplic(blob: &[u8]) -> Option<(u64, u64)> {
                 && node.aia_children.is_empty()
         })
         .and_then(|node| node.reg_entries().next())
+}
+
+/// The framebuffer the firmware lit that `blob` describes as an enabled `simple-framebuffer`
+/// (D542), as m1n1 on Apple silicon and U-Boot on other Arm and RISC-V boards leave it: its
+/// memory, size in pixels, stride and pixel order; `None` when there is none or its pixels are
+/// not 32-bit `a8r8g8b8`, `x8r8g8b8`, `a8b8g8r8` or `x8b8g8r8`.
+pub fn simple_framebuffer(blob: &[u8]) -> Option<crate::handoff::Framebuffer> {
+    use crate::handoff::pixel_format;
+    const SIMPLE_FRAMEBUFFER: &[u8] = b"simple-framebuffer";
+    const BYTES_PER_PIXEL: u32 = 4;
+    let tree = Fdt::new(blob).ok()?;
+    let node = tree
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| node.enabled && node.is_compatible(SIMPLE_FRAMEBUFFER))?;
+    let (address, size) = node.reg_entries().next()?;
+    let format = match node.format.strip_suffix(b"\0").unwrap_or(node.format) {
+        b"a8r8g8b8" | b"x8r8g8b8" => pixel_format::BGRX,
+        b"a8b8g8r8" | b"x8b8g8r8" => pixel_format::RGBX,
+        _ => return None,
+    };
+    Some(crate::handoff::Framebuffer {
+        address,
+        size,
+        width: node.width?,
+        height: node.height?,
+        stride_pixels: node.stride? / BYTES_PER_PIXEL,
+        format,
+    })
 }
 
 /// The first PL011 UART of `blob`: its registers' physical address; the one `/chosen`'s
