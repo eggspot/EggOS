@@ -79,6 +79,7 @@ mod send_input;
 mod shell;
 mod shell_desktop;
 mod shell_menu;
+mod shell_namespace;
 mod shell_files;
 mod shell_folders;
 mod shlwapi;
@@ -251,6 +252,7 @@ const NTDLL: &[&[Export]] = &[
 const SHELL32: &[&[Export]] = &[
     shell::EXPORTS,
     shell_folders::EXPORTS,
+    shell_namespace::EXPORTS,
     shell_files::EXPORTS,
     shell_desktop::EXPORTS,
 ];

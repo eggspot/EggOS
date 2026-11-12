@@ -22864,3 +22864,35 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Thread hot keys (window 0) beyond the program's own focus, `MOD_NOREPEAT`,
   hot keys for the macOS layer (`RegisterEventHotKey`) and the toolkit, a Settings list of
   the registered hot keys.
+
+## D399 The Windows shell namespace over the file system (batch part 13's rest; M15; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (researched: Microsoft's shell namespace documentation for `ITEMIDLIST`, `IShellFolder`, `IShellItem`, `IEnumIDList`, `STRRET` and `BROWSEINFOW`)
+
+- **Question.** The layer made no item ID lists: `SHGetDesktopFolder` and
+  `SHCreateItemFromParsingName` failed and `SHBrowseForFolderW` returned as if cancelled, so
+  programs that pick a folder, or walk folders through the shell, could not.
+- **Decision.** Item ID lists hold EggOS paths, one item per name: `EG`, a flags byte (a
+  folder or not) and the name in UTF-8 (`userland/windows/src/item_lists.rs`, tested on the
+  host). An item's bytes are private to the shell that made them, so the layer's own form is
+  allowed; it keeps lists small and the path a straight walk. The empty list is the desktop,
+  whose one child is the file system's root (an item with an empty name, `C:\`, as every
+  absolute path is `C:\` in the layer). Lists live in the task allocator's blocks, so `ILFree`
+  and `CoTaskMemFree` both free them.
+- **Objects.** `SHGetDesktopFolder` and `BindToObject` give `IShellFolder`s that parse
+  Windows paths (the desktop only absolute ones), list children through `IEnumIDList` (a
+  snapshot taken when it is made; folders, files and dot-files as `SHCONTF` asks), compare
+  (folders first, then names ignoring case, whatever the column), give attributes and
+  `STRRET_WSTR` display names, and rename (`SetNameOf`, never replacing). `IShellItem`
+  (`SHCreateItemFromParsingName`, `SHCreateItemFromIDList`) gives names in every `SIGDN` form,
+  attributes, its parent, compares and binds to its folder (`BHID_SFObject`). The `IL*`
+  helpers, `SHParseDisplayName`, `SHGetPathFromIDListW` and `Ex`, `SHGetIDListFromObject`,
+  `SHBindToParent`, `SHGetSpecialFolderLocation` and `SHGetKnownFolderIDList` work on them;
+  shlwapi's `StrRetToBufW` and `StrRetToStrW` read the `STRRET`s.
+- **Folder picker.** `SHBrowseForFolderW` runs the system picker (`/bin/pick folder`, D391)
+  as the file dialogs do (D392): its title, the root list's folder as the starting place, the
+  owner disabled while it is open; it returns the chosen folder's list and its name in
+  `pszDisplayName`.
+- **Not yet.** Shell views (`CreateViewObject`), context menus, data objects and icons
+  (`GetUIObjectOf`), `BindToStorage`, `IShellItemArray` and `IFileDialog`, the picker's
+  `BFFCALLBACK` (no dialog window exists to receive `BFFM_SETSELECTION`), keeping the picker
+  inside `pidlRoot`, virtual folders (This PC, Network, Recycle Bin) and other drives than
+  `C:`.

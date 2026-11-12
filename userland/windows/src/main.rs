@@ -61,6 +61,8 @@ mod image;
 #[cfg(any(test, runs_windows_programs))]
 mod ini;
 #[cfg(any(test, runs_windows_programs))]
+mod item_lists;
+#[cfg(any(test, runs_windows_programs))]
 mod known_folders;
 #[cfg(any(test, runs_windows_programs))]
 mod library;

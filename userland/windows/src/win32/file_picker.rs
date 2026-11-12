@@ -597,7 +597,7 @@ fn build(window: usize, kind: PickerKind, filter_text: &[u16]) -> Option<()> {
     Some(())
 }
 
-fn owner_root(owner: usize) -> Option<(usize, u32)> {
+pub(super) fn owner_root(owner: usize) -> Option<(usize, u32)> {
     with(|gui| {
         let root = crate::gui::windows::root_of(&gui.windows, owner)?;
         let window = gui.windows.get(root)?;
@@ -607,7 +607,7 @@ fn owner_root(owner: usize) -> Option<(usize, u32)> {
     .flatten()
 }
 
-fn set_modal(root: Option<(usize, u32)>, disabled: bool) {
+pub(super) fn set_modal(root: Option<(usize, u32)>, disabled: bool) {
     if let Some((root, _)) = root {
         with(|gui| {
             if disabled {

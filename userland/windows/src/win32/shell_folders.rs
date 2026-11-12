@@ -1,12 +1,9 @@
 //! shell32's folders (D178): `SHGetFolderPathW` and `SHGetKnownFolderPath` give Windows'
 //! special folders where EggOS keeps them (`crate::known_folders`), made on request;
-//! `SHGetMalloc` is the shell's allocator, a COM object over the layer's heap. The shell's
-//! namespace of item lists and shell folders is not there yet: the layer makes no item lists,
-//! `SHGetDesktopFolder` and `SHCreateItemFromParsingName` answer that the request is not
-//! supported, and the folder picker (`SHBrowseForFolderW`) cannot pick folders yet, so it
-//! returns as if cancelled.
+//! `SHGetMalloc` is the shell's allocator, a COM object over the layer's heap. The namespace
+//! of item lists and shell folders is `shell_namespace` (D399).
 
-use super::{Bool, FALSE, heap};
+use super::heap;
 use crate::known_folders::{self, Folder, Place};
 use crate::library::Export;
 use crate::linux::{self, AT_FDCWD};
@@ -158,35 +155,19 @@ unsafe extern "efiapi" fn sh_get_known_folder_path(
     S_OK
 }
 
-extern "efiapi" fn sh_get_path_from_id_list_w(_list: usize, _path: *mut u16) -> Bool {
-    FALSE
-}
-
-unsafe extern "efiapi" fn sh_get_desktop_folder(folder: *mut usize) -> i32 {
-    if folder.is_null() {
-        return E_POINTER;
+/// The EggOS path (no NUL) of the special folder `csidl` into `out`; its length.
+pub(super) fn special_folder(csidl: u32, out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
+    let length = folder_path(known_folders::by_csidl(csidl)?, out)?;
+    if csidl & CSIDL_FLAG_CREATE != 0 && !is_folder(&out[..length]) {
+        let _ = make_folders(&out[..length]);
     }
-    // SAFETY: the caller passes a writable `IShellFolder*`.
-    unsafe { folder.write(0) };
-    from_win32(super::error::NOT_SUPPORTED)
+    Some(length - 1)
 }
 
-unsafe extern "efiapi" fn sh_create_item_from_parsing_name(
-    _path: *const u16,
-    _context: usize,
-    _interface: *const [u8; 16],
-    item: *mut usize,
-) -> i32 {
-    if item.is_null() {
-        return E_POINTER;
-    }
-    // SAFETY: the caller passes a writable interface pointer.
-    unsafe { item.write(0) };
-    from_win32(super::error::NOT_SUPPORTED)
-}
-
-extern "efiapi" fn sh_browse_for_folder_w(_request: usize) -> usize {
-    0
+/// The EggOS path (no NUL) of the known folder `id` into `out`; its length.
+pub(super) fn known_folder(id: &[u8; 16], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
+    let length = folder_path(known_folders::by_known_folder_id(id)?, out)?;
+    Some(length - 1)
 }
 
 #[allow(dead_code, reason = "the program reads it")]
@@ -288,9 +269,5 @@ unsafe extern "efiapi" fn sh_get_malloc(malloc: *mut usize) -> i32 {
 pub(super) const EXPORTS: &[Export] = exports![
     b"SHGetFolderPathW" => sh_get_folder_path_w,
     b"SHGetKnownFolderPath" => sh_get_known_folder_path,
-    b"SHGetPathFromIDListW" => sh_get_path_from_id_list_w,
-    b"SHGetDesktopFolder" => sh_get_desktop_folder,
-    b"SHCreateItemFromParsingName" => sh_create_item_from_parsing_name,
-    b"SHBrowseForFolderW" => sh_browse_for_folder_w,
     b"SHGetMalloc" => sh_get_malloc,
 ];
