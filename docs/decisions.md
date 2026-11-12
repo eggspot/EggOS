@@ -23432,3 +23432,33 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Telling a fetched file that fails its digest from an installed one (the manager
   reports both as `Damaged`), and the same for install and remove jobs, which still run in the
   window's tick (section 6).
+
+## D422 Settings on every device class, part 1: the window's shapes (docs/ux/settings-forms-v0.5.md, Fable's design; M12; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering), design by Claude Fable (D16)
+
+- **Design.** Claude Fable designed how Settings takes the phone, tablet, TV and wearable forms
+  (`docs/ux/settings-forms-v0.5.md`): two window shapes chosen by form and width (the sidebar,
+  or one page at a time below 624 px), a phone's list and pane pages with a back bar, 40 px
+  touch rows on a tablet, the TV's focus moves, a read-only wearable, and one reflow rule
+  (R1 to R10) that turns each pane's desktop layout into one column.
+- **Done (part 1, the window).** `SettingsForm` (from `shell.form_in_use` and the window's
+  size; a wearable when the longer side is 320 or less) and `shape_for` choose
+  `Shape::Sidebar { row }` or `Shape::Pages`; `set_form_factor(form, width)`, which the program
+  now calls on every resize through the toolkit's new `Application::resized`, lays the frame
+  out: the sidebar and pane as today (rows of 40 and a 40 px search on a tablet), or the list
+  page (search 48 tall across the width, rows of 56; rows of 48 and no search on a wearable)
+  and the pane page (a 56 px `dock.bg` bar with `Back` and the pane's name over the pane's
+  scroll view). Tapping or opening a row, `settings open` and `--pane` show the pane's page;
+  `Back` (the arrow, the shell's `Back`, Esc) goes from the page to the list with the row
+  focused, then clears a search, then reports `BACK_UNUSED`. On a TV, Right from the sidebar
+  moves the ring into the pane, Left with nothing to use it and Back bring it back. The
+  registry pane drills down whenever the window is in pages (D401). The toolkit gains
+  `set_row_height` for lists.
+- **Deviations.** A row's `Chosen` opens its page as `Opened` does, so on a phone the arrow
+  keys open pages too (the list cannot yet tell a tap from a key); the list rows have no icon,
+  summary or chevron yet (the design's ask 1), the TV's root padding and always-drawn ring are
+  the toolkit's own (unchanged here), and the wearable shows each pane as on a phone rather
+  than as read-only facts.
+- **Not yet (part 2).** The reflow rule R1 to R10 for each pane, the Components pane's section
+  10 and the Display pane's phone places, `pane_summary`, cards in a column, wrapping labels
+  and bottom sheets (asks 1 to 3), and the element tree's `list` `Settings` with its
+  summaries.

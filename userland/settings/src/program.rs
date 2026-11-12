@@ -42,7 +42,7 @@ use eggos_settings::network_view::NetworkRead;
 use eggos_settings::wifi_section;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, Request,
-    SetOutcome, SettingsWindow, TITLE,
+    SetOutcome, SettingsForm, SettingsWindow, TITLE,
 };
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
@@ -1318,6 +1318,15 @@ const SECOND_MS: u32 = 1000;
 impl Application<CAPACITY> for Settings {
     fn tree(&mut self) -> &mut WidgetTree<CAPACITY> {
         self.window.tree()
+    }
+
+    fn resized(&mut self, width: i32, height: i32) {
+        let form = SettingsForm::of(self.window.facts().form_in_use, width, height);
+        self.window.set_form_factor(form, width);
+    }
+
+    fn back(&mut self, _now_ms: u32) -> bool {
+        self.window.go_back()
     }
 
     fn respond(&mut self, response: Response, now_ms: u32) {

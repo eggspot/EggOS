@@ -657,7 +657,7 @@ fn a_phone_browses_one_level_a_page_and_goes_up_by_the_dot_dot_row() {
     let store = sample();
     let mut window = opened(&store);
     let widgets = ids(&window);
-    window.set_form_factor(eggos_toolkit::widget::FormFactor::Phone, 360);
+    window.set_form_factor(crate::settings_window::SettingsForm::Phone, 360);
     assert_eq!(rect(&window, widgets.keys).width, 328);
     assert_eq!(window.windows_pane().key_rows(), ["..", "  Software"]);
     window.tree().set_focus(Some(widgets.keys), 0);

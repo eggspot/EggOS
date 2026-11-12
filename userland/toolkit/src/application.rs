@@ -65,6 +65,10 @@ pub trait Application<const N: usize, const A: usize = 0> {
         false
     }
 
+    /// The window's content became `width` by `height`, after its widgets were laid out
+    /// again: the moment to change the window's shape for its new size.
+    fn resized(&mut self, _width: i32, _height: i32) {}
+
     /// Whether the window shows something for the person's eyes only now, such as a pairing
     /// code: while it does, no agent may capture its pixels (`PERSON_VIEW_ONLY`, D193).
     fn person_view_only(&self) -> bool {
@@ -312,6 +316,7 @@ pub fn answer_clipboard<const N: usize, const A: usize>(
 impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, N, A> {
     fn resize(&mut self, width: i32, height: i32) {
         self.0.tree().resize(width, height);
+        self.0.resized(width, height);
     }
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {

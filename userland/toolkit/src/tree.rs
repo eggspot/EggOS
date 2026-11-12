@@ -410,6 +410,19 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.keep_caret_visible(id);
     }
 
+    /// Gives list `id` rows `height` tall, as a window that changes its form asks.
+    pub fn set_row_height(&mut self, id: WidgetId, height: i32) {
+        if matches!(self.kind(id), Some(Kind::List(list)) if list.row_height == height) {
+            return;
+        }
+        self.change(id, |kind| {
+            if let Kind::List(list) = kind {
+                list.row_height = height;
+            }
+        });
+        self.layout();
+    }
+
     /// Shows progress bar `id` with `permille` of it done.
     pub fn set_progress(&mut self, id: WidgetId, permille: u16) {
         if matches!(self.kind(id), Some(Kind::Progress { permille: shown }) if *shown == permille) {

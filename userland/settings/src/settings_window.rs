@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 207
+pub const CAPACITY: usize = 210
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -59,6 +59,18 @@ pub const CAPACITY: usize = 207
 
 const SIDEBAR_WIDTH: i32 = 176;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
+/// Below this window width the sidebar gives way to pages (docs/ux/settings-forms-v0.5.md 1):
+/// the sidebar and the narrowest pane the desktop layouts were drawn for.
+pub const PAGES_BELOW: i32 = 624;
+const SIDEBAR_ROW_TOUCH: i32 = 40;
+const TOUCH_LIST_TOP: i32 = 56;
+const PAGE_ROW: i32 = 56;
+const PAGE_LIST_TOP: i32 = 64;
+const PAGE_SEARCH: (i32, i32, i32) = (16, 8, 48);
+const PAGE_BAR: i32 = 56;
+const WEARABLE_ROW: i32 = 48;
+const WEARABLE_BAR: i32 = 48;
+const BAR_TITLE: (i32, i32) = (56, 20);
 const LIST_TOP: i32 = 44;
 const SIDEBAR_ROW: i32 = 32;
 const PADDING: i32 = 16;
@@ -662,6 +674,80 @@ struct Widgets {
     keyboard_line: WidgetId,
 }
 
+/// The device class Settings is shown on (docs/ux/settings-forms-v0.5.md 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsForm {
+    #[default]
+    Desktop,
+    Tablet,
+    Phone,
+    Tv,
+    Wearable,
+}
+
+impl SettingsForm {
+    /// The form for `shell.form_in_use` (`GET_FORM`'s numbering, [`crate::facts::FORMS_IN_USE`])
+    /// on a window `width` by `height`: a wearable when its longer side is 320 or less.
+    pub fn of(form_in_use: usize, width: i32, height: i32) -> Self {
+        if width.max(height) <= 320 {
+            return Self::Wearable;
+        }
+        match form_in_use {
+            1 => Self::Tablet,
+            2 => Self::Phone,
+            3 => Self::Tv,
+            _ => Self::Desktop,
+        }
+    }
+
+    fn toolkit(self) -> eggos_toolkit::widget::FormFactor {
+        use eggos_toolkit::widget::FormFactor;
+        match self {
+            Self::Desktop | Self::Tablet => FormFactor::Desktop,
+            Self::Phone => FormFactor::Phone,
+            Self::Tv => FormFactor::Tv,
+            Self::Wearable => FormFactor::Wearable,
+        }
+    }
+}
+
+/// How the window is laid out: the sidebar beside the pane with rows of `row`, or one page at
+/// a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Sidebar { row: i32 },
+    Pages,
+}
+
+/// The shape for `form` in a window `width` wide.
+pub fn shape_for(form: SettingsForm, width: i32) -> Shape {
+    match form {
+        SettingsForm::Phone | SettingsForm::Wearable => Shape::Pages,
+        SettingsForm::Tablet | SettingsForm::Desktop if width < PAGES_BELOW => Shape::Pages,
+        SettingsForm::Tablet => Shape::Sidebar {
+            row: SIDEBAR_ROW_TOUCH,
+        },
+        SettingsForm::Desktop | SettingsForm::Tv => Shape::Sidebar { row: SIDEBAR_ROW },
+    }
+}
+
+/// The page [`Shape::Pages`] shows: the list of panes, or one pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    List,
+    Pane,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    sidebar: WidgetId,
+    pane_area: WidgetId,
+    scroll: WidgetId,
+    bar: WidgetId,
+    back: WidgetId,
+    title: WidgetId,
+}
+
 /// The Settings window's widgets and what they show.
 #[derive(Debug)]
 pub struct SettingsWindow {
@@ -682,6 +768,10 @@ pub struct SettingsWindow {
     windows_layer: bool,
     facts: Facts,
     pane: usize,
+    frame: Frame,
+    form: SettingsForm,
+    shape: Shape,
+    page: Page,
 }
 
 fn every_pane_but_windows() -> u32 {
@@ -865,6 +955,32 @@ impl SettingsWindow {
             Kind::panel(Token::Menu),
         );
         let scroll = build.add(Some(pane_area), Place::fill(), Kind::scroll_view());
+        let bar = build.add(
+            Some(pane_area),
+            Place::at(0, 0, Length::Fill(0), Length::Px(PAGE_BAR)),
+            Kind::Panel {
+                fill: Some(Token::Dock),
+                border_right: None,
+            },
+        );
+        let back = build.add(
+            Some(bar),
+            Place::at(0, 0, Length::Px(PAGE_BAR), Length::Px(PAGE_BAR)),
+            Kind::button("\u{2190}", false),
+        );
+        let title = build.add(
+            Some(bar),
+            Place::at(BAR_TITLE.0, BAR_TITLE.1, Length::Fill(16), Length::Content),
+            Kind::label("", Token::Text),
+        );
+        let frame = Frame {
+            sidebar,
+            pane_area,
+            scroll,
+            bar,
+            back,
+            title,
+        };
         let panes: [WidgetId; PANES.len()] = core::array::from_fn(|pane| match pane {
             ABOUT => build.pane(scroll, Length::Fill(0)),
             DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
@@ -1221,7 +1337,13 @@ impl SettingsWindow {
             windows_layer: false,
             facts,
             pane: APPEARANCE,
+            frame,
+            form: SettingsForm::Desktop,
+            shape: Shape::Sidebar { row: SIDEBAR_ROW },
+            page: Page::List,
         };
+        window.tree.set_accessible_name(frame.back, "Back");
+        window.tree.set_shown(frame.bar, false);
         window.show_keyboard(facts.keyboard, facts.caps_lock);
         window.show_layout_set();
         window
@@ -1425,14 +1547,184 @@ impl SettingsWindow {
         &self.windows
     }
 
-    /// Tells the window the device class it is on and how wide its panes are: a phone or a
-    /// wearable browses the registry one level a page (D401).
-    pub fn set_form_factor(&mut self, form: eggos_toolkit::widget::FormFactor, pane_width: i32) {
-        use eggos_toolkit::widget::FormFactor;
-        self.tree.set_form_factor(form);
-        let drill_down = matches!(form, FormFactor::Phone | FormFactor::Wearable);
+    /// Tells the window the device class it is on and how wide it is, from `GET_FORM` and
+    /// each resize: the shape follows (docs/ux/settings-forms-v0.5.md 1), the pane and the
+    /// search text stay, and a narrow window browses the registry one level a page (D401).
+    pub fn set_form_factor(&mut self, form: SettingsForm, width: i32) {
+        self.form = form;
+        self.tree.set_form_factor(form.toolkit());
+        let shape = shape_for(form, width);
+        if shape != self.shape && shape == Shape::Pages {
+            self.page = Page::List;
+        }
+        self.shape = shape;
+        let pane_width = match shape {
+            Shape::Pages => width,
+            Shape::Sidebar { .. } => width - SIDEBAR_WIDTH,
+        };
         self.windows
-            .set_drill_down(&mut self.tree, drill_down, pane_width);
+            .set_drill_down(&mut self.tree, shape == Shape::Pages, pane_width);
+        self.lay_out_frame();
+    }
+
+    /// The window's shape now.
+    pub fn shape(&self) -> Shape {
+        self.shape
+    }
+
+    /// The page shown in [`Shape::Pages`].
+    pub fn page(&self) -> Page {
+        self.page
+    }
+
+    fn lay_out_frame(&mut self) {
+        let frame = self.frame;
+        let search = self.widgets.search;
+        let list = self.widgets.list;
+        let wearable = self.form == SettingsForm::Wearable;
+        match self.shape {
+            Shape::Sidebar { row } => {
+                let touch = row == SIDEBAR_ROW_TOUCH;
+                self.tree.set_place(
+                    frame.sidebar,
+                    Place::at(0, 0, Length::Px(SIDEBAR_WIDTH), Length::Fill(0)),
+                );
+                self.tree.set_shown(frame.sidebar, true);
+                self.tree.set_shown(search, true);
+                let height = if touch { SIDEBAR_ROW_TOUCH } else { SEARCH.3 };
+                self.tree.set_place(
+                    search,
+                    Place::at(SEARCH.0, SEARCH.1, Length::Px(SEARCH.2), Length::Px(height)),
+                );
+                let top = if touch { TOUCH_LIST_TOP } else { LIST_TOP };
+                self.tree
+                    .set_place(list, Place::at(0, top, Length::Fill(1), Length::Fill(0)));
+                self.tree.set_row_height(list, row);
+                self.tree.set_place(
+                    frame.pane_area,
+                    Place::at(SIDEBAR_WIDTH, 0, Length::Fill(0), Length::Fill(0)),
+                );
+                self.tree.set_shown(frame.pane_area, true);
+                self.tree.set_shown(frame.bar, false);
+                self.tree.set_place(frame.scroll, Place::fill());
+            }
+            Shape::Pages => {
+                let on_list = self.page == Page::List;
+                self.tree.set_place(
+                    frame.sidebar,
+                    Place::at(0, 0, Length::Fill(0), Length::Fill(0)),
+                );
+                self.tree.set_shown(frame.sidebar, on_list);
+                self.tree.set_shown(search, !wearable);
+                self.tree.set_place(
+                    search,
+                    Place::at(
+                        PAGE_SEARCH.0,
+                        PAGE_SEARCH.1,
+                        Length::Fill(PAGE_SEARCH.0),
+                        Length::Px(PAGE_SEARCH.2),
+                    ),
+                );
+                let (top, row) = match wearable {
+                    true => (0, WEARABLE_ROW),
+                    false => (PAGE_LIST_TOP, PAGE_ROW),
+                };
+                self.tree
+                    .set_place(list, Place::at(0, top, Length::Fill(0), Length::Fill(0)));
+                self.tree.set_row_height(list, row);
+                let bar = if wearable { WEARABLE_BAR } else { PAGE_BAR };
+                self.tree.set_place(
+                    frame.pane_area,
+                    Place::at(0, 0, Length::Fill(0), Length::Fill(0)),
+                );
+                self.tree.set_shown(frame.pane_area, !on_list);
+                self.tree.set_shown(frame.bar, !on_list);
+                self.tree.set_place(
+                    frame.bar,
+                    Place::at(0, 0, Length::Fill(0), Length::Px(bar)),
+                );
+                self.tree.set_place(
+                    frame.back,
+                    Place::at(0, 0, Length::Px(bar), Length::Px(bar)),
+                );
+                self.tree.set_place(
+                    frame.title,
+                    Place::at(bar, (bar - 16) / 2, Length::Fill(16), Length::Content),
+                );
+                self.tree.set_text(frame.title, PANES[self.pane]);
+                self.tree.set_place(
+                    frame.scroll,
+                    Place::at(0, bar, Length::Fill(0), Length::Fill(0)),
+                );
+            }
+        }
+    }
+
+    fn open_page(&mut self, pane: usize) -> Option<Request> {
+        let request = self.show_pane(pane);
+        if self.shape == Shape::Pages {
+            self.page = Page::Pane;
+            self.lay_out_frame();
+            self.tree.set_focus(Some(self.frame.back), 0);
+        }
+        request
+    }
+
+    /// `Back` reached the window (the arrow, the shell's `Back`, Esc with nothing else to
+    /// close): from a pane page the list shows with the pane's row focused; on the list page
+    /// a search is cleared; on a TV the ring goes from the pane back to the sidebar. Whether it
+    /// used it; if not, the window reports `BACK_UNUSED` and the shell goes on.
+    pub fn go_back(&mut self) -> bool {
+        match (self.shape, self.page) {
+            (Shape::Pages, Page::Pane) => {
+                self.page = Page::List;
+                self.lay_out_frame();
+                self.tree.set_selected(self.widgets.list, self.pane);
+                self.tree.set_focus(Some(self.widgets.list), 0);
+                true
+            }
+            (Shape::Pages, Page::List) => {
+                let searching = self
+                    .tree
+                    .text_of(self.widgets.search)
+                    .is_some_and(|text| !text.is_empty());
+                if searching {
+                    self.tree.set_text(self.widgets.search, "");
+                    self.filter();
+                }
+                searching
+            }
+            (Shape::Sidebar { .. }, _) => {
+                let in_sidebar = self
+                    .tree
+                    .focus()
+                    .is_none_or(|focus| focus == self.widgets.list || focus == self.widgets.search);
+                if self.form == SettingsForm::Tv && !in_sidebar {
+                    self.tree.set_focus(Some(self.widgets.list), 0);
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    fn tv_move(&mut self, code: u16) -> bool {
+        if self.form != SettingsForm::Tv {
+            return false;
+        }
+        let focus = self.tree.focus();
+        let on_list = focus == Some(self.widgets.list);
+        match code {
+            key::RIGHT if on_list => {
+                self.tree.move_focus(false, 0);
+                true
+            }
+            key::LEFT if !on_list && focus != Some(self.widgets.search) => {
+                self.tree.set_focus(Some(self.widgets.list), 0);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The Components pane.
@@ -1583,7 +1875,7 @@ impl SettingsWindow {
             return None;
         }
         self.tree.set_selected(self.widgets.list, pane);
-        self.show_pane(pane)
+        self.open_page(pane)
     }
 
     /// Shows the Agents pane's Network view with its pairing panel filled in with agent `id`
@@ -2128,8 +2420,13 @@ impl SettingsWindow {
                 Some(Request::SetSwitchKey(switch_key))
             }
             Response::Chosen(id, pane) | Response::Opened(id, pane) if id == widgets.list => {
-                self.show_pane(pane)
+                self.open_page(pane)
             }
+            Response::Activated(id) if id == self.frame.back => {
+                self.go_back();
+                None
+            }
+            Response::Unused { code, .. } if self.tv_move(code) => None,
             Response::Edited(id) if id == widgets.search => self.filter(),
             Response::Edited(id) if id == widgets.set_field => {
                 let typed = self
@@ -2889,5 +3186,113 @@ mod tests {
             click(&mut window, 200, 124),
             Some(Request::ChangeDisplay(DisplayChange::ReduceMotion(true)))
         );
+    }
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    fn shown_at(width: i32, height: i32, form: SettingsForm) -> SettingsWindow {
+        let mut window = SettingsWindow::new(Facts::example());
+        window.tree().resize(width, height);
+        window.set_form_factor(form, width);
+        window
+    }
+
+    #[test]
+    fn the_shape_follows_the_form_and_the_width() {
+        for (form, width) in [
+            (SettingsForm::Phone, 390),
+            (SettingsForm::Wearable, 320),
+            (SettingsForm::Tablet, 336),
+            (SettingsForm::Tablet, 508),
+            (SettingsForm::Desktop, 600),
+        ] {
+            assert_eq!(shape_for(form, width), Shape::Pages, "{form:?} {width}");
+        }
+        assert_eq!(
+            shape_for(SettingsForm::Tablet, 680),
+            Shape::Sidebar { row: 40 }
+        );
+        assert_eq!(
+            shape_for(SettingsForm::Tablet, 1024),
+            Shape::Sidebar { row: 40 }
+        );
+        assert_eq!(
+            shape_for(SettingsForm::Desktop, 640),
+            Shape::Sidebar { row: 32 }
+        );
+        assert_eq!(shape_for(SettingsForm::Tv, 960), Shape::Sidebar { row: 32 });
+        assert_eq!(SettingsForm::of(2, 390, 752), SettingsForm::Phone);
+        assert_eq!(SettingsForm::of(0, 320, 320), SettingsForm::Wearable);
+        assert_eq!(SettingsForm::of(3, 960, 540), SettingsForm::Tv);
+    }
+
+    #[test]
+    fn a_phone_shows_the_list_then_a_pane_page_and_back_returns() {
+        let mut window = shown_at(390, 752, SettingsForm::Phone);
+        let frame = window.frame;
+        assert_eq!(window.page(), Page::List);
+        assert_eq!(
+            window.widgets().rect(window.widgets.search),
+            Some(eggos_toolkit::geometry::Rect::new(16, 8, 358, 48))
+        );
+        assert!(!window.widgets().is_shown(frame.pane_area));
+        window.respond(Response::Opened(window.widgets.list, DISPLAY), 0);
+        assert_eq!(window.page(), Page::Pane);
+        assert_eq!(window.pane(), DISPLAY);
+        assert_eq!(
+            window.widgets().rect(frame.bar),
+            Some(eggos_toolkit::geometry::Rect::new(0, 0, 390, 56))
+        );
+        assert_eq!(window.widgets().text_of(frame.title), Some("Display"));
+        assert!(!window.widgets().is_shown(frame.sidebar));
+        assert!(window.go_back());
+        assert_eq!(window.page(), Page::List);
+        assert_eq!(window.widgets().focus(), Some(window.widgets.list));
+        assert!(!window.go_back());
+        window.tree().set_text(window.widgets.search, "dis");
+        assert!(window.go_back());
+        assert_eq!(window.widgets().text_of(window.widgets.search), Some(""));
+    }
+
+    #[test]
+    fn settings_open_on_a_phone_shows_the_pane_page_first() {
+        let mut window = shown_at(390, 752, SettingsForm::Phone);
+        window.open_pane(NETWORK);
+        assert_eq!(window.page(), Page::Pane);
+        assert!(window.go_back());
+        assert_eq!(window.page(), Page::List);
+    }
+
+    #[test]
+    fn a_tablet_keeps_the_sidebar_with_touch_rows_and_a_narrow_side_takes_pages() {
+        let window = shown_at(1024, 660, SettingsForm::Tablet);
+        assert_eq!(window.shape(), Shape::Sidebar { row: 40 });
+        assert_eq!(
+            window.widgets().rect(window.widgets.search),
+            Some(eggos_toolkit::geometry::Rect::new(8, 8, 160, 40))
+        );
+        let narrow = shown_at(336, 660, SettingsForm::Tablet);
+        assert_eq!(narrow.shape(), Shape::Pages);
+    }
+
+    #[test]
+    fn on_a_tv_right_enters_the_pane_and_back_returns_to_the_sidebar() {
+        let mut window = shown_at(960, 540, SettingsForm::Tv);
+        let list = window.widgets.list;
+        window.tree().set_focus(Some(list), 0);
+        window.respond(
+            Response::Unused {
+                code: key::RIGHT,
+                shift: false,
+            },
+            0,
+        );
+        assert_ne!(window.widgets().focus(), Some(list));
+        assert!(window.go_back());
+        assert_eq!(window.widgets().focus(), Some(list));
+        assert!(!window.go_back());
     }
 }
