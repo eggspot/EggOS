@@ -897,7 +897,8 @@ yet" naming what it left.
   - part 16's rest: UDCalc and a C++ test program on macOS (D234; C++ exceptions and the
     libc++abi basics, code written, unbuilt, D380);
   - part 6's screendump checks, part 7's indicator check and part 9's wheel and list-item
-    checks in QEMU (D224, D225, D227);
+    checks in QEMU (D224, D225, D227; moved to the first build-and-test pass with the other
+    QEMU-only checks, D397);
   - the desktop and built-in apps as components (D235, parts 65 and 66; the built-in apps as
     the `builtin-apps` component, code written, unbuilt, D396).
 

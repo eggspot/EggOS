@@ -22832,3 +22832,17 @@ the license, by an explicit instruction recorded here.
   the Task Manager stays in `/bin/settings`, its code woven into Settings' panes.
 - **Not yet.** The desktop as a component (part 66), the Task Manager in the component, the
   launcher hiding the apps' entries when the component is absent.
+
+## D397 QEMU-only checks carried by the leftovers are written in the first build-and-test pass (batch parts 6, 7, 9, 15, 17; code-only mode) — Decided by the code-only session (researched against the owner's code-only order of 2026-11-11 and how the existing checks are made)
+
+- **Context.** The leftovers carry checks that exist only as QEMU boot steps: part 6's
+  screendump checks of the first run (#149's section 14.6, whose timing under TCG needs a
+  tolerance), part 7's network indicator tooltip and click, part 9's sideways wheel and list
+  item selection through `wm act` in the win-controls check, `mac-views.app`'s host renders
+  and QEMU steps (D379) and Minesweeper's flag step (D389).
+- **Decision.** They are written when the code is first built and run, not in code-only mode.
+  Every existing QEMU check pins pixels, coordinates and timings read from a run (the
+  frame comparisons, the screendump offsets, the waits), and code-only mode allows no run;
+  a check written blind would fail on its first run for reasons unrelated to the feature and
+  be rewritten then. The features themselves are written and host-tested; the roadmap lines
+  name each check as moved, so the build pass finds them.
