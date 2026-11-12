@@ -24150,3 +24150,19 @@ the license, by an explicit instruction recorded here.
   memory index registers), loading DMCUB (its region windows and reset), and driving DCN's
   pipes (HUBP, DPP, OPP, OTG) at the register bases found: the roadmap's DCN item stays open
   until the per-version register places are written from AMD's published register headers.
+
+## D469 NVIDIA's chip and its GSP firmware file (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Question.** From Turing on, NVIDIA's display and the rest of the chip are driven through
+  the GPU System Processor, a RISC-V core on the GPU running NVIDIA's GSP firmware, which
+  NVIDIA publishes for open drivers. Driving the display starts with knowing the chip and
+  finding its firmware's image and signature.
+- **Decision.** `nvidia_gsp` names the chip from `PMC_BOOT_0` (BAR 0's first register: chip
+  id, architecture, whether it runs GSP, its firmware folder name such as `tu104` and its
+  signature family such as `tu10x`), and reads a GSP firmware file as the 64-bit ELF file it
+  is: `.fwimage`, `.fwversion` and the `.fwsignature_<family>` section for the chip, each
+  checked to lie inside the file. The NVIDIA probe reads `PMC_BOOT_0` and lists the chip and
+  the firmware folder the component store mirrors (`nvidia/tu104/gsp`).
+- **Not yet.** Booting GSP (the firmware's radix page tables, the booter and FWSEC handover,
+  the message queues) and its display interface: the roadmap's GSP and display-engine item
+  stays open until they are written.

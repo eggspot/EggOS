@@ -13,6 +13,7 @@ use eggos_drivers::gpu::amd_atom::AtomBios;
 use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
 use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
+use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_hal::PhysicalRange;
 
 const VENDOR_AMD: u16 = 0x1002;
@@ -27,6 +28,7 @@ static SUMMARY: SpinLock<String> = SpinLock::new(String::new());
 
 /// AMD's GPUs (PCI vendor 1002h), ahead of the display class's other drivers.
 const ATOM_COMMAND_TABLES: usize = 81;
+const BOOT_0_PAGE: u64 = 4096;
 
 pub static AMD_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
     name: "amd-display",
@@ -69,6 +71,19 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
     for output in bios.outputs.iter().flatten() {
         let _ = write!(line, " {}", output.name());
     }
+    if let Some(config) = probe.pci_config() {
+        eggos_drivers::pci::enable_memory_and_bus_master(config, function.address);
+    }
+    if let Some(chip) = read_boot_0(probe, node.regions[0]).map(Chip::of_boot_0) {
+        match (chip.name(), chip.signature_family()) {
+            (Some(name), Some(family)) if chip.runs_gsp() => {
+                let _ = write!(line, " chip {name} gsp nvidia/{name}/gsp ({family})");
+            }
+            _ => {
+                let _ = write!(line, " chip {:03x}", chip.id);
+            }
+        }
+    }
     line.push('\n');
     SUMMARY.lock().push_str(&line);
     Ok(())
@@ -77,6 +92,18 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
 /// What the AMD and NVIDIA boards' video BIOSes said, one line each; empty without one.
 pub fn summary() -> String {
     SUMMARY.lock().clone()
+}
+
+fn read_boot_0(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<u32> {
+    if registers.len() < BOOT_0_PAGE {
+        return None;
+    }
+    let start = probe
+        .map_window(PhysicalRange::from_start_length(registers.start, BOOT_0_PAGE))
+        .ok()?;
+    // SAFETY: `map_window` mapped BAR 0's first page, the GPU's registers, as device memory
+    // for good; `PMC_BOOT_0` is a read-only identification register.
+    Some(unsafe { core::ptr::read_volatile((start + nvidia_gsp::BOOT_0) as *const u32) })
 }
 
 fn read_discovery(probe: &mut dyn Probe, aperture: PhysicalRange) -> Option<Vec<u8>> {
