@@ -1217,7 +1217,7 @@ UX track (runs alongside, from the start): `docs/ux/` — **in progress** (switc
 | PCI Express: the MCFG, ECAM configuration space, enumeration through bridges, BAR sizing, the capability list (D110) | **done** on x86_64 (PCI on aarch64 and riscv64, a BAR allocator, MSI-X: planned, M5) |
 | NS16550 UART (MMIO, any `reg-shift`, and x86 port I/O), transmit and interrupt-driven receive | **done** |
 | Arm GICv2 (distributor + CPU interface, per-CPU setup, SGIs between CPUs, SPIs routed with their trigger mode) | **done** (GICv3: planned, M5) |
-| RISC-V PLIC (priorities, per-context enables, claim/complete; the hart's context from the device tree) | **done** (AIA: planned, M5) |
+| RISC-V PLIC (priorities, per-context enables, claim/complete; the hart's context from the device tree) | **done** (AIA, the APLIC in MSI mode with the hart's IMSIC: code written, unbuilt, D532) |
 | Arm generic timer (EL1 virtual timer) | **done** |
 | RISC-V SBI timer and IPI | **done** |
 | x86 local APIC (xAPIC), on every CPU: its timer, INIT/start-up IPIs and fixed IPIs; 8259 PICs (remapped and masked); 8254 PIT (frequency measurement) | **done** (x2APIC and the HPET as the calibration clock: code written, unbuilt, D531) |

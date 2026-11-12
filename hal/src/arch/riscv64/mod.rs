@@ -336,12 +336,16 @@ impl Platform for Riscv64 {
     fn route_device_interrupt(
         specifier: &crate::fdt::InterruptSpecifier,
     ) -> Result<crate::DeviceLine, &'static str> {
-        let source = eggos_drivers::interrupt::plic::source_of_specifier(specifier.cells())?;
+        use eggos_drivers::interrupt::{aplic, plic};
+        let (source, mode) = match console_input::uses_aia() {
+            true => aplic::source_of_specifier(specifier.cells())?,
+            false => (plic::source_of_specifier(specifier.cells())?, aplic::SourceMode::LevelHigh),
+        };
         let hart = BOOT_HART.load(Ordering::Relaxed);
         // SAFETY: as in `memory_map`.
         let context =
             unsafe { boot_memory::device_tree_plic_supervisor_context(device_tree(), hart) };
-        console_input::route_device(context, source)
+        console_input::route_device(context, source, mode)
     }
 
     fn release_device_interrupt(line: crate::DeviceLine) {

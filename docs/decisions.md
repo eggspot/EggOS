@@ -25247,6 +25247,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** APIC ids of 256 and more (x2APIC destinations through interrupt remapping) and
   the HPET as a timer of its own.
 
+## D532 RISC-V's Advanced Interrupt Architecture: the APLIC in MSI mode and the hart's IMSIC (M5, the support matrix's "planned"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the RISC-V AIA specification)
+
+- **Decision.** When the device tree has a supervisor-level APLIC delivering MSIs (an enabled
+  `riscv,aplic` node with an `msi-parent` and no `riscv,children`, which the FDT walker now
+  records), riscv64 routes the console's and the devices' wired sources through it instead of
+  the PLIC: the APLIC (`eggos_drivers::interrupt::aplic`) gets MSI delivery turned on, and each
+  routed source its mode (from the specifier's second cell: edges or levels), the boot hart's
+  index as its target and its own number as its identity, and is enabled; the hart's IMSIC
+  interrupt file gets delivery on, threshold 0 and the identity's enable bit through
+  `siselect`/`sireg`; an external interrupt claims and clears identities through `stopei`
+  until none is left, each delivered as its source's line, or reported when unknown. A line
+  given back is disabled in the APLIC and its identity's enable cleared. The machine-level
+  firmware (OpenSBI) sets the supervisor domain's message addresses and delegates its sources.
+- **Not yet.** The APLIC's direct mode (its per-hart delivery controls, for machines without
+  IMSICs), MSIs from PCI devices straight into the IMSIC, identities other than the source
+  numbers, and interrupts on harts other than the boot hart.
+
 ## D525 Intel's Type-C ports, part 1: the port, its PHY and its AUX channel (M13; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's MIT-licensed i915 driver)
 
 - **Decision.** On Tiger Lake and on Alder and Raptor Lake-P (`intel_type_c::flavour` by device

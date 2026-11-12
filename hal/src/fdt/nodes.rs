@@ -100,6 +100,11 @@ pub struct Node<'a> {
     pub opal_phb_id: &'a [u8],
     /// A POWER PCI host bridge's MSI sources (`ibm,opal-msi-ranges`: first, count; D312).
     pub opal_msi_ranges: &'a [u8],
+    /// The `msi-parent` phandle: the controller that takes the node's MSIs (a RISC-V APLIC's
+    /// IMSICs, D532).
+    pub msi_parent: Option<u32>,
+    /// A RISC-V APLIC's raw `riscv,children`: the interrupt domains it delegates to (D532).
+    pub aia_children: &'a [u8],
 }
 
 impl<'a> Node<'a> {
@@ -128,6 +133,8 @@ impl<'a> Node<'a> {
             dma_noncoherent: false,
             opal_phb_id: &[],
             opal_msi_ranges: &[],
+            msi_parent: None,
+            aia_children: &[],
         }
     }
 
@@ -398,6 +405,8 @@ enum Property {
     BusRange,
     OpalPhbId,
     OpalMsiRanges,
+    MsiParent,
+    AiaChildren,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -422,6 +431,8 @@ fn property(name: &[u8]) -> Option<Property> {
         b"bus-range" => BusRange,
         b"ibm,opal-phbid" => OpalPhbId,
         b"ibm,opal-msi-ranges" => OpalMsiRanges,
+        b"msi-parent" => MsiParent,
+        b"riscv,children" => AiaChildren,
         _ => return None,
     })
 }
@@ -451,6 +462,8 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::BusRange => node.bus_range = value,
         Property::OpalPhbId => node.opal_phb_id = value,
         Property::OpalMsiRanges => node.opal_msi_ranges = value,
+        Property::MsiParent => node.msi_parent = cell,
+        Property::AiaChildren => node.aia_children = value,
     }
 }
 

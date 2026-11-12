@@ -1312,6 +1312,23 @@ pub fn gic(blob: &[u8]) -> Option<TreeGic> {
     })
 }
 
+/// The supervisor-level RISC-V APLIC of `blob` in MSI delivery mode (D532): the enabled
+/// `riscv,aplic` node with an `msi-parent` and no child domains; its registers' physical
+/// address and size.
+pub fn supervisor_aplic(blob: &[u8]) -> Option<(u64, u64)> {
+    const APLIC: &[u8] = b"riscv,aplic";
+    let tree = Fdt::new(blob).ok()?;
+    tree.nodes()
+        .map_while(Result::ok)
+        .find(|node| {
+            node.enabled
+                && node.is_compatible(APLIC)
+                && node.msi_parent.is_some()
+                && node.aia_children.is_empty()
+        })
+        .and_then(|node| node.reg_entries().next())
+}
+
 /// The first PL011 UART of `blob`: its registers' physical address; the one `/chosen`'s
 /// `stdout-path` names when it is a PL011 (D266).
 pub fn pl011(blob: &[u8]) -> Option<u64> {
