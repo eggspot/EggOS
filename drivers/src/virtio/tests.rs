@@ -1,6 +1,9 @@
 use super::mmio::{MAGIC, MmioTransport};
 use super::pci::{self, PciTransport, VirtioPciCapability};
-use super::queue::{self, Buffer, DESCRIPTOR_NEXT, DESCRIPTOR_WRITE, DeviceSide, SplitQueue, Used};
+use super::queue::{
+    self, Buffer, DESCRIPTOR_INDIRECT, DESCRIPTOR_NEXT, DESCRIPTOR_WRITE, DeviceSide, IndirectTable,
+    SplitQueue, Used,
+};
 use super::rng::{self, VirtioRng};
 use super::*;
 use crate::dma::fake::HostDma;
@@ -308,6 +311,75 @@ fn the_driver_notifies_unless_the_device_says_not_to() {
     assert!(!queue.should_notify());
     device.set_no_notify(false);
     assert!(queue.should_notify());
+}
+
+#[test]
+fn with_the_event_index_the_driver_notifies_only_past_the_index_the_device_asked_for() {
+    let memory = HostDma::zeroed(1);
+    let (mut queue, mut device) = queue_in(&memory, 8);
+    queue.use_event_index();
+    device.set_avail_event(1);
+    queue.submit(&[buffer(0x1000, 8, false)]).unwrap();
+    assert!(!queue.should_notify());
+    queue.submit(&[buffer(0x1000, 8, false)]).unwrap();
+    assert!(queue.should_notify());
+    queue.submit(&[buffer(0x1000, 8, false)]).unwrap();
+    assert!(!queue.should_notify());
+    assert!(queue::needs_event(0xffff, 1, 0xfffe));
+    assert!(!queue::needs_event(5, 5, 3));
+}
+
+#[test]
+fn the_event_index_asks_for_an_interrupt_at_the_next_used_element_only_when_wanted() {
+    let memory = HostDma::zeroed(1);
+    let (mut queue, mut device) = queue_in(&memory, 8);
+    queue.use_event_index();
+    assert_eq!(device.used_event(), 0);
+    let head = queue.submit(&[buffer(0x1000, 8, true)]).unwrap();
+    device.next_available();
+    device.put_used(head, 8);
+    assert!(queue.pop_used().is_some());
+    assert_eq!(device.used_event(), 1);
+    queue.disable_used_notifications();
+    assert_eq!(device.used_event(), 0);
+}
+
+#[test]
+fn a_used_element_naming_no_chain_in_flight_is_refused() {
+    let memory = HostDma::zeroed(1);
+    let (mut queue, mut device) = queue_in(&memory, 4);
+    let head = queue.submit(&[buffer(0x1000, 8, true)]).unwrap();
+    device.next_available();
+    device.put_used(head, 8);
+    device.put_used(head, 8);
+    device.put_used(3, 8);
+    assert_eq!(queue.pop_used(), Some(Used { head, len: 8 }));
+    assert_eq!(queue.pop_used(), None);
+    assert_eq!(queue.rejected_used(), 2);
+    assert_eq!(queue.free_descriptors(), 4);
+}
+
+#[test]
+fn an_indirect_chain_takes_one_ring_descriptor() {
+    let memory = HostDma::zeroed(2);
+    let (mut queue, mut device) = queue_in(&memory, 4);
+    let table_at = memory.as_mut_ptr().wrapping_add(4096);
+    let table_dma = DmaAddr::new(memory.dma_addr().get() + 4096);
+    // SAFETY: the second page of the zeroed HostDma, which nothing else uses in this test.
+    let table = unsafe { IndirectTable::new(table_at, table_dma, 8) };
+    let chain = [
+        buffer(0x1000, 16, false),
+        buffer(0x2000, 512, true),
+        buffer(0x3000, 1, true),
+    ];
+    let head = queue.submit_indirect(&chain, &table).unwrap();
+    assert_eq!(queue.free_descriptors(), 3);
+    assert_eq!(device.next_available(), Some(head));
+    let (addr, len, flags, _) = device.descriptor(head);
+    assert_eq!((addr, len, flags), (table_dma, 48, DESCRIPTOR_INDIRECT));
+    device.put_used(head, 513);
+    assert_eq!(queue.pop_used(), Some(Used { head, len: 513 }));
+    assert_eq!(queue.free_descriptors(), 4);
 }
 
 #[test]

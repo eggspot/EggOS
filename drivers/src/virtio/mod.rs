@@ -10,6 +10,7 @@ pub mod ccw;
 pub mod console;
 pub mod gpu;
 pub mod input;
+pub mod iommu;
 pub mod mmio;
 pub mod net;
 pub mod pci;
@@ -39,6 +40,10 @@ pub mod status {
 
 /// Device-independent feature bits (virtio 1.2, 6).
 pub mod feature {
+    /// The driver may hand the device chains through indirect descriptor tables (D563).
+    pub const RING_INDIRECT_DESC: u64 = 1 << 28;
+    /// The rings' event index fields replace their notification flags (D563).
+    pub const RING_EVENT_IDX: u64 = 1 << 29;
     /// The device complies with virtio 1.0 or later (not legacy).
     pub const VERSION_1: u64 = 1 << 32;
     /// The device reaches memory through the platform's DMA translation (an IOMMU, if any).
@@ -55,6 +60,7 @@ pub mod device_type {
     pub const ENTROPY: u32 = 4;
     pub const GPU: u32 = 16;
     pub const INPUT: u32 = 18;
+    pub const IOMMU: u32 = 23;
 }
 
 /// A short name for virtio device type `device_type`.
@@ -66,6 +72,7 @@ pub fn device_type_name(device_type: u32) -> &'static str {
         device_type::ENTROPY => "entropy",
         device_type::GPU => "gpu",
         device_type::INPUT => "input",
+        device_type::IOMMU => "iommu",
         _ => "unknown",
     }
 }

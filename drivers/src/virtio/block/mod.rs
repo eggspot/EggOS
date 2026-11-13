@@ -107,7 +107,7 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
         if transport.device_type() != device_type::BLOCK {
             return Err((Error::WrongDeviceType, transport, Some(memory)));
         }
-        let wanted = feature::READ_ONLY | feature::FLUSH;
+        let wanted = feature::READ_ONLY | feature::FLUSH | super::feature::RING_EVENT_IDX;
         let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
@@ -130,6 +130,10 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             Err(error) => return Err((error, transport, Some(memory))),
         };
         queue.disable_used_notifications();
+        queue.set_cache_maintenance(memory.cache_maintenance());
+        if accepted & super::feature::RING_EVENT_IDX != 0 {
+            queue.use_event_index();
+        }
         if let Err(error) = transport.set_up_queue(REQUEST_QUEUE, size, &queue.addresses()) {
             super::fail(&transport);
             let memory = match super::reset(&transport, keep_waiting) {
@@ -393,6 +397,13 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             len: piece.bytes as u32,
             device_writes: kind == request::IN,
         };
+        self.memory
+            .prepare_for_device(header_offset, HEADER_BYTES);
+        self.memory.prepare_for_cpu(status_offset, 1);
+        match kind {
+            request::OUT => self.memory.prepare_for_device(data_offset, piece.bytes),
+            _ => self.memory.prepare_for_cpu(data_offset, piece.bytes),
+        }
         let submitted = match piece.bytes {
             0 => self.queue.submit(&[header, status]),
             _ => self.queue.submit(&[header, data, status]),
@@ -414,6 +425,11 @@ impl<T: Transport, M: DmaMemory> VirtioBlock<T, M> {
             return Ok(());
         };
         let base = self.memory.as_mut_ptr();
+        self.memory.prepare_for_cpu(STATUS_OFFSET + request, 1);
+        self.memory.prepare_for_cpu(
+            DATA_OFFSET + in_flight.first_slot * SLOT_BYTES,
+            in_flight.slots * SLOT_BYTES,
+        );
         // SAFETY: the request's status byte, which the device wrote and handed back with the
         // request (its used index read with acquire ordering).
         let status = unsafe { base.wrapping_add(STATUS_OFFSET + request).read_volatile() };

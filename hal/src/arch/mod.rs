@@ -24,6 +24,10 @@ pub(crate) use aarch64::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::doorbell_barrier;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
+pub(crate) use aarch64::{
+    cache_maintenance_barrier, clean_data_line, data_cache_line, flush_data_line,
+};
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::kernel_virtual_offset;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::zero;
@@ -102,6 +106,10 @@ pub(crate) use riscv64::KERNEL_VIRTUAL_OFFSET;
 pub use riscv64::Riscv64 as CurrentPlatform;
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub(crate) use riscv64::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "riscv64"))]
+pub(crate) use riscv64::{
+    cache_maintenance_barrier, clean_data_line, data_cache_line, flush_data_line,
+};
 #[cfg(all(eggos_kernel, target_arch = "riscv64"))]
 pub(crate) use riscv64::zero;
 

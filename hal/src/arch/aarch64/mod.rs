@@ -219,6 +219,40 @@ pub(crate) fn doorbell_barrier() {
     unsafe { core::arch::asm!("dmb oshst", options(nostack, preserves_flags)) };
 }
 
+/// The smallest data cache line, from `CTR_EL0.DminLine` (D563).
+pub(crate) fn data_cache_line() -> usize {
+    let ctr: u64;
+    // SAFETY: reading the cache type register has no side effects.
+    unsafe { core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    4 << (ctr >> 16 & 0xf)
+}
+
+/// Writes the data cache line at `address` back to memory, to the point of coherency (D563).
+///
+/// # Safety
+/// `address` must be mapped.
+pub(crate) unsafe fn clean_data_line(address: usize) {
+    // SAFETY: cleaning a line writes back what the CPU wrote and changes no memory contents;
+    // the caller vouches that `address` is mapped.
+    unsafe { core::arch::asm!("dc cvac, {}", in(reg) address, options(nostack)) };
+}
+
+/// Writes the data cache line at `address` back and drops it, so the next read comes from
+/// memory (D563).
+///
+/// # Safety
+/// `address` must be mapped.
+pub(crate) unsafe fn flush_data_line(address: usize) {
+    // SAFETY: as `clean_data_line`; dropping a clean line changes no memory contents.
+    unsafe { core::arch::asm!("dc civac, {}", in(reg) address, options(nostack)) };
+}
+
+/// Waits for the cache maintenance before it to finish, as devices see memory.
+pub(crate) fn cache_maintenance_barrier() {
+    // SAFETY: a barrier: it touches no memory or register.
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
 const BOOT_DIRECT_MAP_END: u64 = 256 << 30;
 
 const BOOT_KERNEL: Attributes = Attributes {

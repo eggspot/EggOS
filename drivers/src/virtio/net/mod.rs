@@ -215,7 +215,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             | feature::MTU
             | feature::GUEST_CSUM
             | feature::CSUM
-            | feature::HOST_TSO4;
+            | feature::HOST_TSO4
+            | super::feature::RING_EVENT_IDX;
         let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
@@ -262,6 +263,12 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         };
         receive.disable_used_notifications();
         transmit.disable_used_notifications();
+        receive.set_cache_maintenance(memory.cache_maintenance());
+        transmit.set_cache_maintenance(memory.cache_maintenance());
+        if accepted & super::feature::RING_EVENT_IDX != 0 {
+            receive.use_event_index();
+            transmit.use_event_index();
+        }
         let set_up = transport
             .set_up_queue(RECEIVE_QUEUE, receive_size, &receive.addresses())
             .and_then(|()| {
@@ -355,7 +362,9 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
     }
 
     fn post_receive(&mut self, buffer: u8) -> Result<(), Error> {
-        let addr = self.buffer_addr(RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES)?;
+        let offset = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
+        let addr = self.buffer_addr(offset)?;
+        self.memory.prepare_for_cpu(offset, BUFFER_BYTES);
         let head = self.receive.submit(&[Buffer {
             addr,
             len: BUFFER_BYTES as u32,
@@ -383,6 +392,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
                 .min(frame.len());
             let header_at = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
             let start = header_at + HEADER_BYTES;
+            self.memory
+                .prepare_for_cpu(header_at, HEADER_BYTES + length);
             let mut header = [0u8; HEADER_BYTES];
             // SAFETY: the header lies at the start of the receive buffer `buffer`, which the
             // device handed back with this used element and does not touch until it is posted
@@ -476,6 +487,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
                 frame.len(),
             )
         };
+        self.memory
+            .prepare_for_device(offset, HEADER_BYTES + frame.len());
         let head = self.transmit.submit(&[Buffer {
             addr: self.buffer_addr(offset)?,
             len: (HEADER_BYTES + frame.len()) as u32,

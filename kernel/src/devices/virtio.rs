@@ -1086,17 +1086,15 @@ mod disk {
             .table()
             .get(id)
             .ok_or(ProbeError::Refused("no such device"))?;
-        if node.dma != DmaCoherence::Coherent {
-            return Err(ProbeError::Refused(
-                "the device's DMA is not coherent, which the kernel does not support yet",
-            ));
-        }
         if !crate::block::has_room() {
             return Err(ProbeError::Refused("no room for another disk"));
         }
         let transport =
             take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
-        let memory = DmaRegion::allocate(MEMORY_BYTES)
+        let memory = DmaRegion::allocate_for(MEMORY_BYTES, node.dma)
+            .ok_or(ProbeError::Refused(
+                "the device's DMA is not coherent and this CPU cannot keep its caches in step",
+            ))?
             .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
         let mut disk = match VirtioBlock::new(transport, memory, &mut || deadline.keep_waiting()) {
@@ -1357,17 +1355,15 @@ mod network {
             .table()
             .get(id)
             .ok_or(ProbeError::Refused("no such device"))?;
-        if node.dma != DmaCoherence::Coherent {
-            return Err(ProbeError::Refused(
-                "the device's DMA is not coherent, which the kernel does not support yet",
-            ));
-        }
         if crate::net::is_present() {
             return Err(ProbeError::Refused("a network adapter is already in use"));
         }
         let transport =
             take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
-        let memory = DmaRegion::allocate(MEMORY_BYTES)
+        let memory = DmaRegion::allocate_for(MEMORY_BYTES, node.dma)
+            .ok_or(ProbeError::Refused(
+                "the device's DMA is not coherent and this CPU cannot keep its caches in step",
+            ))?
             .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
         let mut net = match VirtioNet::new(transport, memory, &mut || deadline.keep_waiting()) {
@@ -1580,5 +1576,175 @@ mod tests {
                 Err(ProbeError::Refused(_))
             ));
         }
+    }
+}
+
+#[cfg(any(test, feature = "virtio-iommu"))]
+pub use translation::IOMMU_DRIVER;
+
+#[cfg(any(test, feature = "virtio-iommu"))]
+mod translation {
+    use super::*;
+    use crate::devices::dma::{self, DmaTranslation};
+    use eggos_drivers::virtio::iommu::{MEMORY_BYTES, VirtioIommu, access};
+    use eggos_hal::fdt;
+
+    type Iommu = VirtioIommu<AnyTransport, DmaRegion>;
+
+    static IOMMU: LeafSpinLock<Option<Box<Iommu>>> = LeafSpinLock::new_leaf(None);
+
+    const ANSWER_SPINS: u32 = 1_000_000;
+
+    /// The virtio IOMMU (virtio 1.2, 5.13, D563): every endpoint the device tree puts behind
+    /// it (`iommus` on a node, `iommu-map` on a PCI host) goes into one kernel domain, which
+    /// maps every DMA region at its physical address, so the devices reach their buffers and
+    /// nothing else.
+    pub static IOMMU_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-iommu",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::IOMMU)],
+        probe: probe_iommu,
+    };
+
+    struct KernelDomain {
+        domain: u32,
+    }
+
+    fn spin_waiting() -> impl FnMut() -> bool {
+        let mut spins = 0u32;
+        move || {
+            spins += 1;
+            core::hint::spin_loop();
+            spins < ANSWER_SPINS
+        }
+    }
+
+    impl DmaTranslation for KernelDomain {
+        fn map(&self, start: u64, length: u64) {
+            if let Some(iommu) = IOMMU.lock().as_mut() {
+                let _ = iommu.map(
+                    self.domain,
+                    start,
+                    start,
+                    length,
+                    access::READ | access::WRITE,
+                    &mut spin_waiting(),
+                );
+            }
+        }
+
+        fn unmap(&self, start: u64, length: u64) {
+            if let Some(iommu) = IOMMU.lock().as_mut() {
+                let _ = iommu.unmap(self.domain, start, length, &mut spin_waiting());
+            }
+        }
+    }
+
+    fn probe_iommu(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if IOMMU.lock().is_some() {
+            return Err(ProbeError::Refused("an IOMMU is already in use"));
+        }
+        let endpoints = endpoints_behind(probe);
+        if endpoints.is_empty() {
+            return Err(ProbeError::Refused(
+                "the device tree puts no device behind the IOMMU",
+            ));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate_for(MEMORY_BYTES, node.dma)
+            .ok_or(ProbeError::Refused(
+                "the device's DMA is not coherent and this CPU cannot keep its caches in step",
+            ))?
+            .map_err(|_| ProbeError::Refused("no memory for the device's queue"))?;
+        let mut deadline = probe.deadline(1000);
+        let mut iommu = match Iommu::new(transport, memory, &mut || deadline.keep_waiting()) {
+            Ok(iommu) => iommu,
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: `VirtioIommu::new` hands the memory back only when the device
+                    // never had it or was reset after.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                return Err(ProbeError::Refused(error.description()));
+            }
+        };
+        let limits = iommu.limits();
+        if limits.page_sizes & 0x1fff == 0 {
+            return Err(ProbeError::Refused("the IOMMU maps no 4 KiB pages"));
+        }
+        let domain = limits.domains.0.max(1);
+        if domain > limits.domains.1 {
+            return Err(ProbeError::Refused("the IOMMU has no domain to give"));
+        }
+        *IOMMU.lock() = Some(Box::new(iommu));
+        let kernel_domain: &'static KernelDomain = Box::leak(Box::new(KernelDomain { domain }));
+        dma::translate_through(kernel_domain);
+        let mut attached = 0usize;
+        for endpoint in endpoints {
+            let mut guard = IOMMU.lock();
+            let Some(iommu) = guard.as_mut() else {
+                break;
+            };
+            if iommu.attach(domain, endpoint, &mut spin_waiting()).is_ok() {
+                attached += 1;
+            }
+        }
+        match attached {
+            0 => Err(ProbeError::Refused("no endpoint could be attached")),
+            _ => Ok(()),
+        }
+    }
+
+    fn endpoints_behind(probe: &dyn Probe) -> Vec<u32> {
+        let Some(tree) = probe.device_tree() else {
+            return Vec::new();
+        };
+        let Ok(parsed) = fdt::Fdt::new(tree) else {
+            return Vec::new();
+        };
+        let mut endpoints = Vec::new();
+        let cell = |bytes: &[u8], at: usize| {
+            bytes
+                .get(at..at + 4)
+                .and_then(|word| word.try_into().ok())
+                .map(u32::from_be_bytes)
+        };
+        let mut maps = Vec::new();
+        for node in parsed.nodes().map_while(Result::ok) {
+            if let (Some(_), Some(endpoint)) = (cell(node.iommus, 0), cell(node.iommus, 4)) {
+                endpoints.push(endpoint);
+            }
+            for entry in node.iommu_map.chunks_exact(16) {
+                if let (Some(base), Some(first), Some(length)) =
+                    (cell(entry, 0), cell(entry, 8), cell(entry, 12))
+                {
+                    maps.push((base, first, length));
+                }
+            }
+        }
+        for (_, device) in probe.table().iter() {
+            let Identity::Pci(function) = device.identity else {
+                continue;
+            };
+            let address = function.address;
+            let requester = u32::from(address.bus) << 8
+                | u32::from(address.device) << 3
+                | u32::from(address.function);
+            if let Some(&(base, first, _)) = maps
+                .iter()
+                .find(|&&(base, _, length)| (base..base.saturating_add(length)).contains(&requester))
+            {
+                endpoints.push(first + (requester - base));
+            }
+        }
+        endpoints.sort_unstable();
+        endpoints.dedup();
+        endpoints
     }
 }

@@ -152,6 +152,39 @@ pub(crate) fn doorbell_barrier() {
     unsafe { core::arch::asm!("fence w, o", options(nostack, preserves_flags)) };
 }
 
+/// The cache block Zicbom's instructions work on, 0 without Zicbom (D563).
+pub(crate) fn data_cache_line() -> usize {
+    match timer::has_zicbom() {
+        true => 64,
+        false => 0,
+    }
+}
+
+/// Writes the cache block at `address` back to memory (`cbo.clean`, D563).
+///
+/// # Safety
+/// `address` must be mapped, and the harts must have Zicbom ([`data_cache_line`] not 0).
+pub(crate) unsafe fn clean_data_line(address: usize) {
+    // SAFETY: `cbo.clean` writes the block back and changes no memory contents; the caller
+    // vouches that `address` is mapped and that Zicbom is there.
+    unsafe { core::arch::asm!(".insn i 0x0f, 2, x0, {0}, 1", in(reg) address, options(nostack)) };
+}
+
+/// Writes the cache block at `address` back and drops it (`cbo.flush`, D563).
+///
+/// # Safety
+/// As for [`clean_data_line`].
+pub(crate) unsafe fn flush_data_line(address: usize) {
+    // SAFETY: as `clean_data_line`; `cbo.flush` also drops the clean block.
+    unsafe { core::arch::asm!(".insn i 0x0f, 2, x0, {0}, 2", in(reg) address, options(nostack)) };
+}
+
+/// Orders the cache maintenance before it ahead of the hart's later memory and device accesses.
+pub(crate) fn cache_maintenance_barrier() {
+    // SAFETY: a barrier: it touches no memory or register.
+    unsafe { core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags)) };
+}
+
 /// The direct map: the start of Sv39's high half (D29). It holds 254 GiB: the top 2 GiB are
 /// the kernel's (D33).
 const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;

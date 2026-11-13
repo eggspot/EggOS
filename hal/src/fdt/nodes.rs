@@ -121,6 +121,9 @@ pub struct Node<'a> {
     pub mboxes: &'a [u8],
     /// The raw `iommus` property: (IOMMU phandle, cells...) entries (D547).
     pub iommus: &'a [u8],
+    /// The raw `iommu-map` property of a PCI host: (requester id base, IOMMU phandle, endpoint
+    /// id base, length) entries (D563).
+    pub iommu_map: &'a [u8],
     /// The node's own raw `dma-ranges` (D554): how its children's DMA addresses map to its
     /// parent's.
     pub own_dma_ranges: &'a [u8],
@@ -166,6 +169,7 @@ impl<'a> Node<'a> {
             format: &[],
             mboxes: &[],
             iommus: &[],
+            iommu_map: &[],
         }
     }
 
@@ -478,6 +482,7 @@ enum Property {
     Format,
     Mboxes,
     Iommus,
+    IommuMap,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -511,6 +516,7 @@ fn property(name: &[u8]) -> Option<Property> {
         b"format" => Format,
         b"mboxes" => Mboxes,
         b"iommus" => Iommus,
+        b"iommu-map" => IommuMap,
         _ => return None,
     })
 }
@@ -549,6 +555,7 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::Format => node.format = value,
         Property::Mboxes => node.mboxes = value,
         Property::Iommus => node.iommus = value,
+        Property::IommuMap => node.iommu_map = value,
     }
 }
 

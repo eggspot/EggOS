@@ -276,6 +276,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::PCI_DRIVER,
     #[cfg(any(test, feature = "virtio"))]
     &virtio::CCW_DRIVER,
+    #[cfg(any(test, feature = "virtio-iommu"))]
+    &virtio::IOMMU_DRIVER,
     #[cfg(any(test, feature = "virtio-rng"))]
     &virtio::RNG_DRIVER,
     #[cfg(any(test, feature = "virtio-gpu"))]
@@ -409,8 +411,8 @@ pub enum Identity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaCoherence {
     Coherent,
-    /// Needs cache maintenance around DMA, which the kernel does not do yet: such devices are
-    /// refused.
+    /// Needs cache maintenance around DMA: drivers that do it take a region made by
+    /// `dma::DmaRegion::allocate_for` (D563); the others refuse the device.
     NonCoherent,
 }
 
