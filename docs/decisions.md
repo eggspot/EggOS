@@ -25836,3 +25836,33 @@ the license, by an explicit instruction recorded here.
   runs low, so the allocation paths stay as they were.
 - **Not yet.** Building and running; measuring the caches against the single lock on a many-CPU
   machine; slabs given back on a timer rather than only under pressure.
+
+## D552 Translations kept longer: 1 GiB pages on x86_64, Svpbmt and Svinval on RISC-V, global kernel pages, and address-space tags (PCIDs and ASIDs) (M4; D29's, D33's, D45's, D94's and D261's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **1 GiB pages.** x86_64's format may now hold a leaf at level 2 (`MAX_LEAF_LEVEL` 2), and
+  `Format::max_leaf_level` tells the mapper the highest level this machine's CPUs take: level 2
+  where CPUID 0x8000_0001 EDX bit 26 (`Page1GB`) is set, else 1. The direct map and device windows
+  use it, so a large machine's direct map needs no page directories for its aligned gigabytes.
+- **Svpbmt.** With `svpbmt` in the device tree, RISC-V leaves carry their memory type in PBMT
+  (bits 62:61): 1 (non-cacheable, idempotent) for write-combining, 2 (I/O) for device memory.
+  `Format::encodes_memory_type` reports it at run time, so the self-tests that check device
+  mappings check them on such harts too.
+- **Svinval.** With `svinval`, dropping a range of user translations issues `sfence.w.inval`, one
+  `sinval.vma` per page and `sfence.inval.ir`, instead of a fence per page.
+- **Global kernel pages.** On x86_64 CPUs that need no separate user view (no KPTI), `CR4.PGE` is set
+  and kernel leaves get the global bit, so CR3 loads no longer drop the kernel's translations. Setting
+  up a user view turns both off again, as before.
+- **Address-space tags.** A new `Platform::switch_tagged_address_space(roots, tag)` takes the space's
+  unique id and its mappings' generation. Each CPU keeps 8 slots (`eggos_hal::asid`); slot `i` is
+  hardware tag `i + 1` (x86_64 PCID with `CR4.PCIDE` on CPUs with PCID and no KPTI, AArch64 ASID in
+  `TTBR0_EL1`, RISC-V ASID in `satp` once a probe finds at least 4 ASID bits). Switching to a space a
+  slot holds keeps its translations unless its generation moved on; otherwise the slot's
+  translations are dropped (x86_64 without CR3 bit 63, `tlbi aside1`, `sfence.vma zero, asid`). The
+  kernel bumps a space's generation before it tells other CPUs of any removal or loss of access
+  (`drop_old_translations`), and reads it after the CPU recorded the space and a full fence, so a
+  change either reaches the CPU through D53/D94's stale mark or shootdown, or is seen as a new
+  generation at the switch. Ids are never reused, so a freed space's slot cannot be mistaken for a
+  new one at the same root. AArch64's `drop_user_translations` now names the active ASID.
+- **Not yet.** Building and running; measuring the switch cost with and without tags; PCIDs with
+  KPTI (two tags per space); x86_64's `INVPCID` for dropping another tag's translations without
+  switching.
