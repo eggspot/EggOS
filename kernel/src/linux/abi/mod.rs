@@ -486,6 +486,8 @@ pub mod generic {
         pub const CAPGET: u64 = 90;
         pub const CAPSET: u64 = 91;
         pub const PTRACE: u64 = 117;
+        pub const FANOTIFY_INIT: u64 = 262;
+        pub const FANOTIFY_MARK: u64 = 263;
         pub const LAST: u64 = FCHMODAT2;
     }
 

@@ -448,6 +448,7 @@ fn each_instance(mut report: impl FnMut(&Inotify)) {
 #[inline]
 pub fn changed_in(node: Node, event: u32, cookie: u32, name: &[u8], is_directory: bool) {
     super::leases::changed_in(node, super::leases::notify_event_of(event));
+    super::fanotify::report(node, event, !name.is_empty());
     if WATCHES.load(Ordering::Relaxed) == 0 || watched_bucket(node).load(Ordering::Relaxed) == 0 {
         return;
     }
@@ -459,7 +460,7 @@ pub fn changed_in(node: Node, event: u32, cookie: u32, name: &[u8], is_directory
 /// Reports `event` on `node` to its own watches, without a name.
 #[inline]
 pub fn changed(node: Node, event: u32) {
-    if WATCHES.load(Ordering::Relaxed) == 0 {
+    if WATCHES.load(Ordering::Relaxed) == 0 && !super::fanotify::active() {
         return;
     }
     let is_directory = node.is_directory();

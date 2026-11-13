@@ -228,6 +228,8 @@ pub mod number {
     pub const CAPGET: u64 = 184;
     pub const CAPSET: u64 = 185;
     pub const PTRACE: u64 = 26;
+    pub const FANOTIFY_INIT: u64 = 332;
+    pub const FANOTIFY_MARK: u64 = 333;
     pub const LAST: u64 = FCHMODAT2;
     const NOT_ON_S390X: u64 = 0x1_0000;
 }

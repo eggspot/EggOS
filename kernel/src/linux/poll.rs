@@ -546,6 +546,7 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         FileKind::Event(EventFile::SignalFd(signals)) => signals.events(requested, pending()),
         FileKind::Event(EventFile::Inotify(instance)) => instance.events(requested),
         FileKind::Event(EventFile::PidFd(handle)) => handle.events(requested),
+        FileKind::Event(EventFile::Fanotify(group)) => group.events(requested),
         FileKind::Event(EventFile::Netlink(socket)) => {
             let readable = match socket.is_readable() {
                 true => requested & (event::IN | event::RDNORM),
@@ -1450,6 +1451,23 @@ pub(super) fn read_event<P: Platform>(
         EventFile::Inotify(instance) => {
             inotify::read(process, thread, context, file, instance, buffers)
         }
+        EventFile::Fanotify(group) => {
+            let room = buffers.total().min(64 * 1024) as usize;
+            let result = super::fanotify::read_records(process, thread, group, room).map(|bytes| {
+                let mut at = 0;
+                for entry in buffers.entries() {
+                    let (base, length) = super::iovec(entry);
+                    let part = (bytes.len() - at).min(length as usize);
+                    if process.write_user_memory(base, &bytes[at..at + part]).is_err() {
+                        break;
+                    }
+                    at += part;
+                }
+                at as u64
+            });
+            context.set_syscall_result(result.unwrap_or_else(Errno::result));
+            ControlFlow::Continue(())
+        }
         EventFile::Netlink(socket) => {
             let mut bytes = alloc::vec![0u8; buffers.total().min(64 * 1024) as usize];
             let result = match socket.take(&mut bytes) {
@@ -1497,7 +1515,8 @@ pub(super) fn write_event<P: Platform>(
         | EventFile::Epoll(_)
         | EventFile::Inotify(_)
         | EventFile::PidFd(_)
-        | EventFile::Netlink(_) => {
+        | EventFile::Netlink(_)
+        | EventFile::Fanotify(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
             ControlFlow::Continue(())
         }

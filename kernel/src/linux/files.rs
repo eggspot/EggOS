@@ -393,6 +393,7 @@ fn open<P: Platform>(
             if !directory {
                 super::leases::opened(node, process.id().get(), writes);
             }
+            super::inotify::changed(node, super::inotify::mask::OPEN);
             match (directory, node.generate().map_err(|_| Errno::EIO)?) {
                 (true, _) => FileKind::Directory(node),
                 (false, Some(bytes)) => FileKind::Snapshot(Snapshot { node, bytes }),

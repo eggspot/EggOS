@@ -224,6 +224,8 @@ pub mod number {
     pub const CAPGET: u64 = 125;
     pub const CAPSET: u64 = 126;
     pub const PTRACE: u64 = 101;
+    pub const FANOTIFY_INIT: u64 = 300;
+    pub const FANOTIFY_MARK: u64 = 301;
     pub const LAST: u64 = FCHMODAT2;
 }
 

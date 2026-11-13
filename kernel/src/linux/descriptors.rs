@@ -165,6 +165,8 @@ pub enum EventFile {
     PidFd(Arc<super::pidfd::PidFd>),
     /// A `NETLINK_ROUTE` socket ([`super::socket::netlink`], D559).
     Netlink(Arc<super::socket::netlink::NetlinkSocket>),
+    /// A `fanotify` group ([`super::fanotify`], D560).
+    Fanotify(Arc<super::fanotify::Fanotify>),
 }
 
 impl EventFile {
@@ -178,6 +180,7 @@ impl EventFile {
             Self::Inotify(_) => b"anon_inode:inotify",
             Self::PidFd(_) => b"anon_inode:[pidfd]",
             Self::Netlink(_) => b"socket:[netlink]",
+            Self::Fanotify(_) => b"anon_inode:[fanotify]",
         }
     }
 
@@ -191,6 +194,7 @@ impl EventFile {
             Self::Inotify(instance) => instance.wake_list(),
             Self::PidFd(handle) => handle.wake_list(),
             Self::Netlink(_) => super::poll::never_woken(),
+            Self::Fanotify(group) => group.wake_list(),
         }
     }
 }
@@ -205,6 +209,7 @@ impl PartialEq for EventFile {
             (Self::Inotify(this), Self::Inotify(that)) => Arc::ptr_eq(this, that),
             (Self::PidFd(this), Self::PidFd(that)) => Arc::ptr_eq(this, that),
             (Self::Netlink(this), Self::Netlink(that)) => Arc::ptr_eq(this, that),
+            (Self::Fanotify(this), Self::Fanotify(that)) => Arc::ptr_eq(this, that),
             _ => false,
         }
     }
@@ -368,7 +373,8 @@ impl OpenFile {
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
-        let watched = super::inotify::WATCHES.load(Ordering::Relaxed) != 0;
+        let watched =
+            super::inotify::WATCHES.load(Ordering::Relaxed) != 0 || super::fanotify::active();
         if self.held || watched || super::file_locks::any_held() {
             self.report_close_and_release();
         }

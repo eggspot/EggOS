@@ -64,6 +64,7 @@ pub mod epoll;
 pub mod eventfd;
 pub mod exec;
 pub mod extended_attributes;
+pub mod fanotify;
 pub mod fault;
 pub mod file_changes;
 pub mod file_locks;
@@ -159,6 +160,8 @@ pub mod number {
             #[cfg(linux_abi_legacy_calls)]
             RENAME,
             UMASK,
+            FANOTIFY_INIT,
+            FANOTIFY_MARK,
             CAPGET,
             CAPSET,
             SENDMMSG,
@@ -945,6 +948,22 @@ fn out_of_line_result<P: Platform>(
         number::MEMFD_CREATE => memfd::memfd_create(process, thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UMASK => Ok(file_changes::umask(process, first)),
+        number::FANOTIFY_INIT => fanotify::fanotify_init(process, thread, first, second),
+        number::FANOTIFY_MARK => {
+            let arguments = context.syscall_arguments();
+            let arguments = match abi::WORD_BYTES {
+                4 => [
+                    arguments[0],
+                    arguments[1],
+                    arguments[2] | arguments[3] << 32,
+                    arguments[4],
+                    arguments[5],
+                    0,
+                ],
+                _ => arguments,
+            };
+            fanotify::fanotify_mark(process, thread, arguments)
+        }
         number::CAPGET => capabilities::capget(process, first, second),
         number::CAPSET => capabilities::capset(process, first, second),
         number::PIDFD_OPEN => pidfd::pidfd_open(process, thread, first, second),
