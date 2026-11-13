@@ -89,7 +89,7 @@ and is not listed per item.
 - [x] virtio-gpu: more than one scanout, display hot-unplug and teardown (D112) — code written, unbuilt, D563 (mirroring)
 - [x] virtio-input: keyboard LEDs through the status queue, more than four input devices, hot-plug (D113) — code written, unbuilt, D563 (LEDs already done, D221; unplug here, arrival on the PCIe hot-plug line)
 - [ ] Network: IPv6 (addresses, NDP, SLAAC, ICMPv6, UDP and TCP over IPv6, `AF_INET6` sockets) (D157)
-- [ ] TCP: window scaling, selective acknowledgments, keep-alive probes, urgent data (D158)
+- [x] TCP: window scaling, selective acknowledgments, keep-alive probes, urgent data (D158) — code written, unbuilt, D564
 - [ ] virtio multiqueue: virtio-net's several queue pairs and virtio-blk's `num_queues`, each following its CPU (D540)
 - [ ] virtio-net: IPv6 and UDP segmentation offload and receive-side coalescing (`GUEST_TSO4`, mergeable buffers) (D541)
 - [ ] PCIe native hot-plug: slot presence events, BARs assigned from the bridge's windows, devices that arrive after boot probed and ones that leave released (D563)
@@ -262,3 +262,4 @@ and is not listed per item.
 ## Leftovers (no milestone yet)
 
 - [ ] Sound: an audio stack of our own (virtio-sound and Intel HD Audio drivers, a mixer in a sound server, `sound` CLI, MCP tools and a Settings > Sound pane), with NSSound, `PlaySound`/`waveOut` and SDL audio on it (D383)
+- [ ] `F_SETOWN`/`F_GETOWN`, `O_ASYNC` with `SIGIO`, and `SIGURG` and `SIOCATMARK` for TCP urgent data (D564)

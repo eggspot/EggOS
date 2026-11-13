@@ -26221,3 +26221,38 @@ the license, by an explicit instruction recorded here.
   name its device; per-device domains come with that change.
 - **Not yet.** Building and running; an extended desktop over several scanouts; one domain per
   device; devices added after boot (the new PCIe hot-plug line).
+
+## D564 TCP: window scaling, selective acknowledgments, keep-alive and urgent data (M8; D158's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Options.** `Header` carries the window scale (RFC 7323), SACK-permitted and up to three
+  SACK blocks (RFC 2018) and the urgent pointer; `parse` reads every option it knows and
+  `write_header_with` writes them NOP-padded, so `MAX_HEADER_BYTES` is the format's 60.
+- **Window scaling.** `Connection::set_extensions` offers a shift and SACK; a connection that
+  connects puts them in its SYN, one a listener accepted answers with them only when the peer's
+  SYN had them, and both scale once both offered. Windows on SYNs stay unscaled; the advertised
+  window is rounded down to the shift so the edge it promises is the one it sends. The kernel
+  offers shift 5 and keeps 1 MiB received per connection (256 KiB queued to send).
+- **Out-of-order data and SACK.** `Buffers` gains `hold_out_of_order`, `take_held` and
+  `held_ranges` (nothing by default, so other callers keep dropping); the kernel's queues keep
+  up to 32 runs inside the receive limit, hand them on once the gap fills, and report them as
+  SACK blocks, the most recently received first. The sender keeps a four-block scoreboard from
+  the peer's blocks; three duplicate acknowledgments with SACK information start a recovery that
+  resends one hole at a time (the bytes before the next SACKed block) without going back over
+  what the peer has, and partial acknowledgments move to the next hole; a timeout clears the
+  scoreboard and goes back as before.
+- **Keep-alive.** `KeepAlive` (Linux's two hours, 75 seconds, nine probes by default); an idle
+  connection with nothing in flight sends a probe (sequence one below the unacknowledged one)
+  and ends with `ETIMEDOUT` after the last unanswered one. `SO_KEEPALIVE`, `TCP_KEEPIDLE`,
+  `TCP_KEEPINTVL` and `TCP_KEEPCNT` set it, on the connection or, before it exists, on the
+  socket, which hands them to the connection it makes or accepts.
+- **Urgent data.** `send(MSG_OOB)` marks what is queued as urgent; segments before its end
+  carry `URG` and the pointer. A received urgent pointer (pointing after the urgent byte, as
+  BSD and Linux) takes the byte out of the stream unless `SO_OOBINLINE`; `recv(MSG_OOB)` reads
+  it (`EINVAL` when there is none, `EAGAIN` while it is on its way), `poll` reports `POLLPRI`.
+- **Fixed on the way.** `Socket::accepted` lacked D559's `linger` field.
+- **Decided by research.** One hole a round rather than RFC 6675's full pipe estimate: it never
+  sends more than the dup-ACK clock allows and needs no per-segment state; a SACK scoreboard of
+  four blocks matches the most a peer reports in three segments' worth of options.
+- **Not yet.** Building and running; `SIGURG` to a socket's owner and `SIOCATMARK` (they need
+  `F_SETOWN`, a new line in the leftovers); timestamps (RFC 7323's other half); `TCP_INFO`'s
+  counters.
