@@ -144,7 +144,7 @@ fn failures_say_what_went_wrong() {
             &[c"http://files.test/cut"],
             "fetch: files.test:80: the connection closed before the whole file came\n",
         ),
-        (&[], "fetch: usage: fetch [-q] [-o <file>] <url> [<file>]\n"),
+        (&[], "fetch: usage: fetch [-q] [-o <file>] [--range <first>-<last>] <url> [<file>]\n"),
         (&[c"-o"], "fetch: option requires an argument -- 'o'\n"),
     ];
     for (arguments, expected) in cases {
@@ -201,7 +201,7 @@ fn options_come_from_the_registry_and_combine() {
         &[c"-o", c"-", c"--", c"http://files.test/chunked"],
     );
     assert_eq!((status, out.as_str()), (0, "Hello, chunks"));
-    let usage = "fetch: usage: fetch [-q] [-o <file>] <url> [<file>]\n";
+    let usage = "fetch: usage: fetch [-q] [-o <file>] [--range <first>-<last>] <url> [<file>]\n";
     let cases: [(&[&CStr], &str); 4] = [
         (
             &[c"--bogus", c"http://files.test/"],

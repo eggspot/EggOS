@@ -7,8 +7,10 @@ pub const VENDOR_INTEL: u16 = 0x8086;
 pub const FIRMWARE_FOLDER: &str = "/usr/lib/firmware/intel/iwlwifi";
 
 const HW_REV_TYPE_MASK: u32 = 0x000f_fff0;
-const HW_REV_TYPE_QU_C0: u32 = 0x0000_0338;
-const HW_REV_TYPE_QUZ: u32 = 0x0000_0354;
+const HW_REV_STEP_MASK: u32 = 0x0000_000c;
+const MAC_TYPE_QU: u32 = 0x0000_0330;
+const MAC_TYPE_QUZ: u32 = 0x0000_0350;
+const STEP_C0: u32 = 0x0000_0008;
 const SUBDEVICE_SO: u16 = 0x0090;
 const KILLER_GF4: [u16; 2] = [0x1691, 0x1692];
 
@@ -104,9 +106,9 @@ pub fn identify(device: u16, subdevice: u16, hw_rev: u32) -> Option<Adapter> {
     if let Some(&(_, ltr_delay, xtal_latency, low_latency_xtal)) =
         AX201_IDS.iter().find(|(id, ..)| *id == device)
     {
-        let firmware = match mac {
-            HW_REV_TYPE_QUZ => QUZ_A0_HR_B0,
-            HW_REV_TYPE_QU_C0 => QU_C0_HR_B0,
+        let firmware = match (mac, hw_rev & HW_REV_STEP_MASK) {
+            (MAC_TYPE_QUZ, _) => QUZ_A0_HR_B0,
+            (MAC_TYPE_QU, STEP_C0) => QU_C0_HR_B0,
             _ if matches!(device, 0x02f0 | 0x06f0) => return None,
             _ => QU_B0_HR_B0,
         };
@@ -168,6 +170,9 @@ pub fn firmware_path(adapter: &Adapter) -> alloc::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HW_REV_TYPE_QU_C0: u32 = 0x0000_0338;
+    const HW_REV_TYPE_QUZ: u32 = 0x0000_0354;
 
     #[test]
     fn each_adapter_runs_the_firmware_its_silicon_needs() {

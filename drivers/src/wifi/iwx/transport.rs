@@ -622,7 +622,7 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
                 .collect::<Vec<_>>()
         };
         let firmware = addresses(&self.sections);
-        let (lmac_images, umac_images) = firmware.split_at(lmac);
+        let (lmac_images, umac_images) = firmware.split_at(lmac.min(firmware.len()));
         for (index, address) in umac_images.iter().take(umac).enumerate() {
             put64(&self.rings, base + index * 8, *address);
         }

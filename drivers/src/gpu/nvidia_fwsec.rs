@@ -355,7 +355,7 @@ mod tests {
         put32(&mut rom, dmem + 0x44, 1);
         put32(&mut rom, dmem + 0x4c, DMEM_MAPPER_ID);
         put32(&mut rom, dmem + 0x50, 0x80);
-        put32(&mut rom, dmem + 0x80 + MAPPER_COMMAND_BUFFER, 0x200);
+        put32(&mut rom, dmem + 0x80 + MAPPER_COMMAND_BUFFER, 0x300);
         rom
     }
 
@@ -379,8 +379,8 @@ mod tests {
         assert!(signature_for(&fwsec, 2).is_none());
         let dmem = prepare_frts(&fwsec, 0x7_ff00_0000, 3).unwrap();
         assert_eq!(word(&dmem, 0x80 + MAPPER_INIT_COMMAND), Some(COMMAND_FRTS));
-        assert_eq!(word(&dmem, 0x200 + 32), Some(0x7f_f000));
-        assert_eq!(word(&dmem, 0x200 + 36), Some(FRTS_SIZE_IN_4K));
+        assert_eq!(word(&dmem, 0x300 + 32), Some(0x7f_f000));
+        assert_eq!(word(&dmem, 0x300 + 36), Some(FRTS_SIZE_IN_4K));
         assert_eq!(dmem[0x100], 0x22);
         assert_eq!(prepare_frts(&fwsec, 0, 2), Err(PrepareError::NoSignature));
     }
