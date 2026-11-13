@@ -108,6 +108,7 @@ pub mod time;
 pub mod timerfd;
 pub mod trampoline;
 pub mod unix_socket;
+pub mod vdso;
 pub mod wait;
 pub mod wide_arguments;
 pub mod window;

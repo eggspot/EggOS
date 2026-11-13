@@ -2846,6 +2846,11 @@ fn build_executable(
     what: &str,
 ) -> Result<std::path::PathBuf, String> {
     let mut args = args.to_vec();
+    let vdso = kernel_vdso(&args)?;
+    let mut env = env.to_vec();
+    if let Some(vdso) = &vdso {
+        env.push(("EGGOS_VDSO", vdso));
+    }
     args.extend(["--release", "--message-format=json-render-diagnostics"]);
     let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let nightly = nightly_build_std(&args);
@@ -2875,6 +2880,68 @@ fn build_executable(
         .next_back()
         .map(std::path::PathBuf::from)
         .ok_or_else(|| format!("cargo reported no {what}"))
+}
+
+/// The vDSO for a kernel build `args` asks for (D561): built from `userland/vdso` for the
+/// architecture's user target as a position-independent shared object, stripped to its loadable
+/// part by the linker script, and named to the kernel build by `EGGOS_VDSO`; `None` for other
+/// builds and for architectures without one (x86_64, aarch64 and riscv64 have one).
+fn kernel_vdso(args: &[&str]) -> Result<Option<String>, String> {
+    if !args.windows(2).any(|pair| pair == ["-p", "eggos-kernel"]) {
+        return Ok(None);
+    }
+    let Some(target) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--target")
+        .map(|pair| pair[1])
+    else {
+        return Ok(None);
+    };
+    let Some(arch) = ARCHES
+        .iter()
+        .chain(NAMED_ONLY_ARCHES.iter())
+        .find(|arch| arch.target == target)
+    else {
+        return Ok(None);
+    };
+    if !matches!(arch.name, "x86_64" | "aarch64" | "riscv64") {
+        return Ok(None);
+    }
+    let script = workspace_root().join("userland/vdso/vdso.ld");
+    let output_dir = workspace_root().join("target/vdso").join(arch.name);
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("{}: {e}", output_dir.display()))?;
+    let output = output_dir.join("vdso.so");
+    let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let link_script = format!("-Clink-arg=-T{}", script.display());
+    let link_output = format!("-Clink-arg=-o{}", output.display());
+    let status = Command::new(&cargo_bin)
+        .args([
+            "rustc",
+            "-p",
+            "eggos-vdso",
+            "--release",
+            "--target",
+            arch.user_target,
+            "--crate-type",
+            "cdylib",
+            "--",
+            "-Cpanic=abort",
+            "-Crelocation-model=pic",
+            "-Clink-arg=-nostdlib",
+            "-Clink-arg=-shared",
+            "-Clink-arg=--hash-style=both",
+            "-Clink-arg=-znoexecstack",
+            &link_script,
+            &link_output,
+        ])
+        .env("RUSTFLAGS", "--cfg eggos_user")
+        .current_dir(workspace_root())
+        .status()
+        .map_err(|e| format!("could not run {cargo_bin}: {e}"))?;
+    if !status.success() {
+        return Err(format!("building the vDSO for {} failed ({status})", arch.name));
+    }
+    Ok(Some(output.to_string_lossy().into_owned()))
 }
 
 fn json_string_field(line: &str, field: &str) -> Option<String> {

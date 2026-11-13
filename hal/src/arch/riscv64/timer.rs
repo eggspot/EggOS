@@ -18,6 +18,8 @@ const SBI_EXT_TIME: usize = 0x5449_4d45;
 const SBI_TIME_SET_TIMER: usize = 0;
 
 const SIE_STIE: usize = 1 << 5;
+/// `scounteren.TM`: U-mode may read `time`.
+const SCOUNTEREN_TIME: usize = 1 << 1;
 const SIE_SSIE: usize = 1 << 1;
 
 const SBI_EXT_IPI: usize = 0x73_5049;
@@ -42,6 +44,9 @@ pub(super) extern "C" fn init() {
             FREQUENCY.store(hertz, core::sync::atomic::Ordering::Relaxed);
         }
     }
+    // SAFETY: `scounteren.TM` only lets U-mode read the `time` CSR (`rdtime`), which the vDSO's
+    // clock reads use (D561); it changes nothing the kernel relies on.
+    unsafe { core::arch::asm!("csrs scounteren, {}", in(reg) SCOUNTEREN_TIME, options(nomem, nostack)) };
     disarm();
     // SAFETY: setting `sie.STIE` and `sie.SSIE` only lets the (now disarmed) timer interrupt and
     // the wake-up interrupt reach the trap vector, which is installed, once interrupts are

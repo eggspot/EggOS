@@ -557,6 +557,12 @@ pub trait Platform: 'static {
     /// them. Nothing at all on a machine with no source.
     fn random_seeds(seed: &mut dyn FnMut(random::SeedSource, &[u8]));
 
+    /// Whether programs may read [`Self::clock_ticks`]'s counter themselves (the vDSO's clock
+    /// reads, D561): x86_64's TSC, AArch64's virtual counter, RISC-V's `time`. False by default.
+    fn user_counter_readable() -> bool {
+        false
+    }
+
     /// Fills `bytes` from the CPU's own random number instruction (x86's `RDSEED` or `RDRAND`,
     /// AArch64's `RNDR`, RISC-V's Zkr `seed` CSR) and says whether it did; false on a CPU without
     /// one. The kernel reseeds from it on the virtio-rng schedule (D553). Nothing by default.

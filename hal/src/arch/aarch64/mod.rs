@@ -989,6 +989,10 @@ impl Platform for Aarch64 {
         crate::random::wipe(&mut bytes);
     }
 
+    fn user_counter_readable() -> bool {
+        true
+    }
+
     fn cpu_random(bytes: &mut [u8; 32]) -> bool {
         let features: u64;
         // SAFETY: reading `ID_AA64ISAR0_EL1` has no side effects.

@@ -978,6 +978,10 @@ impl Platform for X86_64 {
         crate::random::wipe(&mut bytes);
     }
 
+    fn user_counter_readable() -> bool {
+        true
+    }
+
     fn cpu_random(bytes: &mut [u8; 32]) -> bool {
         random::fill(bytes)
     }

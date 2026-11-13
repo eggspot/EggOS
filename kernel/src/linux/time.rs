@@ -104,6 +104,11 @@ fn nanoseconds_per_tick<P: Platform>() -> u64 {
     }
 }
 
+/// The scale [`monotonic_nanoseconds`] multiplies the counter by, for the vDSO (D561).
+pub fn nanoseconds_per_tick_for_vdso<P: Platform>() -> u64 {
+    nanoseconds_per_tick::<P>()
+}
+
 /// The monotonic clock in nanoseconds: one multiplication of [`Platform::clock_ticks`]. The
 /// factor is rounded up, so the clock never shows less time passing than the ticks did, and
 /// a sleep of a duration always reads as at least that long.

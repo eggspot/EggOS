@@ -10,6 +10,11 @@ fn main() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("cargo sets CARGO_CFG_TARGET_ARCH");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     linux_abi_cfgs(&manifest_dir.join("src").join("linux").join("abi"), &arch);
+    println!("cargo::rustc-check-cfg=cfg(eggos_vdso)");
+    println!("cargo:rerun-if-env-changed=EGGOS_VDSO");
+    if env::var_os("EGGOS_VDSO").is_some() {
+        println!("cargo::rustc-cfg=eggos_vdso");
+    }
     if env::var_os("CARGO_CFG_EGGOS_KERNEL").is_none() {
         return;
     }

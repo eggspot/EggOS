@@ -801,6 +801,10 @@ impl Platform for Riscv64 {
         crate::random::wipe(&mut bytes);
     }
 
+    fn user_counter_readable() -> bool {
+        true
+    }
+
     fn cpu_random(bytes: &mut [u8; 32]) -> bool {
         if !timer::has_zkr() {
             return false;

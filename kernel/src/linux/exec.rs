@@ -16,8 +16,8 @@
 //! musl's `ld.so`), which [`load_program`] loads beside it at a base of its own, top-down below
 //! the stack's guard gap as Linux places it, and starts instead (D167): `AT_BASE` tells the
 //! loader where it is, `AT_ENTRY` and `AT_PHDR` where the program is, and the loader maps the
-//! libraries itself with `mmap` of their files. There is no vDSO, so no `AT_SYSINFO_EHDR`: C
-//! libraries make the system calls instead. [`load`] alone refuses a program that names an
+//! libraries itself with `mmap` of their files. The vDSO is mapped for clock reads without a
+//! system call, `AT_SYSINFO_EHDR` saying where (D561), where the architecture has one. [`load`] alone refuses a program that names an
 //! interpreter with `ENOENT`, as Linux refuses one whose interpreter is missing; an
 //! interpreter that is not an ELF program for this machine is `ELIBBAD`. A program loaded from
 //! a file keeps it as its segments' backing ([`Program::from_file`]): a page `MADV_DONTNEED`
@@ -97,6 +97,7 @@ pub mod auxv {
     pub const CLKTCK: u64 = 17;
     pub const SECURE: u64 = 23;
     pub const RANDOM: u64 = 25;
+    pub const SYSINFO_EHDR: u64 = 33;
     pub const HWCAP2: u64 = 26;
     pub const EXECFN: u64 = 31;
     pub const MINSIGSTKSZ: u64 = 51;
@@ -348,6 +349,11 @@ pub fn load_program<P: Platform>(
             Some(check_loader(interpreter, &layout, user_end, slide)?)
         }
     };
+    process.set_mmap_slide(random_below::<P>(MMAP_SLOTS) * FRAME_SIZE);
+    let vdso = super::vdso::map_into(
+        process,
+        process.mmap_top(user_end - STACK_RESERVE - STACK_GUARD_GAP),
+    );
     let [hwcap, hwcap2] = P::linux_hardware_capabilities();
     let credentials = &mut process.credentials_and_limits_mut().credentials;
     credentials
@@ -374,6 +380,7 @@ pub fn load_program<P: Platform>(
         (auxv::EGID, u64::from(group.effective)),
         (auxv::SECURE, secure),
         (auxv::RANDOM, 0),
+        (auxv::SYSINFO_EHDR, vdso.unwrap_or(0)),
         (auxv::HWCAP2, hwcap2),
         (auxv::EXECFN, 0),
     ];
@@ -393,7 +400,6 @@ pub fn load_program<P: Platform>(
         map_segments(process, &loader.elf, loader.file.as_ref(), loader.bias)?;
     }
     process.set_program_break(layout.end + random_below::<P>(BREAK_SLOTS) * FRAME_SIZE);
-    process.set_mmap_slide(random_below::<P>(MMAP_SLOTS) * FRAME_SIZE);
     process
         .add_region(
             user_end - STACK_RESERVE,

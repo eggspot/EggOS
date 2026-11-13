@@ -219,6 +219,17 @@ fn set_offset<P: Platform>(nanoseconds: u64) {
     let offset = i128::from(nanoseconds) - i128::from(monotonic);
     let offset = offset.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
     OFFSET_NANOSECONDS.store(offset, Ordering::Relaxed);
+    publish_to_vdso::<P>();
+}
+
+/// Writes the clock data the vDSO reads (D561): the monotonic clock's scale and the wall
+/// clock's offset as they are now.
+pub fn publish_to_vdso<P: Platform>() {
+    crate::linux::vdso::publish(
+        crate::linux::time::nanoseconds_per_tick_for_vdso::<P>(),
+        OFFSET_NANOSECONDS.load(Ordering::Relaxed),
+        P::user_counter_readable(),
+    );
 }
 
 fn on_clock<P: Platform, R>(
