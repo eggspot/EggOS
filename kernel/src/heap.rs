@@ -78,8 +78,6 @@ pub struct Frames<'a>(pub &'a mut FrameAllocator);
 
 impl FrameSource for Frames<'_> {
     fn allocate_frames(&mut self, order: u32) -> Option<usize> {
-        // Blocks are aligned physically; they are aligned virtually (as `Layout`s need) only if
-        // the offset is, which every platform's direct map is, to far more than 4 MiB.
         debug_assert!(
             self.0
                 .physical_memory_offset()
@@ -157,7 +155,6 @@ impl Kind {
     /// `None` when the layout needs more than 2^[`MAX_ORDER`] frames.
     #[inline]
     fn of(layout: Layout) -> Option<Self> {
-        // At least 1: alignments are.
         let size = layout.size().max(layout.align());
         if size <= MAX_BLOCK {
             return Some(Kind::Block(usize::from(CLASS_OF[(size - 1) / MIN_BLOCK])));
@@ -663,7 +660,6 @@ unsafe impl GlobalAlloc for KernelHeap {
 
     #[inline]
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // `GlobalAlloc` callers pass a `new_size` that is valid with `layout`'s alignment.
         let Ok(new) = Layout::from_size_align(new_size, layout.align()) else {
             return ptr::null_mut();
         };
@@ -857,7 +853,6 @@ mod tests {
 
     #[test]
     fn exhausted_memory_and_layouts_larger_than_the_largest_block_return_none() {
-        // One of the 4 frames holds the buddy allocator's metadata.
         let mut allocator = frames(4);
         let mut frames = Frames(&mut allocator);
         let mut heap = Heap::new();

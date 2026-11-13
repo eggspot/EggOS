@@ -503,16 +503,12 @@ fn start_with(
         let stack = GlobalFrames
             .allocate_frames(STACK_ORDER)
             .ok_or(StartError::OutOfMemory)?;
-        // Leaked: the CPU may read it until it calls its entry, which the boot CPU does not
-        // wait for. A few words, once per CPU.
         let start = Box::leak(Box::new(CpuStart {
             stack_top: stack + STACK_SIZE,
             entry,
             argument: ptr::from_ref(cpu) as usize,
             page_table_roots,
         }));
-        // A refused CPU keeps its stack, like its `CpuStart`: on x86 a CPU that missed its
-        // deadline may still start late, and must not find the frames reused.
         start_cpu(cpu.hardware_id(), start)
             .map_err(|error| StartError::Refused(cpu.hardware_id(), error))?;
     }
@@ -532,7 +528,6 @@ extern "C" fn secondary_main<P: Platform>(cpu: usize) -> ! {
     unsafe { P::set_cpu_local(cpu) };
     let _ = crate::user_view::set_up::<P>();
     let cpu = current::<P>();
-    // A deadline already passed fires at once.
     P::set_timer_deadline(P::clock_ticks());
     while cpu.timer_interrupts() == 0 {
         P::wait_for_interrupt();
@@ -572,7 +567,6 @@ mod tests {
 
     #[test]
     fn a_cpu_that_has_not_reported_in_is_not_woken() {
-        // The test platform has no wake-up interrupt: raising one panics.
         wake::<crate::tests::TestPlatform>(Cpu::for_test(1));
     }
 
@@ -583,7 +577,6 @@ mod tests {
         let roots = [0x1000, 0x2000];
         let mut seen = Vec::new();
         let started = start_with(table, boot, &[7, 3, 9], roots, never, |id, start| {
-            // What the HAL's entry code would do: run on the stack, find the block.
             assert_eq!(start.stack_top % 16, 0);
             assert_eq!(start.page_table_roots, roots);
             // SAFETY: the argument is a leaked `Cpu`, whose first word is `this`.
@@ -632,7 +625,6 @@ mod tests {
             Err(StartError::Refused(2, StartCpuError::InvalidCpu))
         );
         assert_eq!(starts, 2);
-        // CPUs 1 and 2 keep their stacks (2 might still start late); CPU 4's is never taken.
         assert_eq!(free_frames(), before - (2 << STACK_ORDER));
         assert_eq!(table.online(), 1);
         assert_eq!(table.all().len(), 4);
@@ -676,7 +668,6 @@ mod tests {
         assert_eq!(cpu.see_scheduler_events(), 1);
         assert!(!cpu.reschedule_requested());
         assert_eq!(cpu.unseen_by_scheduler.load(Ordering::Relaxed), 0);
-        // A request alone: the scheduler looks, and sees no timer interrupt.
         cpu.request_reschedule();
         assert_ne!(cpu.unseen_by_scheduler.load(Ordering::Relaxed), 0);
         assert_eq!(cpu.see_scheduler_events(), 0);
@@ -698,7 +689,6 @@ mod tests {
             })
         );
         assert_eq!(table.all().len(), 1);
-        // Also when the firmware lists none at all.
         let (table, boot) = machine(5);
         assert!(start_with(table, boot, &[], [0; 2], never, |_, _| Ok(())).is_ok());
         assert_eq!(table.all().len(), 1);

@@ -276,10 +276,6 @@ impl FrameAllocator {
             stack_high_watermark: (map.total() / FRAME_SIZE / STACK_SHARE).max(MIN_STACK_HIGH_WATERMARK),
             buddy: Buddy::none(),
         };
-        // The buddy allocator's metadata covers the frames of each range in the map, not the
-        // holes between them (D551). It is taken from the top of the highest range that keeps
-        // a frame besides it, but not written until the buddy allocator is first used; without
-        // such a range, there is no buddy allocator (only single frames).
         if !map.ranges().is_empty() {
             let bytes = Buddy::bitmap_bytes(map);
             if let Some(bitmap) = allocator.take_from_untouched(bytes) {
@@ -527,7 +523,6 @@ impl FrameAllocator {
             let start = range.end.checked_sub(size)? / size * size;
             (start >= range.start).then_some(start)
         };
-        // `None` is `current`, `Some(i)` the untouched range `i`; highest first.
         let (index, block) = core::iter::once(None)
             .chain((0..self.untouched_ranges).rev().map(Some))
             .find_map(|index| {
@@ -546,8 +541,6 @@ impl FrameAllocator {
         if let Some(i) = index
             && self.untouched[i].is_empty()
         {
-            // Only `current` may be empty: `allocate` moves on to the next range without
-            // checking it.
             self.untouched.copy_within(i + 1..self.untouched_ranges, i);
             self.untouched_ranges -= 1;
         }
@@ -1137,7 +1130,6 @@ mod tests {
 
     impl Arena {
         fn new(base: u64, frames: u64) -> Self {
-            // One extra frame, so an aligned run of `frames` frames fits.
             let memory = vec![0u8; ((frames + 1) * K) as usize];
             Self {
                 memory,
@@ -1167,7 +1159,6 @@ mod tests {
         let b = arena.base;
         let map = arena.map(&[(b, b + 4 * K), (b + 8 * K, b + 10 * K)]);
         let mut frames = FrameAllocator::new(&map, arena.offset());
-        // The top frame holds the buddy allocator's bitmap.
         assert_eq!(frames.free_frames(), 5);
         let got: Vec<u64> = core::iter::from_fn(|| frames.allocate()).collect();
         assert_eq!(
@@ -1220,11 +1211,9 @@ mod tests {
         unsafe {
             frames.free(second);
         }
-        // The top frame holds the buddy allocator's bitmap.
         assert_eq!(frames.free_frames(), 7);
         assert_eq!(frames.allocate(), Some(second));
         assert_eq!(frames.allocate(), Some(first));
-        // Then untouched memory again.
         assert_eq!(frames.allocate(), Some(b + 4 * K));
         assert_eq!(frames.free_frames(), 4);
     }
@@ -1255,8 +1244,6 @@ mod tests {
         // SAFETY: every frame in `chain` came from this allocator and is not used any more.
         unsafe { frames.free_chain(chain) };
         assert_eq!(frames.free_frames(), free + 3);
-        // Last pushed first, as if freed one by one, then what was on the free stack before,
-        // then untouched memory (the top frame holds the buddy allocator's bitmap).
         assert_eq!(frames.allocate(), Some(taken[2]));
         assert_eq!(frames.allocate(), Some(taken[1]));
         assert_eq!(frames.allocate(), Some(taken[0]));
@@ -1278,15 +1265,12 @@ mod tests {
 
     #[test]
     fn contiguous_blocks_of_every_order_are_aligned_and_merge_back() {
-        // A base aligned to 1 MiB only, so 4 MiB alignment needs real carving.
         let mut arena = Arena::new(0x10_0000, 2100);
         let b = arena.base;
         let map = arena.map(&[(b, b + 2100 * K)]);
         let mut frames = FrameAllocator::new(&map, arena.offset());
         let total = frames.free_frames();
         let mut owned = Vec::new();
-        // Largest first: the other way round, the small blocks carved from the top would leave
-        // no aligned 4 MiB run in 8 MiB of RAM.
         for order in (0..=MAX_ORDER).rev() {
             let block = frames.allocate_contiguous(order).unwrap();
             assert_eq!(block % (K << order), 0, "order {order} block unaligned");
@@ -1304,7 +1288,6 @@ mod tests {
             unsafe { frames.free_contiguous(block, order) };
         }
         assert_eq!(frames.free_frames(), total);
-        // The freed order-10 block is whole again.
         let block = frames.allocate_contiguous(MAX_ORDER).unwrap();
         assert_eq!(block % (K << MAX_ORDER), 0);
     }
@@ -1314,8 +1297,6 @@ mod tests {
         let mut arena = Arena::new(0x40_0000, 64);
         let b = arena.base;
         let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 64 * K)]), arena.offset());
-        // Carved top down from frames 0..63 (the bitmap took frame 63): 56, 52, 48. The first
-        // block's buddy, 60, is partly the carving's leftovers; 52 and 48 are buddies.
         let blocks = [0; 3].map(|_| frames.allocate_contiguous(2).unwrap());
         assert_eq!(blocks, [56, 52, 48].map(|i| b + i * K));
         // SAFETY: both came from this allocator with order 2 and are unused.
@@ -1342,7 +1323,6 @@ mod tests {
         assert_eq!(block % (16 * K), 0);
         touch(&frames, block, 4);
         assert_eq!(frames.free_frames(), total - 16);
-        // Single frames still come from what is left, the stack and then the buddy allocator.
         let rest: Vec<u64> = core::iter::from_fn(|| frames.allocate()).collect();
         assert_eq!(rest.len() as u64, total - 16);
         assert!(rest.iter().all(|&f| f < block || f >= block + 16 * K));
@@ -1352,12 +1332,10 @@ mod tests {
     fn the_bitmap_goes_where_it_fits_or_there_is_no_buddy_allocator() {
         let mut arena = Arena::new(0x10_0000, 16);
         let b = arena.base;
-        // The highest range is a single frame: the bitmap goes to the top of the one below.
         let map = arena.map(&[(b, b + 8 * K), (b + 12 * K, b + 13 * K)]);
         let frames = FrameAllocator::new(&map, arena.offset());
         assert_eq!(frames.buddy.bitmap, b + 7 * K);
         assert_eq!(frames.free_frames(), 8);
-        // No range keeps a frame besides the bitmap: single frames only.
         let map = arena.map(&[(b, b + K)]);
         let mut frames = FrameAllocator::new(&map, arena.offset());
         assert_eq!(frames.allocate_contiguous(1), None);
