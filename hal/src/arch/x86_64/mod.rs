@@ -38,11 +38,8 @@ use port::PortIo;
 
 core::arch::global_asm!(
     r#"
-    // The image's virtual address minus its physical address. The 32-bit code below runs at
-    // physical addresses with paging off, so it subtracts this from every symbol.
     .set    KERNEL_VIRTUAL_OFFSET, {kernel_virtual_offset}
 
-    // PVH entry point note (XEN_ELFNOTE_PHYS32_ENTRY = 18), read by the loader.
     .pushsection .note.Xen, "a", @note
     .balign 4
     .long 4                     // name size
@@ -61,7 +58,6 @@ _start32:
     cld
     movl    %ebx, %esi              // keep the hvm_start_info address
 
-    // Zero .bss (16-byte aligned and sized by the linker script); the page tables live there.
     movl    $(__bss_start - KERNEL_VIRTUAL_OFFSET), %edi
     movl    $(__bss_end - KERNEL_VIRTUAL_OFFSET), %ecx
     subl    %edi, %ecx
@@ -70,11 +66,6 @@ _start32:
 
     movl    %esi, ({start_info} - KERNEL_VIRTUAL_OFFSET)
 
-    // The boot page tables (D33): the first 4 GiB with 2 MiB pages, at their physical
-    // addresses (PML4[0], only for the switch to long mode and the jump below) and in the
-    // boot direct map (PML4[{direct_map_index}]): RAM below 4 GiB, ACPI tables, MMIO. The
-    // kernel's virtual addresses (PML4[511], PDPT entry {kernel_pdpt_index}) map its first
-    // gigabyte.
     movl    $(boot_pdpt - KERNEL_VIRTUAL_OFFSET), %eax
     orl     $0x3, %eax              // present, writable
     movl    %eax, (boot_pml4 - KERNEL_VIRTUAL_OFFSET)
@@ -85,7 +76,6 @@ _start32:
     movl    $(boot_pd - KERNEL_VIRTUAL_OFFSET), %eax
     orl     $0x3, %eax
     movl    %eax, (boot_pdpt_kernel - KERNEL_VIRTUAL_OFFSET + {kernel_pdpt_index} * 8)
-    // PDPT[0..4] -> the four page directories.
     xorl    %ecx, %ecx
 1:  movl    %ecx, %eax
     shll    $12, %eax
@@ -96,7 +86,6 @@ _start32:
     cmpl    $4, %ecx
     jne     1b
 
-    // 2048 2 MiB pages: 0 .. 4 GiB.
     xorl    %ecx, %ecx
 2:  movl    %ecx, %eax
     shll    $21, %eax
@@ -106,7 +95,6 @@ _start32:
     cmpl    $2048, %ecx
     jne     2b
 
-    // Long mode: PAE, page tables, EFER.LME, then paging.
     movl    %cr4, %eax
     orl     $(1 << 5), %eax
     movl    %eax, %cr4
@@ -125,8 +113,6 @@ _start32:
 
     .code64
 start64:
-    // Continue at the kernel's virtual address, then point the GDTR there too: the low
-    // identity map goes away once the kernel's own page tables are active.
     movabsq $start64_high, %rax
     jmpq    *%rax
 start64_high:
@@ -221,16 +207,10 @@ uefi_start64_high:
     lretq
     .popsection
 
-    // A secondary CPU's 64-bit entry from the trampoline (D40): the `CpuStart`'s address and
-    // the kernel's root from it, then the kernel's tables (the boot ones map only 4 GiB, not
-    // the `CpuStart` or its stack wherever they are), the stack; then the kernel's GDT
-    // and segments as in `start64_high` (CS through a far return, which needs the stack), and
-    // the IDT.
     .pushsection .text.boot, "ax"
 secondary_start64:
     movq    {trampoline} + (eggos_trampoline_start_slot - eggos_trampoline_start), %rbx
     movq    {trampoline} + (eggos_trampoline_page_table_root - eggos_trampoline_start), %rax
-    // The slot is read: the boot CPU may reuse it for the next CPU.
     movl    $1, {trampoline} + (eggos_trampoline_taken - eggos_trampoline_start)
     movq    %rax, %cr3
     movq    {start_stack_top}(%rbx), %rsp
@@ -253,12 +233,6 @@ secondary_start64:
     jmp     2b
     .popsection
 
-    // The trampoline that starts a secondary CPU (D40), copied to physical address
-    // {trampoline} (page {trampoline_page}, the start-up vector) before the CPUs are started;
-    // never run where it is linked. The start-up interrupt starts the CPU in real mode at
-    // {trampoline}: protected mode with the trampoline's own GDT, then long mode with the boot
-    // page tables (below 4 GiB, as a 32-bit CR3 needs), then on to `secondary_start64` at the
-    // kernel's virtual address. Addresses are the copy's: {trampoline} + offset.
     .pushsection .rodata.trampoline, "a"
     .balign 16
     .global eggos_trampoline_start
@@ -307,8 +281,6 @@ trampoline_gdt_pointer:
     .word trampoline_gdt_end - trampoline_gdt - 1
     .long {trampoline} + (trampoline_gdt - eggos_trampoline_start)
     .balign 8
-    // Written by the boot CPU in the copy before each start: the `CpuStart`'s address, the
-    // kernel's page-table root, and a flag the CPU sets once it has read them.
     .global eggos_trampoline_start_slot
 eggos_trampoline_start_slot:
     .quad 0
@@ -327,8 +299,6 @@ eggos_trampoline_end:
     .balign 8
 boot_gdt:
     .quad 0                         // null descriptor
-    // Accessed bits preset, so the CPU never writes the GDT (it is in read-only memory once
-    // the kernel's page tables are active).
     .quad 0x00af9b000000ffff        // 0x08: 64-bit code, ring 0
     .quad 0x00cf93000000ffff        // 0x10: data, ring 0
 boot_gdt_end:

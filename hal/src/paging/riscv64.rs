@@ -139,17 +139,14 @@ mod tests {
     fn encodings_match_the_specification() {
         assert_eq!(Riscv64Sv39::table(0x8020_1000, 2, false), 0x2008_0401);
         assert_eq!(Riscv64Sv39::table(0x8020_1000, 2, true), 0x2008_0401);
-        // Data page: V | R | W | A | D.
         assert_eq!(
             Riscv64Sv39::leaf(0x8020_0000, 0, Attributes::READ_WRITE),
             0x2008_00c7
         );
-        // User data page: V | R | W | U | A | D.
         assert_eq!(
             Riscv64Sv39::leaf(0x8020_0000, 0, Attributes::USER_READ_WRITE),
             0x2008_00d7
         );
-        // Code megapage: V | R | X | A | D.
         assert_eq!(
             Riscv64Sv39::leaf(0x8020_0000, 1, Attributes::TEXT),
             0x2008_00cb

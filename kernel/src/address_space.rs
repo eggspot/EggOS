@@ -310,7 +310,6 @@ impl<P: Platform> AddressSpace<P> {
             .tables
             .lock()
             .change_user_pages(virt, length, change, unmapped);
-        // Even after an error: part of the range may have changed.
         self.drop_old_translations(virt, length, self.spread.load(Ordering::Relaxed));
         result
     }
@@ -403,8 +402,6 @@ impl<P: Platform> AddressSpace<P> {
         if here.active_address_space() == root {
             P::drop_user_translations(virt, length);
         }
-        // The entries before any look at another CPU's record (`mark_stale` explains why a
-        // record read before a switch is fine).
         fence(Ordering::SeqCst);
         if spread {
             shoot_down_elsewhere::<P>(cpu::CPUS.all(), here, root);
@@ -434,7 +431,6 @@ impl<P: Platform> AddressSpace<P> {
     pub fn with_active<R>(&self, active: impl FnOnce() -> R) -> R {
         let here = cpu::current::<P>();
         let root = self.roots()[0];
-        // A process's address space this CPU kept loaded is not in use: put it away first.
         unload_lazily_loaded::<P>(here);
         assert!(
             here.active_address_space() == cpu::NO_ADDRESS_SPACE,
@@ -502,8 +498,6 @@ impl<P: Platform> AddressSpace<P> {
         here: &'static Cpu,
         owner: Arc<dyn Any + Send + Sync>,
     ) {
-        // Held throughout (only this CPU takes it), so the slot is known empty when it is
-        // filled below and nothing is dropped there.
         let mut slot = here.lazily_loaded.lock();
         let previous = slot.take();
         assert!(
@@ -529,9 +523,6 @@ impl<P: Platform> AddressSpace<P> {
             root_count: self.roots().len(),
         });
         drop(slot);
-        // Freed, if this CPU held its last reference, now that it is not loaded. Other CPUs that
-        // keep it are not woken here, which would cost every switch a look at every CPU: one
-        // whose last look raced with this switch keeps it until something wakes it (roadmap).
         drop(previous);
     }
 
@@ -878,7 +869,6 @@ mod tests {
 
     #[test]
     fn the_last_page_before_the_non_canonical_hole_is_never_user_space() {
-        // A `syscall` at its end would return to a non-canonical address (x86_64).
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let space = new_space(&kernel).unwrap();
@@ -921,7 +911,6 @@ mod tests {
         let before = free_frames();
         {
             let space = new_space(&kernel).unwrap();
-            // Pages far apart, so each needs tables of its own at every level.
             for (i, virt) in [0, USER_VIRT, 1 << 30, 1 << 39, (1 << 47) - 2 * FRAME_SIZE]
                 .into_iter()
                 .enumerate()
@@ -969,7 +958,6 @@ mod tests {
             first.roots()[0],
             "the second never became active"
         );
-        // As if the first thread had switched back: the next use starts clean.
         let here = cpu::current::<P>();
         assert_eq!(here.active_address_space(), first.roots()[0]);
         here.set_active_address_space(cpu::NO_ADDRESS_SPACE);
@@ -1020,7 +1008,6 @@ mod tests {
         assert_eq!(keeping.active_address_space(), root | cpu::STALE);
         assert_eq!(other.active_address_space(), 0x9_0000);
         assert_eq!(idle.active_address_space(), cpu::NO_ADDRESS_SPACE);
-        // Still holding it, for the counts that let it go; marked once.
         assert!(keeping.holds(root));
         assert!(!idle.holds(root) && !other.holds(root));
         mark_stale_elsewhere(&[here, keeping], here, root);
@@ -1167,7 +1154,6 @@ mod tests {
                     .map(virt, frame, FRAME_SIZE, Attributes::USER_READ_WRITE)
                     .unwrap();
             }
-            // Across a large unmapped stretch too, which is skipped a table at a time.
             let mut seen = Vec::new();
             space
                 .change_pages(
@@ -1196,7 +1182,6 @@ mod tests {
                 Some((frames[1], Attributes::USER_READ_ONLY))
             );
             assert_eq!(space.translate(USER_VIRT + 2 * FRAME_SIZE), None);
-            // A kept page is seen as such, and can be mapped again; nothing maps over it.
             assert_eq!(
                 space.map(
                     USER_VIRT,
@@ -1233,7 +1218,6 @@ mod tests {
                 Err(MapError::NotUser)
             );
         }
-        // The kept frame and the read-only one go with the tables.
         assert_eq!(free_frames(), before);
     }
 }

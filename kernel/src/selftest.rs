@@ -73,7 +73,6 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 54] {
         ("console_input_arrives_by_interrupt", |_| {
             console_input_arrives_by_interrupt::<P>()
         }),
-        // Before the secondary CPUs start: it asks the HAL for seeds again.
         ("random_generator_is_seeded", |_| {
             random_generator_is_seeded::<P>()
         }),
@@ -162,7 +161,6 @@ pub fn all<P: Platform>() -> [SelfTest<Memory<P>>; 54] {
             "linux_memory_calls_take_effect_at_once",
             linux_memory_calls_take_effect_at_once::<P>,
         ),
-        // Before the secondary CPUs start: every program on one CPU.
         ("linux_programs_keep_their_thread_pointers", |memory| {
             linux_programs_keep_their_thread_pointers::<P>(memory, 3)
         }),
@@ -338,13 +336,9 @@ fn bss_is_zeroed() -> Result<(), &'static str> {
 /// A breakpoint must reach the kernel's exception handler through the architecture's vectors
 /// and come back to the next instruction with the interrupted code's state intact.
 fn breakpoint_resumes<P: Platform>() -> Result<(), &'static str> {
-    // Values live across the breakpoint, in registers or on the stack (the `asm!` block
-    // declares no clobbers), so a handler that corrupts either changes the result.
     let live = [1u64, 2, 3, 4, 5, 6, 7, 8].map(|n| core::hint::black_box(n * 0x0101_0101_0101));
     let before = exception::breakpoints_taken();
     P::breakpoint();
-    // Greater rather than exactly one more: host unit tests run in parallel and may take
-    // breakpoints of their own at the same time.
     if exception::breakpoints_taken() <= before {
         return Err("the breakpoint did not reach the kernel's exception handler");
     }
@@ -368,7 +362,6 @@ fn timer_interrupt_fires<P: Platform>() -> Result<(), &'static str> {
     let deadline = start + frequency / 1000;
     let give_up = start + frequency;
     P::set_timer_deadline(deadline);
-    // Greater rather than exactly one more, as in `breakpoint_resumes`.
     while interrupt::timer_interrupts::<P>() <= before {
         if P::clock_ticks() > give_up {
             return Err("no timer interrupt within 1 s of its deadline");
@@ -475,7 +468,6 @@ fn every_frame_is_usable_ram(frames: &mut FrameAllocator) -> Result<(), &'static
     {
         return Err("freed frames did not come back last in, first out");
     }
-    // Every other frame, chained through its first word so they can all be given back.
     let mut handed_out = taken.len() as u64;
     let mut chain = None;
     while let Some(frame) = frames.allocate() {
@@ -813,7 +805,6 @@ fn user_programs_make_system_calls_and_fault<P: Platform>(
         let mut context = Process::<P>::test_program_context(|program| program.spin);
         let spin = context.pc();
         let timer_interrupts = interrupt::timer_interrupts::<P>();
-        // A deadline already passed: the interrupt is pending as the program starts.
         P::set_timer_deadline(0);
         // SAFETY: as above.
         if unsafe { P::run_user(&mut context) } != UserExit::Interrupt {
@@ -1115,7 +1106,6 @@ fn processes_are_preempted_on_return_to_user_mode<P: Platform>(
     }
     let took_turns = threads.len() == 2 && all_turns(&threads);
     STOP.store(true, Ordering::Relaxed);
-    // Each ends at its next interrupt: this thread's sleeps provide them once one runs alone.
     let give_up = P::clock_ticks() + THREADS_MEET_TIMEOUT_MS * millisecond;
     while !threads.iter().all(|(thread, _)| thread.is_finished()) {
         if P::clock_ticks() >= give_up {
@@ -1430,7 +1420,6 @@ fn linux_memory_calls_take_effect_at_once<P: Platform>(
         let top = start + 2 * HALF;
         let entry = Process::<P>::test_program_context(|program| program.stack_growth).pc();
         let walk = move || UserContext::new(entry, top - 16);
-        // Where each walk stopped, and the first thing that went wrong.
         let stops = Arc::new(SpinLock::new(Vec::new()));
         let failure = Arc::new(SpinLock::new(None));
         let handler = {
@@ -1542,8 +1531,6 @@ fn linux_programs_keep_their_thread_pointers<P: Platform>(
     let mut before = None;
     for round in 0..2 {
         if round == 1 {
-            // After the CPUs let go of the first round's address spaces, which they keep
-            // loaded until they need another.
             if !release_loaded_address_spaces::<P>(|| true) {
                 return Err("a CPU kept an ended process's address space loaded");
             }
@@ -1590,7 +1577,6 @@ fn linux_programs_keep_their_thread_pointers<P: Platform>(
 fn linux_programs_poll_the_console<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    // A page below the stack pointer for the program's structures.
     const STACK_TOP: u64 = 0x70_0000;
     let wait = mul_div_ceil(
         TestProgram::LINUX_POLL_WAIT_NS,
@@ -1600,8 +1586,6 @@ fn linux_programs_poll_the_console<P: Platform>(
     let mut before = None;
     for round in 0..2 {
         if round == 1 {
-            // After the CPU lets go of the first run's address space, which it keeps loaded
-            // until it needs another.
             if !release_loaded_address_spaces::<P>(|| true) {
                 return Err("a CPU kept an ended process's address space loaded");
             }
@@ -1648,7 +1632,6 @@ fn linux_programs_poll_the_console<P: Platform>(
 fn linux_programs_signal_themselves<P: Platform>(
     memory: &mut Memory<P>,
 ) -> Result<(), &'static str> {
-    // A page below the stack pointer for the program's signal sets.
     const STACK_TOP: u64 = 0x70_0000;
     const SIGUSR1: u32 = 10;
     let mut before = None;
@@ -2088,8 +2071,6 @@ fn run_handling_program<P: Platform>(
     offset: usize,
 ) -> Result<(), HandlingFailure> {
     use HandlingFailure::{Failed, Killed, Other};
-    // Three pages below the stack pointer: the program's structures, then its alternate stack,
-    // which holds the handler's frame.
     const STACK_TOP: u64 = 0x70_0000;
     let mut before = None;
     for round in 0..2 {
@@ -2203,8 +2184,6 @@ fn heap_allocates_in_the_direct_map<P: Platform>(
             return Err("heap memory is not aligned, writable memory in the direct map");
         }
     }
-    // Each allocation filled with its own number, written only once all exist, so any overlap
-    // shows.
     for (number, (&pointer, &(size, _))) in taken.iter().zip(&LAYOUTS).enumerate() {
         // SAFETY: `pointer` is a live allocation of `size` bytes.
         unsafe { pointer.write_bytes(number as u8 + 1, size) };
@@ -2222,7 +2201,6 @@ fn heap_allocates_in_the_direct_map<P: Platform>(
         // SAFETY: allocated above with this layout and no longer used.
         unsafe { HEAP.dealloc(pointer, layout) };
     }
-    // The size classes keep the frames they carved; only the whole frames come back.
     if free_frames() != Some(free_before + WHOLE_FRAMES) {
         return Err("freeing did not give back exactly the whole-frame allocations' frames");
     }
@@ -2264,8 +2242,6 @@ fn threads_take_turns_and_free_their_stacks<P: Platform>() -> Result<(), &'stati
             .as_ref()
             .map(FrameAllocator::free_frames)
     };
-    // Two threads that only exit, and room for the log, bring the heap's size classes for the
-    // bookkeeping into use, so the frames counted below are only the stacks'.
     let warm_up = (thread::spawn::<P, _>(|| {}), thread::spawn::<P, _>(|| {}));
     let (Ok(first), Ok(second)) = warm_up else {
         return Err("could not start two threads");
@@ -2296,7 +2272,6 @@ fn threads_take_turns_and_free_their_stacks<P: Platform>() -> Result<(), &'stati
     if log.contains(&u64::MAX) {
         return Err("values live across a switch changed (registers or stack not restored)");
     }
-    // The boot thread (3) goes first: spawning does not switch.
     if log != [30, 10, 20, 31, 11, 21, 32, 12, 22] {
         return Err("the threads did not take turns in round-robin order");
     }
@@ -2315,8 +2290,6 @@ fn threads_are_preempted_at_preemption_points<P: Platform>() -> Result<(), &'sta
     let first = thread::spawn::<P, _>(move || {
         while !SECOND_RAN.load(Ordering::Relaxed) {
             thread::preemption_point::<P>();
-            // Rechecked after the preemption point, which takes a tick already pending: a
-            // host that stalled the machine past `give_up` does not fail the test.
             if !SECOND_RAN.load(Ordering::Relaxed) && P::clock_ticks() > give_up {
                 GAVE_UP.store(true, Ordering::Relaxed);
                 return;
@@ -2545,7 +2518,6 @@ fn threads_sleep_wait_and_run_tickless<P: Platform>() -> Result<(), &'static str
     OPEN.store(false, Ordering::Relaxed);
     let waiter = thread::spawn::<P, _>(|| QUEUE.wait_until::<P>(|| OPEN.load(Ordering::Acquire)))
         .map_err(|_| "could not start a thread")?;
-    // The waiter runs, finds the queue closed and waits.
     thread::yield_now::<P>();
     if waiter.is_finished() {
         return Err("a thread did not wait for its condition");
@@ -2703,7 +2675,6 @@ fn threads_run_on_every_cpu<P: Platform>() -> Result<(), &'static str> {
             }
             WAITING.fetch_add(1, Ordering::Release);
             QUEUE.wait_until::<P>(|| OPEN.load(Ordering::Acquire));
-            // Long enough for the boot thread to block in `join`.
             thread::sleep_until::<P>(P::clock_ticks() + millisecond);
             if !core::ptr::eq(cpu::current::<P>(), here) {
                 MOVED.store(true, Ordering::Relaxed);
@@ -2716,7 +2687,6 @@ fn threads_run_on_every_cpu<P: Platform>() -> Result<(), &'static str> {
     while WAITING.load(Ordering::Acquire) < taking_part - 1 && P::clock_ticks() < give_up {
         core::hint::spin_loop();
     }
-    // Long enough for the threads to block in the queue, so the wake comes from afar.
     thread::sleep_until::<P>(P::clock_ticks() + millisecond);
     let wakeups_before: Vec<u64> = cpus[1..taking_part]
         .iter()
@@ -2779,7 +2749,6 @@ fn threads_move_to_idle_cpus<P: Platform>() -> Result<(), &'static str> {
     GAVE_UP.store(false, Ordering::Relaxed);
     let millisecond = P::clock_frequency() / 1000;
     let give_up = P::clock_ticks() + THREADS_SPREAD_TIMEOUT_MS * millisecond;
-    // Runs at preemption points until it and `other` are seen on two CPUs.
     let side_by_side = move |mine: &AtomicUsize, other: &AtomicUsize| loop {
         let here = cpu::current::<P>().index() + 1;
         mine.store(here, Ordering::Relaxed);
@@ -2808,8 +2777,6 @@ fn threads_move_to_idle_cpus<P: Platform>() -> Result<(), &'static str> {
     while !ASLEEP.load(Ordering::Acquire) && P::clock_ticks() < give_up {
         core::hint::spin_loop();
     }
-    // Long enough for the sleeper to block, leaving its CPU idle, the lowest-numbered one, with
-    // a margin for a host that stalls the machine: the sleeper sleeps four times as long.
     thread::sleep_until::<P>(P::clock_ticks() + 5 * millisecond);
     let sleeper_on = SLEEPER_ON.load(Ordering::Relaxed);
     let busy = thread::spawn::<P, _>(move || {
@@ -3125,7 +3092,6 @@ mod tests {
             unsafe { crate::tests::TestPlatform::set_cpu_local(block) }
         }
         fn cpu_local() -> usize {
-            // The test machine's one CPU.
             crate::tests::TestPlatform::cpu_local()
         }
         fn wake_cpu(_cpu: u64) {
@@ -3144,7 +3110,6 @@ mod tests {
 
     #[test]
     fn no_free_memory_fails() {
-        // One frame of RAM, which the page tables' root takes.
         let memory = vec![0u8; 2 * 4096].leak();
         let start = (memory.as_mut_ptr() as usize).next_multiple_of(4096);
         let mut map = eggos_hal::MemoryMap::new();

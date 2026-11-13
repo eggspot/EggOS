@@ -27,10 +27,7 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
-    // SBI starts only the boot hart; others stay stopped until started through SBI HSM. The
-    // MMU is off, so `lla` (PC-relative) gives physical addresses until the jump below.
 
-    // Zero .bss (8-byte aligned and sized by the linker script); the boot page table is there.
     lla     t0, __bss_start
     lla     t1, __bss_end
 1:  bgeu    t0, t1, 2f
@@ -38,17 +35,11 @@ _start:
     addi    t0, t0, 8
     j       1b
 
-    // Keep the device-tree address and this hart's id (after zeroing .bss, where they are
-    // stored).
 2:  lla     t0, {device_tree}
     sd      a1, 0(t0)
     lla     t0, {boot_hart}
     sd      a0, 0(t0)
 
-    // The boot page table (D33), one Sv39 root of 1 GiB leaves: the gigabyte holding the
-    // kernel, read, write and execute, at its physical address (only for the jump below) and
-    // at the kernel's virtual address, and the boot direct map: the first
-    // {direct_map_gigabytes} GiB of physical memory, read and write, at the direct map offset.
     lla     t0, {boot_root}
     lla     t1, __kernel_start
     srli    t1, t1, 30
@@ -76,7 +67,6 @@ _start:
     addi    t4, t4, -1
     bnez    t4, 3b
 
-    // Turn on translation, then continue at the kernel's virtual address.
     call    boot_translation_on
     lla     t0, 9f
     ld      t0, 0(t0)
@@ -86,7 +76,6 @@ _start:
 8:  .dword  __kernel_start
 9:  .dword  4f
 
-    // From here on the kernel runs at its virtual address, and `lla` gives virtual addresses.
 4:  lla     sp, __stack_top
 
     li      t0, (3 << 13) | (3 << 9)
@@ -98,8 +87,6 @@ _start:
 5:  wfi
     j       5b
 
-    // Turns translation on with the boot page table, from code running at its physical
-    // address: the identity gigabyte keeps the return address mapped. Clobbers t0 and t1.
 boot_translation_on:
     lla     t0, {boot_root}
     srli    t0, t0, 12
@@ -110,10 +97,6 @@ boot_translation_on:
     sfence.vma
     ret
 
-    // A secondary hart, started by SBI HSM `hart_start` (D40): S-mode, translation off,
-    // interrupts masked, a0 = its hart id, a1 = the opaque value, the kernel virtual address
-    // of the `CpuStart`. The boot page table is still in .bss and maps the `CpuStart` and its
-    // stack (the kernel image and the direct map).
     .global eggos_secondary_start
 eggos_secondary_start:
     mv      s1, a1
@@ -493,7 +476,6 @@ impl Platform for Riscv64 {
         // RAM, which the direct map covers (`device_tree` checks it is inside the boot direct
         // map).
         let mut map = unsafe { boot_memory::device_tree_memory_map(device_tree()) };
-        // The kernel's page tables are built through the boot direct map.
         map.retain_within(PhysicalRange {
             start: 0,
             end: BOOT_DIRECT_MAP_END,
@@ -519,8 +501,6 @@ impl Platform for Riscv64 {
     fn physical_memory() -> MemoryMap {
         // SAFETY: as in `memory_map`.
         let mut map = unsafe { boot_memory::device_tree_ram(device_tree()) };
-        // RAM beyond the boot direct map is never handed out (see `memory_map`), so it is left
-        // unmapped.
         map.retain_within(PhysicalRange {
             start: 0,
             end: BOOT_DIRECT_MAP_END,
@@ -574,12 +554,8 @@ impl Platform for Riscv64 {
         // SAFETY: a full fence orders this hart's earlier stores before its later accesses and
         // table walks; it changes no memory contents.
         unsafe { core::arch::asm!("fence rw, rw", options(nostack)) };
-        // The same switch: `satp` holds one root for both halves, and the kernel's entries in
-        // the new root are the active one's, so the kernel runs on at the same addresses.
         // SAFETY: the caller's guarantees include `activate_page_tables`'.
         unsafe { Self::activate_page_tables(roots) };
-        // `fence.i` is this hart's alone: code another hart wrote for the new address space
-        // (`make_instructions_visible` ran there) becomes visible to this one's fetch here.
         // SAFETY: as in `make_instructions_visible`: it changes no memory contents.
         unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
@@ -661,9 +637,6 @@ impl Platform for Riscv64 {
 
     fn page_fault(_kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
         use crate::paging::{Access, PageFault};
-        // `scause` of the instruction, load and store/AMO page faults; access faults (PMP)
-        // are not page faults. The cause does not say whether an entry was valid, and a hart
-        // without Svvptc may cache an invalid one: any of them can be stale.
         let access = match code {
             12 => Access::Execute,
             13 => Access::Read,

@@ -40,8 +40,6 @@ use core::cell::UnsafeCell;
 
 core::arch::global_asm!(
     r#"
-    // Each stub is at most 15 bytes (two pushes of up to 5 bytes and a 5-byte jmp), padded
-    // to 16.
     .macro EXCEPTION_STUB vector
     .balign 16
     pushq   $0
@@ -94,8 +92,6 @@ exception_stubs:
     EXCEPTION_STUB_WITH_ERROR_CODE 29
     EXCEPTION_STUB_WITH_ERROR_CODE 30
     EXCEPTION_STUB 31
-    // Interrupts 0x20-0x53 (legacy PIC inputs 0-15, APIC timer, wake-up, console input, device
-    // lines, the power button); the CPU pushes no error code.
     .irp vector, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50
     EXCEPTION_STUB \vector
     .endr
@@ -111,7 +107,6 @@ apic_spurious_stub:
     EXCEPTION_STUB 255
 
 exception_common:
-    // From ring 3 (D47)? The code segment the CPU pushed is above the vector and error code.
     testb   $3, 24(%rsp)
     jnz     user_exception
     pushq   %rax
@@ -136,7 +131,6 @@ exception_common:
     je      7f
     clac
 7:
-    // From the kernel: the handler keeps the callee-saved registers itself, as any call does.
     pushq   %rax
     pushq   %rcx
     pushq   %rdx
@@ -146,8 +140,6 @@ exception_common:
     pushq   %r9
     pushq   %r10
     pushq   %r11
-    // The CPU aligned the stack to 16 bytes before pushing its 5-word frame; with the error
-    // code, the vector and 9 registers (16 words) it is aligned again, as the call needs.
     movq    %rsp, %rdi
     cld
     call    {handler}
@@ -180,10 +172,6 @@ exception_common:
     iretq
     int3                            // never runs: stops straight-line speculation (D49)
 
-    // From ring 3: the CPU switched to `TSS.RSP0`, which points just past the saved part of the
-    // running program's `UserContext`, so the frame and the registers go straight into it.
-    // Then back to the kernel's GS base, and return from `x86_64_enter_user` on the kernel
-    // stack it left.
 user_exception:
     swapgs
     cmpq    $0, %gs:{user_cr3}
@@ -240,7 +228,6 @@ user_exception_save:
     pushq   %r13
     pushq   %r14
     pushq   %r15
-    // The program's direction flag is its own; the kernel's code needs it clear.
     cld
     cmpb    $0, {ibrs_on_entry}(%rip)
     je      .Lx86_64_entry_predictions_set
@@ -266,9 +253,6 @@ user_exception_save:
     retq
     int3
 
-    // `syscall` from ring 3 (IA32_LSTAR): interrupts, the trap and direction flags are masked
-    // (IA32_FMASK), the stack is still the program's. Builds the frame an interrupt from ring 3
-    // would have in the `UserContext`, with the `syscall` vector, and saves the rest as above.
     .balign 16
     .global x86_64_syscall_entry
 x86_64_syscall_entry:
@@ -288,11 +272,6 @@ x86_64_syscall_entry:
     pushq   ${syscall_vector}
     jmp     user_exception_save
 
-    // `x86_64_enter_user(context)`: keeps the kernel's callee-saved registers on its stack and
-    // the stack pointer in the context, points `TSS.RSP0` just past the context's saved part
-    // and enters ring 3 with the program's registers: with `sysretq` after a system call
-    // (`rcx` and `r11` take its `rip` and `rflags`), with `iretq` otherwise. Returns through
-    // `user_exception_save`.
     .global x86_64_enter_user
 x86_64_enter_user:
     pushq   %rbx
@@ -368,7 +347,6 @@ x86_64_enter_user:
 13: swapgs
     iretq
     int3
-    // After a system call: `sysretq` takes `rcx` and `r11`, so theirs are not loaded.
 1:  movq    {r15}(%rdi), %r15
     movq    {r14}(%rdi), %r14
     movq    {r13}(%rdi), %r13
@@ -424,8 +402,6 @@ x86_64_enter_user:
 x86_64_entry_text_end:
     .popsection
 
-    // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
-    // data. Copied to a user page, never run where it is linked.
     .pushsection .rodata.user_test, "a"
     .global x86_64_user_test_start
 x86_64_user_test_start:
@@ -445,8 +421,6 @@ x86_64_user_test_checks:
     movl    $0x10f, %r15d
     movl    ${syscall_first}, %eax
     syscall
-    // Every register but rax (and rcx and r11, which `syscall` takes) must be as it was: rsi
-    // collects the differences.
     subq    $2, %rsi
     subq    $1, %rdi
     orq     %rdi, %rsi
@@ -488,7 +462,6 @@ x86_64_user_test_spin:
 3:  jmp     3b
     .global x86_64_user_test_linux_hello
 x86_64_user_test_linux_hello:
-    // Linux's x86_64 numbers: write 1, exit_group 231. rbx collects the differences.
     movl    $1, %edi
     leaq    9f(%rip), %rsi
     movl    ${hello_length}, %edx
@@ -516,14 +489,6 @@ x86_64_user_test_linux_hello:
 9:  .ascii  "EGGOS-USER: hello from user mode\n"
     .global x86_64_user_test_linux_start
 x86_64_user_test_linux_start:
-    // Linux's x86_64 numbers: rt_sigaction 13, writev 20, getpid 39, sigaltstack 131, gettid
-    // 186, exit_group 231, prlimit64 302, getrandom 318. rbx is argc, r12 walks argv and envp,
-    // r13 counts the two lists, r14 holds the process id. Each string is written by writev
-    // from one iovec on the stack. Ends with exit_group(255) if the stack is misaligned, the
-    // thread's id is not the process's, getrandom does not fill the 16 bytes below the stack
-    // pointer with something not zero, prlimit64 does not report the stack's limits as 8 MiB
-    // soft and unlimited hard, SIGPIPE's action does not read back as SIG_IGN once set, or
-    // sigaltstack does not report no alternate stack.
     movl    $255, %edi
     testq   $15, %rsp
     jnz     9f
@@ -628,8 +593,6 @@ x86_64_user_test_linux_unknown_syscalls:
     jmp     5b
     .global x86_64_user_test_stack_growth
 x86_64_user_test_stack_growth:
-    // From the stack pointer's page down, a page at a time: each page's address in its
-    // first word, until the stack runs out.
     movq    %rsp, %rax
     andq    $-4096, %rax
 6:  movq    %rax, (%rax)
@@ -637,12 +600,6 @@ x86_64_user_test_stack_growth:
     jmp     6b
     .global x86_64_user_test_linux_thread_pointer
 x86_64_user_test_linux_thread_pointer:
-    // Linux's x86_64 numbers: getpid 39, sched_yield 24, arch_prctl 158, exit_group 231.
-    // A program cannot read its FS base, so it reads the marker below through FS, at the
-    // marker's address less the base it expects: that finds the marker only if the FS base
-    // is that one (another base reads elsewhere or faults). First with the base a new program
-    // starts with, zero; then with getpid() << 12, set with arch_prctl(ARCH_SET_FS), after
-    // every sched_yield. rbx collects the differences.
     leaq    8f(%rip), %r13
     movq    %fs:(%r13), %rbx
     xorq    8f(%rip), %rbx
@@ -675,9 +632,6 @@ x86_64_user_test_linux_thread_pointer:
 8:  .quad   {thread_pointer_marker}
     .global x86_64_user_test_linux_poll
 x86_64_user_test_linux_poll:
-    // Linux's x86_64 numbers: poll 7, ioctl 16, exit_group 231, ppoll 271. ebx is the exit
-    // status until every check passed. The three `struct pollfd`s are at rsp-32, the window
-    // size at rsp-64, the timeout at rsp-48.
     movl    $1, %ebx
     movq    $0, -32(%rsp)           // fd 0, no events
     movq    $1, -24(%rsp)           // fd 1, POLLOUT
@@ -724,8 +678,6 @@ x86_64_user_test_linux_poll:
 8:  jmp     8b
     .global x86_64_user_test_linux_signals
 x86_64_user_test_linux_signals:
-    // Linux's x86_64 numbers: rt_sigprocmask 14, getpid 39, kill 62, rt_sigpending 127,
-    // exit_group 231, tgkill 234. The signal set is at rsp-16, the pending set at rsp-32.
     xorl    %edi, %edi
     movl    $17, %esi               // SIGCHLD, ignored
     movl    $62, %eax
@@ -770,10 +722,6 @@ x86_64_user_test_linux_signals:
 8:  jmp     8b
     .global x86_64_user_test_linux_signal_handler
 x86_64_user_test_linux_signal_handler:
-    // Linux's x86_64 numbers: rt_sigaction 13, rt_sigprocmask 14, rt_sigreturn 15, getpid 39,
-    // sigaltstack 131, exit_group 231, tgkill 234. Its `struct sigaction` is at rsp-64, its
-    // `stack_t` at rsp-32, its alternate stack 0x2000 bytes from rsp-0x2800, the mask read
-    // back at rsp-72. The handler returns through its restorer, as every x86_64 one must.
     leaq    -0x2800(%rsp), %rax
     movq    %rax, -32(%rsp)
     movq    $0, -24(%rsp)
@@ -843,8 +791,6 @@ x86_64_user_test_linux_signal_handler:
     movl    $231, %eax
     syscall
 8:  jmp     8b
-    // The handler: SIGUSR1 from tgkill (SI_TKILL), on the alternate stack the ucontext names;
-    // then it sets the frame's r12 to 2 and clobbers rbx.
 5:  cmpl    $10, %edi
     jne     7f
     cmpl    $10, (%rsi)
@@ -872,14 +818,11 @@ x86_64_user_test_linux_signal_handler:
     movq    $2, {saved_r12}(%rdx)
 7:  xorl    %ebx, %ebx
     ret
-    // Its restorer.
 6:  movl    $15, %eax
     syscall
     int3
     .global x86_64_user_test_linux_fault_handler
 x86_64_user_test_linux_fault_handler:
-    // Linux's x86_64 numbers: mmap 9, rt_sigaction 13, rt_sigreturn 15, exit_group 231. Its
-    // `struct sigaction` is at rsp-64; the handler returns through its restorer.
     leaq    5f(%rip), %rax
     movq    %rax, -64(%rsp)
     movq    $0x04000004, -56(%rsp)  // SA_RESTORER | SA_SIGINFO
@@ -925,9 +868,6 @@ x86_64_user_test_linux_fault_handler:
     movl    $231, %eax
     syscall
 8:  jmp     8b
-    // The handler: SIGSEGV with the si_code and si_addr in the frame's r14 and r13, which cr2
-    // reports too, with trapno 14 (#PF); it counts it in the frame's r12, and resumes the
-    // program at its r15, whatever the checks found.
 5:  cmpl    $11, %edi
     jne     7f
     cmpl    $11, (%rsi)
@@ -946,7 +886,6 @@ x86_64_user_test_linux_fault_handler:
 7:  movq    {saved_r15}(%rdx), %rax
     movq    %rax, {saved_rip}(%rdx)
     ret
-    // Its restorer.
 6:  movl    $15, %eax
     syscall
     int3

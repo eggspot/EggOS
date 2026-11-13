@@ -94,8 +94,6 @@ impl Format for X86_64 {
     }
 
     fn table(table: u64, _level: usize, user: bool) -> u64 {
-        // Permissions are decided at the leaf; the table entry allows everything, user access
-        // only on the way to user mappings.
         let entry = (table & ADDRESS) | PRESENT | WRITABLE;
         if user { entry | USER } else { entry }
     }
@@ -170,21 +168,16 @@ mod tests {
     #[test]
     fn encodings_match_the_manuals() {
         assert_eq!(X86_64::table(0x1000, 3, false), 0x1003);
-        // On the way to user mappings: P | RW | U/S.
         assert_eq!(X86_64::table(0x1000, 3, true), 0x1007);
-        // 4 KiB user data page: P | RW | U/S | A | D | NX.
         assert_eq!(
             X86_64::leaf(0x20_0000, 0, Attributes::USER_READ_WRITE),
             0x8000_0000_0020_0067
         );
-        // 4 KiB data page: P | RW | A | D | NX.
         assert_eq!(
             X86_64::leaf(0x20_0000, 0, Attributes::READ_WRITE),
             0x8000_0000_0020_0063
         );
-        // 2 MiB code page: P | A | D | PS.
         assert_eq!(X86_64::leaf(0x20_0000, 1, Attributes::TEXT), 0x20_00e1);
-        // Device page: P | RW | PWT | PCD | A | D | NX.
         assert_eq!(
             X86_64::leaf(0xfee0_0000, 0, Attributes::DEVICE),
             0x8000_0000_fee0_007b
@@ -211,7 +204,6 @@ mod tests {
             X86_64::decode(0x20_0083, 1),
             Entry::Leaf(0x20_0000, _)
         ));
-        // At level 0 bit 7 is the PAT bit, not a size bit.
         assert!(matches!(X86_64::decode(0x1083, 0), Entry::Leaf(0x1000, _)));
     }
 }

@@ -28,8 +28,6 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .global _start
 _start:
-    // Only the CPU whose affinity (MPIDR_EL1 Aff0-Aff3) is all zero boots for now; park
-    // every other CPU, in any cluster.
     mov     x15, x0
     cbnz    x15, 0f
     mrs     x0, mpidr_el1
@@ -39,11 +37,8 @@ _start:
     cbnz    x0, 6f
 
 0:
-    // Use SP_EL1 at EL1, so exceptions taken to EL1 run on the boot stack set up below.
     msr     spsel, #1
 
-    // The MMU is off, so `adrp` (PC-relative) gives physical addresses until the jump below.
-    // Zero .bss (8-byte aligned and sized by the linker script); the boot page tables are there.
     adrp    x0, __bss_start
     add     x0, x0, :lo12:__bss_start
     adrp    x1, __bss_end
@@ -53,12 +48,6 @@ _start:
     str     xzr, [x0], #8
     b       1b
 
-    // The boot page tables (D33), with 1 GiB blocks: the gigabyte holding the kernel, read,
-    // write and execute, at its physical address through TTBR0 (only for the jump below and
-    // the switch to the kernel's own tables) and at the kernel's virtual address through
-    // TTBR1, and the boot direct map: the first {direct_map_gigabytes} GiB of physical
-    // memory, never executable, at the direct map offset; device memory below the gigabyte
-    // RAM starts in, normal memory from there on.
 2:  adrp    x0, {l0_low}
     adrp    x1, {l1_low}
     adrp    x2, {l0_high}
@@ -102,12 +91,10 @@ _start:
     cmp     x10, #{direct_map_gigabytes}
     b.lo    3b
 
-    // Translation on, then continue at the kernel's virtual address.
     bl      boot_translation_on
     ldr     x0, =4f
     br      x0
 
-    // From here on the kernel runs at its virtual address, and `adrp` gives virtual addresses.
 4:  adrp    x0, __stack_top
     add     x0, x0, :lo12:__stack_top
     mov     sp, x0
@@ -118,7 +105,6 @@ _start:
     msr     cntkctl_el1, x0
     msr     tpidrro_el0, xzr
 
-    // Exception vectors, before any Rust code runs, then the timer and interrupt controller.
     adrp    x0, exception_vectors
     add     x0, x0, :lo12:exception_vectors
     msr     vbar_el1, x0
@@ -128,12 +114,6 @@ _start:
 6:  wfe
     b       6b
 
-    // Turns translation on with the boot page tables, from code running at its physical
-    // address with the MMU off: memory attributes, address sizes (IPS: the CPU's physical
-    // address size, at most 48 bits), both roots, then the MMU and the caches. The TLB is
-    // invalidated first, as its contents are unknown on a CPU that just started. Returns to
-    // the caller's physical address, mapped by the boot tables' identity gigabyte. Clobbers
-    // x0-x2.
 boot_translation_on:
     ldr     x0, ={mair}
     msr     mair_el1, x0
@@ -158,10 +138,6 @@ boot_translation_on:
     isb
     ret
 
-    // A secondary CPU, started by PSCI CPU_ON (D40): EL1, MMU off, interrupts masked, and
-    // x0 = the context id, the kernel virtual address of the `CpuStart`. The boot page tables
-    // the boot CPU built are still in .bss, and map the `CpuStart` and its stack (the kernel
-    // image and the direct map).
     .global eggos_secondary_start
 eggos_secondary_start:
     mov     x19, x0
