@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 225
+pub const CAPACITY: usize = 230
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -858,7 +858,7 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
 /// The Settings window's widgets and what they show.
 #[derive(Debug)]
 pub struct SettingsWindow {
-    tree: WidgetTree<CAPACITY>,
+    tree: alloc::boxed::Box<WidgetTree<CAPACITY>>,
     widgets: Widgets,
     storage: StoragePane,
     agents: AgentsPane,
@@ -1031,7 +1031,7 @@ impl Builder<'_> {
 impl SettingsWindow {
     /// The window showing `facts`, the Appearance pane first, the search field focused.
     pub fn new(facts: Facts) -> Self {
-        let mut tree = WidgetTree::new();
+        let mut tree = alloc::boxed::Box::new(WidgetTree::new());
         let mut build = Builder { tree: &mut tree };
         let sidebar = build.add(
             None,

@@ -303,10 +303,10 @@ fn push_line(
 pub fn wrap_credits(text: &str, lines: &mut [(usize, usize); MAX_CREDIT_LINES]) -> usize {
     let mut count = 0;
     let mut paragraph_start = 0;
-    for paragraph in text.split('\n') {
-        let paragraph = paragraph.strip_suffix('\r').unwrap_or(paragraph);
+    for raw in text.split('\n') {
+        let paragraph = raw.strip_suffix('\r').unwrap_or(raw);
         let base = paragraph_start;
-        paragraph_start += paragraph.len() + 1;
+        paragraph_start += raw.len() + 1;
         if paragraph.is_empty() {
             push_line(lines, &mut count, (base, base));
             continue;
