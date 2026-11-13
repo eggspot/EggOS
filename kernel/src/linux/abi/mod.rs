@@ -63,6 +63,27 @@ mod x86_64;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
 
+#[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
+mod riscv_misaligned;
+
+/// Does a misaligned load or store a program's instruction trapped on, where the architecture
+/// leaves that to the kernel (RISC-V, D560): whether it did. Never elsewhere.
+pub fn emulate_misaligned(
+    registers: &mut eggos_hal::user::UserRegisters,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+    write: &mut dyn FnMut(u64, &[u8]) -> bool,
+) -> bool {
+    #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
+    {
+        riscv_misaligned::emulate(registers, read, write)
+    }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "riscv32")))]
+    {
+        let _ = (registers, read, write);
+        false
+    }
+}
+
 #[cfg(not(any(
     target_arch = "aarch64",
     target_arch = "loongarch64",

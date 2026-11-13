@@ -672,6 +672,18 @@ fn signal_fault<P: Platform>(
     if first_fp_use::<P>(thread, exception.kind) {
         return ControlFlow::Continue(());
     }
+    if exception.kind == ExceptionKind::Alignment {
+        let mut registers = context.registers();
+        let emulated = abi::emulate_misaligned(
+            &mut registers,
+            &mut |address, bytes| process.read_user_memory(address, bytes).is_ok(),
+            &mut |address, bytes| process.write_user_memory(address, bytes).is_ok(),
+        );
+        if emulated {
+            context.set_registers(&registers);
+            return ControlFlow::Continue(());
+        }
+    }
     let fault = fault::classify(process, &exception, context.stack());
     signals::deliver_fault(process, thread, context, &fault)
 }
