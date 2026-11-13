@@ -127,9 +127,13 @@ struct Inode {
     links: u32,
     holds: u32,
     permissions: u32,
+    owner: u32,
+    group: u32,
     modified: u64,
     socket: bool,
     contents: Contents,
+    /// Extended attributes, name and value (D557).
+    extended: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 #[derive(Debug, Default)]
@@ -196,9 +200,12 @@ impl Tmpfs {
                 links: 1,
                 holds: 0,
                 permissions,
+                owner: 0,
+                group: 0,
                 modified: 0,
                 socket: false,
                 contents: Contents::Directory(Vec::new()),
+                extended: Vec::new(),
             }),
         });
         Some(Self {
@@ -463,9 +470,12 @@ impl Tmpfs {
             links: 1,
             holds: 0,
             permissions: permissions & 0o7777,
+            owner: 0,
+            group: 0,
             modified: now,
             socket,
             contents,
+            extended: Vec::new(),
         });
         state.add_child(directory, Child { slot, name: stored }, now);
         Ok(state.number_of(slot))
@@ -538,8 +548,8 @@ impl FileSystem for Tmpfs {
             permissions: inode.permissions,
             file_id: node as u32 as u64 + 1,
             links,
-            owner: 0,
-            group: 0,
+            owner: inode.owner,
+            group: inode.group,
             size,
             modified: inode.modified,
         }
@@ -934,6 +944,95 @@ impl FileSystem for Tmpfs {
             return Err(Refused::InvalidArgument);
         }
         inode.permissions = permissions & 0o7777;
+        Ok(())
+    }
+
+    fn extended_attribute(&self, node: u64, name: &[u8]) -> Result<Vec<u8>, Refused> {
+        let state = self.state.lock();
+        let inode = state.inode(node).ok_or(Refused::NotFound)?;
+        inode
+            .extended
+            .iter()
+            .find(|(held, _)| held.as_slice() == name)
+            .map(|(_, value)| value.clone())
+            .ok_or(Refused::NoAttribute)
+    }
+
+    fn set_extended_attribute(
+        &self,
+        node: u64,
+        name: &[u8],
+        value: &[u8],
+        create_only: bool,
+        replace_only: bool,
+    ) -> Result<(), Refused> {
+        let cost = name.len() + value.len();
+        let mut state = self.state.lock();
+        let inode = state.inode_mut(node).ok_or(Refused::NotFound)?;
+        let held = inode.extended.iter().position(|(held, _)| held.as_slice() == name);
+        match (held, create_only, replace_only) {
+            (Some(_), true, _) => return Err(Refused::Exists),
+            (None, _, true) => return Err(Refused::NoAttribute),
+            _ => {}
+        }
+        self.budget.take(cost)?;
+        let mut stored = Vec::new();
+        if stored.try_reserve_exact(value.len()).is_err() {
+            self.budget.give_back(cost);
+            return Err(Refused::NoSpace);
+        }
+        stored.extend_from_slice(value);
+        match held {
+            Some(index) => {
+                let old = core::mem::replace(&mut inode.extended[index].1, stored);
+                self.budget.give_back(name.len() + old.len());
+            }
+            None => {
+                let mut key = Vec::new();
+                if key.try_reserve_exact(name.len()).is_err() || inode.extended.try_reserve(1).is_err() {
+                    self.budget.give_back(cost);
+                    return Err(Refused::NoSpace);
+                }
+                key.extend_from_slice(name);
+                inode.extended.push((key, stored));
+            }
+        }
+        Ok(())
+    }
+
+    fn extended_attribute_names(&self, node: u64) -> Result<Vec<u8>, Refused> {
+        let state = self.state.lock();
+        let inode = state.inode(node).ok_or(Refused::NotFound)?;
+        let mut names = Vec::new();
+        for (name, _) in &inode.extended {
+            names.extend_from_slice(name);
+            names.push(0);
+        }
+        Ok(names)
+    }
+
+    fn remove_extended_attribute(&self, node: u64, name: &[u8]) -> Result<(), Refused> {
+        let mut state = self.state.lock();
+        let inode = state.inode_mut(node).ok_or(Refused::NotFound)?;
+        let index = inode
+            .extended
+            .iter()
+            .position(|(held, _)| held.as_slice() == name)
+            .ok_or(Refused::NoAttribute)?;
+        let (key, value) = inode.extended.remove(index);
+        self.budget.give_back(key.len() + value.len());
+        Ok(())
+    }
+
+    fn set_owner(&self, node: u64, owner: Option<u32>, group: Option<u32>) -> Result<(), Refused> {
+        let mut state = self.state.lock();
+        let inode = state.inode_mut(node).ok_or(Refused::NotFound)?;
+        if let Some(owner) = owner {
+            inode.owner = owner;
+        }
+        if let Some(group) = group {
+            inode.group = group;
+        }
         Ok(())
     }
 

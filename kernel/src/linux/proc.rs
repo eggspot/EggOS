@@ -273,10 +273,12 @@ mod part {
     pub const STAT: u64 = 6;
     pub const STATUS: u64 = 7;
     pub const DESCRIPTOR: u64 = 8;
+    pub const COMM: u64 = 9;
 }
 
-const PROCESS_FILES: [(&[u8], u64); 6] = [
+const PROCESS_FILES: [(&[u8], u64); 7] = [
     (b"cmdline", part::CMDLINE),
+    (b"comm", part::COMM),
     (b"exe", part::EXE),
     (b"fd", part::FD),
     (b"maps", part::MAPS),
@@ -603,6 +605,16 @@ fn ps<P: Platform>() -> Option<Vec<u8>> {
     Some(text.0)
 }
 
+/// `/proc/<pid>/comm` (D557): the process's name (`PR_SET_NAME`'s, else its program's file
+/// name) and a newline.
+fn process_comm<P: Platform>(pid: u32) -> Option<Vec<u8>> {
+    let Described { listed, .. } = described::<P>(pid)?;
+    let mut text = Vec::new();
+    text.extend_from_slice(name_of(&listed));
+    text.push(b'\n');
+    Some(text)
+}
+
 fn name_of(process: &Listed) -> &[u8] {
     let length = process
         .name
@@ -817,11 +829,16 @@ fn process_status<P: Platform>(pid: u32) -> Option<Vec<u8>> {
         true => "Z (zombie)",
         false => "R (running)",
     };
+    let umask = process
+        .as_ref()
+        .map_or(crate::process::DEFAULT_UMASK, |process| {
+            process.credentials_and_limits().lock().umask
+        });
     write!(
         text,
         "\nUmask:\t{:04o}\nState:\t{state}\nTgid:\t{pid}\nNgid:\t0\nPid:\t{pid}\n\
          PPid:\t{}\nTracerPid:\t0\n",
-        super::file_changes::UMASK,
+        umask,
         listed.parent
     )
     .ok()?;
@@ -1071,6 +1088,7 @@ impl<P: Platform> FileSystem for Proc<P> {
                 part::MAPS => process_maps::<P>(node.pid),
                 part::STAT => process_stat::<P>(node.pid),
                 part::STATUS => process_status::<P>(node.pid),
+                part::COMM => process_comm::<P>(node.pid),
                 _ => return Ok(None),
             };
             return Ok(Some(generated.unwrap_or_default()));

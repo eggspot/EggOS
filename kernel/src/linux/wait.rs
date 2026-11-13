@@ -84,6 +84,7 @@ pub fn process_ended<P: Platform>(process: &Process<P>, how: ProcessExit) {
         table.set_cpu_ticks(process.id().get(), ticks);
         table.end(process.id().get(), how, uid)
     };
+    super::pidfd::process_ended();
     if let Some(notice) = ended.to_parent {
         notify::<P>(notice);
     }

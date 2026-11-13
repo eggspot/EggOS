@@ -518,6 +518,7 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         FileKind::Event(EventFile::EventFd(counter)) => counter.events(requested),
         FileKind::Event(EventFile::SignalFd(signals)) => signals.events(requested, pending()),
         FileKind::Event(EventFile::Inotify(instance)) => instance.events(requested),
+        FileKind::Event(EventFile::PidFd(handle)) => handle.events(requested),
         FileKind::Event(_) => 0,
     }
 }
@@ -1415,7 +1416,7 @@ pub(super) fn read_event<P: Platform>(
         EventFile::Inotify(instance) => {
             inotify::read(process, thread, context, file, instance, buffers)
         }
-        EventFile::Epoll(_) => {
+        EventFile::Epoll(_) | EventFile::PidFd(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
             ControlFlow::Continue(())
         }
@@ -1440,7 +1441,8 @@ pub(super) fn write_event<P: Platform>(
         EventFile::TimerFd(_)
         | EventFile::SignalFd(_)
         | EventFile::Epoll(_)
-        | EventFile::Inotify(_) => {
+        | EventFile::Inotify(_)
+        | EventFile::PidFd(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
             ControlFlow::Continue(())
         }

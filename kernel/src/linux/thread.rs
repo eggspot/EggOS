@@ -144,6 +144,8 @@ pub struct LinuxThread {
     id: u32,
     clear_child_tid: u64,
     robust_list: u64,
+    /// The name `PR_SET_NAME` gave the thread, if any (D557).
+    name: Option<[u8; super::process_table::NAME_LENGTH]>,
     signals: ThreadSignals,
     signals_seen: u16,
     wait_slot: Arc<WaitSlot>,
@@ -161,6 +163,7 @@ impl LinuxThread {
             id: process.id().get(),
             clear_child_tid: 0,
             robust_list: 0,
+            name: None,
             signals: ThreadSignals::new(),
             signals_seen: process.signals_sent(),
             wait_slot: Arc::new(WaitSlot::new()),
@@ -185,6 +188,7 @@ impl LinuxThread {
             id,
             clear_child_tid,
             robust_list: 0,
+            name: None,
             signals: self.signals.for_new_thread(),
             signals_seen: self.signals_seen,
             wait_slot: Arc::new(WaitSlot::new()),
@@ -282,6 +286,16 @@ impl LinuxThread {
 
     /// The head of its robust futex list (`set_robust_list`), 0 for none: its exit releases
     /// the locks on the list that it holds ([`super::futex::release_robust_list`]).
+    /// The name `PR_SET_NAME` gave it, if any (D557).
+    pub fn name(&self) -> Option<[u8; super::process_table::NAME_LENGTH]> {
+        self.name
+    }
+
+    /// Names the thread (`PR_SET_NAME`, D557).
+    pub fn set_name(&mut self, name: [u8; super::process_table::NAME_LENGTH]) {
+        self.name = Some(name);
+    }
+
     pub fn robust_list(&self) -> u64 {
         self.robust_list
     }

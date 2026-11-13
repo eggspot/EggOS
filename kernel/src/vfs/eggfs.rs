@@ -484,6 +484,10 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         self.changing(|volume| volume.set_permissions(node, permissions))
     }
 
+    fn set_owner(&self, node: u64, owner: Option<u32>, group: Option<u32>) -> Result<(), Refused> {
+        self.changing(|volume| volume.set_owner(node, owner, group))
+    }
+
     fn keeps_holds(&self) -> bool {
         true
     }

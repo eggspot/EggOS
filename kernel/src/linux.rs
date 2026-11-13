@@ -57,11 +57,13 @@
 pub mod abi;
 pub mod agent_channel;
 pub mod android_log;
+pub mod capabilities;
 pub mod credentials;
 pub mod descriptors;
 pub mod epoll;
 pub mod eventfd;
 pub mod exec;
+pub mod extended_attributes;
 pub mod fault;
 pub mod file_changes;
 pub mod file_locks;
@@ -75,6 +77,7 @@ pub mod limits;
 pub mod memfd;
 pub mod memory;
 pub mod memory_devices;
+pub mod pidfd;
 pub mod pipe;
 pub mod poll;
 pub mod proc;
@@ -90,6 +93,7 @@ pub mod signal_frame;
 pub mod signalfd;
 pub mod signals;
 pub mod socket;
+pub mod splice;
 pub mod stat;
 pub mod statfs;
 pub mod sync_file;
@@ -152,6 +156,36 @@ pub mod number {
             SYNCFS,
             #[cfg(linux_abi_legacy_calls)]
             RENAME,
+            UMASK,
+            CAPGET,
+            CAPSET,
+            SENDMMSG,
+            RECVMMSG,
+            PIDFD_OPEN,
+            PIDFD_SEND_SIGNAL,
+            PIDFD_GETFD,
+            SETXATTR,
+            LSETXATTR,
+            FSETXATTR,
+            GETXATTR,
+            LGETXATTR,
+            FGETXATTR,
+            LISTXATTR,
+            LLISTXATTR,
+            FLISTXATTR,
+            REMOVEXATTR,
+            LREMOVEXATTR,
+            FREMOVEXATTR,
+            COPY_FILE_RANGE,
+            SPLICE,
+            TEE,
+            SENDFILE,
+            FCHOWN,
+            FCHOWNAT,
+            #[cfg(linux_abi_legacy_calls)]
+            CHOWN,
+            #[cfg(linux_abi_legacy_calls)]
+            LCHOWN,
             #[cfg(linux_abi_legacy_calls)]
             MKDIR,
             #[cfg(linux_abi_legacy_calls)]
@@ -398,6 +432,7 @@ impl Errno {
     pub const EISDIR: Self = Self(21);
     /// The result does not fit: a buffer too small for the working directory (`getcwd`).
     pub const ERANGE: Self = Self(34);
+    pub const ENODATA: Self = Self(61);
     /// A read-only file system: a file opened for writing or created on one.
     pub const EROFS: Self = Self(30);
     /// An invalid argument: here, a bad flag, the same descriptor twice (`dup3`), an unknown
@@ -771,7 +806,9 @@ fn out_of_line_call<P: Platform>(
         | number::RECVMSG
         | number::SHUTDOWN
         | number::SETSOCKOPT
-        | number::GETSOCKOPT => socket::call(process, thread, number, context),
+        | number::GETSOCKOPT
+        | number::SENDMMSG
+        | number::RECVMMSG => socket::call(process, thread, number, context),
         number::PSELECT6
         | number::EPOLL_CREATE1
         | number::EPOLL_CTL
@@ -897,6 +934,62 @@ fn out_of_line_result<P: Platform>(
         number::FALLOCATE => memfd::fallocate(thread, first, second, third, fourth),
         number::MEMFD_CREATE => memfd::memfd_create(process, thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
+        number::UMASK => Ok(file_changes::umask(process, first)),
+        number::CAPGET => capabilities::capget(process, first, second),
+        number::CAPSET => capabilities::capset(process, first, second),
+        number::PIDFD_OPEN => pidfd::pidfd_open(process, thread, first, second),
+        number::PIDFD_SEND_SIGNAL => pidfd::pidfd_send_signal(process, thread, first, second, fourth),
+        number::PIDFD_GETFD => pidfd::pidfd_getfd(process, thread, first, second, third),
+        number::SETXATTR | number::LSETXATTR | number::FSETXATTR => {
+            let named = match number {
+                number::SETXATTR => extended_attributes::Named::Path,
+                number::LSETXATTR => extended_attributes::Named::PathNoFollow,
+                _ => extended_attributes::Named::Descriptor,
+            };
+            extended_attributes::set(process, thread, named, [first, second, third, fourth, fifth])
+        }
+        number::GETXATTR | number::LGETXATTR | number::FGETXATTR => {
+            let named = match number {
+                number::GETXATTR => extended_attributes::Named::Path,
+                number::LGETXATTR => extended_attributes::Named::PathNoFollow,
+                _ => extended_attributes::Named::Descriptor,
+            };
+            extended_attributes::get(process, thread, named, [first, second, third, fourth])
+        }
+        number::LISTXATTR | number::LLISTXATTR | number::FLISTXATTR => {
+            let named = match number {
+                number::LISTXATTR => extended_attributes::Named::Path,
+                number::LLISTXATTR => extended_attributes::Named::PathNoFollow,
+                _ => extended_attributes::Named::Descriptor,
+            };
+            extended_attributes::list(process, thread, named, [first, second, third])
+        }
+        number::REMOVEXATTR | number::LREMOVEXATTR | number::FREMOVEXATTR => {
+            let named = match number {
+                number::REMOVEXATTR => extended_attributes::Named::Path,
+                number::LREMOVEXATTR => extended_attributes::Named::PathNoFollow,
+                _ => extended_attributes::Named::Descriptor,
+            };
+            extended_attributes::remove(process, thread, named, [first, second])
+        }
+        number::COPY_FILE_RANGE => splice::copy_file_range(process, thread, context.syscall_arguments()),
+        number::SPLICE => splice::splice(process, thread, context.syscall_arguments()),
+        number::TEE => splice::tee(thread, first, second, third, fourth),
+        number::SENDFILE => splice::sendfile(process, thread, first, second, third, fourth),
+        number::FCHOWNAT => file_changes::fchownat(process, thread, first, second, third, fourth, fifth),
+        number::FCHOWN => file_changes::fchown(process, thread, first, second, third),
+        #[cfg(linux_abi_legacy_calls)]
+        number::CHOWN => file_changes::fchownat(process, thread, CWD, first, second, third, 0),
+        #[cfg(linux_abi_legacy_calls)]
+        number::LCHOWN => file_changes::fchownat(
+            process,
+            thread,
+            CWD,
+            first,
+            second,
+            third,
+            stat::at::SYMLINK_NOFOLLOW,
+        ),
         number::UNLINKAT => file_changes::unlinkat(process, thread, first, second, third),
         #[cfg(linux_abi_renameat)]
         number::RENAMEAT => {
@@ -937,7 +1030,7 @@ fn out_of_line_result<P: Platform>(
         number::GETPGRP => job_control::getpgid(process, 0),
         number::SETSID => job_control::setsid(process),
         number::GETSID => job_control::getsid(process, first),
-        number::PRCTL => job_control::prctl(process, first, second),
+        number::PRCTL => job_control::prctl(process, thread, first, second),
         number::REBOOT => reboot::reboot(process, first, second, third),
         number::GETTID => Ok(identity::gettid(thread)),
         number::UNAME => identity::uname(process, first),

@@ -16,7 +16,7 @@
 //! `EPIPE` and sends `SIGPIPE`, unless `MSG_NOSIGNAL`.
 
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
-use super::file_changes::{UMASK, now, parent_and_name, refused};
+use super::file_changes::{now, parent_and_name, refused, umask_of};
 use super::files::{starting_points, walk_error};
 use super::poll::{self, deadline_in};
 use super::signals::{self, Interrupted};
@@ -162,6 +162,15 @@ pub fn call<P: Platform>(
     context: &mut UserContext,
 ) -> ControlFlow<()> {
     let [first, second, third, fourth, fifth, sixth] = context.syscall_arguments();
+    if number == number::SENDMMSG || number == number::RECVMMSG {
+        return many::<P>(
+            process,
+            thread,
+            context,
+            [first, second, third, fourth],
+            number == number::SENDMMSG,
+        );
+    }
     if number != number::SOCKET
         && number != number::SOCKETPAIR
         && let Some((file, socket)) = inet::socket_at(thread, first)
@@ -213,6 +222,57 @@ pub fn call<P: Platform>(
         _ => Err(Errno::ENOSYS),
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
+    ControlFlow::Continue(())
+}
+
+/// `struct mmsghdr`: a `msghdr` and the `unsigned int` count of bytes, padded to a word.
+const MMSGHDR_SIZE: usize = (MSGHDR_SIZE + 4).next_multiple_of(W);
+/// The most messages one `sendmmsg` or `recvmmsg` moves, Linux's `UIO_MAXIOV`.
+const MOST_MESSAGES: u64 = 1024;
+
+/// `sendmmsg(fd, vector, length, flags)` and `recvmmsg(fd, vector, length, flags, timeout)`
+/// (D557): `sendmsg` or `recvmsg` for each `mmsghdr` of `vector` in turn, each one's count of
+/// bytes written into its `msg_len`, until one fails or would wait; the count of messages, or
+/// the first one's error. The messages after the first never wait (`MSG_DONTWAIT`), as Linux's
+/// `recvmmsg` with `MSG_WAITFORONE` does; a `recvmmsg` timeout is not used.
+fn many<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+    [fd, vector, length, flags]: [u64; 4],
+    sending: bool,
+) -> ControlFlow<()> {
+    let count = length.min(MOST_MESSAGES);
+    let mut moved = 0u64;
+    for index in 0..count {
+        let header = vector + index * MMSGHDR_SIZE as u64;
+        let flags = match index {
+            0 => flags,
+            _ => flags | u64::from(message::DONTWAIT),
+        };
+        let single = match sending {
+            true => number::SENDMSG,
+            false => number::RECVMSG,
+        };
+        context.set_syscall_arguments([fd, header, flags, 0, 0, 0]);
+        call::<P>(process, thread, single, context)?;
+        let result = context.syscall_result() as i64;
+        if result < 0 {
+            if moved == 0 {
+                return ControlFlow::Continue(());
+            }
+            break;
+        }
+        let length = (result as u32).to_ne_bytes();
+        if process
+            .write_user_memory(header + MSGHDR_SIZE as u64, &length)
+            .is_err()
+        {
+            break;
+        }
+        moved += 1;
+    }
+    context.set_syscall_result(moved);
     ControlFlow::Continue(())
 }
 
@@ -469,7 +529,7 @@ pub fn bind<P: Platform>(
             (Address::Abstract(name), key)
         }
         Address::Path(path) => {
-            let node = make_socket_file::<P>(process.id().get(), thread, &path)?;
+            let node = make_socket_file::<P>(process.id().get(), thread, &path, umask_of(process))?;
             let key = BindingKey::Node(node);
             unix_socket::register(key.clone(), &socket)?;
             (Address::Path(path), key)
@@ -486,6 +546,7 @@ fn make_socket_file<P: Platform>(
     caller: u32,
     thread: &LinuxThread,
     path: &[u8],
+    mask: u32,
 ) -> Result<Node, Errno> {
     let (root, start) = starting_points(thread, super::stat::at::FDCWD as u64, path)?;
     let (directory, name) =
@@ -505,7 +566,7 @@ fn make_socket_file<P: Platform>(
             directory.id(),
             name,
             NodeKind::Socket,
-            0o777 & !UMASK,
+            0o777 & !mask,
             now::<P>(),
         )
         .map_err(|error| match error {

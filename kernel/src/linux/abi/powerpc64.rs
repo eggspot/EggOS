@@ -196,6 +196,36 @@ pub mod number {
     pub const EPOLL_PWAIT2: u64 = 441;
     pub const FCHMODAT2: u64 = 452;
     /// The highest number above.
+    pub const UMASK: u64 = 60;
+    pub const CHOWN: u64 = 181;
+    pub const FCHOWN: u64 = 95;
+    pub const LCHOWN: u64 = 16;
+    pub const FCHOWNAT: u64 = 289;
+    pub const PIDFD_OPEN: u64 = 434;
+    pub const PIDFD_SEND_SIGNAL: u64 = 424;
+    pub const PIDFD_GETFD: u64 = 438;
+    pub const SENDFILE: u64 = 186;
+    pub const SPLICE: u64 = 283;
+    pub const TEE: u64 = 284;
+    pub const VMSPLICE: u64 = 285;
+    pub const COPY_FILE_RANGE: u64 = 379;
+    pub const SETXATTR: u64 = 209;
+    pub const LSETXATTR: u64 = 210;
+    pub const FSETXATTR: u64 = 211;
+    pub const GETXATTR: u64 = 212;
+    pub const LGETXATTR: u64 = 213;
+    pub const FGETXATTR: u64 = 214;
+    pub const LISTXATTR: u64 = 215;
+    pub const LLISTXATTR: u64 = 216;
+    pub const FLISTXATTR: u64 = 217;
+    pub const REMOVEXATTR: u64 = 218;
+    pub const LREMOVEXATTR: u64 = 219;
+    pub const FREMOVEXATTR: u64 = 220;
+    pub const SENDMMSG: u64 = 349;
+    pub const RECVMMSG: u64 = 343;
+    pub const CAPGET: u64 = 183;
+    pub const CAPSET: u64 = 184;
+    pub const PTRACE: u64 = 26;
     pub const LAST: u64 = FCHMODAT2;
 }
 

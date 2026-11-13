@@ -161,10 +161,30 @@ struct ProgramBreak {
 
 /// A process's credentials and resource limits, under one lock: `setrlimit` checks the one
 /// and changes the other. Root's credentials and the default limits to start with.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CredentialsAndLimits {
     pub credentials: Credentials,
     pub limits: ResourceLimits,
+    /// The file mode creation mask (`umask`, D557): bits taken off every file, directory and
+    /// socket the process creates. Kept by `fork` and `execve`.
+    pub umask: u32,
+    /// The capability sets `capset` or `PR_CAPBSET_DROP` set, if any; derived from the effective
+    /// user id until then (D557).
+    pub capabilities: Option<crate::linux::capabilities::Capabilities>,
+}
+
+/// The mask a process starts with, as Linux's init gives it.
+pub const DEFAULT_UMASK: u32 = 0o022;
+
+impl Default for CredentialsAndLimits {
+    fn default() -> Self {
+        Self {
+            credentials: Credentials::default(),
+            limits: ResourceLimits::default(),
+            umask: DEFAULT_UMASK,
+            capabilities: None,
+        }
+    }
 }
 
 impl CredentialsAndLimits {
@@ -173,6 +193,8 @@ impl CredentialsAndLimits {
         Some(Self {
             credentials: self.credentials.copy()?,
             limits: self.limits.copy()?,
+            umask: self.umask,
+            capabilities: self.capabilities,
         })
     }
 }

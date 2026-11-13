@@ -1363,6 +1363,24 @@ impl<D: Disk> Volume<D> {
         self.write_inode(number, &inode)
     }
 
+    fn set_owner_changing(
+        &mut self,
+        node: u64,
+        owner: Option<u32>,
+        group: Option<u32>,
+    ) -> Result<(), Error> {
+        self.writable()?;
+        self.ensure_room()?;
+        let (number, mut inode) = self.live(node)?;
+        if let Some(owner) = owner {
+            inode.owner = owner;
+        }
+        if let Some(group) = group {
+            inode.group = group;
+        }
+        self.write_inode(number, &inode)
+    }
+
     fn set_permissions_changing(&mut self, node: u64, permissions: u32) -> Result<(), Error> {
         self.writable()?;
         self.ensure_room()?;
@@ -1782,6 +1800,12 @@ impl<D: Disk> Volume<D> {
     /// Sets when `node` was last read (`utimensat`'s access time).
     pub fn set_accessed(&mut self, node: u64, time: u64) -> Result<(), Error> {
         let result = self.set_accessed_changing(node, time);
+        self.mark_broken_on_failure(result)
+    }
+
+    /// Sets `node`'s owner and group (D557); `None` keeps one as it is.
+    pub fn set_owner(&mut self, node: u64, owner: Option<u32>, group: Option<u32>) -> Result<(), Error> {
+        let result = self.set_owner_changing(node, owner, group);
         self.mark_broken_on_failure(result)
     }
 

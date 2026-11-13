@@ -97,6 +97,12 @@ pub enum Refused {
     TooManyLinks,
     /// The change is not allowed on that node, such as a hard link to a directory (`EPERM`).
     NotPermitted,
+    /// The file system does not do that, such as keeping extended attributes (`EOPNOTSUPP`).
+    NotSupported,
+    /// The node has no such extended attribute (`ENODATA`).
+    NoAttribute,
+    /// The caller's buffer is too small for the value or list (`ERANGE`).
+    TooSmall,
 }
 
 /// The storage under a file system failed: a disk did not answer or reported an error, or
@@ -379,6 +385,34 @@ pub trait FileSystem: Sync + Send {
     }
     /// Sets `node`'s permission bits (`chmod`, D170) to `permissions & 0o7777`.
     fn set_permissions(&self, _node: u64, _permissions: u32) -> Result<(), Refused> {
+        Err(Refused::ReadOnly)
+    }
+    /// The value of `node`'s extended attribute `name` (D557).
+    fn extended_attribute(&self, _node: u64, _name: &[u8]) -> Result<alloc::vec::Vec<u8>, Refused> {
+        Err(Refused::NotSupported)
+    }
+    /// Sets `node`'s extended attribute `name` to `value`: [`Refused::Exists`] when `create_only`
+    /// and it is there, [`Refused::NoAttribute`] when `replace_only` and it is not (D557).
+    fn set_extended_attribute(
+        &self,
+        _node: u64,
+        _name: &[u8],
+        _value: &[u8],
+        _create_only: bool,
+        _replace_only: bool,
+    ) -> Result<(), Refused> {
+        Err(Refused::NotSupported)
+    }
+    /// `node`'s extended attributes' names, each followed by a zero byte (D557).
+    fn extended_attribute_names(&self, _node: u64) -> Result<alloc::vec::Vec<u8>, Refused> {
+        Err(Refused::NotSupported)
+    }
+    /// Removes `node`'s extended attribute `name` (D557).
+    fn remove_extended_attribute(&self, _node: u64, _name: &[u8]) -> Result<(), Refused> {
+        Err(Refused::NotSupported)
+    }
+    /// Sets `node`'s owner and group (`chown`, D557); `None` keeps one as it is.
+    fn set_owner(&self, _node: u64, _owner: Option<u32>, _group: Option<u32>) -> Result<(), Refused> {
         Err(Refused::ReadOnly)
     }
     /// Keeps `node` alive while something uses it: when its last name goes, its contents stay

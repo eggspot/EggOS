@@ -28,7 +28,131 @@ pub const RENAME_NOREPLACE: u64 = 1;
 /// `linkat`'s flag that follows a symbolic link named as the existing file (`AT_SYMLINK_FOLLOW`).
 pub const AT_SYMLINK_FOLLOW: u64 = 0x400;
 
-pub(super) const UMASK: u32 = 0o022;
+/// The calling process's file mode creation mask (`umask`, D557).
+pub(super) fn umask_of<P: Platform>(process: &Process<P>) -> u32 {
+    process.credentials_and_limits().lock().umask
+}
+
+/// Makes `node`, just created, the file system user and group ids' of `process` (D557), as
+/// Linux gives a new file its creator's: nothing for root's, which every node has to start with.
+pub(super) fn give_to_creator<P: Platform>(process: &Process<P>, node: Node) {
+    let (user, group) = {
+        let state = process.credentials_and_limits().lock();
+        (
+            state.credentials.ids(super::credentials::Kind::User).filesystem,
+            state.credentials.ids(super::credentials::Kind::Group).filesystem,
+        )
+    };
+    if user != 0 || group != 0 {
+        let _ = node.file_system().set_owner(node.id(), Some(user), Some(group));
+    }
+}
+
+/// `umask(mask)`: sets the calling process's file mode creation mask to `mask & 0777` and returns
+/// the one before (D557).
+pub fn umask<P: Platform>(process: &Process<P>, mask: u64) -> u64 {
+    let mut state = process.credentials_and_limits().lock();
+    let before = state.umask;
+    state.umask = mask as u32 & 0o777;
+    u64::from(before)
+}
+
+/// `fchownat(dirfd, path, owner, group, flags)`: gives the file `dirfd` and `path` name a new
+/// owner and group; -1 (as a 32-bit value) leaves one as it is (D557). `chown` and `lchown` on the
+/// legacy tables are this from the working directory, `lchown` with `AT_SYMLINK_NOFOLLOW`. As
+/// Linux: only root changes the owner; the owner changes the group to one of its own groups;
+/// a change by someone other than root clears the set-user-id and set-group-id bits; `EPERM`
+/// otherwise, the path's errors, `EROFS` on a file system that cannot be changed.
+pub fn fchownat<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    dirfd: u64,
+    path: u64,
+    owner: u64,
+    group: u64,
+    flags: u64,
+) -> Result<u64, Errno> {
+    use super::stat::at;
+    if flags & !(at::SYMLINK_NOFOLLOW | at::EMPTY_PATH) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let mut buffer = PathBuffer::uninit();
+    let path = read_path(process, path, &mut buffer)?;
+    let node = if path.is_empty() {
+        if flags & at::EMPTY_PATH == 0 {
+            return Err(Errno::ENOENT);
+        }
+        let file = thread.files().file(dirfd)?;
+        file.kind().node().ok_or(Errno::EBADF)?
+    } else {
+        let (root, start) = starting_points(thread, dirfd, path)?;
+        let follow_last = flags & at::SYMLINK_NOFOLLOW == 0;
+        vfs::resolve_as(root, start, path, process.id().get(), follow_last).map_err(walk_error)?
+    };
+    change_owner(process, node, owner, group)
+}
+
+/// `fchown(fd, owner, group)`: [`fchownat`] on the file `fd` is open on (D557).
+pub fn fchown<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    fd: u64,
+    owner: u64,
+    group: u64,
+) -> Result<u64, Errno> {
+    let file = thread.files().file(fd)?;
+    match file.kind().node() {
+        Some(node) => change_owner(process, node, owner, group),
+        None => Ok(0),
+    }
+}
+
+fn change_owner<P: Platform>(
+    process: &Process<P>,
+    node: Node,
+    owner: u64,
+    group: u64,
+) -> Result<u64, Errno> {
+    const UNCHANGED: u32 = u32::MAX;
+    let (owner, group) = (owner as u32, group as u32);
+    let attributes = node.attributes();
+    let (user, groups_ok) = {
+        let state = process.credentials_and_limits().lock();
+        let user = state.credentials.ids(super::credentials::Kind::User).filesystem;
+        let own_group = state.credentials.ids(super::credentials::Kind::Group).filesystem;
+        let groups_ok = group == UNCHANGED
+            || group == attributes.group
+            || group == own_group
+            || state.credentials.groups().contains(&group);
+        (user, groups_ok)
+    };
+    let owner = (owner != UNCHANGED && owner != attributes.owner).then_some(owner);
+    let group = (group != UNCHANGED && group != attributes.group).then_some(group);
+    if user != 0 && (owner.is_some() || user != attributes.owner || !groups_ok) {
+        if owner.is_none() && group.is_none() && user == attributes.owner {
+            return Ok(0);
+        }
+        return Err(Errno::EPERM);
+    }
+    let file_system = node.file_system();
+    if !file_system.is_writable() {
+        return Err(Errno::EROFS);
+    }
+    file_system
+        .set_owner(node.id(), owner, group)
+        .map_err(refused)?;
+    if user != 0 && attributes.kind == NodeKind::Regular {
+        let kept = attributes.permissions & !(SET_USER_ID | SET_GROUP_ID);
+        if kept != attributes.permissions {
+            let _ = file_system.set_permissions(node.id(), kept);
+        }
+    }
+    inotify::changed(node, watched::ATTRIB);
+    Ok(0)
+}
+
+const SET_USER_ID: u32 = 0o4000;
+const SET_GROUP_ID: u32 = 0o2000;
 
 const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;
@@ -55,6 +179,9 @@ pub fn refused(refused: Refused) -> Errno {
         Refused::Storage => Errno::EIO,
         Refused::TooManyLinks => Errno::EMLINK,
         Refused::NotPermitted => Errno::EPERM,
+        Refused::NotSupported => Errno::EOPNOTSUPP,
+        Refused::NoAttribute => Errno::ENODATA,
+        Refused::TooSmall => Errno::ERANGE,
     }
 }
 
@@ -142,6 +269,7 @@ pub fn create_file<P: Platform>(
     mode: u64,
     caller: u32,
     links_allowed: bool,
+    mask: u32,
 ) -> Result<Node, Errno> {
     let (directory, name) =
         parent_and_name_walking(root, start, path, false, caller, links_allowed)?;
@@ -152,7 +280,7 @@ pub fn create_file<P: Platform>(
     if !file_system.is_writable() {
         return Err(Errno::EROFS);
     }
-    let permissions = mode as u32 & 0o7777 & !UMASK;
+    let permissions = mode as u32 & 0o7777 & !mask;
     let id = file_system
         .create(
             directory.id(),
@@ -365,7 +493,7 @@ pub fn mkdirat<P: Platform>(
         return Err(Errno::EEXIST);
     }
     let file_system = directory.file_system();
-    let permissions = mode as u32 & 0o7777 & !UMASK;
+    let permissions = mode as u32 & 0o7777 & !umask_of(process);
     file_system
         .create(
             directory.id(),
@@ -376,6 +504,9 @@ pub fn mkdirat<P: Platform>(
         )
         .map_err(refused)?;
     inotify::created(directory, name, true);
+    if let Ok(node) = directory.lookup(name) {
+        give_to_creator(process, node);
+    }
     Ok(0)
 }
 

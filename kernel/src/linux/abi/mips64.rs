@@ -203,6 +203,36 @@ pub mod number {
     pub const EPOLL_PWAIT2: u64 = 5441;
     pub const FCHMODAT2: u64 = 5452;
     /// The highest number above.
+    pub const UMASK: u64 = 5093;
+    pub const CHOWN: u64 = 5090;
+    pub const FCHOWN: u64 = 5091;
+    pub const LCHOWN: u64 = 5092;
+    pub const FCHOWNAT: u64 = 5250;
+    pub const PIDFD_OPEN: u64 = 5434;
+    pub const PIDFD_SEND_SIGNAL: u64 = 5424;
+    pub const PIDFD_GETFD: u64 = 5438;
+    pub const SENDFILE: u64 = 5039;
+    pub const SPLICE: u64 = 5263;
+    pub const TEE: u64 = 5265;
+    pub const VMSPLICE: u64 = 5266;
+    pub const COPY_FILE_RANGE: u64 = 5320;
+    pub const SETXATTR: u64 = 5180;
+    pub const LSETXATTR: u64 = 5181;
+    pub const FSETXATTR: u64 = 5182;
+    pub const GETXATTR: u64 = 5183;
+    pub const LGETXATTR: u64 = 5184;
+    pub const FGETXATTR: u64 = 5185;
+    pub const LISTXATTR: u64 = 5186;
+    pub const LLISTXATTR: u64 = 5187;
+    pub const FLISTXATTR: u64 = 5188;
+    pub const REMOVEXATTR: u64 = 5189;
+    pub const LREMOVEXATTR: u64 = 5190;
+    pub const FREMOVEXATTR: u64 = 5191;
+    pub const SENDMMSG: u64 = 5302;
+    pub const RECVMMSG: u64 = 5294;
+    pub const CAPGET: u64 = 5123;
+    pub const CAPSET: u64 = 5124;
+    pub const PTRACE: u64 = 5099;
     pub const LAST: u64 = FCHMODAT2;
     /// Not in n64: past [`LAST`].
     pub const TIME: u64 = LAST + 1;

@@ -199,6 +199,10 @@ pub mod request {
 }
 
 mod option {
+    pub const PR_CAPBSET_READ: u32 = 23;
+    pub const PR_CAPBSET_DROP: u32 = 24;
+    pub const PR_SET_NAME: u32 = 15;
+    pub const PR_GET_NAME: u32 = 16;
     pub const PR_SET_CHILD_SUBREAPER: u32 = 36;
     pub const PR_GET_CHILD_SUBREAPER: u32 = 37;
 }
@@ -250,9 +254,47 @@ pub fn setsid<P: Platform>(process: &Process<P>) -> Result<u64, Errno> {
 /// it) and `PR_GET_CHILD_SUBREAPER` (an `int` written at `argument`, `EFAULT` if it is not the
 /// program's writable memory). `EINVAL` for every other option, as Linux answers one it does
 /// not know.
-pub fn prctl<P: Platform>(process: &Process<P>, option: u64, argument: u64) -> Result<u64, Errno> {
+pub fn prctl<P: Platform>(
+    process: &Process<P>,
+    thread: &mut super::thread::LinuxThread,
+    option: u64,
+    argument: u64,
+) -> Result<u64, Errno> {
     let id = process.id().get();
     match option as u32 {
+        option::PR_CAPBSET_READ => super::capabilities::bounding_holds(process, argument),
+        option::PR_CAPBSET_DROP => super::capabilities::drop_from_bounding(process, argument),
+        option::PR_SET_NAME => {
+            let mut name = [0u8; super::process_table::NAME_LENGTH];
+            for (index, slot) in name.iter_mut().take(super::process_table::NAME_LENGTH - 1).enumerate() {
+                let mut byte = [0u8; 1];
+                process
+                    .read_user_memory(argument + index as u64, &mut byte)
+                    .map_err(|_| Errno::EFAULT)?;
+                if byte[0] == 0 {
+                    break;
+                }
+                *slot = byte[0];
+            }
+            thread.set_name(name);
+            if thread.id() == id {
+                TABLE.lock().set_name(id, name);
+            }
+            Ok(0)
+        }
+        option::PR_GET_NAME => {
+            let name = match thread.name() {
+                Some(name) => name,
+                None => TABLE
+                    .lock()
+                    .describe(id)
+                    .map_or([0; super::process_table::NAME_LENGTH], |(listed, _)| listed.name),
+            };
+            process
+                .write_user_memory(argument, &name)
+                .map(|()| 0)
+                .map_err(|_| Errno::EFAULT)
+        }
         option::PR_SET_CHILD_SUBREAPER => {
             TABLE.lock().set_child_subreaper(id, argument != 0);
             Ok(0)

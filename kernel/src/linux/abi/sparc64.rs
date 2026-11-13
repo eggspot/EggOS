@@ -201,6 +201,36 @@ pub mod number {
     pub const FCHMODAT2: u64 = 452;
     pub const TIME: u64 = NOT_ON_SPARC64;
     /// The highest number above that SPARC64 has.
+    pub const UMASK: u64 = 60;
+    pub const CHOWN: u64 = 13;
+    pub const FCHOWN: u64 = 123;
+    pub const LCHOWN: u64 = 16;
+    pub const FCHOWNAT: u64 = 291;
+    pub const PIDFD_OPEN: u64 = 434;
+    pub const PIDFD_SEND_SIGNAL: u64 = 424;
+    pub const PIDFD_GETFD: u64 = 438;
+    pub const SENDFILE: u64 = 39;
+    pub const SPLICE: u64 = 232;
+    pub const TEE: u64 = 280;
+    pub const VMSPLICE: u64 = 25;
+    pub const COPY_FILE_RANGE: u64 = 357;
+    pub const SETXATTR: u64 = 169;
+    pub const LSETXATTR: u64 = 170;
+    pub const FSETXATTR: u64 = 171;
+    pub const GETXATTR: u64 = 172;
+    pub const LGETXATTR: u64 = 173;
+    pub const FGETXATTR: u64 = 177;
+    pub const LISTXATTR: u64 = 178;
+    pub const LLISTXATTR: u64 = 179;
+    pub const FLISTXATTR: u64 = 180;
+    pub const REMOVEXATTR: u64 = 181;
+    pub const LREMOVEXATTR: u64 = 182;
+    pub const FREMOVEXATTR: u64 = 186;
+    pub const SENDMMSG: u64 = 336;
+    pub const RECVMMSG: u64 = 328;
+    pub const CAPGET: u64 = 21;
+    pub const CAPSET: u64 = 22;
+    pub const PTRACE: u64 = 26;
     pub const LAST: u64 = FCHMODAT2;
     const NOT_ON_SPARC64: u64 = 0x1_0000;
 }

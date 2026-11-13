@@ -328,10 +328,12 @@ fn open<P: Platform>(
                 mode,
                 caller,
                 links_allowed,
+                super::file_changes::umask_of(process),
             );
             match created_file {
                 Ok(node) => {
                     created = true;
+                    super::file_changes::give_to_creator(process, node);
                     (node, node.kind())
                 }
                 Err(Errno::EROFS) => return Err(creation_error(caller, root, start, path)),

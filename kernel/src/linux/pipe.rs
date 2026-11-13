@@ -348,6 +348,61 @@ enum Taken {
 }
 
 impl PipeEnd {
+    /// Takes bytes off the pipe into `buffer` without waiting (`splice`, D557): how many.
+    pub(super) fn take_bytes(&self, buffer: &mut [u8]) -> usize {
+        let taken = self.pipe.ring.lock().take(buffer);
+        if taken > 0 {
+            self.pipe.wake_list.wake();
+        }
+        taken
+    }
+
+    /// Copies bytes `skip..` of what the pipe holds into `buffer`, leaving them there (`tee`,
+    /// D557): how many.
+    pub(super) fn peek_bytes(&self, skip: usize, buffer: &mut [u8]) -> usize {
+        let ring = self.pipe.ring.lock();
+        let available = ring.length.saturating_sub(skip);
+        let count = buffer.len().min(available);
+        for (index, slot) in buffer[..count].iter_mut().enumerate() {
+            *slot = ring.bytes[(ring.start + skip + index) % CAPACITY];
+        }
+        count
+    }
+
+    /// Puts `bytes` back at the front of the pipe, after a `splice` took more than its sink took
+    /// (D557).
+    pub(super) fn give_back(&self, bytes: &[u8]) {
+        let mut ring = self.pipe.ring.lock();
+        let count = bytes.len().min(ring.room());
+        ring.start = (ring.start + CAPACITY - count) % CAPACITY;
+        for (index, &byte) in bytes[..count].iter().enumerate() {
+            let at = (ring.start + index) % CAPACITY;
+            ring.bytes[at] = byte;
+        }
+        ring.length += count;
+    }
+
+    /// Pushes `bytes` into the pipe without waiting (`splice`, `sendfile`, `tee`, D557): how many
+    /// went in; `EPIPE` when no reader is left.
+    pub(super) fn push_bytes(&self, bytes: &[u8]) -> Result<usize, Errno> {
+        let pushed = {
+            let mut ring = self.pipe.ring.lock();
+            if ring.readers == 0 {
+                return Err(Errno::EPIPE);
+            }
+            ring.push(bytes)
+        };
+        if pushed > 0 {
+            self.pipe.wake_list.wake();
+        }
+        Ok(pushed)
+    }
+
+    /// Whether `other` is an end of the same pipe.
+    pub(super) fn same_pipe(&self, other: &PipeEnd) -> bool {
+        Arc::ptr_eq(&self.pipe, &other.pipe)
+    }
+
     fn take(&self, buffer: &mut [u8]) -> Taken {
         let mut ring = self.pipe.ring.lock();
         match ring.take(buffer) {

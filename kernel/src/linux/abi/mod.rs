@@ -458,6 +458,34 @@ pub mod generic {
         pub const SYSINFO: u64 = 179;
         pub const FADVISE64: u64 = 223;
         /// The highest number above.
+        pub const UMASK: u64 = 166;
+        pub const FCHOWN: u64 = 55;
+        pub const FCHOWNAT: u64 = 54;
+        pub const PIDFD_OPEN: u64 = 434;
+        pub const PIDFD_SEND_SIGNAL: u64 = 424;
+        pub const PIDFD_GETFD: u64 = 438;
+        pub const SENDFILE: u64 = 71;
+        pub const SPLICE: u64 = 76;
+        pub const TEE: u64 = 77;
+        pub const VMSPLICE: u64 = 75;
+        pub const COPY_FILE_RANGE: u64 = 285;
+        pub const SETXATTR: u64 = 5;
+        pub const LSETXATTR: u64 = 6;
+        pub const FSETXATTR: u64 = 7;
+        pub const GETXATTR: u64 = 8;
+        pub const LGETXATTR: u64 = 9;
+        pub const FGETXATTR: u64 = 10;
+        pub const LISTXATTR: u64 = 11;
+        pub const LLISTXATTR: u64 = 12;
+        pub const FLISTXATTR: u64 = 13;
+        pub const REMOVEXATTR: u64 = 14;
+        pub const LREMOVEXATTR: u64 = 15;
+        pub const FREMOVEXATTR: u64 = 16;
+        pub const SENDMMSG: u64 = 269;
+        pub const RECVMMSG: u64 = 243;
+        pub const CAPGET: u64 = 90;
+        pub const CAPSET: u64 = 91;
+        pub const PTRACE: u64 = 117;
         pub const LAST: u64 = FCHMODAT2;
     }
 

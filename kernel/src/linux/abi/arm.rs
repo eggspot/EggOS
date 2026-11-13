@@ -199,6 +199,36 @@ pub mod number {
     pub const EPOLL_PWAIT2: u64 = 441;
     pub const FCHMODAT2: u64 = 452;
     /// The highest number above.
+    pub const UMASK: u64 = 60;
+    pub const CHOWN: u64 = 212;
+    pub const FCHOWN: u64 = 207;
+    pub const LCHOWN: u64 = 198;
+    pub const FCHOWNAT: u64 = 325;
+    pub const PIDFD_OPEN: u64 = 434;
+    pub const PIDFD_SEND_SIGNAL: u64 = 424;
+    pub const PIDFD_GETFD: u64 = 438;
+    pub const SENDFILE: u64 = 239;
+    pub const SPLICE: u64 = 340;
+    pub const TEE: u64 = 342;
+    pub const VMSPLICE: u64 = 343;
+    pub const COPY_FILE_RANGE: u64 = 391;
+    pub const SETXATTR: u64 = 226;
+    pub const LSETXATTR: u64 = 227;
+    pub const FSETXATTR: u64 = 228;
+    pub const GETXATTR: u64 = 229;
+    pub const LGETXATTR: u64 = 230;
+    pub const FGETXATTR: u64 = 231;
+    pub const LISTXATTR: u64 = 232;
+    pub const LLISTXATTR: u64 = 233;
+    pub const FLISTXATTR: u64 = 234;
+    pub const REMOVEXATTR: u64 = 235;
+    pub const LREMOVEXATTR: u64 = 236;
+    pub const FREMOVEXATTR: u64 = 237;
+    pub const SENDMMSG: u64 = 374;
+    pub const RECVMMSG: u64 = 365;
+    pub const CAPGET: u64 = 184;
+    pub const CAPSET: u64 = 185;
+    pub const PTRACE: u64 = 26;
     pub const LAST: u64 = FCHMODAT2;
     /// Not on 32-bit Arm with 64-bit time and `statx`: past [`LAST`].
     pub const NEWFSTATAT: u64 = LAST + 1;
