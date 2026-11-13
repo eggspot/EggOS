@@ -106,7 +106,7 @@ and is not listed per item.
 
 - [x] `fetch`: proxies (`http_proxy`/`https_proxy`), basic authentication, cookies, gzip/deflate `Content-Encoding` (D158) — code written, unbuilt, D573
 - [x] TLS: Ed25519 and ECDSA P-521 certificates (D159) — code written, unbuilt, D573
-- [ ] Text Editor: syntax colouring (D149)
+- [x] Text Editor: syntax colouring (D149) — code written, unbuilt, D574
 - [ ] D-Bus: a session bus of our own (`eggos-dbus`, the wire protocol, `org.freedesktop.DBus` names) for single-instance apps, portals and accessibility (D176)
 - [x] eggsh: arithmetic expansion `$((...))` and `let` (D182) — code written, unbuilt, D572
 - [x] eggsh: `trap`, `getopts`, `printf`, `exec`, `command`, `readonly`, `umask`, `times` built-ins (D182) — code written, unbuilt, D572

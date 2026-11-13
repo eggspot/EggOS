@@ -26457,3 +26457,22 @@ the license, by an explicit instruction recorded here.
   every program the same way.
 - **Not yet.** Building and running; digest authentication; HTTPS proxies (TLS to the proxy);
   `br` (Brotli) bodies.
+
+## D574 Text Editor syntax colouring (M10; D149's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design by Claude Fable, `docs/ux/text-editor-syntax-v0.1.md`)
+- **What.** `eggos_editor::highlight` classifies each line of a document into runs of fourteen
+  kinds (keyword, type, string, number, comment, function, macro, attribute, escape, heading,
+  link, key, tag, plain) for twelve languages, picked by the file's extension or a `#!` line,
+  carrying a one-byte state (block comment, long string, HTML comment, Markdown fence) from
+  line to line. The editor window paints each glyph in its kind's colour, the design's seven
+  values from the desktop palette, selected text keeping its colour; the status bar names the
+  language (`Plain Text` when none).
+- **Line states.** The state at the start of every 256th line is kept (256 checkpoints, a
+  fixed array, no allocation); an edit forgets the checkpoints from its line on, and painting
+  scans from the nearest checkpoint, so a keystroke re-scans at most 255 lines plus the
+  visible ones, never the whole document.
+- **Decided by research.** The design puts the toggle in a `View` menu under `Word Wrap`; the
+  editor has neither a menu bar nor word wrap yet, so `Show/Hide Syntax Colours` sits in the
+  text's context menu (disabled for plain text) and moves to `View` when that menu comes.
+  On by default, per window, not saved, as the design says.
+- **Not yet.** Building and running; JavaScript template strings and HTML tags spanning lines
+  carry no state; no per-language plug-ins.
