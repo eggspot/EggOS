@@ -38,6 +38,10 @@ use eggos_hal::Platform;
 use eggos_hal::atomic::AtomicU64;
 use eggos_net::checksum::Completion;
 use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
+
+/// The longest frame an adapter hands up: a TCP segment the device joined from several
+/// (receive coalescing, D566), up to the largest IP packet with its Ethernet header.
+pub const JOINED_FRAME_BYTES: usize = u16::MAX as usize + MAX_FRAME_BYTES;
 use eggos_net::interface::{
     Counters, Datagram, Delivery, Interface, LARGE_TCP_SEGMENT_AT, SendError,
 };
@@ -98,7 +102,7 @@ struct Adapter {
     name: &'static [u8],
     device: Box<dyn NetDevice>,
     interface: Interface,
-    frame: [u8; MAX_FRAME_BYTES],
+    frame: Vec<u8>,
 }
 
 impl Adapter {
@@ -115,7 +119,7 @@ impl Adapter {
             name,
             device,
             interface,
-            frame: [0; MAX_FRAME_BYTES],
+            frame: alloc::vec![0; JOINED_FRAME_BYTES],
         })
     }
 

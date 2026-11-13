@@ -6,7 +6,7 @@
 use super::super::queue::{Buffer, SplitQueue};
 use super::super::{Error, Transport};
 use super::{
-    BUFFER_BYTES, CONTROL_COMMAND_OFFSET, CONTROL_QUEUE_OFFSET, HEADER_BYTES,
+    BUFFER_BYTES, CONTROL_COMMAND_OFFSET, CONTROL_QUEUE_OFFSET, HEADER_BUFFERS, HEADER_BYTES,
     HEADER_CHECKSUM_OFFSET, HEADER_CHECKSUM_START, HEADER_FLAGS, NEEDS_CHECKSUM, QUEUE_SIZE,
     RECEIVE_BUFFERS_OFFSET, TRANSMIT_BUFFERS_OFFSET, TRANSMIT_QUEUE_OFFSET, complete_checksum,
 };
@@ -93,6 +93,7 @@ pub struct Lane<M: DmaMemory> {
     transmit_buffers_of_head: [u16; QUEUE_SIZE as usize],
     free_transmit_buffers: u16,
     receive_size: u16,
+    mergeable: bool,
 }
 
 impl<M: DmaMemory> Lane<M> {
@@ -103,6 +104,7 @@ impl<M: DmaMemory> Lane<M> {
         memory: M,
         pair: u16,
         event_index: bool,
+        mergeable: bool,
     ) -> Result<Self, (Error, M)> {
         if memory.len() < super::MEMORY_BYTES {
             return Err((Error::MemoryTooSmall, memory));
@@ -160,6 +162,7 @@ impl<M: DmaMemory> Lane<M> {
             transmit_buffers_of_head: [0; QUEUE_SIZE as usize],
             free_transmit_buffers: ((1u32 << transmit_size) - 1) as u16,
             receive_size,
+            mergeable,
         })
     }
 
@@ -272,6 +275,11 @@ impl<M: DmaMemory> Lane<M> {
                     length,
                 )
             };
+            let mut length = length;
+            if self.mergeable {
+                let more = u16::from_le_bytes([header[HEADER_BUFFERS], header[HEADER_BUFFERS + 1]]);
+                length = self.join_buffers(transport, frame, length, more.saturating_sub(1));
+            }
             if header[HEADER_FLAGS] & NEEDS_CHECKSUM != 0 {
                 let field =
                     |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
@@ -287,6 +295,45 @@ impl<M: DmaMemory> Lane<M> {
                 return Some(length);
             }
         }
+    }
+
+    fn join_buffers<T: Transport + ?Sized>(
+        &mut self,
+        transport: &T,
+        frame: &mut [u8],
+        mut length: usize,
+        more: u16,
+    ) -> usize {
+        for _ in 0..more {
+            let Some(used) = self.receive.pop_used() else {
+                break;
+            };
+            if used.head >= self.receive.size() {
+                continue;
+            }
+            let buffer = self.receive_buffer_of_head[usize::from(used.head)];
+            let at = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
+            let count = (used.len as usize)
+                .min(BUFFER_BYTES)
+                .min(frame.len().saturating_sub(length));
+            self.memory.prepare_for_cpu(at, count);
+            // SAFETY: the receive buffer `buffer`, which the device filled and handed back with
+            // this used element and does not touch until it is posted again below; `frame` is
+            // the caller's own memory, apart from it, with room for `count` more bytes.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.memory.as_mut_ptr().wrapping_add(at),
+                    frame.as_mut_ptr().wrapping_add(length),
+                    count,
+                )
+            };
+            length += count;
+            let _ = self.post_receive(buffer);
+        }
+        if self.receive.should_notify() {
+            transport.notify(self.receive_queue);
+        }
+        length
     }
 
     fn reclaim_transmitted(&mut self) {
