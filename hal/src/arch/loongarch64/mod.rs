@@ -208,7 +208,7 @@ eggos_secondary_start:
     kernel_root_slot = const paging::index(KERNEL_VIRTUAL_OFFSET, 3) * 8,
     kernel_gigabyte_slot = const paging::index(KERNEL_VIRTUAL_OFFSET, 2) * 8,
     direct_leaf = const paging::loongarch64::leaf(0, 2, Attributes::READ_WRITE),
-    kernel_leaf = const paging::loongarch64::leaf(0, 2, BOOT_KERNEL),
+    kernel_leaf = const paging::loongarch64::leaf(0, 2, BOOT_KERNEL_ATTRIBUTES),
     init_timer = sym timer::init,
     mailbox1 = const iocsr::MAILBOX1,
     start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
@@ -278,7 +278,7 @@ const DIRECT_MAP_OFFSET: usize = 0xffff_8000_0000_0000;
 const BOOT_DIRECT_MAP_END: u64 = 512 << 30;
 const KERNEL_LOAD_ADDRESS: u64 = 0x20_0000;
 
-const BOOT_KERNEL: Attributes = Attributes {
+const BOOT_KERNEL_ATTRIBUTES: Attributes = Attributes {
     writable: true,
     executable: true,
     memory_type: MemoryType::Normal,

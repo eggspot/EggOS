@@ -75,7 +75,7 @@ pub(super) fn console_write(bytes: &[u8]) {
             // SAFETY: the console lock is held, so only this CPU uses the buffer and the length.
             let (buffer, length) = unsafe {
                 let buffer = &raw mut BUFFER;
-                (*buffer)[..rest.len()].copy_from_slice(rest);
+                (&mut *buffer)[..rest.len()].copy_from_slice(rest);
                 let length = &raw mut LENGTH;
                 *length = (rest.len() as u64).to_be();
                 (buffer as *const u8, length as *const u64)
@@ -118,7 +118,7 @@ pub(super) fn console_read(buffer: &mut [u8]) -> usize {
         _ => 0,
     };
     // SAFETY: as above.
-    buffer[..read].copy_from_slice(unsafe { &(*(&raw const BUFFER))[..read] });
+    buffer[..read].copy_from_slice(unsafe { &(&*(&raw const BUFFER))[..read] });
     release_console();
     read
 }

@@ -178,6 +178,8 @@ pub enum TestMachine {
     S390CcwVirtio,
     /// SPARC64's `sun4u` (D326).
     Sun4u,
+    /// 64-bit little-endian PowerPC's `powernv9` (D304).
+    PowerNv9,
 }
 
 /// The machine this kernel's self-tests expect; `None` in host builds.
@@ -198,6 +200,9 @@ pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::S390CcwVirtio);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "sparc64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Sun4u);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::PowerNv9);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Q35);

@@ -1951,7 +1951,6 @@ fn supervisor_protections() -> u64 {
     };
     smep | umip | smap
 }
-const CR4_SMEP: u64 = 1 << 20;
 const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
 const RFLAGS_FIXED: u64 = 1 << 1;
