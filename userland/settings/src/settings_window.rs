@@ -786,7 +786,7 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
             "{} \u{d7} {}, scale {}",
             facts.resolution.0, facts.resolution.1, facts.scale
         ),
-        KEYBOARD => write!(text, "Layouts, repeat and the on-screen keyboard"),
+        KEYBOARD => write!(text, "Layouts, repeat, on-screen keyboard"),
         MOUSE => write!(
             text,
             "{} hand{}",
@@ -3546,7 +3546,7 @@ mod tests {
             )
         );
         assert_eq!(
-            click(&mut window, 600, 124),
+            click(&mut window, 600, 164),
             Some(Request::SetDisplayScale(2))
         );
         window.display_scale_saved(2, Ok(()));
@@ -3558,7 +3558,7 @@ mod tests {
             )
         );
         assert_eq!(
-            click(&mut window, 540, 124),
+            click(&mut window, 540, 164),
             Some(Request::SetDisplayScale(1))
         );
         window.display_scale_saved(1, Err(Errno::EPERM));
