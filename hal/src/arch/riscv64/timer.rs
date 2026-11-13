@@ -6,8 +6,6 @@
 /// device tree once the kernel parses it (M5).
 pub(super) const TIMEBASE_FREQUENCY: u64 = 10_000_000;
 
-/// The `time` counter's frequency: `/cpus/timebase-frequency` once the boot hart read it (D261),
-/// QEMU `virt`'s until then.
 static FREQUENCY: crate::atomic::AtomicU64 = crate::atomic::AtomicU64::new(TIMEBASE_FREQUENCY);
 
 /// The `time` counter's frequency.
@@ -16,17 +14,12 @@ pub(super) fn frequency() -> u64 {
     FREQUENCY.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// SBI Timer extension, `sbi_set_timer` function.
 const SBI_EXT_TIME: usize = 0x5449_4d45;
 const SBI_TIME_SET_TIMER: usize = 0;
 
-/// `sie` bit 5: supervisor timer interrupt enable.
 const SIE_STIE: usize = 1 << 5;
-/// `sie` / `sip` bit 1: supervisor software interrupt (enable / pending), which the SBI IPI
-/// extension raises: the wake-up interrupt between harts (D41).
 const SIE_SSIE: usize = 1 << 1;
 
-/// SBI IPI extension, `sbi_send_ipi` function (SBI spec v2.0, chapter 7).
 const SBI_EXT_IPI: usize = 0x73_5049;
 const SBI_IPI_SEND_IPI: usize = 0;
 
@@ -61,7 +54,6 @@ pub(super) fn wake(hart: u64) {
     // the caller's contract rules out.
     let (error, _) =
         unsafe { super::sbi_call(SBI_EXT_IPI, SBI_IPI_SEND_IPI, [1, hart as usize, 0]) };
-    // The IPI extension is in every SBI from v0.2 on, which the kernel needs anyway (HSM, D40).
     debug_assert_eq!(error, 0, "SBI could not send a wake-up to hart {hart}");
 }
 

@@ -266,16 +266,28 @@ const STATX_TIMES: [usize; 3] = [64, 96, 112];
 pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
     let mut bytes = [0; STAT_SIZE];
     if crate::linux::abi::stat::LAYOUT == crate::linux::abi::StatLayout::Mips64 {
-        put(&mut bytes, 0, &(status.device.encoded() as u32).to_ne_bytes());
+        put(
+            &mut bytes,
+            0,
+            &(status.device.encoded() as u32).to_ne_bytes(),
+        );
         put(&mut bytes, 16, &status.inode.to_ne_bytes());
         put(&mut bytes, 24, &status.mode.to_ne_bytes());
         put(&mut bytes, 28, &status.links.to_ne_bytes());
         put(&mut bytes, 32, &status.owner.to_ne_bytes());
         put(&mut bytes, 36, &status.group.to_ne_bytes());
-        put(&mut bytes, 40, &(status.represented_device.encoded() as u32).to_ne_bytes());
+        put(
+            &mut bytes,
+            40,
+            &(status.represented_device.encoded() as u32).to_ne_bytes(),
+        );
         put(&mut bytes, 56, &status.size.to_ne_bytes());
         for (index, offset) in MIPS64_STAT_TIMES.into_iter().enumerate() {
-            let time = if index == 0 { status.accessed } else { status.modified };
+            let time = if index == 0 {
+                status.accessed
+            } else {
+                status.modified
+            };
             put(&mut bytes, offset, &(time as u32).to_ne_bytes());
         }
         put(&mut bytes, 88, &status.block_size.to_ne_bytes());
@@ -285,16 +297,32 @@ pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
     put(&mut bytes, 0, &status.device.encoded().to_ne_bytes());
     put(&mut bytes, 8, &status.inode.to_ne_bytes());
     if crate::linux::abi::stat::LAYOUT == crate::linux::abi::StatLayout::Sparc64 {
-        put(&mut bytes, 0, &(status.device.encoded() as u32).to_ne_bytes());
+        put(
+            &mut bytes,
+            0,
+            &(status.device.encoded() as u32).to_ne_bytes(),
+        );
         put(&mut bytes, 8, &status.inode.to_ne_bytes());
         put(&mut bytes, 16, &status.mode.to_ne_bytes());
-        put(&mut bytes, 20, &(status.links.min(u32::from(u16::MAX)) as u16).to_ne_bytes());
+        put(
+            &mut bytes,
+            20,
+            &(status.links.min(u32::from(u16::MAX)) as u16).to_ne_bytes(),
+        );
         put(&mut bytes, 24, &status.owner.to_ne_bytes());
         put(&mut bytes, 28, &status.group.to_ne_bytes());
-        put(&mut bytes, 32, &(status.represented_device.encoded() as u32).to_ne_bytes());
+        put(
+            &mut bytes,
+            32,
+            &(status.represented_device.encoded() as u32).to_ne_bytes(),
+        );
         put(&mut bytes, 40, &status.size.to_ne_bytes());
         for (index, offset) in SPARC64_STAT_TIMES.into_iter().enumerate() {
-            let time = if index == 0 { status.accessed } else { status.modified };
+            let time = if index == 0 {
+                status.accessed
+            } else {
+                status.modified
+            };
             put(&mut bytes, offset, &time.to_ne_bytes());
         }
         put(&mut bytes, 72, &u64::from(status.block_size).to_ne_bytes());
@@ -306,10 +334,18 @@ pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
         put(&mut bytes, 24, &status.mode.to_ne_bytes());
         put(&mut bytes, 28, &status.owner.to_ne_bytes());
         put(&mut bytes, 32, &status.group.to_ne_bytes());
-        put(&mut bytes, 40, &status.represented_device.encoded().to_ne_bytes());
+        put(
+            &mut bytes,
+            40,
+            &status.represented_device.encoded().to_ne_bytes(),
+        );
         put(&mut bytes, 48, &status.size.to_ne_bytes());
         for (index, offset) in S390X_STAT_TIMES.into_iter().enumerate() {
-            let time = if index == 0 { status.accessed } else { status.modified };
+            let time = if index == 0 {
+                status.accessed
+            } else {
+                status.modified
+            };
             put(&mut bytes, offset, &time.to_ne_bytes());
         }
         put(&mut bytes, 104, &u64::from(status.block_size).to_ne_bytes());
@@ -343,7 +379,11 @@ pub fn stat_bytes(status: &Status) -> [u8; STAT_SIZE] {
     }
     put(&mut bytes, 64, &status.blocks.to_ne_bytes());
     for (index, offset) in STAT_TIMES.into_iter().enumerate() {
-        let time = if index == 0 { status.accessed } else { status.modified };
+        let time = if index == 0 {
+            status.accessed
+        } else {
+            status.modified
+        };
         put(&mut bytes, offset, &time.to_ne_bytes());
     }
     bytes
@@ -375,7 +415,11 @@ pub fn statx_bytes(status: &Status) -> [u8; STATX_SIZE] {
     put(&mut bytes, 136, &status.device.major.to_ne_bytes());
     put(&mut bytes, 140, &status.device.minor.to_ne_bytes());
     for (index, offset) in STATX_TIMES.into_iter().enumerate() {
-        let time = if index == 0 { status.accessed } else { status.modified };
+        let time = if index == 0 {
+            status.accessed
+        } else {
+            status.modified
+        };
         put(&mut bytes, offset, &time.to_ne_bytes());
     }
     bytes
@@ -730,8 +774,6 @@ mod tests {
             group: 100,
             size: 0,
             modified: 0,
-            accessed: 0,
-    accessed: 0,
         };
         let ids = |id| Ids {
             real: id,

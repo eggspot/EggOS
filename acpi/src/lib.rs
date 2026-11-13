@@ -78,7 +78,11 @@ pub enum Error {
     /// The machine refused an access.
     Host(HostError),
     /// The AML ran `Fatal`.
-    Fatal { kind: u8, code: u32, argument: u64 },
+    Fatal {
+        kind: u8,
+        code: u32,
+        argument: u64,
+    },
     /// Something the interpreter does not do.
     Unsupported(&'static str),
 }

@@ -40,7 +40,6 @@ const PARAMETERS_NAMED: usize = 8;
 const PARAMETERS_COUNT: usize = 16;
 const PARAMETERS_NAMED_COUNT: usize = 20;
 
-/// One connection to a server, shared by the proxies it made.
 #[repr(C)]
 #[derive(Debug)]
 struct Link {
@@ -48,10 +47,9 @@ struct Link {
     fd: usize,
 }
 
-/// An object the server keeps, as the program sees it.
 #[repr(C)]
 #[derive(Debug)]
-struct Proxy {
+pub(crate) struct Proxy {
     table: usize,
     references: AtomicU32,
     link: *mut Link,
@@ -128,8 +126,6 @@ fn new_link(fd: usize) -> *mut Link {
     link
 }
 
-/// # Safety
-/// `link` must be a live link the caller holds a reference to.
 unsafe fn drop_link(link: *mut Link) {
     // SAFETY: the caller's duty.
     let found = unsafe { &*link };
@@ -140,7 +136,6 @@ unsafe fn drop_link(link: *mut Link) {
     }
 }
 
-/// A new proxy for object `id` on `link`, which it takes a reference to.
 fn new_proxy(link: *mut Link, id: u32) -> Result<*mut Proxy, HResult> {
     let proxy = crate::com::allocate(core::mem::size_of::<Proxy>()).cast::<Proxy>();
     if proxy.is_null() {
@@ -228,7 +223,10 @@ pub(super) unsafe extern "efiapi" fn query_interface(
 /// `this` must be a live proxy.
 pub(super) unsafe extern "efiapi" fn add_reference(this: *mut Proxy) -> u32 {
     // SAFETY: the caller's duty.
-    unsafe { proxy(this) }.references.fetch_add(1, Ordering::Relaxed) + 1
+    unsafe { proxy(this) }
+        .references
+        .fetch_add(1, Ordering::Relaxed)
+        + 1
 }
 
 /// `IUnknown::Release`: the last reference releases the server's object and the proxy's
@@ -313,8 +311,11 @@ pub(super) unsafe extern "efiapi" fn get_ids_of_names(
     // SAFETY: the caller's duty.
     let found = unsafe { proxy(this) };
     // SAFETY: the proxy's live link.
-    let answer = ask(unsafe { &*found.link }, &wire::names(found.id, locale, &texts))
-        .and_then(|body| wire::read_named(&body));
+    let answer = ask(
+        unsafe { &*found.link },
+        &wire::names(found.id, locale, &texts),
+    )
+    .and_then(|body| wire::read_named(&body));
     let Some((status, given)) = answer else {
         return RPC_E_DISCONNECTED;
     };
@@ -403,7 +404,10 @@ fn exception_into(record: *mut u8, exception: &wire::Exception) {
                 true => core::ptr::null_mut(),
                 false => bstr::from_units(text),
             };
-            record.add(at).cast::<usize>().write_unaligned(made as usize);
+            record
+                .add(at)
+                .cast::<usize>()
+                .write_unaligned(made as usize);
         }
         record
             .add(EXCEPTION_HELP_CONTEXT)

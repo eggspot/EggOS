@@ -41,7 +41,13 @@ const NAME_COLUMN: i32 = 160;
 const SIZE_COLUMN: i32 = 80;
 const MODIFIED_COLUMN: i32 = 128;
 const PLACE_NAMES: [&str; 7] = [
-    PLACES[0].0, PLACES[1].0, PLACES[2].0, PLACES[3].0, PLACES[4].0, PLACES[5].0, PLACES[6].0,
+    PLACES[0].0,
+    PLACES[1].0,
+    PLACES[2].0,
+    PLACES[3].0,
+    PLACES[4].0,
+    PLACES[5].0,
+    PLACES[6].0,
 ];
 
 static mut CELLS: Vec<[String; 3]> = Vec::new();
@@ -104,7 +110,10 @@ pub struct PickerWindow<F: Files> {
 }
 
 fn leaked(words: &[String]) -> &'static [&'static str] {
-    let names: Vec<&'static str> = words.iter().map(|word| &*Box::leak(word.clone().into_boxed_str())).collect();
+    let names: Vec<&'static str> = words
+        .iter()
+        .map(|word| &*Box::leak(word.clone().into_boxed_str()))
+        .collect();
     Box::leak(names.into_boxed_slice())
 }
 
@@ -145,54 +154,177 @@ impl<F: Files> PickerWindow<F> {
 
     fn build(&mut self) {
         let root = self.add(None, Place::fill(), Kind::panel(Token::Menu));
-        let toolbar = self.add(root, Place::at(0, 0, Length::Fill(0), Length::Px(TOOLBAR)), Kind::panel(Token::Bar));
-        self.ids.back = self.add(toolbar, Place::at(4, 2, Length::Px(28), Length::Px(28)), Kind::button("<", false));
-        self.ids.up = self.add(toolbar, Place::at(36, 2, Length::Px(28), Length::Px(28)), Kind::button("^", false));
-        self.ids.path = self.add(toolbar, Place::at(72, 2, Length::Fill(8), Length::Px(28)), Kind::text_field("", Escape::Revert));
+        let toolbar = self.add(
+            root,
+            Place::at(0, 0, Length::Fill(0), Length::Px(TOOLBAR)),
+            Kind::panel(Token::Bar),
+        );
+        self.ids.back = self.add(
+            toolbar,
+            Place::at(4, 2, Length::Px(28), Length::Px(28)),
+            Kind::button("<", false),
+        );
+        self.ids.up = self.add(
+            toolbar,
+            Place::at(36, 2, Length::Px(28), Length::Px(28)),
+            Kind::button("^", false),
+        );
+        self.ids.path = self.add(
+            toolbar,
+            Place::at(72, 2, Length::Fill(8), Length::Px(28)),
+            Kind::text_field("", Escape::Revert),
+        );
         let band = self.band();
         let middle = Length::Fill(band);
-        let sidebar = self.add(root, Place::at(0, TOOLBAR, Length::Px(SIDEBAR), middle), Kind::panel(Token::Dock));
-        self.add(sidebar, Place::at(12, 8, Length::Px(SIDEBAR - 24), Length::Px(16)), Kind::label("Places", Token::TextDim));
-        self.ids.places = self.add(sidebar, Place::at(0, 28, Length::Fill(0), Length::Fill(0)), Kind::list(&PLACE_NAMES, ROW, 8, 24));
+        let sidebar = self.add(
+            root,
+            Place::at(0, TOOLBAR, Length::Px(SIDEBAR), middle),
+            Kind::panel(Token::Dock),
+        );
+        self.add(
+            sidebar,
+            Place::at(12, 8, Length::Px(SIDEBAR - 24), Length::Px(16)),
+            Kind::label("Places", Token::TextDim),
+        );
+        self.ids.places = self.add(
+            sidebar,
+            Place::at(0, 28, Length::Fill(0), Length::Fill(0)),
+            Kind::list(&PLACE_NAMES, ROW, 8, 24),
+        );
         let columns = [
-            TableColumn { title: "Name", width: NAME_COLUMN, min_width: NAME_COLUMN, align: Align::Left, sortable: true },
-            TableColumn { title: "Size", width: SIZE_COLUMN, min_width: SIZE_COLUMN, align: Align::End, sortable: true },
-            TableColumn { title: "Modified", width: MODIFIED_COLUMN, min_width: MODIFIED_COLUMN, align: Align::Left, sortable: true },
+            TableColumn {
+                title: "Name",
+                width: NAME_COLUMN,
+                min_width: NAME_COLUMN,
+                align: Align::Start,
+                sortable: true,
+            },
+            TableColumn {
+                title: "Size",
+                width: SIZE_COLUMN,
+                min_width: SIZE_COLUMN,
+                align: Align::End,
+                sortable: true,
+            },
+            TableColumn {
+                title: "Modified",
+                width: MODIFIED_COLUMN,
+                min_width: MODIFIED_COLUMN,
+                align: Align::Start,
+                sortable: true,
+            },
         ];
-        self.ids.table = self.add(root, Place::at(SIDEBAR, TOOLBAR, Length::Fill(0), middle), Kind::table("Entries", &columns, 0, cell, 0));
-        self.ids.empty = self.add(root, Place::at(SIDEBAR + 28, TOOLBAR + 32, Length::Fill(8), Length::Px(16)), Kind::label("", Token::TextDim));
+        self.ids.table = self.add(
+            root,
+            Place::at(SIDEBAR, TOOLBAR, Length::Fill(0), middle),
+            Kind::table("Entries", &columns, 0, cell, 0),
+        );
+        self.ids.empty = self.add(
+            root,
+            Place::at(SIDEBAR + 28, TOOLBAR + 32, Length::Fill(8), Length::Px(16)),
+            Kind::label("", Token::TextDim),
+        );
         let height = self.tree.size().1;
-        let bottom = self.add(root, Place::at(0, height - band, Length::Fill(0), Length::Px(band)), Kind::panel(Token::Bar));
+        let bottom = self.add(
+            root,
+            Place::at(0, height - band, Length::Fill(0), Length::Px(band)),
+            Kind::panel(Token::Bar),
+        );
         if self.save() {
-            self.add(bottom, Place::at(12, 18, Length::Px(56), Length::Px(16)), Kind::label("Name:", Token::Text));
-            self.ids.name = self.add(bottom, Place::at(72, 12, Length::Fill(12), Length::Px(28)), Kind::text_field("", Escape::Revert));
+            self.add(
+                bottom,
+                Place::at(12, 18, Length::Px(56), Length::Px(16)),
+                Kind::label("Name:", Token::Text),
+            );
+            self.ids.name = self.add(
+                bottom,
+                Place::at(72, 12, Length::Fill(12), Length::Px(28)),
+                Kind::text_field("", Escape::Revert),
+            );
         }
         let row = band - 40;
-        self.ids.hidden = self.add(bottom, Place::at(12, row, Length::Px(150), Length::Px(28)), Kind::checkbox("Hidden files", false));
-        let filters: Vec<String> = self.picker.options().filters.iter().map(|filter| filter.description.clone()).collect();
+        self.ids.hidden = self.add(
+            bottom,
+            Place::at(12, row, Length::Px(150), Length::Px(28)),
+            Kind::checkbox("Hidden files", false),
+        );
+        let filters: Vec<String> = self
+            .picker
+            .options()
+            .filters
+            .iter()
+            .map(|filter| filter.description.clone())
+            .collect();
         if !filters.is_empty() {
             let index = self.picker.filter();
-            self.ids.filter = self.add(bottom, Place::at(172, row, Length::Px(160), Length::Px(28)), Kind::dropdown("Filter", leaked(&filters), index));
+            self.ids.filter = self.add(
+                bottom,
+                Place::at(172, row, Length::Px(160), Length::Px(28)),
+                Kind::dropdown("Filter", leaked(&filters), index),
+            );
         }
         let (button_width, button_height) = BUTTON;
         self.ids.cancel = self.add(
             bottom,
-            Place { horizontal: eggos_toolkit::widget::Horizontal::Right(212 - button_width), top: row, width: Length::Px(button_width), height: Length::Px(button_height) },
+            Place {
+                horizontal: eggos_toolkit::widget::Horizontal::Right(212 - button_width),
+                top: row,
+                width: Length::Px(button_width),
+                height: Length::Px(button_height),
+            },
             Kind::button("Cancel", false),
         );
         let primary_words = self.picker.options().button.clone();
         self.ids.primary = self.add(
             bottom,
-            Place { horizontal: eggos_toolkit::widget::Horizontal::Right(12), top: row, width: Length::Px(button_width), height: Length::Px(button_height) },
+            Place {
+                horizontal: eggos_toolkit::widget::Horizontal::Right(12),
+                top: row,
+                width: Length::Px(button_width),
+                height: Length::Px(button_height),
+            },
             Kind::button(&primary_words, true),
         );
-        self.ids.notice = self.add(root, Place::at(SIDEBAR + 16, TOOLBAR + 8, Length::Fill(16), Length::Px(28)), Kind::label("", Token::Text));
-        self.ids.keep = self.add(root, Place::at(SIDEBAR + 16, TOOLBAR + 40, Length::Px(button_width), Length::Px(button_height)), Kind::button("Cancel", false));
-        self.ids.replace = self.add(root, Place::at(SIDEBAR + 24 + button_width, TOOLBAR + 40, Length::Px(button_width), Length::Px(button_height)), Kind::button("Replace", true));
-        for id in [self.ids.notice, self.ids.keep, self.ids.replace].into_iter().flatten() {
+        self.ids.notice = self.add(
+            root,
+            Place::at(SIDEBAR + 16, TOOLBAR + 8, Length::Fill(16), Length::Px(28)),
+            Kind::label("", Token::Text),
+        );
+        self.ids.keep = self.add(
+            root,
+            Place::at(
+                SIDEBAR + 16,
+                TOOLBAR + 40,
+                Length::Px(button_width),
+                Length::Px(button_height),
+            ),
+            Kind::button("Cancel", false),
+        );
+        self.ids.replace = self.add(
+            root,
+            Place::at(
+                SIDEBAR + 24 + button_width,
+                TOOLBAR + 40,
+                Length::Px(button_width),
+                Length::Px(button_height),
+            ),
+            Kind::button("Replace", true),
+        );
+        for id in [self.ids.notice, self.ids.keep, self.ids.replace]
+            .into_iter()
+            .flatten()
+        {
             self.tree.set_shown(id, false);
         }
-        for id in [self.ids.table, self.ids.name, self.ids.primary, self.ids.replace].into_iter().flatten() {
+        for id in [
+            self.ids.table,
+            self.ids.name,
+            self.ids.primary,
+            self.ids.replace,
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.tree.set_person_only(id, true);
         }
         if let Some(primary) = self.ids.primary {
@@ -221,7 +353,11 @@ impl<F: Files> PickerWindow<F> {
         if let Some(table) = self.ids.table {
             self.tree.set_rows(table, self.picker.rows().len());
             let (column, reversed) = self.picker.sort();
-            let order = if reversed { SortOrder::Descending } else { SortOrder::Ascending };
+            let order = if reversed {
+                SortOrder::Descending
+            } else {
+                SortOrder::Ascending
+            };
             let index = match column {
                 Column::Name => 0,
                 Column::Size => 1,
@@ -233,7 +369,8 @@ impl<F: Files> PickerWindow<F> {
             }
         }
         if let Some(path) = self.ids.path {
-            self.tree.set_text(path, &shown(self.picker.folder().as_bytes()));
+            self.tree
+                .set_text(path, &shown(self.picker.folder().as_bytes()));
         }
         if let Some(empty) = self.ids.empty {
             let words = self.picker.empty_text().unwrap_or_default();
@@ -272,7 +409,12 @@ impl<F: Files> PickerWindow<F> {
     }
 
     fn ask_replace(&mut self, path: Path) {
-        let name = shown(path.as_bytes().rsplit(|&byte| byte == b'/').next().unwrap_or(b""));
+        let name = shown(
+            path.as_bytes()
+                .rsplit(|&byte| byte == b'/')
+                .next()
+                .unwrap_or(b""),
+        );
         let folder = shown(eggos_files::names::parent(path.as_bytes()));
         if let Some(label) = self.ids.notice {
             let mut words = String::new();
@@ -340,7 +482,9 @@ impl<F: Files> PickerWindow<F> {
     fn respond(&mut self, response: Response, now_ms: u32) {
         let is = |wanted: Option<WidgetId>, id: WidgetId| wanted == Some(id);
         match response {
-            Response::Activated(id) if is(self.ids.cancel, id) => self.ending = Some(Ending::Cancelled),
+            Response::Activated(id) if is(self.ids.cancel, id) => {
+                self.ending = Some(Ending::Cancelled)
+            }
             Response::Activated(id) if is(self.ids.primary, id) => self.primary(now_ms),
             Response::Activated(id) if is(self.ids.keep, id) => self.end_question(),
             Response::Activated(id) if is(self.ids.replace, id) => {
@@ -364,7 +508,10 @@ impl<F: Files> PickerWindow<F> {
             Response::Chosen(id, row) if is(self.ids.table, id) => {
                 self.picker.select(row, Select::Only);
                 if self.save()
-                    && let (Some(name), Some(false)) = (self.ids.name, self.picker.rows().get(row).map(|row| row.dim))
+                    && let (Some(name), Some(false)) = (
+                        self.ids.name,
+                        self.picker.rows().get(row).map(|row| row.dim),
+                    )
                 {
                     let words = shown(self.picker.name(row));
                     self.tree.set_text(name, &words);
@@ -384,14 +531,20 @@ impl<F: Files> PickerWindow<F> {
                 self.refresh();
             }
             Response::Sorted(id, column, order) if is(self.ids.table, id) => {
-                self.picker.sort_as(Column::at(column), order == SortOrder::Descending);
+                self.picker
+                    .sort_as(Column::at(column), order == SortOrder::Descending);
                 self.refresh();
             }
-            Response::Unused { code: key::ENTER | key::KEYPAD_ENTER, .. } => self.enter(now_ms),
-            Response::Unused { code: key::ESC, .. } => match self.replacing.is_some() || self.notice_until.is_some() {
-                true => self.end_question(),
-                false => self.ending = Some(Ending::Cancelled),
-            },
+            Response::Unused {
+                code: key::ENTER | key::KEYPAD_ENTER,
+                ..
+            } => self.enter(now_ms),
+            Response::Unused { code: key::ESC, .. } => {
+                match self.replacing.is_some() || self.notice_until.is_some() {
+                    true => self.end_question(),
+                    false => self.ending = Some(Ending::Cancelled),
+                }
+            }
             Response::Unused { code: key::F5, .. } => {
                 self.picker.reload(&mut self.files);
                 self.refresh();
@@ -411,8 +564,10 @@ impl<F: Files> View for PickerWindow<F> {
             self.ending = Some(Ending::Cancelled);
             return false;
         }
-        if matches!(input, Input::Key { pressed: true, .. } | Input::Button { pressed: true, .. })
-            && self.notice_until.is_some()
+        if matches!(
+            input,
+            Input::Key { pressed: true, .. } | Input::Button { pressed: true, .. }
+        ) && self.notice_until.is_some()
         {
             self.hide_notice();
         }
@@ -443,7 +598,10 @@ impl<F: Files> View for PickerWindow<F> {
     }
 
     fn tick(&mut self, now_ms: u32) {
-        if self.notice_until.is_some_and(|until| now_ms.wrapping_sub(until) < u32::MAX / 2) {
+        if self
+            .notice_until
+            .is_some_and(|until| now_ms.wrapping_sub(until) < u32::MAX / 2)
+        {
             self.hide_notice();
         }
         let response = self.tree.tick(now_ms);

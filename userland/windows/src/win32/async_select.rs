@@ -38,8 +38,7 @@ struct Registered {
     armed: u32,
 }
 
-static SOCKETS: SpinLock<[Option<Registered>; MOST_SOCKETS]> =
-    SpinLock::new([None; MOST_SOCKETS]);
+static SOCKETS: SpinLock<[Option<Registered>; MOST_SOCKETS]> = SpinLock::new([None; MOST_SOCKETS]);
 static REGISTERED: AtomicUsize = AtomicUsize::new(0);
 
 fn remove(table: &mut [Option<Registered>; MOST_SOCKETS], socket: usize) {
@@ -151,8 +150,6 @@ fn incoming(fd: usize) -> Option<(u32, u32)> {
     }
 }
 
-/// What `reported` (poll's events) means for `registered`'s armed events: up to two events,
-/// each with its Winsock error.
 fn happened(registered: &Registered, reported: u16) -> [Option<(u32, u32)>; 2] {
     let armed = registered.armed;
     let failed = reported & (POLL_ERROR | POLL_HANG_UP) != 0;

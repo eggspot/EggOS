@@ -862,7 +862,8 @@ fn the_json_records_carry_the_design_s_fields() {
     assert!(first.starts_with("{\"name\":\"desktop\",\"title\":\"Desktop\""));
     assert!(first.contains("\"state\":\"installed\""));
     assert!(first.contains("\"needed_by\":[\"Built-in apps\"]"));
-    assert!(console.error.starts_with("{\"store\":{\"file\":\"eggos-"));
+    assert!(console.error.starts_with("{\"updates_checked\":"));
+    assert!(console.error.contains(",\"store\":{\"file\":\"eggos-"));
 }
 
 #[test]
@@ -892,7 +893,7 @@ fn the_registry_s_examples_run_as_written() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 4);
+    assert_eq!(ran, 7);
 }
 
 #[test]
@@ -937,7 +938,9 @@ fn the_whence_excerpt_keeps_a_driver_s_header_and_licence_and_only_our_files() {
     }];
     let excerpt = crate::firmware::whence_entries(WHENCE_SAMPLE, &files);
     assert!(excerpt.contains("Driver: i915 -- Intel Integrated Graphics driver"));
-    assert!(excerpt.contains("File: i915/tgl_dmc_ver2_12.bin\nVersion: DMC API/APB ver 2 release 12"));
+    assert!(
+        excerpt.contains("File: i915/tgl_dmc_ver2_12.bin\nVersion: DMC API/APB ver 2 release 12")
+    );
     assert!(excerpt.contains("License: Redistributable. See LICENSE.i915 for details"));
     assert!(!excerpt.contains("skl_dmc"));
     assert!(!excerpt.contains("other/blob.bin"));
@@ -949,12 +952,16 @@ fn a_firmware_file_that_is_not_the_pinned_one_is_refused() {
     let gathered = crate::firmware::gather(component, &mut |_| Some(b"not the firmware".to_vec()));
     assert_eq!(
         gathered,
-        Err(crate::firmware::Gathering::NotPinned("i915/tgl_dmc_ver2_12.bin"))
+        Err(crate::firmware::Gathering::NotPinned(
+            "i915/tgl_dmc_ver2_12.bin"
+        ))
     );
     let unreachable = crate::firmware::gather(component, &mut |_| None);
     assert_eq!(
         unreachable,
-        Err(crate::firmware::Gathering::Unreachable("i915/tgl_dmc_ver2_12.bin"))
+        Err(crate::firmware::Gathering::Unreachable(
+            "i915/tgl_dmc_ver2_12.bin"
+        ))
     );
 }
 
@@ -967,8 +974,16 @@ fn every_firmware_component_installs_only_into_its_own_firmware_folder() {
             assert!(file.path.starts_with(component.folder));
             assert_eq!(file.sha256.len(), 64);
         }
-        let record = crate::firmware::record(component, &[([folder.as_str(), "/WHENCE"].concat(), b"x".to_vec())]);
-        assert!(record.files.iter().all(|file| index::is_component_path(&file.path)));
+        let record = crate::firmware::record(
+            component,
+            &[([folder.as_str(), "/WHENCE"].concat(), b"x".to_vec())],
+        );
+        assert!(
+            record
+                .files
+                .iter()
+                .all(|file| index::is_component_path(&file.path))
+        );
     }
     assert_eq!(
         crate::firmware::upstream_url(&crate::firmware::WHENCE),
@@ -1007,7 +1022,10 @@ fn a_store_image_places_each_file_and_reads_back_with_its_digest() {
     let read = index::parse_index(&header, text, image.len() as u64).unwrap();
     let file = &read.components[0].files[0];
     assert_eq!(file.length, 1000);
-    assert_eq!(index::sha256(&image[file.offset as usize..][..1000]), file.sha256);
+    assert_eq!(
+        index::sha256(&image[file.offset as usize..][..1000]),
+        file.sha256
+    );
     assert_eq!(
         manager::upstream_store_path("0.5.0", "x86_64", "display-firmware"),
         "/var/cache/eggos/eggos-0.5.0-x86_64-display-firmware.img"

@@ -125,7 +125,10 @@ mod tests {
         string(&mut list, b"dcp");
         string(&mut list, b"EPICProviderClass");
         string(&mut list, b"disp0-service");
-        assert_eq!(string_value(&list, b"EPICProviderClass"), Some(&b"disp0-service"[..]));
+        assert_eq!(
+            string_value(&list, b"EPICProviderClass"),
+            Some(&b"disp0-service"[..])
+        );
         assert_eq!(string_value(&list, b"EPICName"), Some(&b"dcp"[..]));
         assert_eq!(string_value(&list, b"Missing"), None);
         assert_eq!(string_value(&list[4..], b"EPICName"), None);

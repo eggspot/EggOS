@@ -405,8 +405,14 @@ pub fn run(startup: &Startup) -> i32 {
         count += 1;
     }
     if let [b"do", rest @ ..] = &arguments[..count] {
-        let operands: [&[u8]; 2] = [rest.first().copied().unwrap_or(b""), rest.get(1).copied().unwrap_or(b"")];
-        let shown = operands.iter().filter(|operand| !operand.starts_with(b"-")).count();
+        let operands: [&[u8]; 2] = [
+            rest.first().copied().unwrap_or(b""),
+            rest.get(1).copied().unwrap_or(b""),
+        ];
+        let shown = operands
+            .iter()
+            .filter(|operand| !operand.starts_with(b"-"))
+            .count();
         if operands[0].is_empty() || shown == 0 {
             write_all(STANDARD_ERROR, command::USAGE.as_bytes());
             return command::USAGE_ERROR;

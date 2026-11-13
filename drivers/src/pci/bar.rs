@@ -33,7 +33,11 @@ const PREFETCHABLE: u32 = 1 << 3;
 pub fn assign<C: ConfigSpace + ?Sized>(config: &C, address: Address, bar: &Bar, bus_address: u64) {
     let offset = BAR0 + 4 * u16::from(bar.index);
     let flags = config.read32(address, offset) & MEMORY_FLAGS;
-    config.write32(address, offset, (bus_address as u32 & !MEMORY_FLAGS) | flags);
+    config.write32(
+        address,
+        offset,
+        (bus_address as u32 & !MEMORY_FLAGS) | flags,
+    );
     if bar.kind == BarKind::Memory64 {
         config.write32(address, offset + 4, (bus_address >> 32) as u32);
     }

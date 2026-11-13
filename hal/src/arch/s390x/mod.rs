@@ -149,21 +149,14 @@ _start:
 /// The image's virtual address minus its physical address: the top 2 GiB of the 53-bit space
 /// (D33). `linker.ld` uses the same value and checks it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0x001f_ffff_8000_0000;
-/// The direct map: the kernel half's start (D29).
 const DIRECT_MAP_OFFSET: u64 = 1 << 52;
-/// The physical memory the direct map covers.
 const DIRECT_MAP_END: u64 = 1 << 52;
-/// The kernel's load address: below it are the lowcore and QEMU's boot information.
 const KERNEL_LOAD_ADDRESS: u64 = 0x10_0000;
 /// The most CPUs the HAL keeps program roots for.
 pub(super) const MAX_CPUS: usize = 16;
-/// RAM without an SCLP answer: 256 MiB.
 const DEFAULT_RAM: u64 = 256 << 20;
-/// Where QEMU leaves the command line of an image it loads.
 const COMMAND_LINE: u64 = 0x1_0480;
 const COMMAND_LINE_BYTES: usize = 896;
-/// CR0: EDAT-1, the clock comparator's, emergency signals' and the service signal's external
-/// interruption subclasses.
 static CR0_BITS: u64 = 1 << 23 | 1 << 14 | 1 << 11 | 1 << 9;
 
 #[repr(C, align(16384))]
@@ -172,7 +165,6 @@ struct RegionTable([u64; 2048]);
 #[repr(C, align(16384))]
 struct ThirdTables([u64; 4096]);
 
-/// Built by `_start` in real mode.
 static mut BOOT_ROOT: RegionTable = RegionTable([0; 2048]);
 static mut BOOT_THIRDS: ThirdTables = ThirdTables([0; 4096]);
 static mut BOOT_SEGMENTS: RegionTable = RegionTable([0; 2048]);
@@ -237,7 +229,8 @@ impl Platform for S390x {
         Err("s390x devices are on the channel subsystem, polled (D322)")
     }
 
-    fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
+    fn message_interrupt()
+    -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         Err("s390x has no message interrupts (D321)")
     }
 
@@ -337,7 +330,9 @@ impl Platform for S390x {
 
     fn physical_memory() -> MemoryMap {
         let mut map = MemoryMap::new();
-        let end = sclp::memory_bytes().unwrap_or(DEFAULT_RAM).min(DIRECT_MAP_END);
+        let end = sclp::memory_bytes()
+            .unwrap_or(DEFAULT_RAM)
+            .min(DIRECT_MAP_END);
         map.add_ram(PhysicalRange { start: 0, end });
         map
     }
@@ -356,9 +351,15 @@ impl Platform for S390x {
         // SAFETY: the bytes QEMU left at `COMMAND_LINE`, below the image, which nothing writes
         // (the memory map reserves them), through the direct map.
         let bytes = unsafe {
-            core::slice::from_raw_parts((DIRECT_MAP_OFFSET + COMMAND_LINE) as *const u8, COMMAND_LINE_BYTES)
+            core::slice::from_raw_parts(
+                (DIRECT_MAP_OFFSET + COMMAND_LINE) as *const u8,
+                COMMAND_LINE_BYTES,
+            )
         };
-        let length = bytes.iter().position(|&byte| byte == 0).unwrap_or(bytes.len());
+        let length = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
         line(&bytes[..length]);
     }
 

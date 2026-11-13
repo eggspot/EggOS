@@ -28,15 +28,21 @@ pub struct Image<'a> {
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(offset..offset + 2)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
 }
 
 fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(bytes.get(offset..offset + 8)?.try_into().ok()?))
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
+    ))
 }
 
 impl<'a> Image<'a> {
@@ -92,7 +98,8 @@ impl<'a> Image<'a> {
     }
 
     pub fn loads(&self) -> impl Iterator<Item = Segment> + 'a {
-        self.of_type(LOAD).filter(|segment| segment.memory_bytes != 0)
+        self.of_type(LOAD)
+            .filter(|segment| segment.memory_bytes != 0)
     }
 
     pub fn file_bytes(&self, segment: &Segment) -> Option<&'a [u8]> {
@@ -197,7 +204,13 @@ mod tests {
         note.extend_from_slice(b"EggOS\0\0\0");
         note.extend_from_slice(&0x10_1234u64.to_le_bytes());
         let bytes = image_with(
-            &[(NOTE, header_end as u64, 0, note.len() as u64, note.len() as u64)],
+            &[(
+                NOTE,
+                header_end as u64,
+                0,
+                note.len() as u64,
+                note.len() as u64,
+            )],
             &note,
         );
         let image = Image::parse(&bytes).unwrap();

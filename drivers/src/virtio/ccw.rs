@@ -66,7 +66,8 @@ impl<M: DmaMemory> CcwTransport<M> {
         subchannel: SubchannelId,
         memory: M,
     ) -> Result<Self, (Error, M)> {
-        let mut buffer = ChannelBuffer::new(memory).map_err(|(error, memory)| (error.into(), memory))?;
+        let mut buffer =
+            ChannelBuffer::new(memory).map_err(|(error, memory)| (error.into(), memory))?;
         match Self::identify(channels, subchannel, &mut buffer) {
             Ok(device_type) => Ok(Self {
                 channels,
@@ -117,7 +118,12 @@ impl<M: DmaMemory> CcwTransport<M> {
         use_buffer(unsafe { &mut *self.buffer.get() })
     }
 
-    fn run(&self, command: u8, count: u16, fill: impl FnOnce(&mut [u8])) -> Result<[u8; 8], ChannelError> {
+    fn run(
+        &self,
+        command: u8,
+        count: u16,
+        fill: impl FnOnce(&mut [u8]),
+    ) -> Result<[u8; 8], ChannelError> {
         self.with_buffer(|buffer| {
             fill(buffer.data_mut());
             buffer.run(self.channels, self.subchannel, command, count)?;
@@ -128,12 +134,23 @@ impl<M: DmaMemory> CcwTransport<M> {
     }
 
     fn read_config(&self, offset: usize, bytes: usize, read: impl FnOnce(&[u8])) -> bool {
-        let Some(end) = offset.checked_add(bytes).filter(|&end| end <= channel::DATA_BYTES) else {
+        let Some(end) = offset
+            .checked_add(bytes)
+            .filter(|&end| end <= channel::DATA_BYTES)
+        else {
             return false;
         };
         self.with_buffer(|buffer| {
             buffer.data_mut()[..end].fill(0);
-            if buffer.run(self.channels, self.subchannel, command::READ_CONFIG, end as u16).is_err() {
+            if buffer
+                .run(
+                    self.channels,
+                    self.subchannel,
+                    command::READ_CONFIG,
+                    end as u16,
+                )
+                .is_err()
+            {
                 return false;
             }
             read(&buffer.data()[offset..end]);
@@ -169,7 +186,9 @@ impl<M: DmaMemory> Transport for CcwTransport<M> {
                     data[..4].fill(0);
                     data[4] = index;
                 })
-                .map_or(0, |data| u32::from_le_bytes([data[0], data[1], data[2], data[3]]));
+                .map_or(0, |data| {
+                    u32::from_le_bytes([data[0], data[1], data[2], data[3]])
+                });
             features | u64::from(word) << (32 * u32::from(index))
         })
     }
@@ -202,7 +221,12 @@ impl<M: DmaMemory> Transport for CcwTransport<M> {
             data[16..24].copy_from_slice(&addresses.driver.get().to_be_bytes());
             data[24..32].copy_from_slice(&addresses.device.get().to_be_bytes());
             buffer
-                .run(self.channels, self.subchannel, command::SET_QUEUE, QUEUE_INFO_BYTES)
+                .run(
+                    self.channels,
+                    self.subchannel,
+                    command::SET_QUEUE,
+                    QUEUE_INFO_BYTES,
+                )
                 .map(|_| ())
                 .map_err(|_| Error::QueueUnavailable)
         })
@@ -219,15 +243,31 @@ impl<M: DmaMemory> Transport for CcwTransport<M> {
     }
 
     fn write_config8(&self, offset: usize, value: u8) {
-        let Some(end) = offset.checked_add(1).filter(|&end| end <= channel::DATA_BYTES) else {
+        let Some(end) = offset
+            .checked_add(1)
+            .filter(|&end| end <= channel::DATA_BYTES)
+        else {
             return;
         };
         self.with_buffer(|buffer| {
-            if buffer.run(self.channels, self.subchannel, command::READ_CONFIG, end as u16).is_err() {
+            if buffer
+                .run(
+                    self.channels,
+                    self.subchannel,
+                    command::READ_CONFIG,
+                    end as u16,
+                )
+                .is_err()
+            {
                 return;
             }
             buffer.data_mut()[offset] = value;
-            let _ = buffer.run(self.channels, self.subchannel, command::WRITE_CONFIG, end as u16);
+            let _ = buffer.run(
+                self.channels,
+                self.subchannel,
+                command::WRITE_CONFIG,
+                end as u16,
+            );
         });
     }
 

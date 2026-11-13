@@ -158,7 +158,9 @@ impl Edit {
     /// What the text shows in a window that shows `view`: less the scroll bars' cells and row.
     pub fn inner(&self, view: View) -> View {
         View {
-            cells: view.cells.saturating_sub(if self.bars.0 { BAR_CELLS } else { 0 }),
+            cells: view
+                .cells
+                .saturating_sub(if self.bars.0 { BAR_CELLS } else { 0 }),
             rows: view.rows.saturating_sub(usize::from(self.bars.1)).max(1),
         }
     }
@@ -189,8 +191,9 @@ impl Edit {
         match start {
             -1 => self.anchor = self.caret,
             start => {
-                self.anchor = at(start);
-                self.caret = at(end);
+                let (anchor, caret) = (at(start), at(end));
+                self.anchor = anchor;
+                self.caret = caret;
             }
         }
         self.scroll(view);
@@ -325,7 +328,13 @@ impl Edit {
                 self.replace(&[], view)
             }
             _ if vertical && !self.multiline => EditOutcome::Unchanged,
-            key::LEFT | key::RIGHT | key::HOME | key::END | key::UP | key::DOWN | key::PRIOR
+            key::LEFT
+            | key::RIGHT
+            | key::HOME
+            | key::END
+            | key::UP
+            | key::DOWN
+            | key::PRIOR
             | key::NEXT => {
                 let lines = view.rows.max(2) as isize - 1;
                 let target = match virtual_key {
@@ -426,9 +435,6 @@ impl Edit {
         }
     }
 
-    /// The display line that starts at `start`: where its text ends and where the next one
-    /// starts (none after the last). A line longer than the wrap width breaks after the last
-    /// space that fits, or at the width when no space does (D351, the greedy rule).
     fn row(&self, start: usize) -> (usize, Option<usize>) {
         let end = self.paragraph_end(start);
         let width = self.wrap_cells;
@@ -479,7 +485,11 @@ impl Edit {
         let index = index.min(self.length);
         let mut line = 0;
         let mut start = 0;
-        while let Some(next) = self.row(start).1.filter(|&next| next <= index && next > start) {
+        while let Some(next) = self
+            .row(start)
+            .1
+            .filter(|&next| next <= index && next > start)
+        {
             line += 1;
             start = next;
         }
@@ -526,7 +536,10 @@ impl Edit {
             .saturating_add_signed(lines)
             .min(self.line_count() - 1);
         let offset = match self.wrap_cells {
-            0 => self.offset.saturating_add_signed(columns).min(EDIT_CAPACITY),
+            0 => self
+                .offset
+                .saturating_add_signed(columns)
+                .min(EDIT_CAPACITY),
             _ => 0,
         };
         let moved = (top, offset) != (self.top, self.offset);
@@ -633,9 +646,7 @@ impl Edit {
 
     fn line_moved(&self, lines: isize) -> usize {
         let line = self.line_of(self.caret);
-        let target = line
-            .saturating_add_signed(lines)
-            .min(self.line_count() - 1);
+        let target = line.saturating_add_signed(lines).min(self.line_count() - 1);
         let column = self.caret - self.line_start_at(self.caret);
         match self.line_index(target) {
             Some(start) => (start + column).min(self.line_end_at(start)),
@@ -915,7 +926,14 @@ pub fn paint(
         false => {
             let top = cell_top(rect.top, rect.height());
             let first = edit.offset.min(edit.length);
-            paint_run(surface, (left, top), edit, (first, edit.length), shown.cells, run);
+            paint_run(
+                surface,
+                (left, top),
+                edit,
+                (first, edit.length),
+                shown.cells,
+                run,
+            );
             if caret_shown {
                 let x = left + (edit.caret - edit.offset.min(edit.caret)) as i32 * CELL_WIDTH;
                 surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
@@ -1310,7 +1328,10 @@ mod tests {
         assert_eq!(edit.first_visible_line(), 0);
         paint(&mut surface, Rect::new(0, 0, 120, 48), &edit, look, &LIGHT);
         let caret_x = TEXT_INSET + 2 * CELL_WIDTH;
-        assert_eq!(surface.get(caret_x, TEXT_INSET + CELL_HEIGHT + 1), Some(LIGHT.caret));
+        assert_eq!(
+            surface.get(caret_x, TEXT_INSET + CELL_HEIGHT + 1),
+            Some(LIGHT.caret)
+        );
         assert_ne!(surface.get(caret_x, TEXT_INSET + 1), Some(LIGHT.caret));
     }
 
@@ -1325,15 +1346,17 @@ mod tests {
         edit.set_text(&units("hello big world"));
         edit.fit(narrow);
         assert_eq!(edit.line_count(), 3);
-        assert_eq!((edit.line_index(1), edit.line_index(2)), (Some(6), Some(10)));
+        assert_eq!(
+            (edit.line_index(1), edit.line_index(2)),
+            (Some(6), Some(10))
+        );
         assert_eq!(edit.line_end_at(7), 10);
         assert_eq!((edit.line_of(10), edit.line_start_at(10)), (2, 10));
         let mut word = Edit::with_style(style::MULTILINE);
         word.set_text(&units("abcdefghij"));
         word.fit(narrow);
         assert_eq!((word.line_count(), word.line_index(1)), (2, Some(8)));
-        let mut scrolling =
-            Edit::with_style(style::MULTILINE | style::AUTO_HORIZONTAL_SCROLL);
+        let mut scrolling = Edit::with_style(style::MULTILINE | style::AUTO_HORIZONTAL_SCROLL);
         scrolling.set_text(&units("hello big world"));
         scrolling.fit(narrow);
         assert_eq!(scrolling.line_count(), 1);

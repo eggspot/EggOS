@@ -388,8 +388,7 @@ impl Loader<'_, '_, '_> {
             .filter(|class| !class.is_null())
             .or_else(|| original.map(|name| allowed_class(name, &OBJECT_CLASSES)))
             .unwrap_or(core::ptr::null_mut());
-        let controller =
-            descends(class, &NSVIEWCONTROLLER) || descends(class, &NSWINDOWCONTROLLER);
+        let controller = descends(class, &NSVIEWCONTROLLER) || descends(class, &NSWINDOWCONTROLLER);
         match controller {
             true => new_of(class),
             false => self.view(index),
@@ -400,7 +399,10 @@ impl Loader<'_, '_, '_> {
         PLACEHOLDER_KEYS
             .iter()
             .find_map(|key| self.archive.string(index, key))
-            .map_or(core::ptr::null_mut(), storyboard::controller_for_placeholder)
+            .map_or(
+                core::ptr::null_mut(),
+                storyboard::controller_for_placeholder,
+            )
     }
 
     fn view_class(&self, index: usize) -> *mut ClassObject {

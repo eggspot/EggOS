@@ -87,9 +87,7 @@ pub mod signal_frame {
     use eggos_hal::user::UserRegisters;
 
     const W: usize = crate::linux::abi::WORD_BYTES;
-    /// `sc_regs`: the PC, then `x1` to `x31`, a word each.
     const REGISTERS_SIZE: usize = 32 * W;
-    /// `sc_fpregs`, the union of the F, D and Q states: the Q state's 528 bytes.
     const FP_UNION_SIZE: usize = 528;
 
     /// The whole frame: the `ucontext_t` is 960 bytes on RV64, 816 on RV32 (D490).

@@ -36,7 +36,6 @@ eggos_fp_restore:
 
 const _: () = assert!(core::mem::offset_of!(crate::fp::Mips64State, fcsr) == 256);
 
-/// `Status.CU1`: the FP unit is usable.
 const STATUS_CU1: u64 = 1 << 29;
 
 unsafe extern "C" {

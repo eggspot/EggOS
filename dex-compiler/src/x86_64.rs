@@ -215,8 +215,18 @@ fn precision(width: Width) -> u8 {
 
 impl Emitter {
     fn sse_frame(&mut self, prefix: u8, wide: bool, opcode: u8, register: u8, slot_of: u32) {
-        let rex = if wide { WIDE_EXTENDED_BASE } else { EXTENDED_BASE };
-        self.bytes(&[prefix, rex, 0x0f, opcode, 0x80 | register << 3 | FRAME_REGISTER]);
+        let rex = if wide {
+            WIDE_EXTENDED_BASE
+        } else {
+            EXTENDED_BASE
+        };
+        self.bytes(&[
+            prefix,
+            rex,
+            0x0f,
+            opcode,
+            0x80 | register << 3 | FRAME_REGISTER,
+        ]);
         self.bytes(&slot(slot_of).to_le_bytes());
     }
 
@@ -277,7 +287,9 @@ fn compare_floats(
     emitter.byte(0xb8);
     emitter.bytes(&unordered.to_le_bytes());
     emitter.bytes(&[0x7a, 0x0e]);
-    emitter.bytes(&[0x0f, 0x97, 0xc1, 0x0f, 0x92, 0xc2, 0x0f, 0xb6, 0xc1, 0x0f, 0xb6, 0xd2]);
+    emitter.bytes(&[
+        0x0f, 0x97, 0xc1, 0x0f, 0x92, 0xc2, 0x0f, 0xb6, 0xc1, 0x0f, 0xb6, 0xd2,
+    ]);
     emitter.bytes(&[0x29, 0xd0]);
     emitter.store(Width::Int, EAX, target);
 }
@@ -520,7 +532,11 @@ fn arithmetic(
     right: u32,
 ) {
     emitter.load(width, EAX, left);
-    let right_width = if is_shift(operation) { Width::Int } else { width };
+    let right_width = if is_shift(operation) {
+        Width::Int
+    } else {
+        width
+    };
     emitter.load(right_width, ECX, right);
     emitter.operate(width, operation);
     emitter.store(width, EAX, target);
@@ -628,7 +644,11 @@ fn emit(
         }
         0x2b | 0x2c => switch(emitter, code, instruction, at).ok_or(bad_branch)?,
         0x2d..=0x30 => {
-            let width = if opcode >= 0x2f { Width::Long } else { Width::Int };
+            let width = if opcode >= 0x2f {
+                Width::Long
+            } else {
+                Width::Int
+            };
             let below_on_nan = matches!(opcode, 0x2d | 0x2f);
             compare_floats(emitter, width, below_on_nan, a, b, c);
         }
@@ -849,7 +869,10 @@ mod tests {
         let frame = (6usize * 8).next_multiple_of(16) as u32 + 8;
         let reserve = [[WIDE, 0x81, 0xec].as_slice(), &frame.to_le_bytes()].concat();
         assert!(contains(&compiled.code, &reserve));
-        assert!(contains(&compiled.code, &[0x4c, 0x8d, 0xac, 0x24, 24, 0, 0, 0]));
+        assert!(contains(
+            &compiled.code,
+            &[0x4c, 0x8d, 0xac, 0x24, 24, 0, 0, 0]
+        ));
         let copy = [WIDE, 0x8b, 0x87, 0, 0, 0, 0, 0x49, 0x89, 0x85, 16, 0, 0, 0];
         assert!(contains(&compiled.code, &copy));
         assert!(compiled.code.ends_with(&EPILOGUE_POPS));
@@ -876,7 +899,10 @@ mod tests {
         let branch = compiled.place_of(2).unwrap();
         let field = branch + 7 + 2 + 2;
         let relative = i32::from_le_bytes(compiled.code[field..field + 4].try_into().unwrap());
-        assert_eq!(field as i32 + 4 + relative, compiled.place_of(0).unwrap() as i32);
+        assert_eq!(
+            field as i32 + 4 + relative,
+            compiled.place_of(0).unwrap() as i32
+        );
     }
 
     #[test]
@@ -887,7 +913,10 @@ mod tests {
         let call_through = [WIDE, 0x89, 0xe7, 0x4c, 0x89, 0xe6, 0x41, 0xff, 0x94, 0x24];
         let call = [&call_through[..], &entry.to_le_bytes()].concat();
         assert!(contains(&compiled.code, &call));
-        assert!(contains(&compiled.code, &[WIDE, 0x89, 0x84, 0x24, 8, 0, 0, 0]));
+        assert!(contains(
+            &compiled.code,
+            &[WIDE, 0x89, 0x84, 0x24, 8, 0, 0, 0]
+        ));
         let result = compiled.place_of(3).unwrap();
         assert_eq!(compiled.code[result..result + 3], [0x41, 0x89, 0x85]);
     }
@@ -898,7 +927,10 @@ mod tests {
         let compiled = compile(&code(&bytes)).unwrap();
         let index = [WIDE, 0xc7, 0x84, 0x24, 0, 0, 0, 0, 4, 0, 0, 0];
         assert!(contains(&compiled.code, &index));
-        assert!(contains(&compiled.code, &[WIDE, 0x89, 0x84, 0x24, 16, 0, 0, 0]));
+        assert!(contains(
+            &compiled.code,
+            &[WIDE, 0x89, 0x84, 0x24, 16, 0, 0, 0]
+        ));
         let entry = ((helper::INVOKE_VIRTUAL * 8) as u32).to_le_bytes();
         let call = [[0x41, 0xff, 0x94, 0x24].as_slice(), &entry].concat();
         assert!(contains(&compiled.code, &call));
@@ -907,8 +939,8 @@ mod tests {
     #[test]
     fn a_packed_switch_compares_each_key_and_jumps_to_its_case() {
         let bytes = units(&[
-            0x002b, 0x0005, 0x0000, 0x000e, 0x000e, 0x0100, 0x0002, 0x000a, 0x0000, 0x0003,
-            0x0000, 0x0004, 0x0000,
+            0x002b, 0x0005, 0x0000, 0x000e, 0x000e, 0x0100, 0x0002, 0x000a, 0x0000, 0x0003, 0x0000,
+            0x0004, 0x0000,
         ]);
         let compiled = compile(&code(&bytes)).unwrap();
         assert!(contains(&compiled.code, &[0x3d, 10, 0, 0, 0, 0x0f, 0x84]));
@@ -919,16 +951,22 @@ mod tests {
             .position(|window| window == [0x3d, 10, 0, 0, 0, 0x0f, 0x84])
             .unwrap()
             + 7;
-        let relative =
-            i32::from_le_bytes(compiled.code[first_jump..first_jump + 4].try_into().unwrap());
-        assert_eq!(first_jump as i32 + 4 + relative, compiled.place_of(3).unwrap() as i32);
+        let relative = i32::from_le_bytes(
+            compiled.code[first_jump..first_jump + 4]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(
+            first_jump as i32 + 4 + relative,
+            compiled.place_of(3).unwrap() as i32
+        );
     }
 
     #[test]
     fn arrays_statics_and_casts_go_through_the_runtime_s_helpers() {
         let bytes = units(&[
-            0x1023, 0x0007, 0x0021, 0x0044, 0x0100, 0x004b, 0x0100, 0x0060, 0x0002, 0x0067,
-            0x0002, 0x001f, 0x0003, 0x0027, 0x000e,
+            0x1023, 0x0007, 0x0021, 0x0044, 0x0100, 0x004b, 0x0100, 0x0060, 0x0002, 0x0067, 0x0002,
+            0x001f, 0x0003, 0x0027, 0x000e,
         ]);
         let compiled = compile(&code(&bytes)).unwrap();
         for entry in [
@@ -962,17 +1000,29 @@ mod tests {
     fn float_addition_loads_adds_and_stores_with_sse() {
         let bytes = units(&[0x00a6, 0x0201, 0x000e]);
         let compiled = compile(&code(&bytes)).unwrap();
-        assert!(contains(&compiled.code, &[SINGLE, 0x41, 0x0f, 0x10, 0x85, 8, 0, 0, 0]));
-        assert!(contains(&compiled.code, &[SINGLE, 0x41, 0x0f, 0x10, 0x8d, 16, 0, 0, 0]));
+        assert!(contains(
+            &compiled.code,
+            &[SINGLE, 0x41, 0x0f, 0x10, 0x85, 8, 0, 0, 0]
+        ));
+        assert!(contains(
+            &compiled.code,
+            &[SINGLE, 0x41, 0x0f, 0x10, 0x8d, 16, 0, 0, 0]
+        ));
         assert!(contains(&compiled.code, &[SINGLE, 0x0f, 0x58, 0xc1]));
-        assert!(contains(&compiled.code, &[SINGLE, 0x41, 0x0f, 0x11, 0x85, 0, 0, 0, 0]));
+        assert!(contains(
+            &compiled.code,
+            &[SINGLE, 0x41, 0x0f, 0x11, 0x85, 0, 0, 0, 0]
+        ));
     }
 
     #[test]
     fn a_double_comparison_answers_minus_one_for_nan_with_cmpl() {
         let bytes = units(&[0x002f, 0x0201, 0x000e]);
         let compiled = compile(&code(&bytes)).unwrap();
-        assert!(contains(&compiled.code, &[0x66, 0x0f, 0x2e, 0xc1, 0xb8, 0xff, 0xff, 0xff, 0xff]));
+        assert!(contains(
+            &compiled.code,
+            &[0x66, 0x0f, 0x2e, 0xc1, 0xb8, 0xff, 0xff, 0xff, 0xff]
+        ));
         let conversions = units(&[0x0087, 0x008e, 0x000e]);
         let compiled = compile(&code(&conversions)).unwrap();
         let entry = ((helper::FLOAT_TO_INT * 8) as u32).to_le_bytes();
@@ -1015,9 +1065,15 @@ mod tests {
         let handle = units(&[0x000e, 0x00fe, 0x0000]);
         assert_eq!(
             compile(&code(&handle)),
-            Err(CompileError::Unsupported { opcode: 0xfe, at: 1 })
+            Err(CompileError::Unsupported {
+                opcode: 0xfe,
+                at: 1
+            })
         );
         let stray = units(&[0x0228, 0x000e]);
-        assert_eq!(compile(&code(&stray)), Err(CompileError::BadBranch { at: 0 }));
+        assert_eq!(
+            compile(&code(&stray)),
+            Err(CompileError::BadBranch { at: 0 })
+        );
     }
 }

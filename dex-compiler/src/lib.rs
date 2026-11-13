@@ -46,7 +46,10 @@ impl Compiled {
     /// Where the instruction at code unit `at` starts in the machine code.
     pub fn place_of(&self, at: usize) -> Option<usize> {
         let at = u32::try_from(at).ok()?;
-        let index = self.places.binary_search_by_key(&at, |&(unit, _)| unit).ok()?;
+        let index = self
+            .places
+            .binary_search_by_key(&at, |&(unit, _)| unit)
+            .ok()?;
         Some(self.places[index].1 as usize)
     }
 }

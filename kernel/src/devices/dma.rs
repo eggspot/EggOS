@@ -7,11 +7,11 @@
 //! with the proof that its device was reset ([`DmaRegion::free_after_reset`]); one dropped
 //! without it is leaked, since its device may still write it.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::memory::FRAMES;
+use core::sync::atomic::Ordering;
 use eggos_drivers::dma::{DmaAddr, DmaMemory};
 use eggos_drivers::virtio::ResetDone;
-use core::sync::atomic::Ordering;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::memory::FRAME_SIZE;
 
 /// Why a region could not be made.
@@ -84,8 +84,6 @@ impl DmaRegion {
     }
 }
 
-/// What devices add to a physical address to reach it ([`eggos_hal::Platform::dma_device_offset`]: POWER's
-/// bypass window, D312); 0 elsewhere.
 static DEVICE_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// Sets [`DEVICE_OFFSET`], once, when the PCI host that needs it is discovered.

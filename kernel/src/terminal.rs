@@ -25,7 +25,6 @@
 //! to read the console, its prompt written ([`console_waited`]), or [`BOOT_SCREEN_LIMIT_MS`]
 //! after the desktop was made; then one frame draws the whole desktop.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::console;
 use crate::devices::interrupts::DeviceEvents;
 use crate::display;
@@ -51,6 +50,7 @@ use eggos_drivers::terminal::{
     CursorLook, REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea, WHEEL_LINES,
 };
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::time::mul_div_ceil;
 
 pub use eggos_drivers::terminal::ViewMove;
@@ -312,7 +312,8 @@ pub fn set_rotation_setting<P: Platform>(index: u32) -> Result<(), RotationRefus
         true => crate::orientation::facing().degrees(),
         false => eggos_settings_file::rotation_degrees(index as usize),
     };
-    let rotation = crate::display::Rotation::of_degrees(degrees).ok_or(RotationRefused::NoSuchValue)?;
+    let rotation =
+        crate::display::Rotation::of_degrees(degrees).ok_or(RotationRefused::NoSuchValue)?;
     match crate::display::set_rotation(rotation) {
         Ok(Some(mode)) => {
             with_windows::<P, _>(|desktop, _, damage, events| {
@@ -354,7 +355,8 @@ pub fn set_form_setting<P: Platform>(index: u32) -> bool {
 
 fn apply_form(desktop: &mut Desktop, damage: &mut Damage, events: &mut dyn EventSink) {
     let (width, height) = (desktop.screen().width, desktop.screen().height);
-    let (form, _) = eggos_drivers::desktop::form::in_use(form_setting(), width, height, input::present_kinds());
+    let (form, _) =
+        eggos_drivers::desktop::form::in_use(form_setting(), width, height, input::present_kinds());
     if form != Form::Console {
         desktop.set_form(form, damage, events);
     }
@@ -480,21 +482,25 @@ pub fn load_saved_settings<P: Platform>() {
     {
         remember_profile(profile);
     }
-    if let Some(index) = eggos_settings_file::value(&file[..length], eggos_settings_file::SHELL_FORM)
-        .and_then(|chosen| {
-            eggos_drivers::desktop::form::FORM_SETTING_NAMES
-                .iter()
-                .position(|name| name.as_bytes() == chosen)
-        })
+    if let Some(index) =
+        eggos_settings_file::value(&file[..length], eggos_settings_file::SHELL_FORM).and_then(
+            |chosen| {
+                eggos_drivers::desktop::form::FORM_SETTING_NAMES
+                    .iter()
+                    .position(|name| name.as_bytes() == chosen)
+            },
+        )
     {
         CHOSEN_FORM.store(index as u8, Ordering::Relaxed);
     }
-    if let Some(index) = eggos_settings_file::value(&file[..length], eggos_settings_file::DISPLAY_ROTATION)
-        .and_then(|chosen| {
-            eggos_settings_file::DISPLAY_ROTATIONS
-                .iter()
-                .position(|rotation| rotation.as_bytes() == chosen)
-        })
+    if let Some(index) =
+        eggos_settings_file::value(&file[..length], eggos_settings_file::DISPLAY_ROTATION).and_then(
+            |chosen| {
+                eggos_settings_file::DISPLAY_ROTATIONS
+                    .iter()
+                    .position(|rotation| rotation.as_bytes() == chosen)
+            },
+        )
     {
         CHOSEN_ROTATION.store(index as u8, Ordering::Relaxed);
         let degrees = eggos_settings_file::rotation_degrees(index);
@@ -502,12 +508,13 @@ pub fn load_saved_settings<P: Platform>() {
             let _ = crate::display::set_rotation(rotation);
         }
     }
-    if let Some(mode) = eggos_settings_file::value(&file[..length], eggos_settings_file::KEYBOARD_ON_SCREEN)
-        .and_then(|chosen| {
-            eggos_settings_file::KEYBOARD_ON_SCREEN_MODES
-                .iter()
-                .position(|mode| mode.as_bytes() == chosen)
-        })
+    if let Some(mode) =
+        eggos_settings_file::value(&file[..length], eggos_settings_file::KEYBOARD_ON_SCREEN)
+            .and_then(|chosen| {
+                eggos_settings_file::KEYBOARD_ON_SCREEN_MODES
+                    .iter()
+                    .position(|mode| mode.as_bytes() == chosen)
+            })
     {
         CHOSEN_ON_SCREEN_KEYBOARD.store(mode as u8, Ordering::Relaxed);
     }
@@ -568,9 +575,6 @@ static CONSOLE_ALONE: AtomicBool = AtomicBool::new(false);
 
 const NO_DESKTOP_MARKER: &[u8] = b"/var/lib/eggos/components/.no-desktop";
 
-/// Whether the window server starts (D412): never in a kernel built without the `desktop`
-/// feature (the server edition), always for a self-test, and otherwise unless the `desktop`
-/// component was removed, which leaves the component manager's marker on the persistent disk.
 fn desktop_wanted(session: Session) -> bool {
     if !cfg!(feature = "desktop") {
         return false;
@@ -887,8 +891,6 @@ impl Asked {
 static DISPLAY_LOOKED_AT: AtomicU64 = AtomicU64::new(0);
 const DISPLAY_LOOK_EVERY_MS: u64 = 500;
 
-/// Looks at most twice a second whether the display's device asked for another size (a host
-/// window resized, D311); when the display changed to it, the desktop is laid out for it.
 fn follow_display_size<P: Platform>() {
     let now = P::clock_ticks();
     let every = mul_div_ceil(DISPLAY_LOOK_EVERY_MS, P::clock_frequency(), 1000);
@@ -915,11 +917,12 @@ fn pack_updates(count: usize, bytes: u64) -> u64 {
 }
 
 fn unpack_updates(packed: u64) -> (usize, u64) {
-    ((packed >> UPDATES_BYTES_BITS) as usize, packed & ((1 << UPDATES_BYTES_BITS) - 1))
+    (
+        (packed >> UPDATES_BYTES_BITS) as usize,
+        packed & ((1 << UPDATES_BYTES_BITS) - 1),
+    )
 }
 
-/// Reads the last stored component update check (`component update --dry-run`, D299) at most
-/// once a minute, for the bar's `Updates` chip (D300).
 fn read_stored_updates<P: Platform>() {
     let now = P::clock_ticks();
     let every = mul_div_ceil(UPDATES_READ_EVERY_MS, P::clock_frequency(), 1000);
@@ -950,9 +953,14 @@ fn read_stored_updates<P: Platform>() {
             let mut words = line.split(|&byte| byte == b' ');
             (words.next()? == b"update").then_some(())?;
             words.next()?;
-            core::str::from_utf8(words.next()?).ok()?.parse::<u64>().ok()
+            core::str::from_utf8(words.next()?)
+                .ok()?
+                .parse::<u64>()
+                .ok()
         })
-        .fold((0usize, 0u64), |(count, bytes), fetch| (count + 1, bytes.saturating_add(fetch)));
+        .fold((0usize, 0u64), |(count, bytes), fetch| {
+            (count + 1, bytes.saturating_add(fetch))
+        });
     STORED_UPDATES.store(pack_updates(count, bytes), Ordering::Relaxed);
 }
 
@@ -1038,7 +1046,9 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 desktop.sideways_wheel(delta, &mut queues);
                 Action::None
             }
-            InputEvent::SecondTouch { x, y, down } => desktop.second_touch(x, y, down, damage, &mut queues),
+            InputEvent::SecondTouch { x, y, down } => {
+                desktop.second_touch(x, y, down, damage, &mut queues)
+            }
             InputEvent::LayoutChanged(number) => {
                 if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number))
                 {
@@ -1448,9 +1458,10 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
     match drawn.map(|asked| asked.action) {
         Some(Action::PowerOff) => reboot::shut_down::<P>(reboot::Action::PowerOff),
         Some(Action::Restart) => reboot::shut_down::<P>(reboot::Action::Restart),
-        Some(action @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_) | Action::AppDo(..))) => {
-            run_launch::<P>(action)
-        }
+        Some(
+            action
+            @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_) | Action::AppDo(..)),
+        ) => run_launch::<P>(action),
         Some(Action::ShowAgentLog) => {
             move_view::<P>(ViewMove::Live);
             console::receive_from_keyboard::<P>(eggos_drivers::desktop::AGENT_LOG_LINE);

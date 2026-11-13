@@ -17,12 +17,12 @@ pub mod bench;
 pub mod block;
 pub mod boot_clock;
 pub mod clipboard;
-pub mod drag_payload;
 pub mod component_store;
 pub mod console;
 pub mod cpu;
 pub mod devices;
 pub mod display;
+pub mod drag_payload;
 pub mod elf;
 pub mod exception;
 pub mod heap;
@@ -37,8 +37,8 @@ pub mod paging;
 pub mod process;
 pub mod random;
 pub mod regions;
-pub mod selftest;
 pub mod rendering;
+pub mod selftest;
 pub mod shared_frames;
 pub mod sync;
 pub mod terminal;
@@ -675,8 +675,8 @@ fn report_memory<W: Write>(console: &mut W, map: &eggos_hal::MemoryMap) -> core:
 pub(crate) mod tests {
     use super::*;
 
-    use eggos_hal::atomic::AtomicU64;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use eggos_hal::atomic::AtomicU64;
     use eggos_hal::user::TestProgram;
     use eggos_hal::{Exception, ExceptionKind, Interrupt};
 

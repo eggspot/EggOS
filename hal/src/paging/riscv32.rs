@@ -41,7 +41,6 @@ impl Format for Riscv32Sv32 {
     const ROOTS: usize = 1;
     const MAX_LEAF_LEVEL: usize = 1;
     const ENCODES_MEMORY_TYPE: bool = false;
-    /// The low 3 GiB.
     const USER_END: u64 = 0xc000_0000;
     const ENTRY_BYTES: usize = 4;
 
@@ -120,7 +119,11 @@ mod tests {
     #[test]
     fn entries_round_trip_within_34_bit_physical_addresses() {
         for (phys, level) in [(0x2_3456_7000, 0), (0x3_ff40_0000, 1)] {
-            let kinds = [Attributes::READ_WRITE, Attributes::USER_READ_WRITE, Attributes::TEXT];
+            let kinds = [
+                Attributes::READ_WRITE,
+                Attributes::USER_READ_WRITE,
+                Attributes::TEXT,
+            ];
             for attributes in kinds {
                 assert_eq!(
                     Riscv32Sv32::decode(Riscv32Sv32::leaf(phys, level, attributes), level),
@@ -129,7 +132,10 @@ mod tests {
             }
         }
         for phys in [0, 0x1234_5000, 0x3_ffff_f000] {
-            assert_eq!(Riscv32Sv32::decode(Riscv32Sv32::kept(phys), 0), Entry::Kept(phys));
+            assert_eq!(
+                Riscv32Sv32::decode(Riscv32Sv32::kept(phys), 0),
+                Entry::Kept(phys)
+            );
         }
         assert_eq!(Riscv32Sv32::decode(0, 0), Entry::Empty);
     }

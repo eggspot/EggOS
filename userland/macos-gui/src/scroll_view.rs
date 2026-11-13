@@ -53,7 +53,8 @@ pub fn layout(frame: Rect, bordered: bool, scrollers: Scrollers, document: (i32,
         true => frame.inset(1),
         false => frame,
     };
-    let needs = |asked: bool, document: i32, view: i32| asked && (!scrollers.autohides || document > view);
+    let needs =
+        |asked: bool, document: i32, view: i32| asked && (!scrollers.autohides || document > view);
     let mut vertical = needs(scrollers.vertical, document.1, clip.height);
     let width = clip.width - if vertical { SCROLLER_WIDTH } else { 0 };
     let horizontal = needs(scrollers.horizontal, document.0, width);
@@ -66,10 +67,20 @@ pub fn layout(frame: Rect, bordered: bool, scrollers: Scrollers, document: (i32,
         height.max(0),
     );
     let vertical_rect = vertical.then(|| {
-        Rect::new(clip.right() - SCROLLER_WIDTH, clip.y, SCROLLER_WIDTH, content.1)
+        Rect::new(
+            clip.right() - SCROLLER_WIDTH,
+            clip.y,
+            SCROLLER_WIDTH,
+            content.1,
+        )
     });
     let horizontal_rect = horizontal.then(|| {
-        Rect::new(clip.x, clip.bottom() - SCROLLER_WIDTH, content.0, SCROLLER_WIDTH)
+        Rect::new(
+            clip.x,
+            clip.bottom() - SCROLLER_WIDTH,
+            content.0,
+            SCROLLER_WIDTH,
+        )
     });
     let corner = (vertical && horizontal).then(|| {
         Rect::new(

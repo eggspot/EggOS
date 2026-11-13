@@ -40,9 +40,7 @@ const SET_REDUCE_MOTION: usize = 0x4004_772a;
 const SET_MENU: usize = 0x4100_7715;
 const GET_FORM: usize = 0x800c_772c;
 const BACK_UNUSED: usize = 0x4004_772f;
-/// `Create`'s flag: the window takes `Back` and reports when it did not use it (D305).
 const HANDLES_BACK: u32 = 16;
-/// `Create`'s flag: the window moves its own focus with the arrows (D309).
 const FOCUS_NAVIGABLE: u32 = 32;
 const SET_FORM: usize = 0x4004_772d;
 const SET_TEXT_FOCUS: usize = 0x4010_7730;
@@ -220,7 +218,13 @@ impl WindowServer {
     /// Hands the drag of `window`, which holds the pointer with the left button down, to the
     /// server (`START_DRAG`, D393): `payload` of `kind` (1 paths one per line, 2 text), the
     /// ghost showing `words`.
-    pub fn start_drag(&self, window: u32, kind: u32, payload: &[u8], words: &str) -> Result<(), Errno> {
+    pub fn start_drag(
+        &self,
+        window: u32,
+        kind: u32,
+        payload: &[u8],
+        words: &str,
+    ) -> Result<(), Errno> {
         let mut argument = [0u8; START_DRAG_BYTES];
         let mut length = words.len().min(DRAG_WORDS);
         while !words.is_char_boundary(length) {
@@ -243,7 +247,14 @@ impl WindowServer {
         argument[8..12].copy_from_slice(&(into.len() as u32).to_ne_bytes());
         argument[12..16].copy_from_slice(&(offset as u32).to_ne_bytes());
         self.ioctl(GET_DRAG, &mut argument)?;
-        let word = |at: usize| u32::from_ne_bytes([argument[at], argument[at + 1], argument[at + 2], argument[at + 3]]);
+        let word = |at: usize| {
+            u32::from_ne_bytes([
+                argument[at],
+                argument[at + 1],
+                argument[at + 2],
+                argument[at + 3],
+            ])
+        };
         Ok((word(20) as usize, word(24), word(28)))
     }
 
@@ -334,13 +345,19 @@ impl WindowServer {
         let mut request = [0u8; 20];
         request[..4].copy_from_slice(&action.to_ne_bytes());
         self.ioctl(ON_SCREEN_KEYBOARD, &mut request)?;
-        let panel = [word(&request, 4), word(&request, 8), word(&request, 12), word(&request, 16)];
+        let panel = [
+            word(&request, 4),
+            word(&request, 8),
+            word(&request, 12),
+            word(&request, 16),
+        ];
         Ok((word(&request, 0) != 0).then_some(panel))
     }
 
     /// Makes `keyboard.on_screen` mode `mode` (auto, always, never as 0 to 2), at once (D314).
     pub fn set_on_screen_keyboard_mode(&self, mode: u32) -> Result<(), Errno> {
-        self.on_screen_keyboard(ON_SCREEN_KEYBOARD_SET_MODE + mode.min(2)).map(|_| ())
+        self.on_screen_keyboard(ON_SCREEN_KEYBOARD_SET_MODE + mode.min(2))
+            .map(|_| ())
     }
 
     /// Makes profile `profile` the desktop's, at once.

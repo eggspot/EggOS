@@ -107,7 +107,9 @@ fn words(bytes: &[u8], at: usize, count: usize) -> Option<Vec<u32>> {
     (0..count)
         .map(|index| {
             let start = at + 4 * index;
-            Some(u32::from_le_bytes(bytes.get(start..start + 4)?.try_into().ok()?))
+            Some(u32::from_le_bytes(
+                bytes.get(start..start + 4)?.try_into().ok()?,
+            ))
         })
         .collect()
 }
@@ -323,7 +325,11 @@ mod tests {
             height,
             refresh: hertz << 16,
         };
-        let modes = [mode(3024, 1964, 120), mode(1920, 1200, 60), mode(1512, 982, 120)];
+        let modes = [
+            mode(3024, 1964, 120),
+            mode(1920, 1200, 60),
+            mode(1512, 982, 120),
+        ];
         assert_eq!(choose_timing(&modes), Some(mode(1920, 1200, 60)));
         let color = |bits, colorimetry| ColorMode {
             valid: 1,

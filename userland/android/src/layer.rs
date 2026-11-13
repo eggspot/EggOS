@@ -101,7 +101,14 @@ fn read_file(path: &[u8]) -> Option<Vec<u8>> {
     let descriptor = unsafe {
         syscall::call(
             number::OPENAT,
-            [AT_CURRENT_FOLDER, named.as_ptr() as usize, READ_ONLY, 0, 0, 0],
+            [
+                AT_CURRENT_FOLDER,
+                named.as_ptr() as usize,
+                READ_ONLY,
+                0,
+                0,
+                0,
+            ],
         )
     };
     let descriptor = usize::try_from(descriptor).ok()?;
@@ -112,7 +119,14 @@ fn read_file(path: &[u8]) -> Option<Vec<u8>> {
         let count = unsafe {
             syscall::call(
                 number::READ,
-                [descriptor, chunk.as_mut_ptr() as usize, chunk.len(), 0, 0, 0],
+                [
+                    descriptor,
+                    chunk.as_mut_ptr() as usize,
+                    chunk.len(),
+                    0,
+                    0,
+                    0,
+                ],
             )
         };
         match usize::try_from(count) {
@@ -209,8 +223,6 @@ fn set_pending(table: *const usize, exception: u64) {
     unsafe { pending_slot(table).write(exception as usize) };
 }
 
-/// Throws a new exception of framework class `class` (D504): it becomes pending, and the
-/// compiled code that called the helper goes to its handler or returns.
 fn raise(table: *const usize, class: &str) -> u64 {
     let exception = new_object(Object {
         class: String::from(class),
@@ -405,7 +417,10 @@ extern "sysv64" fn array_get(words: *const u64, table: *const usize) -> u64 {
     let Some(index) = element_index(array, index, table) else {
         return 0;
     };
-    array.elements.as_ref().map_or(0, |elements| elements[index])
+    array
+        .elements
+        .as_ref()
+        .map_or(0, |elements| elements[index])
 }
 
 extern "sysv64" fn array_put(words: *const u64, table: *const usize) -> u64 {
@@ -556,7 +571,9 @@ extern "sysv64" fn text_view_init(words: *const u64, _: *const usize) -> u64 {
 
 extern "sysv64" fn set_text(words: *const u64, _: *const usize) -> u64 {
     let [view, text] = arguments::<2>(words);
-    let text = object(text).and_then(|text| text.text.clone()).unwrap_or_default();
+    let text = object(text)
+        .and_then(|text| text.text.clone())
+        .unwrap_or_default();
     if let Some(view) = object(view) {
         view.text = Some(text);
     }
@@ -565,7 +582,11 @@ extern "sysv64" fn set_text(words: *const u64, _: *const usize) -> u64 {
 
 fn resource_string(id: u64) -> Option<String> {
     let state = state();
-    state.resources.as_ref()?.string(id as u32).map(String::from)
+    state
+        .resources
+        .as_ref()?
+        .string(id as u32)
+        .map(String::from)
 }
 
 fn new_string(text: String) -> u64 {
@@ -587,7 +608,11 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
     let class = framework::element_class(&node.element);
     let shows_text = TEXT_VIEWS.contains(&class.as_str());
     let children = match depth < DEEPEST_VIEW {
-        true => node.children.iter().map(|child| inflate_node(child, depth + 1)).collect(),
+        true => node
+            .children
+            .iter()
+            .map(|child| inflate_node(child, depth + 1))
+            .collect(),
         false => Vec::new(),
     };
     let hint = text_of(&node.hint);
@@ -638,7 +663,9 @@ fn find_view(view: u64, id: u32, depth: usize) -> Option<u64> {
         return None;
     }
     let children = found.children.clone();
-    children.into_iter().find_map(|child| find_view(child, id, depth + 1))
+    children
+        .into_iter()
+        .find_map(|child| find_view(child, id, depth + 1))
 }
 
 extern "sysv64" fn find_view_by_id(words: *const u64, _: *const usize) -> u64 {
@@ -648,7 +675,8 @@ extern "sysv64" fn find_view_by_id(words: *const u64, _: *const usize) -> u64 {
         true => Some(this),
         false => state().content,
     };
-    root.and_then(|root| find_view(root, id as u32, 0)).unwrap_or(0)
+    root.and_then(|root| find_view(root, id as u32, 0))
+        .unwrap_or(0)
 }
 
 extern "sysv64" fn view_init(words: *const u64, _: *const usize) -> u64 {
@@ -685,7 +713,9 @@ extern "sysv64" fn set_text_resource(words: *const u64, _: *const usize) -> u64 
 
 extern "sysv64" fn get_text(words: *const u64, _: *const usize) -> u64 {
     let [view] = arguments::<1>(words);
-    let text = object(view).and_then(|view| view.text.clone()).unwrap_or_default();
+    let text = object(view)
+        .and_then(|view| view.text.clone())
+        .unwrap_or_default();
     new_string(text)
 }
 
@@ -810,10 +840,6 @@ extern "sysv64" fn set_on_item_click_listener(words: *const u64, _: *const usize
     0
 }
 
-/// The texts a list view shows: its adapter's rows when the adapter is the app's own
-/// ([`adapter_rows`]), else its items, each a string's text or its class.
-/// A recycler view's row `position` (D516): a view holder from the adapter's
-/// `onCreateViewHolder(list, 0)`, bound by `onBindViewHolder(holder, position)`; its item view.
 fn recycler_row(list: u64, adapter: u64, position: usize) -> Option<u64> {
     let class = object(adapter)?.class.clone();
     let create = compiled_method(&class, "onCreateViewHolder")?;
@@ -824,7 +850,6 @@ fn recycler_row(list: u64, adapter: u64, position: usize) -> Option<u64> {
     object(holder)?.fields.get(&field).copied()
 }
 
-/// A recycler view's rows: `getItemCount()` of them (at most 32), each its row's first text.
 fn recycler_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
     let class = object(adapter)?.class.clone();
     let count = call_at(compiled_method(&class, "getItemCount")?, &[adapter]) as u32 as usize;
@@ -877,7 +902,9 @@ fn item_clicked(view: u64, position: usize) {
         }
         return;
     }
-    let Some(listener) = object(view).and_then(|view| view.view.as_ref()).map(|view| view.listener)
+    let Some(listener) = object(view)
+        .and_then(|view| view.view.as_ref())
+        .map(|view| view.listener)
     else {
         return;
     };
@@ -892,8 +919,6 @@ fn item_clicked(view: u64, position: usize) {
 
 const LARGEST_IMAGE: u32 = 1024;
 
-/// Decodes the PNG drawable resource `id` names (D509) into the layer's images, as
-/// premultiplied pixels the canvas composites; its place among them.
 fn load_image(id: u32) -> Option<u32> {
     let path = resource_string(u64::from(id))?;
     let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
@@ -901,7 +926,8 @@ fn load_image(id: u32) -> Option<u32> {
         return load_vector(&file);
     }
     if path.ends_with(".webp") {
-        let decoded = eggos_image::decode(&read_file(&file)?, &eggos_image::Limits::DEFAULT).ok()?;
+        let decoded =
+            eggos_image::decode(&read_file(&file)?, &eggos_image::Limits::DEFAULT).ok()?;
         if decoded.width > LARGEST_IMAGE || decoded.height > LARGEST_IMAGE {
             return None;
         }
@@ -936,7 +962,6 @@ fn load_image(id: u32) -> Option<u32> {
     u32::try_from(images.len() - 1).ok()
 }
 
-/// Draws the vector drawable in the file at `file` (D518) into the layer's images; its place.
 fn load_vector(file: &[u8]) -> Option<u32> {
     let vector = eggos_android_package::vector::parse(&read_file(file)?)?;
     let image = crate::vector_raster::rasterize(&vector, |colour| match colour {
@@ -983,11 +1008,11 @@ fn first_text(view: u64, depth: usize) -> Option<String> {
         return None;
     }
     let children = shown.view.as_ref()?.children.clone();
-    children.into_iter().find_map(|child| first_text(child, depth + 1))
+    children
+        .into_iter()
+        .find_map(|child| first_text(child, depth + 1))
 }
 
-/// The rows an adapter of the app's own (D511) gives: `getCount()` rows (at most 32), each
-/// `getView(position, null, list)`'s first text; `None` when it defines neither.
 fn adapter_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
     let class = object(adapter)?.class.clone();
     let get_view = compiled_method(&class, "getView")?;
@@ -1133,14 +1158,17 @@ fn table() -> *const usize {
     state().table as *const usize
 }
 
-/// Calls the code at `address` from the layer with `words`; an exception it leaves pending
-/// was caught by nothing, which ends the app as Java ends a thread's uncaught one (D504).
 fn call_at(address: usize, words: &[u64]) -> u64 {
     let result = entry_at(address)(words.as_ptr(), table());
     if let Some(exception) = object(pending(table())) {
         let class = exception.class.clone();
         let message = exception.text.clone().unwrap_or_default();
-        stop(&[b"android: uncaught ", class.as_bytes(), b": ", message.as_bytes()]);
+        stop(&[
+            b"android: uncaught ",
+            class.as_bytes(),
+            b": ",
+            message.as_bytes(),
+        ]);
     }
     result
 }
@@ -1277,9 +1305,11 @@ impl ContentWindow {
         for &(widget, view) in &self.lists {
             let items = list_items(view);
             let unchanged = match self.tree.kind(widget) {
-                Some(Kind::List(list)) => {
-                    list.items.iter().copied().eq(items.iter().map(String::as_str))
-                }
+                Some(Kind::List(list)) => list
+                    .items
+                    .iter()
+                    .copied()
+                    .eq(items.iter().map(String::as_str)),
                 _ => true,
             };
             if !unchanged {
@@ -1355,7 +1385,10 @@ pub fn run(startup: &Startup) -> i32 {
     let manifest_path = [folder, b"/", MANIFEST_NAME].concat();
     let manifest = read_file(&manifest_path).and_then(|bytes| Manifest::parse(&bytes));
     let Some(manifest) = manifest else {
-        stop(&[b"android: no readable AndroidManifest.xml beside ", code_path]);
+        stop(&[
+            b"android: no readable AndroidManifest.xml beside ",
+            code_path,
+        ]);
     };
     let Some(launcher) = manifest.launcher_activity.as_deref() else {
         stop(&[b"android: the app names no launcher activity"]);
@@ -1377,7 +1410,7 @@ pub fn run(startup: &Startup) -> i32 {
     let targets: Vec<Target> = (0..dex.method_count())
         .map(|method| framework::resolve(&dex, method, &compiled))
         .collect();
-    let state = State {
+    let initial = State {
         dex,
         content: None,
         base,
@@ -1391,16 +1424,21 @@ pub fn run(startup: &Startup) -> i32 {
         activity: 0,
         table: 0,
     };
-    STATE.store(Box::leak(Box::new(state)), Ordering::Release);
+    STATE.store(Box::leak(Box::new(initial)), Ordering::Release);
     let mut entries: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
     entries.extend(targets.into_iter().map(target_address));
     entries[helper::PENDING_EXCEPTION] = 0;
     let entries: &'static mut [usize] = Box::leak(entries.into_boxed_slice());
     state().table = entries.as_mut_ptr() as usize;
     let Some(class) = dex.class_index(&activity) else {
-        stop(&[b"android: the app does not define its activity ", activity.as_bytes()]);
+        stop(&[
+            b"android: the app does not define its activity ",
+            activity.as_bytes(),
+        ]);
     };
-    if dex.superclass(class).is_none_or(|parent| !ACTIVITY_CLASSES.contains(&parent.as_str()))
+    if dex
+        .superclass(class)
+        .is_none_or(|parent| !ACTIVITY_CLASSES.contains(&parent.as_str()))
         && method_named(&dex, class, "onCreate").is_none()
     {
         stop(&[b"android: ", activity.as_bytes(), b" is not an activity"]);

@@ -14,8 +14,8 @@ use super::context::{
 };
 use super::frames::{self, Bridge, Collided, Event, ThreadMemory, Walk};
 use super::{
-    DispatcherContext, ExceptionPointers, ExceptionRecord, Frame, MAX_PARAMETERS, cxx,
-    disposition, filter, flag, status, vectored,
+    DispatcherContext, ExceptionPointers, ExceptionRecord, Frame, MAX_PARAMETERS, cxx, disposition,
+    filter, flag, status, vectored,
 };
 use crate::fault;
 use crate::unwind::HandlerKinds;
@@ -259,11 +259,6 @@ pub fn unwind(
     reached
 }
 
-/// Calls `frame`'s language handler, if it has one, to unwind it toward `target`, as Windows
-/// does: `EXCEPTION_TARGET_UNWIND` when it is the target's frame, and for a frame an earlier
-/// unwind collided in (D347), `EXCEPTION_COLLIDED_UNWIND` with the earlier call's scope index,
-/// so only the handlers that call had not run yet run. The bridge into the handler remembers
-/// the frame, so an unwind the handler starts collides with this one.
 fn unwind_frame(
     frame: &Frame,
     record: *mut ExceptionRecord,
@@ -353,11 +348,6 @@ fn ucontext_word(ucontext: *mut u8, offset: usize) -> *mut u64 {
     ucontext.wrapping_add(offset).cast::<u64>()
 }
 
-/// The signal frame from `bottom` up to the end of the signal stack it is on, copied onto the
-/// faulting thread's own stack below its stack pointer and red zone (D346), so the dispatch
-/// runs where the program's frames are, and nothing a later signal puts on the signal stack
-/// overwrites the frame before the dispatch has read it: the copy's `ucontext_t`, `siginfo_t`
-/// and bottom. `None` when the frame is not on the signal stack.
 fn frame_on_thread_stack(
     ucontext: *mut u8,
     info: *mut u8,
@@ -375,11 +365,7 @@ fn frame_on_thread_stack(
     // SAFETY: the frame is the kernel's, intact on the signal stack; the copy goes below the
     // faulting thread's stack pointer and red zone, onto its stack that nothing uses.
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            bottom as *const u8,
-            new_bottom as *mut u8,
-            length as usize,
-        )
+        core::ptr::copy_nonoverlapping(bottom as *const u8, new_bottom as *mut u8, length as usize)
     };
     let delta = new_bottom.wrapping_sub(bottom);
     let moved = |address: *mut u8| (address as u64).wrapping_add(delta) as *mut u8;

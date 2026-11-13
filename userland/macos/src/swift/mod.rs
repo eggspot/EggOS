@@ -24,9 +24,9 @@ pub mod string_object;
 #[cfg(eggos_user)]
 mod cast;
 #[cfg(eggos_user)]
-mod class_metadata;
-#[cfg(eggos_user)]
 mod characters;
+#[cfg(eggos_user)]
+mod class_metadata;
 #[cfg(eggos_user)]
 mod conformance;
 #[cfg(eggos_user)]
@@ -68,8 +68,9 @@ pub use runtime::*;
 #[cfg(eggos_user)]
 mod runtime {
     use super::{
-        cast, characters, conformance, failures, heap_object, metadata, overlays, print, protocols,
-        standard_protocols, storage, string, swift_object, type_lookup, type_name, weak,
+        cast, characters, class_metadata, conformance, dispatch_overlay, failures, heap_object,
+        metadata, overlays, print, protocols, standard_protocols, storage, string, swift_object,
+        type_lookup, type_name, weak,
     };
     use crate::libsystem::{abort, stdio, write_error};
 

@@ -54,9 +54,18 @@ pub(crate) fn buffer_address<M: DmaMemory>(memory: &M, area: usize, index: usize
     memory.dma_addr().get() + (area + index * BUFFER_BYTES) as u64
 }
 
-pub(crate) fn take_frame<M: DmaMemory>(memory: &M, index: usize, length: usize, frame: &mut [u8]) -> Option<usize> {
+pub(crate) fn take_frame<M: DmaMemory>(
+    memory: &M,
+    index: usize,
+    length: usize,
+    frame: &mut [u8],
+) -> Option<usize> {
     let length = length.min(frame.len()).min(BUFFER_BYTES);
-    copy_out(memory, RECEIVE_BUFFERS + index * BUFFER_BYTES, &mut frame[..length]);
+    copy_out(
+        memory,
+        RECEIVE_BUFFERS + index * BUFFER_BYTES,
+        &mut frame[..length],
+    );
     Some(length)
 }
 
@@ -82,7 +91,7 @@ mod tests {
 
     #[test]
     fn the_rings_and_buffers_fit_their_memory() {
-        assert!(RING_ENTRIES * 16 <= TRANSMIT_RING - RECEIVE_RING);
+        const { assert!(RING_ENTRIES * 16 <= TRANSMIT_RING - RECEIVE_RING) };
         assert_eq!(MEMORY_BYTES, 0x2000 + 2 * RING_ENTRIES * BUFFER_BYTES);
     }
 }

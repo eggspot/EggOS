@@ -33,18 +33,17 @@
 //! `direction` mask allows (right 1, left 2, up 4, down 8; right by default).
 
 use crate::appkit::{
-    NSAPPLICATION, NSAPPLICATION_META, NSBUTTON, NSBUTTON_META, NSCOLOR, NSCOLOR_META,
-    NSCONTROL, NSCONTROL_META, NSEVENT, NSEVENT_META, NSFONT, NSFONT_META, NSIMAGEVIEW,
-    NSIMAGEVIEW_META, NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT,
-    NSLAYOUTCONSTRAINT_META, NSRESPONDER, NSRESPONDER_META, NSSCREEN, NSSCREEN_META, NSSTACKVIEW,
-    NSSTACKVIEW_META,
-    NSTEXTFIELD, NSTEXTFIELD_META, NSVIEW, NSVIEW_META, NSVIEWCONTROLLER, NSVIEWCONTROLLER_META,
-    NSWINDOW, NSWINDOW_META,
+    NSAPPLICATION, NSAPPLICATION_META, NSBUTTON, NSBUTTON_META, NSCOLOR, NSCOLOR_META, NSCONTROL,
+    NSCONTROL_META, NSEVENT, NSEVENT_META, NSFONT, NSFONT_META, NSIMAGEVIEW, NSIMAGEVIEW_META,
+    NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META, NSRESPONDER,
+    NSRESPONDER_META, NSSCREEN, NSSCREEN_META, NSSTACKVIEW, NSSTACKVIEW_META, NSTEXTFIELD,
+    NSTEXTFIELD_META, NSVIEW, NSVIEW_META, NSVIEWCONTROLLER, NSVIEWCONTROLLER_META, NSWINDOW,
+    NSWINDOW_META,
 };
 use crate::foundation::{self, Definition, NSSET, class_pointer, new_instance};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, class_named, message, methods, sel, send, send1, send2, send_bool};
+use crate::objc::{Runtime, class_named, message, methods, sel, send, send_bool, send1, send2};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_macos_gui::geometry::{Frame, Point};
 
@@ -61,7 +60,6 @@ const TOUCH_UP_INSIDE: u64 = 1 << 6;
 const PRIMARY_ACTION_TRIGGERED: u64 = 1 << 13;
 const LONGEST_CLASS_NAME: usize = 256;
 
-/// `UITouchPhase`.
 mod phase {
     pub const BEGAN: u64 = 0;
     pub const MOVED: u64 = 1;
@@ -96,14 +94,12 @@ const STATE_CHANGED: u64 = 2;
 const LONG_PRESS_SECONDS: f64 = 0.5;
 const TAP_SLOP: f64 = 10.0;
 
-/// Where and when the press now down began, in window coordinates and seconds.
 static PRESS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 
 const MOST_RECOGNIZERS: usize = 128;
 const STATE_POSSIBLE: u64 = 0;
 const STATE_ENDED: u64 = 3;
 
-/// Which recognizer is attached to which view: pairs of addresses, a pair's view 0 when free.
 static ATTACHED: [[AtomicUsize; 2]; MOST_RECOGNIZERS] =
     [const { [AtomicUsize::new(0), AtomicUsize::new(0)] }; MOST_RECOGNIZERS];
 
@@ -116,7 +112,11 @@ const CLASSES: [Pair; 26] = [
     (b"UIResponder", &NSRESPONDER, &NSRESPONDER_META),
     (b"UIView", &NSVIEW, &NSVIEW_META),
     (b"UIWindow", &NSWINDOW, &NSWINDOW_META),
-    (b"UIViewController", &NSVIEWCONTROLLER, &NSVIEWCONTROLLER_META),
+    (
+        b"UIViewController",
+        &NSVIEWCONTROLLER,
+        &NSVIEWCONTROLLER_META,
+    ),
     (b"UILabel", &NSTEXTFIELD, &NSTEXTFIELD_META),
     (b"UIButton", &NSBUTTON, &NSBUTTON_META),
     (b"UIColor", &NSCOLOR, &NSCOLOR_META),
@@ -130,9 +130,21 @@ const CLASSES: [Pair; 26] = [
     (b"UIWindowScene", &NSRESPONDER, &NSRESPONDER_META),
     (b"UISceneSession", &NSRESPONDER, &NSRESPONDER_META),
     (b"UISceneConfiguration", &NSRESPONDER, &NSRESPONDER_META),
-    (b"UIGestureRecognizer", &UIGESTURERECOGNIZER, &UIGESTURERECOGNIZER_META),
-    (b"UITapGestureRecognizer", &UITAPGESTURERECOGNIZER, &UITAPGESTURERECOGNIZER_META),
-    (b"NSLayoutConstraint", &NSLAYOUTCONSTRAINT, &NSLAYOUTCONSTRAINT_META),
+    (
+        b"UIGestureRecognizer",
+        &UIGESTURERECOGNIZER,
+        &UIGESTURERECOGNIZER_META,
+    ),
+    (
+        b"UITapGestureRecognizer",
+        &UITAPGESTURERECOGNIZER,
+        &UITAPGESTURERECOGNIZER_META,
+    ),
+    (
+        b"NSLayoutConstraint",
+        &NSLAYOUTCONSTRAINT,
+        &NSLAYOUTCONSTRAINT_META,
+    ),
     (b"NSLayoutAnchor", &NSLAYOUTANCHOR, &NSLAYOUTANCHOR_META),
     (b"UIStackView", &NSSTACKVIEW, &NSSTACKVIEW_META),
     (
@@ -140,8 +152,16 @@ const CLASSES: [Pair; 26] = [
         &UILONGPRESSGESTURERECOGNIZER,
         &UILONGPRESSGESTURERECOGNIZER_META,
     ),
-    (b"UIPanGestureRecognizer", &UIPANGESTURERECOGNIZER, &UIPANGESTURERECOGNIZER_META),
-    (b"UISwipeGestureRecognizer", &UISWIPEGESTURERECOGNIZER, &UISWIPEGESTURERECOGNIZER_META),
+    (
+        b"UIPanGestureRecognizer",
+        &UIPANGESTURERECOGNIZER,
+        &UIPANGESTURERECOGNIZER_META,
+    ),
+    (
+        b"UISwipeGestureRecognizer",
+        &UISWIPEGESTURERECOGNIZER,
+        &UISWIPEGESTURERECOGNIZER_META,
+    ),
 ];
 
 const SELECTORS: [(&[u8], &[u8]); 7] = [
@@ -244,7 +264,12 @@ extern "C" fn recognizer_location_in_view(this: Id, _: Sel, view: Id) -> Point {
         return fields.location;
     }
     let convert: extern "C" fn(Id, Sel, Point, Id) -> Point = message::msg_send_as();
-    convert(view, sel!("convertPoint:fromView:"), fields.location, core::ptr::null_mut())
+    convert(
+        view,
+        sel!("convertPoint:fromView:"),
+        fields.location,
+        core::ptr::null_mut(),
+    )
 }
 
 extern "C" fn recognizer_is_enabled(this: Id, _: Sel) -> u8 {
@@ -292,7 +317,11 @@ enum Kind {
 
 fn kind_of(gesture: Id) -> Kind {
     let is = |class: &ClassObject| {
-        send_bool(gesture, sel!("isKindOfClass:"), class as *const ClassObject as usize)
+        send_bool(
+            gesture,
+            sel!("isKindOfClass:"),
+            class as *const ClassObject as usize,
+        )
     };
     if is(&UIPANGESTURERECOGNIZER) {
         Kind::Pan
@@ -382,7 +411,6 @@ fn released(view: Id, location: Point, time: f64) {
     });
 }
 
-/// The direction a press from `start` to `end` over `seconds` swiped, as a mask bit, or 0.
 fn swipe_direction(start: Point, end: Point, seconds: f64) -> u64 {
     let (across, along) = (end.x - start.x, end.y - start.y);
     if seconds > SWIPE_SECONDS {
@@ -414,7 +442,10 @@ extern "C" fn swipe_get_direction(this: Id, _: Sel) -> u64 {
 
 extern "C" fn pan_translation(this: Id, _: Sel, _view: Id) -> Point {
     let fields = recognizer(this);
-    Point::new(fields.location.x - fields.start.x, fields.location.y - fields.start.y)
+    Point::new(
+        fields.location.x - fields.start.x,
+        fields.location.y - fields.start.y,
+    )
 }
 
 extern "C" fn minimum_press_duration(_: Id, _: Sel) -> f64 {
@@ -458,7 +489,12 @@ extern "C" fn touch_location_in_view(this: Id, _: Sel, view: Id) -> Point {
         return fields.location;
     }
     let convert: extern "C" fn(Id, Sel, Point, Id) -> Point = message::msg_send_as();
-    convert(view, sel!("convertPoint:fromView:"), fields.location, core::ptr::null_mut())
+    convert(
+        view,
+        sel!("convertPoint:fromView:"),
+        fields.location,
+        core::ptr::null_mut(),
+    )
 }
 
 extern "C" fn touch_view(this: Id, _: Sel) -> Id {
@@ -615,7 +651,10 @@ fn deliver(view: Id, event: Id, phase: u64, selector: Sel) {
 fn place_and_time(event: Id) -> (Point, f64) {
     let location: extern "C" fn(Id, Sel) -> Point = message::msg_send_as();
     let time: extern "C" fn(Id, Sel) -> f64 = message::msg_send_as();
-    (location(event, sel!("locationInWindow")), time(event, sel!("timestamp")))
+    (
+        location(event, sel!("locationInWindow")),
+        time(event, sel!("timestamp")),
+    )
 }
 
 /// A view's `mouseDown:` (D501): `touchesBegan:withEvent:` when its class answers it.
@@ -654,7 +693,8 @@ pub fn swift_class_name(name: &[u8], out: &mut [u8; LONGEST_CLASS_NAME]) -> Opti
     }
     let mut written = 0;
     let mut push = |bytes: &[u8]| -> Option<()> {
-        out.get_mut(written..written + bytes.len())?.copy_from_slice(bytes);
+        out.get_mut(written..written + bytes.len())?
+            .copy_from_slice(bytes);
         written += bytes.len();
         Some(())
     };
@@ -724,7 +764,10 @@ fn connect_scene() {
         let send3: extern "C" fn(Id, Sel, Id, Id, Id) -> Id = message::msg_send_as();
         send3(delegate, connect, scene, session, core::ptr::null_mut());
     }
-    for step in [sel!("sceneWillEnterForeground:"), sel!("sceneDidBecomeActive:")] {
+    for step in [
+        sel!("sceneWillEnterForeground:"),
+        sel!("sceneDidBecomeActive:"),
+    ] {
         if send_bool(delegate, sel!("respondsToSelector:"), step as usize) {
             send1(delegate, step, scene as usize);
         }
@@ -780,8 +823,14 @@ mod tests {
     #[test]
     fn a_quick_long_move_along_one_axis_is_a_swipe_that_way() {
         let start = Point::new(100.0, 100.0);
-        assert_eq!(swipe_direction(start, Point::new(180.0, 110.0), 0.2), SWIPE_RIGHT);
-        assert_eq!(swipe_direction(start, Point::new(100.0, 30.0), 0.2), SWIPE_DOWN);
+        assert_eq!(
+            swipe_direction(start, Point::new(180.0, 110.0), 0.2),
+            SWIPE_RIGHT
+        );
+        assert_eq!(
+            swipe_direction(start, Point::new(100.0, 30.0), 0.2),
+            SWIPE_DOWN
+        );
         assert_eq!(swipe_direction(start, Point::new(180.0, 110.0), 0.9), 0);
         assert_eq!(swipe_direction(start, Point::new(120.0, 110.0), 0.2), 0);
     }

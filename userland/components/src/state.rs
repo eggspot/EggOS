@@ -142,7 +142,9 @@ fn write_text<F: Files>(files: &mut F, path: &str, text: &str) -> bool {
     let Ok(handle) = files.create(staged.as_bytes(), 0o644) else {
         return false;
     };
-    let written = files.write(handle, text.as_bytes()).and_then(|()| files.sync_file(handle));
+    let written = files
+        .write(handle, text.as_bytes())
+        .and_then(|()| files.sync_file(handle));
     files.close(handle);
     written.is_ok() && files.rename(staged.as_bytes(), path.as_bytes()).is_ok()
 }
@@ -169,7 +171,10 @@ pub fn set_daily<F: Files>(files: &mut F, on: bool) -> bool {
 
 /// Records `job`'s progress.
 pub fn record_job<F: Files>(files: &mut F, job: &Job) {
-    let text = format!("{} {} {} {} {} {}\n", job.pid, job.kind, job.name, job.phase, job.done, job.total);
+    let text = format!(
+        "{} {} {} {} {} {}\n",
+        job.pid, job.kind, job.name, job.phase, job.done, job.total
+    );
     let _ = write_text(files, JOB_PATH, &text);
 }
 
@@ -195,7 +200,11 @@ pub fn end_job<F: Files>(files: &mut F) {
 
 /// Records that updating component `name` failed with `failure`.
 pub fn record_failure<F: Files>(files: &mut F, name: &str, failure: &crate::manager::Failure) {
-    let _ = write_text(files, FAILURE_PATH, &format!("{name} {}\n", failure_text(failure)));
+    let _ = write_text(
+        files,
+        FAILURE_PATH,
+        &format!("{name} {}\n", failure_text(failure)),
+    );
 }
 
 /// Forgets the last failure, as a new job starts.

@@ -118,7 +118,12 @@ pub fn scaled(pixels: &[u32], width: usize, crop: Rect, size: (i32, i32)) -> Vec
         let source_row = crop.y as usize + row * crop_height / out_height;
         for column in 0..out_width {
             let source_column = crop.x as usize + column * crop_width / out_width;
-            out.push(pixels.get(source_row * width + source_column).copied().unwrap_or(0));
+            out.push(
+                pixels
+                    .get(source_row * width + source_column)
+                    .copied()
+                    .unwrap_or(0),
+            );
         }
     }
     out
@@ -142,7 +147,7 @@ pub fn premultiplied(pixel: u32) -> u32 {
         0xff => pixel,
         0 => 0,
         _ => [16, 8, 0].into_iter().fold(alpha << 24, |mixed, shift| {
-            mixed | ((pixel >> shift & 0xff) * alpha + 127) / 255 << shift
+            mixed | (((pixel >> shift & 0xff) * alpha + 127) / 255) << shift
         }),
     }
 }
@@ -150,7 +155,6 @@ pub fn premultiplied(pixel: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     const FRAME: Rect = Rect::new(0, 0, 96, 96);
 
@@ -161,20 +165,35 @@ mod tests {
 
     #[test]
     fn a_small_image_under_each_scaling() {
-        assert_eq!(placed((48, 48), scaling::PROPORTIONALLY_DOWN), ((48, 48), (24, 24)));
-        assert_eq!(placed((48, 48), scaling::PROPORTIONALLY_UP_OR_DOWN), ((96, 96), (0, 0)));
-        assert_eq!(placed((48, 48), scaling::AXES_INDEPENDENTLY), ((96, 96), (0, 0)));
+        assert_eq!(
+            placed((48, 48), scaling::PROPORTIONALLY_DOWN),
+            ((48, 48), (24, 24))
+        );
+        assert_eq!(
+            placed((48, 48), scaling::PROPORTIONALLY_UP_OR_DOWN),
+            ((96, 96), (0, 0))
+        );
+        assert_eq!(
+            placed((48, 48), scaling::AXES_INDEPENDENTLY),
+            ((96, 96), (0, 0))
+        );
     }
 
     #[test]
     fn a_wide_image_fits_or_overflows_evenly() {
-        assert_eq!(placed((200, 100), scaling::PROPORTIONALLY_DOWN), ((96, 48), (0, 24)));
+        assert_eq!(
+            placed((200, 100), scaling::PROPORTIONALLY_DOWN),
+            ((96, 48), (0, 24))
+        );
         assert_eq!(placed((200, 100), scaling::NONE), ((200, 100), (-52, -2)));
     }
 
     #[test]
     fn a_framed_style_insets_the_area_by_two() {
-        assert_eq!(image_area(FRAME, frame_style::PHOTO), Rect::new(2, 2, 92, 92));
+        assert_eq!(
+            image_area(FRAME, frame_style::PHOTO),
+            Rect::new(2, 2, 92, 92)
+        );
         assert_eq!(image_area(FRAME, frame_style::NONE), FRAME);
     }
 
@@ -211,7 +230,7 @@ mod tests {
     fn premultiplying_scales_the_colour_by_alpha() {
         assert_eq!(premultiplied(0x80ff_0000), 0x8080_0000);
         assert_eq!(premultiplied(0x00ff_ffff), 0);
-        let pixels = vec![premultiplied(0xffff_0000)];
+        let pixels = [premultiplied(0xffff_0000)];
         assert_eq!(pixels[0], 0xffff_0000);
     }
 }

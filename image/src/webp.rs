@@ -13,22 +13,132 @@ use alloc::vec::Vec;
 const LOSSLESS_SIGNATURE: u8 = 0x2f;
 const GREEN_ALPHABET: usize = 256 + 24;
 const DISTANCE_ALPHABET: usize = 40;
-const CODE_LENGTH_ORDER: [usize; 19] =
-    [17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const CODE_LENGTH_ORDER: [usize; 19] = [
+    17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+];
 const MAX_CODE_LENGTH: usize = 15;
 const COLOUR_CACHE_MULTIPLIER: u32 = 0x1e35_a7bd;
 const DISTANCES: [(i8, i8); 120] = [
-    (0, 1), (1, 0), (1, 1), (-1, 1), (0, 2), (2, 0), (1, 2), (-1, 2), (2, 1), (-2, 1), (2, 2),
-    (-2, 2), (0, 3), (3, 0), (1, 3), (-1, 3), (3, 1), (-3, 1), (2, 3), (-2, 3), (3, 2), (-3, 2),
-    (0, 4), (4, 0), (1, 4), (-1, 4), (4, 1), (-4, 1), (3, 3), (-3, 3), (2, 4), (-2, 4), (4, 2),
-    (-4, 2), (0, 5), (3, 4), (-3, 4), (4, 3), (-4, 3), (5, 0), (1, 5), (-1, 5), (5, 1), (-5, 1),
-    (2, 5), (-2, 5), (5, 2), (-5, 2), (4, 4), (-4, 4), (3, 5), (-3, 5), (5, 3), (-5, 3), (0, 6),
-    (6, 0), (1, 6), (-1, 6), (6, 1), (-6, 1), (2, 6), (-2, 6), (6, 2), (-6, 2), (4, 5), (-4, 5),
-    (5, 4), (-5, 4), (3, 6), (-3, 6), (6, 3), (-6, 3), (0, 7), (7, 0), (1, 7), (-1, 7), (5, 5),
-    (-5, 5), (7, 1), (-7, 1), (4, 6), (-4, 6), (6, 4), (-6, 4), (2, 7), (-2, 7), (7, 2), (-7, 2),
-    (3, 7), (-3, 7), (7, 3), (-7, 3), (5, 6), (-5, 6), (6, 5), (-6, 5), (8, 0), (4, 7), (-4, 7),
-    (7, 4), (-7, 4), (8, 1), (8, 2), (6, 6), (-6, 6), (8, 3), (5, 7), (-5, 7), (7, 5), (-7, 5),
-    (8, 4), (6, 7), (-6, 7), (7, 6), (-7, 6), (8, 5), (7, 7), (-7, 7), (8, 6), (8, 7),
+    (0, 1),
+    (1, 0),
+    (1, 1),
+    (-1, 1),
+    (0, 2),
+    (2, 0),
+    (1, 2),
+    (-1, 2),
+    (2, 1),
+    (-2, 1),
+    (2, 2),
+    (-2, 2),
+    (0, 3),
+    (3, 0),
+    (1, 3),
+    (-1, 3),
+    (3, 1),
+    (-3, 1),
+    (2, 3),
+    (-2, 3),
+    (3, 2),
+    (-3, 2),
+    (0, 4),
+    (4, 0),
+    (1, 4),
+    (-1, 4),
+    (4, 1),
+    (-4, 1),
+    (3, 3),
+    (-3, 3),
+    (2, 4),
+    (-2, 4),
+    (4, 2),
+    (-4, 2),
+    (0, 5),
+    (3, 4),
+    (-3, 4),
+    (4, 3),
+    (-4, 3),
+    (5, 0),
+    (1, 5),
+    (-1, 5),
+    (5, 1),
+    (-5, 1),
+    (2, 5),
+    (-2, 5),
+    (5, 2),
+    (-5, 2),
+    (4, 4),
+    (-4, 4),
+    (3, 5),
+    (-3, 5),
+    (5, 3),
+    (-5, 3),
+    (0, 6),
+    (6, 0),
+    (1, 6),
+    (-1, 6),
+    (6, 1),
+    (-6, 1),
+    (2, 6),
+    (-2, 6),
+    (6, 2),
+    (-6, 2),
+    (4, 5),
+    (-4, 5),
+    (5, 4),
+    (-5, 4),
+    (3, 6),
+    (-3, 6),
+    (6, 3),
+    (-6, 3),
+    (0, 7),
+    (7, 0),
+    (1, 7),
+    (-1, 7),
+    (5, 5),
+    (-5, 5),
+    (7, 1),
+    (-7, 1),
+    (4, 6),
+    (-4, 6),
+    (6, 4),
+    (-6, 4),
+    (2, 7),
+    (-2, 7),
+    (7, 2),
+    (-7, 2),
+    (3, 7),
+    (-3, 7),
+    (7, 3),
+    (-7, 3),
+    (5, 6),
+    (-5, 6),
+    (6, 5),
+    (-6, 5),
+    (8, 0),
+    (4, 7),
+    (-4, 7),
+    (7, 4),
+    (-7, 4),
+    (8, 1),
+    (8, 2),
+    (6, 6),
+    (-6, 6),
+    (8, 3),
+    (5, 7),
+    (-5, 7),
+    (7, 5),
+    (-7, 5),
+    (8, 4),
+    (6, 7),
+    (-6, 7),
+    (7, 6),
+    (-7, 6),
+    (8, 5),
+    (7, 7),
+    (-7, 7),
+    (8, 6),
+    (8, 7),
 ];
 
 /// Whether `bytes` is a WebP file.
@@ -84,7 +194,6 @@ impl Bits<'_> {
     }
 }
 
-/// A canonical prefix code: per length, the first code and where its symbols start.
 #[derive(Default, Clone)]
 struct Code {
     counts: [u16; MAX_CODE_LENGTH + 1],
@@ -112,7 +221,10 @@ impl Code {
         for (symbol, &length) in lengths.iter().enumerate() {
             if length != 0 {
                 let slot = &mut offsets[usize::from(length)];
-                *code.symbols.get_mut(usize::from(*slot)).ok_or(Error::Corrupt)? = symbol as u16;
+                *code
+                    .symbols
+                    .get_mut(usize::from(*slot))
+                    .ok_or(Error::Corrupt)? = symbol as u16;
                 *slot += 1;
             }
         }
@@ -229,7 +341,11 @@ fn decode_stream(
         }
         _ => 0,
     };
-    let cache_size = if cache_bits > 0 { 1usize << cache_bits } else { 0 };
+    let cache_size = if cache_bits > 0 {
+        1usize << cache_bits
+    } else {
+        0
+    };
     let (meta_bits, meta) = match top_level && bits.read(1)? == 1 {
         true => {
             let prefix_bits = bits.read(3)? + 2;
@@ -241,10 +357,15 @@ fn decode_stream(
         false => (0, None),
     };
     let groups_count = meta.as_ref().map_or(1, |(_, meta)| {
-        meta.iter().map(|&pixel| (pixel >> 8 & 0xffff) as usize + 1).max().unwrap_or(1)
+        meta.iter()
+            .map(|&pixel| (pixel >> 8 & 0xffff) as usize + 1)
+            .max()
+            .unwrap_or(1)
     });
     let mut groups = Vec::new();
-    groups.try_reserve(groups_count).map_err(|_| Error::OutOfMemory)?;
+    groups
+        .try_reserve(groups_count)
+        .map_err(|_| Error::OutOfMemory)?;
     for _ in 0..groups_count {
         groups.push(Group {
             codes: [
@@ -258,7 +379,9 @@ fn decode_stream(
     }
     let total = width * height;
     let mut pixels: Vec<u32> = Vec::new();
-    pixels.try_reserve_exact(total).map_err(|_| Error::OutOfMemory)?;
+    pixels
+        .try_reserve_exact(total)
+        .map_err(|_| Error::OutOfMemory)?;
     let mut cache = vec![0u32; cache_size];
     let remember = |pixel: u32, cache: &mut [u32]| {
         if cache_bits > 0 {
@@ -269,7 +392,10 @@ fn decode_stream(
         let position = pixels.len();
         let group = match &meta {
             Some((meta_width, meta)) => {
-                let (x, y) = (position % width >> meta_bits, position / width >> meta_bits);
+                let (x, y) = (
+                    (position % width) >> meta_bits,
+                    (position / width) >> meta_bits,
+                );
                 (meta[y * meta_width + x] >> 8 & 0xffff) as usize
             }
             None => 0,
@@ -321,7 +447,7 @@ enum Transform {
 fn add(a: u32, b: u32) -> u32 {
     let mut out = 0;
     for shift in [0, 8, 16, 24] {
-        out |= ((a >> shift & 0xff) + (b >> shift & 0xff) & 0xff) << shift;
+        out |= (((a >> shift & 0xff) + (b >> shift & 0xff)) & 0xff) << shift;
     }
     out
 }
@@ -329,7 +455,7 @@ fn add(a: u32, b: u32) -> u32 {
 fn average(a: u32, b: u32) -> u32 {
     let mut out = 0;
     for shift in [0, 8, 16, 24] {
-        out |= ((a >> shift & 0xff) + (b >> shift & 0xff)) / 2 << shift;
+        out |= (((a >> shift & 0xff) + (b >> shift & 0xff)) / 2) << shift;
     }
     out
 }
@@ -342,14 +468,19 @@ fn from_channels(values: [i32; 4]) -> u32 {
     values
         .iter()
         .zip([24, 16, 8, 0])
-        .fold(0, |pixel, (&value, shift)| pixel | (value.clamp(0, 255) as u32) << shift)
+        .fold(0, |pixel, (&value, shift)| {
+            pixel | (value.clamp(0, 255) as u32) << shift
+        })
 }
 
 fn select(left: u32, top: u32, top_left: u32) -> u32 {
     let (l, t, tl) = (channels(left), channels(top), channels(top_left));
     let estimate: [i32; 4] = core::array::from_fn(|index| l[index] + t[index] - tl[index]);
-    let distance =
-        |of: [i32; 4]| (0..4).map(|index| (estimate[index] - of[index]).abs()).sum::<i32>();
+    let distance = |of: [i32; 4]| {
+        (0..4)
+            .map(|index| (estimate[index] - of[index]).abs())
+            .sum::<i32>()
+    };
     if distance(l) < distance(t) { left } else { top }
 }
 
@@ -392,8 +523,11 @@ fn undo_predictor(pixels: &mut [u32], width: usize, bits: u32, image: &[u32]) {
                     true => pixels[index - width + 1],
                     false => pixels[index - x],
                 };
-                let (left, top, top_left) =
-                    (pixels[index - 1], pixels[index - width], pixels[index - width - 1]);
+                let (left, top, top_left) = (
+                    pixels[index - 1],
+                    pixels[index - width],
+                    pixels[index - width - 1],
+                );
                 predict(mode, left, top, top_right, top_left)
             }
         };
@@ -447,7 +581,10 @@ fn decode_lossless(body: &[u8], limits: &Limits) -> Result<Image, Error> {
     if body.first() != Some(&LOSSLESS_SIGNATURE) {
         return Err(Error::Corrupt);
     }
-    let mut bits = Bits { bytes: body, bit: 8 };
+    let mut bits = Bits {
+        bytes: body,
+        bit: 8,
+    };
     let width = bits.read(14)? as usize + 1;
     let height = bits.read(14)? as usize + 1;
     let _alpha = bits.read(1)?;
@@ -494,8 +631,14 @@ fn decode_image_stream(
                     false,
                 )?;
                 match kind {
-                    0 => Transform::Predictor { bits: block_bits, image },
-                    _ => Transform::Colour { bits: block_bits, image },
+                    0 => Transform::Predictor {
+                        bits: block_bits,
+                        image,
+                    },
+                    _ => Transform::Colour {
+                        bits: block_bits,
+                        image,
+                    },
                 }
             }
             2 => Transform::SubtractGreen,
@@ -553,7 +696,10 @@ fn apply_alpha(image: &mut Image, chunk: &[u8]) -> Result<(), Error> {
     let header = *chunk.first().ok_or(Error::Truncated)?;
     let (width, height) = (image.width as usize, image.height as usize);
     let mut alpha = match header & 3 {
-        0 => chunk.get(1..1 + width * height).ok_or(Error::Truncated)?.to_vec(),
+        0 => chunk
+            .get(1..1 + width * height)
+            .ok_or(Error::Truncated)?
+            .to_vec(),
         1 => {
             let mut bits = Bits {
                 bytes: &chunk[1..],

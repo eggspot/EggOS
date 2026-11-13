@@ -51,7 +51,6 @@ const NAVIGATION_ZONES: u32 = 3;
 const TABLET_SEARCH_WIDTH: u32 = 480;
 const TABLET_CELL_WIDTH: u32 = 112;
 
-/// What the person pressed in the phone's shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
     StatusBar,
@@ -61,8 +60,6 @@ enum Target {
     LeftEdge,
 }
 
-/// How far a finger moves for a swipe (section 2.8): from the status bar or the left edge, and
-/// up from the navigation bar.
 const SWIPE: u32 = 48;
 const SWIPE_UP: u32 = 64;
 const EDGE: u32 = 16;
@@ -153,7 +150,9 @@ impl Desktop {
                         continue;
                     }
                     match (window.role, Some(slot) == shown) {
-                        (Role::Normal, true) | (Role::Dialog, _) => self.fit_to_phone(slot, damage, events),
+                        (Role::Normal, true) | (Role::Dialog, _) => {
+                            self.fit_to_phone(slot, damage, events)
+                        }
                         (Role::Normal, false) => self.minimise(slot, damage, events),
                         _ => {}
                     }
@@ -191,7 +190,12 @@ impl Desktop {
 
     /// Gives window `slot` its place in the phone form: a normal window the whole work area,
     /// the others it covered minimised; a dialog the bottom of it, full width (section 2.5).
-    pub(super) fn fit_to_phone(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
+    pub(super) fn fit_to_phone(
+        &mut self,
+        slot: usize,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         let placed = match (self.form, self.window_at(slot).role) {
             (Form::Tablet, Role::Normal) => self.tablet_place(slot),
             _ => None,
@@ -249,14 +253,26 @@ impl Desktop {
     fn search_field(&self) -> Rect {
         let work = self.layout.work_area;
         if self.form == Form::Tablet {
-            return Rect::new(work.x + (work.width - TABLET_SEARCH_WIDTH) / 2, work.y + SEARCH.0, TABLET_SEARCH_WIDTH, SEARCH.2);
+            return Rect::new(
+                work.x + (work.width - TABLET_SEARCH_WIDTH) / 2,
+                work.y + SEARCH.0,
+                TABLET_SEARCH_WIDTH,
+                SEARCH.2,
+            );
         }
-        Rect::new(SEARCH.0, work.y + SEARCH.1, work.width.saturating_sub(2 * SEARCH.0), SEARCH.2)
+        Rect::new(
+            SEARCH.0,
+            work.y + SEARCH.1,
+            work.width.saturating_sub(2 * SEARCH.0),
+            SEARCH.2,
+        )
     }
 
     fn grid_columns(&self) -> u32 {
         match self.form {
-            Form::Tablet => (self.layout.work_area.width.saturating_sub(32) / TABLET_CELL_WIDTH).max(1),
+            Form::Tablet => {
+                (self.layout.work_area.width.saturating_sub(32) / TABLET_CELL_WIDTH).max(1)
+            }
             _ => GRID_COLUMNS,
         }
     }
@@ -280,7 +296,12 @@ impl Desktop {
 
     fn grid_area(&self) -> Rect {
         let work = self.layout.work_area;
-        Rect::new(work.x, work.y + GRID_TOP, work.width, work.height.saturating_sub(GRID_TOP))
+        Rect::new(
+            work.x,
+            work.y + GRID_TOP,
+            work.width,
+            work.height.saturating_sub(GRID_TOP),
+        )
     }
 
     fn cell(&self, index: usize) -> Rect {
@@ -304,7 +325,12 @@ impl Desktop {
 
     fn search_row(&self, index: usize) -> Rect {
         let area = self.grid_area();
-        Rect::new(area.x, area.y + ROW_HEIGHT * index as u32, area.width, ROW_HEIGHT)
+        Rect::new(
+            area.x,
+            area.y + ROW_HEIGHT * index as u32,
+            area.width,
+            ROW_HEIGHT,
+        )
     }
 
     fn most_scroll(&self) -> u32 {
@@ -347,7 +373,8 @@ impl Desktop {
             return true;
         }
         if let Some(slot) = self.phone_shown_window() {
-            let handles_back = self.window_at(slot).flags & super::protocol::flags::HANDLES_BACK != 0;
+            let handles_back =
+                self.window_at(slot).flags & super::protocol::flags::HANDLES_BACK != 0;
             if handles_back && self.phone.awaiting_back != Some(slot as u8) {
                 self.phone.awaiting_back = Some(slot as u8);
                 self.send_back_key(slot, events);
@@ -378,11 +405,20 @@ impl Desktop {
 
     /// The shown window did not use the `Back` key it was sent (`BackUnused`, rule 4 of
     /// section 2.6): the shell goes back past it, minimising it.
-    pub fn back_unused(&mut self, client: u16, window: u32, damage: &mut Damage, events: &mut dyn EventSink) {
+    pub fn back_unused(
+        &mut self,
+        client: u16,
+        window: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         let Ok(id) = super::WindowId::try_from(window) else {
             return;
         };
-        let Some(slot) = self.find(id).filter(|&slot| self.window_at(slot).client == client) else {
+        let Some(slot) = self
+            .find(id)
+            .filter(|&slot| self.window_at(slot).client == client)
+        else {
             return;
         };
         if !self.touch_form() || self.phone.awaiting_back != Some(slot as u8) {
@@ -408,7 +444,11 @@ impl Desktop {
         {
             return Some(action);
         }
-        if self.layout.status_bar.is_some_and(|bar| contains(bar, x, y)) {
+        if self
+            .layout
+            .status_bar
+            .is_some_and(|bar| contains(bar, x, y))
+        {
             self.phone.pressed = Some(Target::StatusBar);
             self.phone.press_at = (x, y);
             damage.add(self.layout.status_bar.unwrap_or(self.screen()));
@@ -420,15 +460,25 @@ impl Desktop {
             self.phone.press_at = (x, y);
             return Some(Action::None);
         }
-        let on_bar = self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y));
+        let on_bar = self
+            .layout
+            .navigation_bar
+            .is_some_and(|bar| contains(bar, x, y));
         if self.phone.shade && !on_bar {
             return Some(self.shade_press(x, y, damage));
         }
         if self.phone.switcher && !on_bar {
-            return Some(self.switcher_press(x, y, damage, events));
+            return Some(self.phone_switcher_press(x, y, damage, events));
         }
-        if self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y)) {
-            let zone = (0..NAVIGATION_ZONES).find(|&index| self.navigation_zone(index).is_some_and(|zone| contains(zone, x, y)))?;
+        if self
+            .layout
+            .navigation_bar
+            .is_some_and(|bar| contains(bar, x, y))
+        {
+            let zone = (0..NAVIGATION_ZONES).find(|&index| {
+                self.navigation_zone(index)
+                    .is_some_and(|zone| contains(zone, x, y))
+            })?;
             if let Some(rect) = self.layout.navigation_bar {
                 damage.add(rect);
             }
@@ -462,7 +512,9 @@ impl Desktop {
                 .catalogue
                 .desktop_apps()
                 .enumerate()
-                .find(|(index, _)| contains(self.cell(*index), x, y) && contains(self.grid_area(), x, y))
+                .find(|(index, _)| {
+                    contains(self.cell(*index), x, y) && contains(self.grid_area(), x, y)
+                })
                 .map(|(_, app)| app),
             _ => self
                 .matching_apps()
@@ -476,7 +528,12 @@ impl Desktop {
         Some(self.phone_open_app(app, damage, events))
     }
 
-    pub(super) fn phone_open_app(&mut self, app: AppId, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
+    pub(super) fn phone_open_app(
+        &mut self,
+        app: AppId,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
         let mut windows = [0u8; MAX_WINDOWS];
         match self.app_windows(app, &mut windows) {
             0 => self.launch(app, damage, events),
@@ -530,7 +587,8 @@ impl Desktop {
         if self.touch_form() && self.switcher_scroll(notches, damage) {
             return true;
         }
-        if !self.touch_form() || self.phone_shown_window().is_some() || self.phone.query_length > 0 {
+        if !self.touch_form() || self.phone_shown_window().is_some() || self.phone.query_length > 0
+        {
             return false;
         }
         let step = notches.unsigned_abs() * WHEEL_STEP;
@@ -545,7 +603,12 @@ impl Desktop {
     /// Key `code` on the home screen: Esc is `Back`, typing goes to the search, Backspace
     /// takes a character back, Enter opens the first match. Returns the action when it was
     /// the shell's.
-    pub(super) fn phone_key(&mut self, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Option<Action> {
+    pub(super) fn phone_key(
+        &mut self,
+        code: u16,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
         if self.phone_shown_window().is_some() {
             return None;
         }
@@ -560,7 +623,10 @@ impl Desktop {
                 Some(Action::None)
             }
             key::ENTER | key::KEYPAD_ENTER => {
-                let app = self.matching_apps().next().filter(|_| self.phone.query_length > 0)?;
+                let app = self
+                    .matching_apps()
+                    .next()
+                    .filter(|_| self.phone.query_length > 0)?;
                 self.phone.query_length = 0;
                 self.phone.search_focused = false;
                 Some(self.phone_open_app(app, damage, events))
@@ -598,8 +664,12 @@ impl Desktop {
         };
         canvas.text(field.x + SEARCH_TEXT.0, field.y + SEARCH_TEXT.1, text, ink);
         if self.phone.search_focused {
-            let caret_x = field.x + SEARCH_TEXT.0 + self.phone.query_length as u32 * GLYPH_WIDTH as u32;
-            canvas.fill(Rect::new(caret_x, field.y + SEARCH_TEXT.1, 1, GLYPH_HEIGHT as u32), colour::TEXT);
+            let caret_x =
+                field.x + SEARCH_TEXT.0 + self.phone.query_length as u32 * GLYPH_WIDTH as u32;
+            canvas.fill(
+                Rect::new(caret_x, field.y + SEARCH_TEXT.1, 1, GLYPH_HEIGHT as u32),
+                colour::TEXT,
+            );
         }
         let area = self.grid_area();
         if self.phone.query_length > 0 {
@@ -611,8 +681,19 @@ impl Desktop {
                 if index == 0 {
                     canvas.fill(row, colour::SELECTION);
                 }
-                draw_icon(canvas, self.catalogue.icon(app), IconSize::Small, row.x + ROW_ICON.0, row.y + ROW_ICON.1);
-                canvas.text(row.x + ROW_TEXT.0, row.y + ROW_TEXT.1, self.catalogue.name(app), colour::TEXT);
+                draw_icon(
+                    canvas,
+                    self.catalogue.icon(app),
+                    IconSize::Small,
+                    row.x + ROW_ICON.0,
+                    row.y + ROW_ICON.1,
+                );
+                canvas.text(
+                    row.x + ROW_TEXT.0,
+                    row.y + ROW_TEXT.1,
+                    self.catalogue.name(app),
+                    colour::TEXT,
+                );
             }
             return;
         }
@@ -621,18 +702,34 @@ impl Desktop {
             if cell.y < area.y || cell.bottom() > area.bottom() {
                 continue;
             }
-            draw_icon(canvas, self.catalogue.icon(app), IconSize::Large, cell.x + CELL_ICON.0, cell.y + CELL_ICON.1);
+            draw_icon(
+                canvas,
+                self.catalogue.icon(app),
+                IconSize::Large,
+                cell.x + CELL_ICON.0,
+                cell.y + CELL_ICON.1,
+            );
             let mut windows = [0u8; MAX_WINDOWS];
             if self.app_windows(app, &mut windows) > 0 {
                 canvas.fill(
-                    Rect::new(cell.x + RUNNING_MARK.0, cell.y + RUNNING_MARK.1, RUNNING_MARK.2, RUNNING_MARK.2),
+                    Rect::new(
+                        cell.x + RUNNING_MARK.0,
+                        cell.y + RUNNING_MARK.1,
+                        RUNNING_MARK.2,
+                        RUNNING_MARK.2,
+                    ),
                     colour::TEXT,
                 );
             }
             let (text, cut) = windows::cut_title(self.catalogue.name(app), LABEL_GLYPHS);
             let glyphs = text.chars().count() + if cut { windows::ellipsis().len() } else { 0 };
             let width = glyphs as u32 * GLYPH_WIDTH as u32 + 2 * LABEL_PADDING;
-            let pill = Rect::new(cell.x + CELL.0.saturating_sub(width) / 2, cell.y + LABEL_TOP, width, LABEL_HEIGHT);
+            let pill = Rect::new(
+                cell.x + CELL.0.saturating_sub(width) / 2,
+                cell.y + LABEL_TOP,
+                width,
+                LABEL_HEIGHT,
+            );
             canvas.rounded(pill, &paint::INSET_R4, true, true, colour::BAR);
             canvas.text(pill.x + LABEL_PADDING, pill.y + 2, text, colour::TEXT);
             if cut {
@@ -666,36 +763,41 @@ impl Desktop {
             _ => colour::BAR,
         };
         canvas.fill(Rect::new(bar.x, bar.y, bar.width, bar.height - 1), fill);
-        canvas.fill(Rect::new(bar.x, bar.bottom() - 1, bar.width, 1), colour::BAR_EDGE);
+        canvas.fill(
+            Rect::new(bar.x, bar.bottom() - 1, bar.width, 1),
+            colour::BAR_EDGE,
+        );
         let ink = match self.clock_shows_time_of_day() {
             true => colour::TEXT,
             false => colour::TEXT_DIM,
         };
         canvas.text(CLOCK_X, TEXT_Y, self.clock_text(), ink);
         let mut right = bar.width.saturating_sub(RIGHT_EDGE_FROM_SCREEN);
-        if let Some(state) = self.network.state {
+        if let Some(state) = self.network_state() {
             let x = right - NETWORK_SIDE;
             for rect in state.glyph().into_iter().flatten() {
-                canvas.fill(
-                    Rect::new(
-                        x + u32::from(rect.x),
-                        TEXT_Y + u32::from(rect.y),
-                        u32::from(rect.width),
-                        u32::from(rect.height),
-                    ),
-                    colour::TEXT,
-                );
+                canvas.fill(rect.placed(x, TEXT_Y, 1), colour::TEXT);
             }
             right = x - ITEM_GAP;
         }
         if self.agent_connected() {
-            let chip = Rect::new(right - AGENT_CHIP.0, AGENT_CHIP_Y, AGENT_CHIP.0, AGENT_CHIP.1);
+            let chip = Rect::new(
+                right - AGENT_CHIP.0,
+                AGENT_CHIP_Y,
+                AGENT_CHIP.0,
+                AGENT_CHIP.1,
+            );
             let (fill, text) = match self.agent_acting() {
                 true => (colour::ACCENT, colour::ICON_DARK),
                 false => (colour::BAR_HOVER, colour::TEXT_DIM),
             };
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
-            canvas.text(chip.x + AGENT_TEXT_INSET.0, chip.y + AGENT_TEXT_INSET.1, super::AGENT_LABEL, text);
+            canvas.text(
+                chip.x + AGENT_TEXT_INSET.0,
+                chip.y + AGENT_TEXT_INSET.1,
+                super::AGENT_LABEL,
+                text,
+            );
             right = chip.x;
         }
         if self.form == Form::Tablet {
@@ -704,7 +806,8 @@ impl Desktop {
         }
         if let Some(slot) = self.phone_shown_window() {
             let room = (right.saturating_sub(TITLE_GAP + TITLE_X) / GLYPH_WIDTH as u32) as usize;
-            let (text, cut) = windows::cut_title(self.window_at(slot).title(), room.saturating_sub(3));
+            let (text, cut) =
+                windows::cut_title(self.window_at(slot).title(), room.saturating_sub(3));
             let (text, cut) = match self.window_at(slot).title().chars().count() <= room {
                 true => (self.window_at(slot).title(), false),
                 false => (text, cut),
@@ -722,7 +825,10 @@ impl Desktop {
     }
 
     fn draw_navigation_bar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
-        canvas.fill(Rect::new(bar.x, bar.y + 1, bar.width, bar.height - 1), colour::BAR);
+        canvas.fill(
+            Rect::new(bar.x, bar.y + 1, bar.width, bar.height - 1),
+            colour::BAR,
+        );
         canvas.fill(Rect::new(bar.x, bar.y, bar.width, 1), colour::BAR_EDGE);
         let pressed = match self.phone.pressed {
             Some(Target::Back) => Some(0),
@@ -730,7 +836,10 @@ impl Desktop {
             _ => None,
         };
         if let Some(zone) = pressed.and_then(|index| self.navigation_zone(index)) {
-            canvas.fill(Rect::new(zone.x, zone.y + 1, zone.width, zone.height - 1), colour::BAR_PRESSED);
+            canvas.fill(
+                Rect::new(zone.x, zone.y + 1, zone.width, zone.height - 1),
+                colour::BAR_PRESSED,
+            );
         }
         let ink = match self.phone_can_go_back() {
             true => colour::TEXT,
@@ -738,7 +847,10 @@ impl Desktop {
         };
         let back = self.navigation_zone(0).unwrap_or(bar);
         let length = BACK_ARROW.2;
-        let (x, y) = (back.x + (back.width - length) / 2, back.y + back.height / 2 - 1);
+        let (x, y) = (
+            back.x + (back.width - length) / 2,
+            back.y + back.height / 2 - 1,
+        );
         canvas.fill(Rect::new(x, y, length, 2), ink);
         for step in 1..=5u32 {
             canvas.fill(Rect::new(x + step, y.saturating_sub(step), 2, 2), ink);
@@ -756,13 +868,22 @@ impl Desktop {
 
     /// Draws window `window`'s phone look: its content only, and a sheet's top edge over the
     /// darkened rows above it.
-    pub(super) fn draw_phone_window_frame(&self, canvas: &mut Canvas<'_>, window: &windows::Window) {
+    pub(super) fn draw_phone_window_frame(
+        &self,
+        canvas: &mut Canvas<'_>,
+        window: &windows::Window,
+    ) {
         if window.role != Role::Dialog {
             return;
         }
         let content = window.content();
         let work = self.layout.work_area;
-        canvas.dim(Rect::new(work.x, work.y, work.width, content.y.saturating_sub(work.y)));
+        canvas.dim(Rect::new(
+            work.x,
+            work.y,
+            work.width,
+            content.y.saturating_sub(work.y),
+        ));
     }
 
     /// `wm move` and `wm size` in the phone form: refused with `fixed_by_form`.

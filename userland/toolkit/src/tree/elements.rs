@@ -630,15 +630,13 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             (Action::Invoke, Kind::MenuButton(_), Some(entry)) => {
                 self.invoke_by_agent(id, 0, entry)
             }
-            (Action::SetText, Kind::Outline(outline), None) => {
-                match text.trim().parse::<usize>() {
-                    Ok(row) if row >= 1 && row <= outline.rows => {
-                        (Outcome::Done, self.select_outline_row(id, row - 1))
-                    }
-                    Ok(_) => (Outcome::Done, Response::Nothing),
-                    Err(_) => (Outcome::NotSupported, Response::Nothing),
+            (Action::SetText, Kind::Outline(outline), None) => match text.trim().parse::<usize>() {
+                Ok(row) if row >= 1 && row <= outline.rows => {
+                    (Outcome::Done, self.select_outline_row(id, row - 1))
                 }
-            }
+                Ok(_) => (Outcome::Done, Response::Nothing),
+                Err(_) => (Outcome::NotSupported, Response::Nothing),
+            },
             (action @ (Action::Select | Action::Invoke), Kind::Outline(outline), Some(part)) => {
                 let Some(rect) = self.rect(id) else {
                     return (Outcome::NoSuchElement, Response::Nothing);

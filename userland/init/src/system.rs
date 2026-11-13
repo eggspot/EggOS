@@ -72,13 +72,9 @@ struct Services {
     updates: AgentServer,
 }
 
-/// The component manager, which checks for updates once a day (D299).
 const COMPONENT: &[u8] = b"/bin/component\0";
-/// Its arguments for the check, each with its NUL.
 const CHECK_ARGUMENTS: [&[u8]; 3] = [b"update\0", b"--dry-run\0", b"--json\0"];
-/// `off` there turns the daily check off.
 const UPDATES_DAILY: &[u8] = b"/var/lib/eggos/updates-daily\0";
-/// How long after the network comes up the first check waits, and between checks.
 const FIRST_CHECK_S: u64 = 600;
 const CHECK_EVERY_S: u64 = 24 * 60 * 60;
 const LOOK_AGAIN_LATER_S: u64 = 60 * 60;
@@ -92,7 +88,11 @@ struct SignalAction {
     mask_high: u64,
 }
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+#[cfg(not(any(
+    target_arch = "loongarch64",
+    target_arch = "riscv64",
+    target_arch = "mips64"
+)))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -114,7 +114,11 @@ impl SignalAction {
         Self {
             handler,
             flags: 0,
-            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+            #[cfg(not(any(
+                target_arch = "loongarch64",
+                target_arch = "riscv64",
+                target_arch = "mips64"
+            )))]
             restorer: 0,
             #[cfg(target_arch = "mips64")]
             mask_high: 0,
@@ -128,14 +132,27 @@ impl SignalAction {
             SA_RESTORER,
             eggos_runtime::process::restore_after_signal as *const () as usize,
         );
-        #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64", target_arch = "s390x", target_arch = "sparc64"))]
+        #[cfg(any(
+            target_arch = "aarch64",
+            target_arch = "powerpc64",
+            target_arch = "s390x",
+            target_arch = "sparc64"
+        ))]
         let (flags, restorer) = (0, 0);
-        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64"))]
+        #[cfg(any(
+            target_arch = "loongarch64",
+            target_arch = "riscv64",
+            target_arch = "mips64"
+        ))]
         let flags = 0;
         Self {
             handler: handler as usize,
             flags,
-            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+            #[cfg(not(any(
+                target_arch = "loongarch64",
+                target_arch = "riscv64",
+                target_arch = "mips64"
+            )))]
             restorer,
             #[cfg(target_arch = "mips64")]
             mask_high: 0,
@@ -713,9 +730,6 @@ fn start_update_checker(updates: &mut AgentServer) {
     }
 }
 
-/// The daily update check (D299, docs/ux/components-v0.5.md section 7): ten minutes after the
-/// network has an address, then every 24 hours, `component update --dry-run --json`, which
-/// stores what it finds; nothing is installed. Off while `updates-daily` says `off`.
 fn check_updates_daily() -> ! {
     set_signal_actions(SIG_DFL);
     call(number::SETSID, [0; 6]);
@@ -744,8 +758,6 @@ fn daily_check_on() -> bool {
     text[..length].trim_ascii() != b"off"
 }
 
-/// Runs `program` with `arguments` (each NUL-terminated), its output in init's log; whether it
-/// ended with status 0.
 fn run_logged(program: &[u8], arguments: &[&[u8]]) -> bool {
     let mut pointers = [ptr::null::<u8>(); 8];
     pointers[0] = program.as_ptr();
@@ -764,14 +776,24 @@ fn run_logged(program: &[u8], arguments: &[&[u8]]) -> bool {
             call(number::DUP3, [log, 2, 0, 0, 0, 0]);
             call(
                 number::EXECVE,
-                [program.as_ptr() as usize, pointers.as_ptr() as usize, environment.as_ptr() as usize, 0, 0, 0],
+                [
+                    program.as_ptr() as usize,
+                    pointers.as_ptr() as usize,
+                    environment.as_ptr() as usize,
+                    0,
+                    0,
+                    0,
+                ],
             );
             syscall::exit(COMMAND_NOT_RUN)
         }
         1.. => {
             let mut status = 0;
             loop {
-                match call(number::WAIT4, [child as usize, &raw mut status as usize, 0, 0, 0, 0]) {
+                match call(
+                    number::WAIT4,
+                    [child as usize, &raw mut status as usize, 0, 0, 0, 0],
+                ) {
                     ended if ended == child => return status == 0,
                     error if error == -EINTR => {}
                     _ => return false,
@@ -907,7 +929,9 @@ fn notice_end(services: &mut Services, ended: isize) {
     }
     match services.updates.ended(ended as usize, now_ms()) {
         Some(AfterEnd::Restart) => start_update_checker(&mut services.updates),
-        Some(AfterEnd::GiveUp) => say(&[b"init: the update checker keeps ending; components are not checked for updates\n"]),
+        Some(AfterEnd::GiveUp) => say(&[
+            b"init: the update checker keeps ending; components are not checked for updates\n",
+        ]),
         None => {}
     }
     match services.display.ended(ended as usize, now_ms()) {

@@ -179,6 +179,11 @@ impl Listing {
 
     /// Reads `folder` again, hiding names that start with `.`.
     pub fn read_folder(&mut self, files: &mut impl Files, folder: &Path) {
+        self.read_folder_showing(files, folder, false);
+    }
+
+    /// Reads `folder` again, with names that start with `.` when `hidden` is true.
+    pub fn read_folder_showing(&mut self, files: &mut impl Files, folder: &Path, hidden: bool) {
         self.clear();
         let mut name = [0u8; 256];
         let mut index = 0;
@@ -193,7 +198,7 @@ impl Listing {
             };
             index += 1;
             let name = &name[..length];
-            if name.first() == Some(&b'.') {
+            if !hidden && name.first() == Some(&b'.') {
                 continue;
             }
             let Some(path) = joined(folder, name) else {
@@ -403,6 +408,9 @@ mod tests {
         assert_eq!(listing.get(5).unwrap().time, 3);
         assert_eq!(listing.find(b"tool"), Some(4));
         assert_eq!(listing.error(), None);
+        listing.read_folder_showing(&mut files, &Path::from(b"/home/root").unwrap(), true);
+        assert_eq!(listing.find(b".hidden"), Some(3));
+        assert_eq!(listing.len(), 7);
         listing.read_folder(&mut files, &Path::from(b"/none").unwrap());
         assert_eq!(listing.error(), Some(Errno::ENOENT));
         assert!(listing.is_empty());

@@ -17,7 +17,6 @@ use eggos_hal::user::UserContext;
 /// Whether the programs are 32-bit, so some calls split their 64-bit values.
 pub const SPLITS_WIDE_VALUES: bool = abi::WORD_BYTES == 4;
 
-/// `mmap2`'s offset unit, whatever the page size.
 const MMAP2_UNIT: u64 = 4096;
 
 /// Whether call `number` passes a 64-bit value in two registers on a 32-bit port.
@@ -102,7 +101,14 @@ fn result<P: Platform>(
         }
         number::MMAP => {
             let [_, length, protection, flags, file, units] = registers.values;
-            let arguments = [fd, length, protection, flags, file, units.wrapping_mul(MMAP2_UNIT)];
+            let arguments = [
+                fd,
+                length,
+                protection,
+                flags,
+                file,
+                units.wrapping_mul(MMAP2_UNIT),
+            ];
             super::memory_call::<P>(process, thread.files(), number::MMAP, arguments)
         }
         number::PREAD64 | number::PWRITE64 => {

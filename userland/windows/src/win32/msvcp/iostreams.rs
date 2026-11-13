@@ -55,7 +55,6 @@ const CLASS_BLANK: i16 = 0x40;
 const CLASS_HEX: i16 = 0x80;
 const CLASS_ALPHA: i16 = 0x100;
 
-/// A static the program reads and writes through pointers.
 #[repr(transparent)]
 struct Shared<T>(UnsafeCell<T>);
 
@@ -71,7 +70,7 @@ impl<T> Shared<T> {
 
 macro_rules! shared_pointer {
     ($static:ident) => {
-        UnsafeCell::raw_get((&raw const $static).cast())
+        UnsafeCell::raw_get(&raw const $static.0)
     };
 }
 
@@ -547,7 +546,12 @@ unsafe fn buffer_call(buffer: *mut Streambuf, slot: usize, arguments: [usize; 3]
     // SAFETY: the caller's duty: a live stream buffer, whose first word is its table.
     let method = unsafe { (*buffer).table.add(slot).read() } as usize;
     // SAFETY: as above: the buffer's own virtual function, called as MSVC calls it.
-    unsafe { call_program(method, [buffer as usize, arguments[0], arguments[1], arguments[2]]) }
+    unsafe {
+        call_program(
+            method,
+            [buffer as usize, arguments[0], arguments[1], arguments[2]],
+        )
+    }
 }
 
 unsafe fn available(next_at: *mut *mut u8, count_at: *mut i32) -> i32 {
@@ -560,7 +564,6 @@ unsafe fn available(next_at: *mut *mut u8, count_at: *mut i32) -> i32 {
     }
 }
 
-/// `sputc`: the put area or `overflow`.
 unsafe fn put_char(buffer: *mut Streambuf, byte: u8) -> i32 {
     // SAFETY: the caller's duty: a live buffer.
     unsafe {
@@ -576,13 +579,17 @@ unsafe fn put_char(buffer: *mut Streambuf, byte: u8) -> i32 {
     }
 }
 
-/// `sputn`, through `xsputn`.
 unsafe fn put_bytes(buffer: *mut Streambuf, bytes: &[u8]) -> i64 {
     // SAFETY: the caller's duty.
-    unsafe { buffer_call(buffer, SLOT_XSPUTN, [bytes.as_ptr() as usize, bytes.len(), 0]) as i64 }
+    unsafe {
+        buffer_call(
+            buffer,
+            SLOT_XSPUTN,
+            [bytes.as_ptr() as usize, bytes.len(), 0],
+        ) as i64
+    }
 }
 
-/// `sgetc` (`take` false) or `sbumpc`.
 unsafe fn get_char(buffer: *mut Streambuf, take: bool) -> i32 {
     // SAFETY: the caller's duty: a live buffer.
     unsafe {
@@ -637,7 +644,6 @@ unsafe fn flush_stream(stream: *mut u8) {
     }
 }
 
-/// An output member's sentry: whether the stream may write, the tied stream flushed first.
 unsafe fn output_ready(stream: *mut u8) -> bool {
     // SAFETY: the caller's duty: a live output stream.
     unsafe {
@@ -733,10 +739,7 @@ unsafe fn write_float(stream: *mut u8, value: f64, long_double: bool) -> *mut u8
         ((*ios).base.format, (*ios).base.precision)
     };
     let spec = stream_format::float_specification(format, long_double);
-    let mut arguments = FloatArguments {
-        precision,
-        value,
-    };
+    let mut arguments = FloatArguments { precision, value };
     let mut out = Collected(Vec::new());
     let dialect = eggos_c_format::Dialect::Windows {
         wide_strings: false,
@@ -926,9 +929,6 @@ unsafe extern "efiapi" fn flush_manipulator(stream: *mut u8) -> *mut u8 {
     unsafe { flush(stream) }
 }
 
-
-/// An input member's sentry (`_Ipfx`): whether the stream may read, the tied stream flushed
-/// and white space skipped unless `no_skip` or the stream says not to.
 unsafe fn input_ready(stream: *mut u8, no_skip: bool) -> bool {
     // SAFETY: the caller's duty: a live input stream.
     unsafe {
@@ -989,7 +989,6 @@ fn accepts(byte: u8, taken: &[u8], base: u32, float: bool) -> bool {
     }
 }
 
-/// Takes the bytes of a number from the stream's buffer, as many as can belong to it.
 unsafe fn take_number(stream: *mut u8, float: bool) -> Option<Vec<u8>> {
     // SAFETY: the caller's duty: a live input stream.
     unsafe {
@@ -1720,8 +1719,9 @@ unsafe extern "efiapi" fn buffer_set_get(
     unsafe {
         *(*this).get_first_at = first;
         *(*this).get_next_at = next;
-        *(*this).get_count_at =
-            last.offset_from(next).clamp(0, i64::from(i32::MAX) as isize) as i32;
+        *(*this).get_count_at = last
+            .offset_from(next)
+            .clamp(0, i64::from(i32::MAX) as isize) as i32;
     }
 }
 
@@ -1730,8 +1730,9 @@ unsafe extern "efiapi" fn buffer_set_put(this: *mut Streambuf, first: *mut u8, l
     unsafe {
         *(*this).put_first_at = first;
         *(*this).put_next_at = first;
-        *(*this).put_count_at =
-            last.offset_from(first).clamp(0, i64::from(i32::MAX) as isize) as i32;
+        *(*this).put_count_at = last
+            .offset_from(first)
+            .clamp(0, i64::from(i32::MAX) as isize) as i32;
     }
 }
 
@@ -2027,10 +2028,22 @@ macro_rules! data {
 
 /// The standard objects and the data the headers import.
 pub(super) const DATA_EXPORTS: &[Export] = &[
-    data!(b"?cout@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A", COUT),
-    data!(b"?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A", CERR),
-    data!(b"?clog@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A", CLOG),
-    data!(b"?cin@std@@3V?$basic_istream@DU?$char_traits@D@std@@@1@A", CIN),
+    data!(
+        b"?cout@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A",
+        COUT
+    ),
+    data!(
+        b"?cerr@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A",
+        CERR
+    ),
+    data!(
+        b"?clog@std@@3V?$basic_ostream@DU?$char_traits@D@std@@@1@A",
+        CLOG
+    ),
+    data!(
+        b"?cin@std@@3V?$basic_istream@DU?$char_traits@D@std@@@1@A",
+        CIN
+    ),
     data!(b"?id@?$ctype@D@std@@2V0locale@2@A", CTYPE_ID),
     data!(b"?_Id_cnt@id@locale@std@@0HA", ID_COUNT),
     data!(b"?_Sync@ios_base@std@@0_NA", SYNC_WITH_STDIO),

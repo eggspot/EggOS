@@ -7,8 +7,8 @@
 
 use crate::frames::{Address, WPA2_PERSONAL_RSN, WPA3_PERSONAL_RSN};
 use crate::kdf::kdf_sha256;
-use eggos_crypto::cmac::cmac;
 use eggos_crypto::aes::Aes;
+use eggos_crypto::cmac::cmac;
 use eggos_crypto::constant_time::equal;
 use eggos_crypto::key_wrap;
 use eggos_crypto::sha1::{hmac_sha1, pbkdf2_hmac_sha1};
@@ -118,8 +118,16 @@ pub fn ptk_for(
         return ptk(pmk, authenticator, supplicant, a_nonce, s_nonce);
     }
     let mut data = [0u8; 6 + 6 + NONCE_BYTES + NONCE_BYTES];
-    let (low, high) = if authenticator <= supplicant { (authenticator, supplicant) } else { (supplicant, authenticator) };
-    let (first, second) = if a_nonce <= s_nonce { (a_nonce, s_nonce) } else { (s_nonce, a_nonce) };
+    let (low, high) = if authenticator <= supplicant {
+        (authenticator, supplicant)
+    } else {
+        (supplicant, authenticator)
+    };
+    let (first, second) = if a_nonce <= s_nonce {
+        (a_nonce, s_nonce)
+    } else {
+        (s_nonce, a_nonce)
+    };
     data[..6].copy_from_slice(&low);
     data[6..12].copy_from_slice(&high);
     data[12..44].copy_from_slice(first);
@@ -186,7 +194,10 @@ pub fn key_frame(frame: &[u8]) -> Option<KeyFrame<'_>> {
     }
     let body = usize::from(u16::from_be_bytes([frame[2], frame[3]]));
     let frame = frame.get(..EAPOL_HEADER_BYTES + body)?;
-    let data_length = usize::from(u16::from_be_bytes([frame[KEY_DATA_LENGTH_AT], frame[KEY_DATA_LENGTH_AT + 1]]));
+    let data_length = usize::from(u16::from_be_bytes([
+        frame[KEY_DATA_LENGTH_AT],
+        frame[KEY_DATA_LENGTH_AT + 1],
+    ]));
     let start = EAPOL_HEADER_BYTES + KEY_FRAME_FIXED_BYTES;
     Some(KeyFrame {
         info: u16::from_be_bytes([frame[KEY_INFO_AT], frame[KEY_INFO_AT + 1]]),
@@ -259,7 +270,8 @@ pub fn write_key_frame_for(
     out[KEY_INFO_AT + 2..KEY_INFO_AT + 4].copy_from_slice(&(TK_BYTES as u16).to_be_bytes());
     out[REPLAY_AT..REPLAY_AT + 8].copy_from_slice(&replay_counter.to_be_bytes());
     out[NONCE_AT..NONCE_AT + NONCE_BYTES].copy_from_slice(nonce);
-    out[KEY_DATA_LENGTH_AT..KEY_DATA_LENGTH_AT + 2].copy_from_slice(&(data.len() as u16).to_be_bytes());
+    out[KEY_DATA_LENGTH_AT..KEY_DATA_LENGTH_AT + 2]
+        .copy_from_slice(&(data.len() as u16).to_be_bytes());
     out[EAPOL_HEADER_BYTES + KEY_FRAME_FIXED_BYTES..length].copy_from_slice(data);
     if let Some(kck) = kck {
         let code = mic_for(akm, kck, &out[..length]);
@@ -315,12 +327,23 @@ pub struct Answer {
 impl Supplicant {
     /// A handshake for station `own` with access point `authenticator`; `s_nonce` must be fresh
     /// random bytes.
-    pub fn new(pmk: [u8; PMK_BYTES], own: Address, authenticator: Address, s_nonce: [u8; NONCE_BYTES]) -> Self {
+    pub fn new(
+        pmk: [u8; PMK_BYTES],
+        own: Address,
+        authenticator: Address,
+        s_nonce: [u8; NONCE_BYTES],
+    ) -> Self {
         Self::for_akm(Akm::Psk, pmk, own, authenticator, s_nonce)
     }
 
     /// A handshake following `akm`, otherwise as [`Self::new`].
-    pub fn for_akm(akm: Akm, pmk: [u8; PMK_BYTES], own: Address, authenticator: Address, s_nonce: [u8; NONCE_BYTES]) -> Self {
+    pub fn for_akm(
+        akm: Akm,
+        pmk: [u8; PMK_BYTES],
+        own: Address,
+        authenticator: Address,
+        s_nonce: [u8; NONCE_BYTES],
+    ) -> Self {
         Self {
             akm,
             pmk,
@@ -355,7 +378,14 @@ impl Supplicant {
         };
         if key.info & KEY_INFO_MIC == 0 {
             self.check_replay(key.replay_counter)?;
-            let ptk = ptk_for(self.akm, &self.pmk, self.authenticator, self.own, &key.nonce, &self.s_nonce);
+            let ptk = ptk_for(
+                self.akm,
+                &self.pmk,
+                self.authenticator,
+                self.own,
+                &key.nonce,
+                &self.s_nonce,
+            );
             let info = self.akm.key_info_version() | KEY_INFO_PAIRWISE | KEY_INFO_MIC;
             answer.length = write_key_frame_for(
                 self.akm,
@@ -373,14 +403,22 @@ impl Supplicant {
         if !equal(&mic_for(self.akm, &ptk.kck, frame), &key.mic) {
             return Err(HandshakeError::BadMic);
         }
-        if key.info & (KEY_INFO_INSTALL | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA) != KEY_INFO_INSTALL | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA {
+        if key.info & (KEY_INFO_INSTALL | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA)
+            != KEY_INFO_INSTALL | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA
+        {
             return Err(HandshakeError::Unexpected);
         }
         self.check_replay(key.replay_counter)?;
         let kek = Aes::new(&ptk.kek).map_err(|_| HandshakeError::BadKeyData)?;
         let mut data = [0u8; 248];
-        let unwrapped = key.data.len().checked_sub(8).filter(|&length| length <= data.len()).ok_or(HandshakeError::BadKeyData)?;
-        key_wrap::unwrap(&kek, key.data, &mut data[..unwrapped]).map_err(|_| HandshakeError::BadKeyData)?;
+        let unwrapped = key
+            .data
+            .len()
+            .checked_sub(8)
+            .filter(|&length| length <= data.len())
+            .ok_or(HandshakeError::BadKeyData)?;
+        key_wrap::unwrap(&kek, key.data, &mut data[..unwrapped])
+            .map_err(|_| HandshakeError::BadKeyData)?;
         let (gtk_index, gtk) = group_key(&data[..unwrapped]).ok_or(HandshakeError::BadKeyData)?;
         let igtk = integrity_group_key(&data[..unwrapped]);
         if self.akm == Akm::Sae && igtk.is_none() {
@@ -395,7 +433,15 @@ impl Supplicant {
         };
         keys.gtk[..gtk.len()].copy_from_slice(gtk);
         let info = self.akm.key_info_version() | KEY_INFO_PAIRWISE | KEY_INFO_MIC | KEY_INFO_SECURE;
-        answer.length = write_key_frame_for(self.akm, &mut answer.frame, info, key.replay_counter, &[0; NONCE_BYTES], &[], Some(&ptk.kck));
+        answer.length = write_key_frame_for(
+            self.akm,
+            &mut answer.frame,
+            info,
+            key.replay_counter,
+            &[0; NONCE_BYTES],
+            &[],
+            Some(&ptk.kck),
+        );
         answer.keys = Some(keys);
         Ok(answer)
     }
@@ -437,8 +483,14 @@ impl Supplicant {
         self.check_replay(key.replay_counter)?;
         let kek = Aes::new(&ptk.kek).map_err(|_| HandshakeError::BadKeyData)?;
         let mut data = [0u8; 248];
-        let unwrapped = key.data.len().checked_sub(8).filter(|&length| length <= data.len()).ok_or(HandshakeError::BadKeyData)?;
-        key_wrap::unwrap(&kek, key.data, &mut data[..unwrapped]).map_err(|_| HandshakeError::BadKeyData)?;
+        let unwrapped = key
+            .data
+            .len()
+            .checked_sub(8)
+            .filter(|&length| length <= data.len())
+            .ok_or(HandshakeError::BadKeyData)?;
+        key_wrap::unwrap(&kek, key.data, &mut data[..unwrapped])
+            .map_err(|_| HandshakeError::BadKeyData)?;
         let (gtk_index, gtk) = group_key(&data[..unwrapped]).ok_or(HandshakeError::BadKeyData)?;
         let mut keys = Keys {
             tk: ptk.tk,
@@ -454,7 +506,15 @@ impl Supplicant {
             keys: None,
         };
         let info = self.akm.key_info_version() | KEY_INFO_MIC | KEY_INFO_SECURE;
-        answer.length = write_key_frame_for(self.akm, &mut answer.frame, info, key.replay_counter, &[0; NONCE_BYTES], &[], Some(&ptk.kck));
+        answer.length = write_key_frame_for(
+            self.akm,
+            &mut answer.frame,
+            info,
+            key.replay_counter,
+            &[0; NONCE_BYTES],
+            &[],
+            Some(&ptk.kck),
+        );
         answer.keys = Some(keys);
         Ok(answer)
     }
@@ -496,7 +556,10 @@ mod tests {
     fn the_ptk_does_not_depend_on_who_is_first() {
         let pmk = [7u8; 32];
         let (a, s) = ([1u8; 32], [2u8; 32]);
-        assert_eq!(ptk(&pmk, AP, STATION, &a, &s), ptk(&pmk, STATION, AP, &s, &a));
+        assert_eq!(
+            ptk(&pmk, AP, STATION, &a, &s),
+            ptk(&pmk, STATION, AP, &s, &a)
+        );
     }
 
     #[test]
@@ -506,26 +569,45 @@ mod tests {
         let s_nonce = [4u8; 32];
         let mut supplicant = Supplicant::new(pmk, STATION, AP, s_nonce);
         let mut message = [0u8; MAX_KEY_FRAME_BYTES];
-        let length = write_key_frame(&mut message, 2 | KEY_INFO_PAIRWISE | KEY_INFO_ACK, 1, &a_nonce, &[], None);
+        let length = write_key_frame(
+            &mut message,
+            2 | KEY_INFO_PAIRWISE | KEY_INFO_ACK,
+            1,
+            &a_nonce,
+            &[],
+            None,
+        );
         let second = supplicant.receive(&message[..length]).unwrap();
         let second_frame = key_frame(&second.frame[..second.length]).unwrap();
         assert_eq!(second_frame.nonce, s_nonce);
         let keys = ptk(&pmk, AP, STATION, &a_nonce, &s_nonce);
-        assert_eq!(mic(&keys.kck, &second.frame[..second.length]), second_frame.mic);
+        assert_eq!(
+            mic(&keys.kck, &second.frame[..second.length]),
+            second_frame.mic
+        );
         let gtk = [0x55u8; 16];
         let mut kde = vec![KDE_TYPE, 22, 0x00, 0x0f, 0xac, 1, 1, 0];
         kde.extend_from_slice(&gtk);
         kde.resize(24, 0);
         let mut wrapped = [0u8; 32];
         key_wrap::wrap(&Aes::new(&keys.kek).unwrap(), &kde, &mut wrapped).unwrap();
-        let info = 2 | KEY_INFO_PAIRWISE | KEY_INFO_ACK | KEY_INFO_INSTALL | KEY_INFO_MIC | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA;
+        let info = 2
+            | KEY_INFO_PAIRWISE
+            | KEY_INFO_ACK
+            | KEY_INFO_INSTALL
+            | KEY_INFO_MIC
+            | KEY_INFO_SECURE
+            | KEY_INFO_ENCRYPTED_DATA;
         let length = write_key_frame(&mut message, info, 2, &a_nonce, &wrapped, Some(&keys.kck));
         let fourth = supplicant.receive(&message[..length]).unwrap();
         let installed = fourth.keys.unwrap();
         assert_eq!(installed.tk, keys.tk);
         assert_eq!(&installed.gtk[..installed.gtk_bytes], &gtk);
         assert_eq!(installed.gtk_index, 1);
-        assert_eq!(supplicant.receive(&message[..length]).unwrap_err(), HandshakeError::Replayed);
+        assert_eq!(
+            supplicant.receive(&message[..length]).unwrap_err(),
+            HandshakeError::Replayed
+        );
     }
 
     #[test]
@@ -534,13 +616,24 @@ mod tests {
         let (a_nonce, s_nonce) = ([3u8; 32], [4u8; 32]);
         let mut supplicant = Supplicant::for_akm(Akm::Sae, pmk, STATION, AP, s_nonce);
         let mut message = [0u8; MAX_KEY_FRAME_BYTES];
-        let length = write_key_frame_for(Akm::Sae, &mut message, KEY_INFO_PAIRWISE | KEY_INFO_ACK, 1, &a_nonce, &[], None);
+        let length = write_key_frame_for(
+            Akm::Sae,
+            &mut message,
+            KEY_INFO_PAIRWISE | KEY_INFO_ACK,
+            1,
+            &a_nonce,
+            &[],
+            None,
+        );
         let second = supplicant.receive(&message[..length]).unwrap();
         let keys = ptk_for(Akm::Sae, &pmk, AP, STATION, &a_nonce, &s_nonce);
         assert_ne!(keys, ptk(&pmk, AP, STATION, &a_nonce, &s_nonce));
         let second_frame = key_frame(&second.frame[..second.length]).unwrap();
         assert_eq!(second_frame.info & 7, 0);
-        assert_eq!(mic_for(Akm::Sae, &keys.kck, &second.frame[..second.length]), second_frame.mic);
+        assert_eq!(
+            mic_for(Akm::Sae, &keys.kck, &second.frame[..second.length]),
+            second_frame.mic
+        );
         let mut kde = vec![KDE_TYPE, 22, 0x00, 0x0f, 0xac, 1, 1, 0];
         kde.extend_from_slice(&[0x55u8; 16]);
         kde.extend_from_slice(&[KDE_TYPE, 28, 0x00, 0x0f, 0xac, 9, 4, 0, 0, 0, 0, 0, 0, 0]);
@@ -548,9 +641,26 @@ mod tests {
         kde.resize(56, 0);
         let mut wrapped = [0u8; 64];
         key_wrap::wrap(&Aes::new(&keys.kek).unwrap(), &kde, &mut wrapped).unwrap();
-        let info = KEY_INFO_PAIRWISE | KEY_INFO_ACK | KEY_INFO_INSTALL | KEY_INFO_MIC | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA;
-        let length = write_key_frame_for(Akm::Sae, &mut message, info, 2, &a_nonce, &wrapped, Some(&keys.kck));
-        let installed = supplicant.receive(&message[..length]).unwrap().keys.unwrap();
+        let info = KEY_INFO_PAIRWISE
+            | KEY_INFO_ACK
+            | KEY_INFO_INSTALL
+            | KEY_INFO_MIC
+            | KEY_INFO_SECURE
+            | KEY_INFO_ENCRYPTED_DATA;
+        let length = write_key_frame_for(
+            Akm::Sae,
+            &mut message,
+            info,
+            2,
+            &a_nonce,
+            &wrapped,
+            Some(&keys.kck),
+        );
+        let installed = supplicant
+            .receive(&message[..length])
+            .unwrap()
+            .keys
+            .unwrap();
         assert_eq!(installed.igtk, Some(([0x66u8; 16], 4)));
     }
 
@@ -558,11 +668,34 @@ mod tests {
     fn a_wrong_passphrase_fails_message_3_s_mic() {
         let mut supplicant = Supplicant::new([1u8; 32], STATION, AP, [4u8; 32]);
         let mut message = [0u8; MAX_KEY_FRAME_BYTES];
-        let length = write_key_frame(&mut message, 2 | KEY_INFO_PAIRWISE | KEY_INFO_ACK, 1, &[3u8; 32], &[], None);
+        let length = write_key_frame(
+            &mut message,
+            2 | KEY_INFO_PAIRWISE | KEY_INFO_ACK,
+            1,
+            &[3u8; 32],
+            &[],
+            None,
+        );
         supplicant.receive(&message[..length]).unwrap();
         let other = ptk(&[2u8; 32], AP, STATION, &[3u8; 32], &[4u8; 32]);
-        let info = 2 | KEY_INFO_PAIRWISE | KEY_INFO_ACK | KEY_INFO_INSTALL | KEY_INFO_MIC | KEY_INFO_SECURE | KEY_INFO_ENCRYPTED_DATA;
-        let length = write_key_frame(&mut message, info, 2, &[3u8; 32], &[0; 24], Some(&other.kck));
-        assert_eq!(supplicant.receive(&message[..length]).unwrap_err(), HandshakeError::BadMic);
+        let info = 2
+            | KEY_INFO_PAIRWISE
+            | KEY_INFO_ACK
+            | KEY_INFO_INSTALL
+            | KEY_INFO_MIC
+            | KEY_INFO_SECURE
+            | KEY_INFO_ENCRYPTED_DATA;
+        let length = write_key_frame(
+            &mut message,
+            info,
+            2,
+            &[3u8; 32],
+            &[0; 24],
+            Some(&other.kck),
+        );
+        assert_eq!(
+            supplicant.receive(&message[..length]).unwrap_err(),
+            HandshakeError::BadMic
+        );
     }
 }

@@ -217,7 +217,10 @@ impl MenuAction {
         };
         match glyphs > MENU_LABEL_CAPACITY {
             true => {
-                let end = base.char_indices().nth(MENU_LABEL_CUT).map_or(base.len(), |(at, _)| at);
+                let end = base
+                    .char_indices()
+                    .nth(MENU_LABEL_CUT)
+                    .map_or(base.len(), |(at, _)| at);
                 push(&base[..end]);
                 push(ASKS_FIRST_MARK);
             }
@@ -227,7 +230,8 @@ impl MenuAction {
             }
         }
         let mut name = [0; manifest::actions::NAME_CAPACITY];
-        name.get_mut(..action.name.len())?.copy_from_slice(action.name);
+        name.get_mut(..action.name.len())?
+            .copy_from_slice(action.name);
         Some(Self {
             name,
             name_length: action.name.len() as u8,
@@ -510,7 +514,11 @@ impl Catalogue {
         let name = installed.name().as_bytes();
         match action {
             Some(chosen) => {
-                let action = installed.actions.get(usize::from(chosen)).copied().flatten()?;
+                let action = installed
+                    .actions
+                    .get(usize::from(chosen))
+                    .copied()
+                    .flatten()?;
                 Command::program(APP_PROGRAM, &[b"do", b"--window", name, action.name()])
             }
             None => Command::program(APP_PROGRAM, &[b"do", b"--window", name]),

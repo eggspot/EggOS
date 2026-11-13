@@ -171,7 +171,8 @@ impl<R: RegisterIo> I8042<R> {
         if !self.found.keyboard {
             return true;
         }
-        let byte = u8::from(lights.scroll) | (u8::from(lights.num) << 1) | (u8::from(lights.caps) << 2);
+        let byte =
+            u8::from(lights.scroll) | (u8::from(lights.num) << 1) | (u8::from(lights.caps) << 2);
         self.to_keyboard(KEYBOARD_SET_LIGHTS) && self.to_keyboard(byte)
     }
 }
@@ -307,8 +308,16 @@ impl MousePackets {
         if flags & OVERFLOW == 0 {
             let dx = i32::from(x) - if flags & X_NEGATIVE != 0 { 256 } else { 0 };
             let dy = i32::from(y) - if flags & Y_NEGATIVE != 0 { 256 } else { 0 };
-            let dz = if self.wheel { i32::from((z << 4) as i8 >> 4) } else { 0 };
-            for (code, value) in [(relative::X, dx), (relative::Y, -dy), (relative::WHEEL, -dz)] {
+            let dz = if self.wheel {
+                i32::from((z << 4) as i8 >> 4)
+            } else {
+                0
+            };
+            for (code, value) in [
+                (relative::X, dx),
+                (relative::Y, -dy),
+                (relative::WHEEL, -dz),
+            ] {
                 if value != 0 {
                     event(RawEvent {
                         kind: event_type::REL,
@@ -336,13 +345,19 @@ mod tests {
         for &byte in bytes {
             decoder.byte(byte, &mut |event| events.push(event));
         }
-        events.into_iter().filter(|event| event.kind == event_type::KEY).collect()
+        events
+            .into_iter()
+            .filter(|event| event.kind == event_type::KEY)
+            .collect()
     }
 
     #[test]
     fn set_1_codes_are_linux_key_codes_and_e0_ones_are_mapped() {
         let events = decode(&[0x1e, 0x9e, 0xe0, 0x48, 0xe0, 0xc8]);
-        let codes: Vec<_> = events.iter().map(|event| (event.code, event.value)).collect();
+        let codes: Vec<_> = events
+            .iter()
+            .map(|event| (event.code, event.value))
+            .collect();
         assert_eq!(codes, vec![(30, 1), (30, 0), (103, 1), (103, 0)]);
     }
 
@@ -380,6 +395,12 @@ mod tests {
         for byte in [0x00, 0x08, 1, 1] {
             mouse.byte(byte, &mut |event| events.push(event));
         }
-        assert_eq!(events.iter().filter(|event| event.kind == event_type::REL).count(), 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == event_type::REL)
+                .count(),
+            2
+        );
     }
 }

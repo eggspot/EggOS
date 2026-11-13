@@ -3,17 +3,15 @@
 //! (PE 1) whose DMA bypasses translation at bus address `1 << 59` plus the physical address,
 //! and MSIs are the PHB's XIVE sources (`ibm,opal-msi-ranges`).
 
-use crate::atomic::AtomicU64;
 use super::opal;
+use crate::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 use eggos_drivers::pci::{Address, ConfigSpace};
 
 const PHB_COMPATIBLE: [&[u8]; 2] = [b"ibm,ioda3-phb", b"ibm,ioda2-phb"];
-/// The PE every function joins.
 const PE: u64 = 1;
 /// Where PHB4's bypass window starts in bus addresses.
 pub(super) const BYPASS_BASE: u64 = 1 << 59;
-/// The physical memory the bypass window covers.
 const BYPASS_SIZE: u64 = 1 << 40;
 
 static PHB: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -31,7 +29,9 @@ fn be64(bytes: &[u8]) -> Option<u64> {
 }
 
 fn be32(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(bytes.get(at * 4..at * 4 + 4)?.try_into().ok()?))
+    Some(u32::from_be_bytes(
+        bytes.get(at * 4..at * 4 + 4)?.try_into().ok()?,
+    ))
 }
 
 /// The first PHB's MSI range (`ibm,opal-msi-ranges`: first source, count).
@@ -52,11 +52,17 @@ fn rid(address: Address) -> u64 {
 
 impl ConfigSpace for OpalConfig {
     fn read32(&self, address: Address, offset: u16) -> u32 {
-        opal::pci_config_read32(PHB.load(Ordering::Relaxed), rid(address), u64::from(offset)).unwrap_or(u32::MAX)
+        opal::pci_config_read32(PHB.load(Ordering::Relaxed), rid(address), u64::from(offset))
+            .unwrap_or(u32::MAX)
     }
 
     fn write32(&self, address: Address, offset: u16, value: u32) {
-        opal::pci_config_write32(PHB.load(Ordering::Relaxed), rid(address), u64::from(offset), value);
+        opal::pci_config_write32(
+            PHB.load(Ordering::Relaxed),
+            rid(address),
+            u64::from(offset),
+            value,
+        );
     }
 }
 

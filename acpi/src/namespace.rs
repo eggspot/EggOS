@@ -49,7 +49,10 @@ impl Namespace {
             (b"_SB_", Object::Device),
             (b"_SI_", Object::Scope),
             (b"_TZ_", Object::Device),
-            (b"_OSI", Object::NativeMethod(NativeMethod::OperatingSystemInterface)),
+            (
+                b"_OSI",
+                Object::NativeMethod(NativeMethod::OperatingSystemInterface),
+            ),
             (b"_OS_", Object::String(OPERATING_SYSTEM_NAME.to_vec())),
             (b"_REV", Object::Integer(REVISION)),
             (
@@ -71,9 +74,10 @@ impl Namespace {
     /// unless both are scopes of the same kind, which a later table may name again.
     pub fn add(&mut self, path: Path, object: Object) -> Result<NodeId, Error> {
         if let Some(&existing) = self.by_path.get(&path) {
-            let same_scope = object.is_scope() && self.get(existing).is_some_and(|held| {
-                core::mem::discriminant(held) == core::mem::discriminant(&object)
-            });
+            let same_scope = object.is_scope()
+                && self.get(existing).is_some_and(|held| {
+                    core::mem::discriminant(held) == core::mem::discriminant(&object)
+                });
             return match same_scope {
                 true => Ok(existing),
                 false => Err(Error::AlreadyExists),
@@ -116,7 +120,10 @@ impl Namespace {
     }
 
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut Object> {
-        self.nodes.get_mut(id.0)?.as_mut().map(|node| &mut node.object)
+        self.nodes
+            .get_mut(id.0)?
+            .as_mut()
+            .map(|node| &mut node.object)
     }
 
     /// The path the node was made at.

@@ -679,8 +679,13 @@ impl Server {
                         let mut present: [(&'static str, bool); 8] = [("", false); 8];
                         let mut known = 0;
                         for file in tools::TOOLS.iter().filter_map(|tool| tool.needs) {
-                            if known < present.len() && !present[..known].iter().any(|(seen, _)| *seen == file) {
-                                present[known] = (file, system.reaches_file(file));
+                            let seen_before = present
+                                .get(..known)
+                                .unwrap_or_default()
+                                .iter()
+                                .any(|(seen, _)| *seen == file);
+                            if !seen_before && let Some(slot) = present.get_mut(known) {
+                                *slot = (file, system.reaches_file(file));
                                 known += 1;
                             }
                         }
@@ -688,8 +693,16 @@ impl Server {
                         rpc::write_result(out, id, |out| {
                             tools::write_list(
                                 out,
-                                &mut |file| present[..known].iter().any(|(seen, here)| *seen == file && *here),
-                                &mut |out| crate::app_actions::write_tools(out, system, &mut actions_file),
+                                &mut |file| {
+                                    present
+                                        .get(..known)
+                                        .unwrap_or_default()
+                                        .iter()
+                                        .any(|(seen, here)| *seen == file && *here)
+                                },
+                                &mut |out| {
+                                    crate::app_actions::write_tools(out, system, &mut actions_file)
+                                },
                             )
                         })
                     }
@@ -1139,7 +1152,8 @@ impl Server {
                         .map(|object| object.text());
                     let mut redirected = [0u8; 8192];
                     let length = crate::app_actions::redirected(&found, arguments, &mut redirected);
-                    if let Ok(parsed) = crate::json::parse(&redirected[..length])
+                    if let Ok(parsed) =
+                        crate::json::parse(redirected.get(..length).unwrap_or_default())
                         && let Value::Object(object) = parsed.value
                     {
                         self.call(id, Some(object), nested_duplicate, system, scratch, out);
@@ -2158,7 +2172,10 @@ impl Server {
         if let Some(source) = arguments::source_text(&prepared.checked, buffers.content) {
             push_word(&mut words, &mut count, source);
         }
-        if tool.kind == Kind::Run {
+        if matches!(
+            tool.kind,
+            Kind::Run | Kind::WifiConnect | Kind::AppDo | Kind::AppDoConfirmed
+        ) {
             for word in prepared.checked.words.each(buffers.words) {
                 push_word(&mut words, &mut count, word);
             }
@@ -3814,6 +3831,25 @@ fn write_audit_arguments(
     if tool.kind == Kind::FileRemove {
         writer.key("recursive");
         writer.bool(checked.recursive);
+    }
+    if tool.kind == Kind::WifiConnect {
+        let mut words = checked.words.each(scratch.words).peekable();
+        let hidden = words.next_if_eq(&"--hidden").is_some();
+        words.next_if_eq(&"--");
+        writer.key("ssid");
+        shown_string(&mut writer, words.next().unwrap_or(""), cut);
+        writer.key("hidden");
+        writer.bool(hidden);
+        writer.key("passphrase");
+        writer.bool(words.next().is_some());
+    }
+    if matches!(tool.kind, Kind::AppDo | Kind::AppDoConfirmed) {
+        writer.key("command");
+        writer.begin_array();
+        for word in checked.words.each(scratch.words) {
+            shown_string(&mut writer, word, cut);
+        }
+        writer.end_array();
     }
     if tool.kind == Kind::FolderCreate {
         writer.key("parents");

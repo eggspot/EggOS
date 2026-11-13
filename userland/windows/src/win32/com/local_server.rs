@@ -27,6 +27,7 @@ const DISP_E_TYPEMISMATCH: HResult = 0x8002_0005_u32 as i32;
 const DISP_E_BADPARAMCOUNT: HResult = 0x8002_000e_u32 as i32;
 const RPC_E_DISCONNECTED: HResult = 0x8001_0108_u32 as i32;
 const E_NOTIMPL: HResult = 0x8000_4001_u32 as i32;
+static NO_INTERFACE: Guid = guid::NULL;
 const SLOT_CREATE_INSTANCE: usize = 3;
 const SLOT_GET_IDS_OF_NAMES: usize = 5;
 const SLOT_INVOKE: usize = 6;
@@ -42,8 +43,7 @@ const AF_UNIX: usize = 1;
 const SOCK_STREAM: usize = 1;
 
 /// The `IClassFactory` interface's id.
-pub(super) const CLASS_FACTORY: Guid =
-    Guid::new(0x0000_0001, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
+pub(super) const CLASS_FACTORY: Guid = Guid::new(0x0000_0001, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
 
 #[derive(Debug, Clone, Copy)]
 struct Registration {
@@ -167,7 +167,9 @@ pub(super) unsafe extern "efiapi" fn co_register_class_object(
 /// `CoRevokeClassObject`.
 pub(super) extern "efiapi" fn co_revoke_class_object(cookie: u32) -> HResult {
     let found = CLASSES.with(|classes| {
-        let at = classes.iter().position(|registered| registered.cookie == cookie)?;
+        let at = classes
+            .iter()
+            .position(|registered| registered.cookie == cookie)?;
         Some(classes.remove(at))
     });
     let Some(registration) = found else {
@@ -196,7 +198,9 @@ pub(super) extern "efiapi" fn co_resume_class_objects() -> HResult {
     for (cookie, class) in waiting {
         let listener = listen_on(&class);
         CLASSES.with(|classes| {
-            let found = classes.iter_mut().find(|registered| registered.cookie == cookie);
+            let found = classes
+                .iter_mut()
+                .find(|registered| registered.cookie == cookie);
             if let Some(registered) = found {
                 registered.listener = listener;
                 registered.armed = listener.is_some();
@@ -387,7 +391,9 @@ fn accept_one(cookie: u32, listener: usize) {
         return;
     };
     let found = CLASSES.with(|classes| {
-        let registered = classes.iter().find(|registered| registered.cookie == cookie)?;
+        let registered = classes
+            .iter()
+            .find(|registered| registered.cookie == cookie)?;
         Some((registered.single_use, registered.class, registered.thread))
     });
     let Some((single_use, class, thread)) = found else {
@@ -396,7 +402,9 @@ fn accept_one(cookie: u32, listener: usize) {
     };
     if single_use {
         CLASSES.with(|classes| {
-            let found = classes.iter_mut().find(|registered| registered.cookie == cookie);
+            let found = classes
+                .iter_mut()
+                .find(|registered| registered.cookie == cookie);
             if let Some(registered) = found {
                 registered.listener = None;
                 registered.armed = false;
@@ -417,7 +425,9 @@ fn accept_one(cookie: u32, listener: usize) {
 
 fn close_connection(fd: usize) {
     let objects = CONNECTIONS.with(|connections| {
-        let at = connections.iter().position(|connection| connection.fd == fd)?;
+        let at = connections
+            .iter()
+            .position(|connection| connection.fd == fd)?;
         Some(connections.remove(at).objects)
     });
     let _ = linux::close(fd);
@@ -430,8 +440,13 @@ fn close_connection(fd: usize) {
 fn hand_out(fd: usize, object: usize) -> u32 {
     CONNECTIONS
         .with(|connections| {
-            let connection = connections.iter_mut().find(|connection| connection.fd == fd)?;
-            let known = connection.objects.iter_mut().find(|entry| entry.object == object);
+            let connection = connections
+                .iter_mut()
+                .find(|connection| connection.fd == fd)?;
+            let known = connection
+                .objects
+                .iter_mut()
+                .find(|entry| entry.object == object);
             if let Some(entry) = known {
                 entry.handed_out += 1;
                 return Some((entry.id, true));
@@ -527,7 +542,7 @@ fn numbers_of_names(fd: usize, object: u32, locale: u32, names: &[Vec<u16>]) -> 
     let mut numbers = alloc::vec![0i32; names.len()];
     let arguments = [
         target,
-        &raw const guid::NULL as usize,
+        &raw const NO_INTERFACE as usize,
         pointers.as_ptr() as usize,
         names.len(),
         locale as usize,
@@ -679,7 +694,7 @@ fn invoke(
     let call = [
         target,
         member as u32 as usize,
-        &raw const guid::NULL as usize,
+        &raw const NO_INTERFACE as usize,
         locale as usize,
         usize::from(flags),
         parameters.as_ptr() as usize,
@@ -714,8 +729,13 @@ fn invoke(
 
 fn release(fd: usize, object: u32) -> Vec<u8> {
     let gone = CONNECTIONS.with(|connections| {
-        let connection = connections.iter_mut().find(|connection| connection.fd == fd)?;
-        let at = connection.objects.iter().position(|entry| entry.id == object)?;
+        let connection = connections
+            .iter_mut()
+            .find(|connection| connection.fd == fd)?;
+        let at = connection
+            .objects
+            .iter()
+            .position(|entry| entry.id == object)?;
         let entry = &mut connection.objects[at];
         entry.handed_out -= 1;
         match entry.handed_out {

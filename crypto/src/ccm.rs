@@ -23,7 +23,12 @@ fn counter_block(nonce: &[u8; NONCE_BYTES], counter: u16) -> [u8; BLOCK_BYTES] {
     block
 }
 
-fn authenticate(cipher: &Aes, nonce: &[u8; NONCE_BYTES], aad: &[u8], data: &[u8]) -> [u8; BLOCK_BYTES] {
+fn authenticate(
+    cipher: &Aes,
+    nonce: &[u8; NONCE_BYTES],
+    aad: &[u8],
+    data: &[u8],
+) -> [u8; BLOCK_BYTES] {
     let mut mac = [0u8; BLOCK_BYTES];
     let adata = if aad.is_empty() { 0 } else { 0x40 };
     mac[0] = adata | ((((TAG_BYTES - 2) / 2) as u8) << 3) | (LENGTH_BYTES - 1) as u8;
@@ -66,7 +71,12 @@ fn tag_of(cipher: &Aes, nonce: &[u8; NONCE_BYTES], mac: &[u8; BLOCK_BYTES]) -> [
 }
 
 /// Encrypts `data` in place and returns its tag over `aad` and `data`. `data` is at most 64 KiB.
-pub fn seal(cipher: &Aes, nonce: &[u8; NONCE_BYTES], aad: &[u8], data: &mut [u8]) -> [u8; TAG_BYTES] {
+pub fn seal(
+    cipher: &Aes,
+    nonce: &[u8; NONCE_BYTES],
+    aad: &[u8],
+    data: &mut [u8],
+) -> [u8; TAG_BYTES] {
     let mac = authenticate(cipher, nonce, aad, data);
     apply_keystream(cipher, nonce, data);
     tag_of(cipher, nonce, &mac)
@@ -98,7 +108,9 @@ mod tests {
     fn rfc_3610_packet_vector_1() {
         let key: [u8; 16] = core::array::from_fn(|index| 0xc0 + index as u8);
         let cipher = Aes::new(&key).unwrap();
-        let nonce = [0x00, 0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5];
+        let nonce = [
+            0x00, 0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5,
+        ];
         let aad: [u8; 8] = core::array::from_fn(|index| index as u8);
         let mut data: [u8; 23] = core::array::from_fn(|index| 8 + index as u8);
         let plain = data;

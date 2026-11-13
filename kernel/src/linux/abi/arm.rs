@@ -435,9 +435,8 @@ pub mod signal_frame {
     }
 
     pub fn parse(frame: &[u8; READ], _current: &UserRegisters) -> Option<Saved> {
-        let u32_at = |at: usize| {
-            u64::from(u32::from_ne_bytes(frame[at..at + 4].try_into().unwrap()))
-        };
+        let u32_at =
+            |at: usize| u64::from(u32::from_ne_bytes(frame[at..at + 4].try_into().unwrap()));
         let mut r = [0; 15];
         for (index, value) in r.iter_mut().enumerate() {
             *value = u32_at(REGISTERS + index * 4);
@@ -500,9 +499,7 @@ pub mod fault {
                 let reported = match status {
                     STATUS_ALIGNMENT => (signal::SIGBUS, code::BUS_ADRALN, address),
                     STATUS_DEBUG => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
-                    status if external_abort(status) => {
-                        (signal::SIGBUS, code::BUS_OBJERR, address)
-                    }
+                    status if external_abort(status) => (signal::SIGBUS, code::BUS_OBJERR, address),
                     _ => segv(address),
                 };
                 let trap = Trap {

@@ -3,11 +3,12 @@
 //! own boot parameters, D313), the HAL describes the machine in one, so the kernel's discovery
 //! (memory, CPUs, devices, PCI) reads it as any other.
 
-use super::{FDT_BEGIN_NODE, FDT_END, FDT_END_NODE, FDT_PROP, HEADER_LENGTH, MAGIC, SUPPORTED_VERSION};
+use super::{
+    FDT_BEGIN_NODE, FDT_END, FDT_END_NODE, FDT_PROP, HEADER_LENGTH, MAGIC, SUPPORTED_VERSION,
+};
 
 /// The most bytes of property names one tree holds.
 pub const STRINGS_CAPACITY: usize = 512;
-/// One empty memory-reservation entry ends the block.
 const RESERVATIONS_LENGTH: usize = 16;
 const LAST_COMPATIBLE_VERSION: u32 = 16;
 
@@ -221,7 +222,10 @@ mod tests {
     fn a_tree_too_large_for_the_buffer_fails() {
         let mut buffer = [0u8; 64];
         let mut writer = Writer::new(&mut buffer);
-        writer.begin(b"").string(b"model", b"a name longer than the buffer can hold").end();
+        writer
+            .begin(b"")
+            .string(b"model", b"a name longer than the buffer can hold")
+            .end();
         assert_eq!(writer.finish(), None);
     }
 }

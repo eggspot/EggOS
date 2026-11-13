@@ -28,11 +28,12 @@ use eggos_drivers::desktop::protocol;
 use eggos_drivers::desktop::protocol::event as record_kind;
 use eggos_drivers::desktop::protocol::{
     ELEMENT_TEXT_CAPACITY, EVENT_SIZE, EventRecord, EventSink, MAX_COMMIT_RECTS, MAX_TREE_BYTES,
-    MENU_POOL_CAPACITY, NO_GPU_BUFFER, QUERY_ANSWER_MS, Request, TITLE_CAPACITY, WindowError, act_request,
-    capture_reply, create_reply, desktop_action, element_action, get_clipboard_reply, get_form_reply,
-    get_menu_reply, get_tree_reply, input_outcome, keyboard_flags, keyboard_layout_reply,
-    list_desktops_reply, list_reply, placement_reply, put_double_word, put_word, query_kind,
-    read_query_reply, request, send_input_reply, set_size_reply, size, tree_answer,
+    MENU_POOL_CAPACITY, NO_GPU_BUFFER, QUERY_ANSWER_MS, Request, TITLE_CAPACITY, WindowError,
+    act_request, capture_reply, create_reply, desktop_action, element_action, get_clipboard_reply,
+    get_form_reply, get_menu_reply, get_tree_reply, input_outcome, keyboard_flags,
+    keyboard_layout_reply, list_desktops_reply, list_reply, placement_reply, put_double_word,
+    put_word, query_kind, read_query_reply, request, send_input_reply, set_size_reply, size,
+    tree_answer,
 };
 use eggos_drivers::desktop::{Desktop, Injected, InjectedInput, ListedWindow, Profile, WindowId};
 use eggos_drivers::display::Damage;
@@ -141,7 +142,9 @@ pub fn ioctl<P: Platform>(
     if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
     }
-    if matches!(request, Request::OpenApp { .. } | Request::GetLaunch { .. }) && !may_open_apps(process) {
+    if matches!(request, Request::OpenApp { .. } | Request::GetLaunch { .. })
+        && !may_open_apps(process)
+    {
         return Err(Errno::EPERM);
     }
     if matches!(request, Request::TypeInTerminal { .. }) && !may_type_in_terminal(process) {
@@ -513,8 +516,8 @@ pub fn ioctl<P: Platform>(
                     process
                         .read_user_memory(address, &mut bytes)
                         .map_err(|_| Errno::EFAULT)?;
-                    for (pixel, word) in image.iter_mut().zip(bytes.chunks_exact(4)) {
-                        *pixel = u32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
+                    for (pixel, word) in image.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                        *pixel = u32::from_ne_bytes(*word);
                     }
                     Some(&image)
                 }
@@ -556,14 +559,9 @@ pub fn ioctl<P: Platform>(
                     let FileKind::GpuBuffer(gpu) = file.kind() else {
                         return Err(Errno::EINVAL);
                     };
-                    let picture = GpuPicture::new(
-                        Arc::clone(gpu),
-                        width,
-                        height,
-                        stride,
-                        u64::from(offset),
-                    )
-                    .ok_or(Errno::EINVAL)?;
+                    let picture =
+                        GpuPicture::new(Arc::clone(gpu), width, height, stride, u64::from(offset))
+                            .ok_or(Errno::EINVAL)?;
                     gpu.wait::<P>(false).map_err(|_| Errno::EIO)?;
                     Some(Arc::new(picture))
                 }
@@ -577,16 +575,23 @@ pub fn ioctl<P: Platform>(
             })
             .ok_or(Errno::ENXIO)?
             .ok_or(Errno::EINVAL)?;
-            let whole = [eggos_drivers::display::Rect::new(0, 0, shown_width, shown_height)];
+            let whole = [eggos_drivers::display::Rect::new(
+                0,
+                0,
+                shown_width,
+                shown_height,
+            )];
             on_windows::<P, _>(|desktop, _, damage, events| {
                 desktop.commit(client, window, &whole, damage, events)
             })?;
         }
-        Request::SetRotation { setting } => match crate::terminal::set_rotation_setting::<P>(setting) {
-            Ok(()) => {}
-            Err(crate::terminal::RotationRefused::NoSuchValue) => return Err(Errno::EINVAL),
-            Err(crate::terminal::RotationRefused::NoMemory) => return Err(Errno::ENOMEM),
-        },
+        Request::SetRotation { setting } => {
+            match crate::terminal::set_rotation_setting::<P>(setting) {
+                Ok(()) => {}
+                Err(crate::terminal::RotationRefused::NoSuchValue) => return Err(Errno::EINVAL),
+                Err(crate::terminal::RotationRefused::NoMemory) => return Err(Errno::ENOMEM),
+            }
+        }
         Request::BackUnused { window } => {
             on_windows::<P, _>(|desktop, _, damage, events| {
                 desktop.back_unused(client, window, damage, events);
@@ -627,7 +632,8 @@ pub fn ioctl<P: Platform>(
                 match action {
                     on_screen_keyboard::SHOW => desktop
                         .show_on_screen_keyboard_by_request(damage, events)
-                        .map_err(|()| WindowError::Unsupported)?,
+                        .then_some(())
+                        .ok_or(WindowError::Unsupported)?,
                     on_screen_keyboard::HIDE => desktop.hide_on_screen_keyboard(damage, events),
                     _ => {}
                 }
@@ -635,7 +641,10 @@ pub fn ioctl<P: Platform>(
             })?;
             put_word(bytes, on_screen_keyboard::SHOWN, u32::from(panel.is_some()));
             let panel = panel.unwrap_or_default();
-            for (index, value) in [panel.x, panel.y, panel.width, panel.height].into_iter().enumerate() {
+            for (index, value) in [panel.x, panel.y, panel.width, panel.height]
+                .into_iter()
+                .enumerate()
+            {
                 put_word(bytes, on_screen_keyboard::PANEL + 4 * index, value);
             }
             process
@@ -798,7 +807,8 @@ pub fn ioctl<P: Platform>(
             let mut reply = [0u8; eggos_drivers::desktop::protocol::size::GET_LAUNCH];
             put_word(&mut reply, get_launch_reply::KIND, kind);
             put_word(&mut reply, get_launch_reply::LENGTH, command.len() as u32);
-            reply[get_launch_reply::COMMAND..get_launch_reply::COMMAND + command.len()].copy_from_slice(command);
+            reply[get_launch_reply::COMMAND..get_launch_reply::COMMAND + command.len()]
+                .copy_from_slice(command);
             process
                 .write_user_memory(argument, &reply)
                 .map_err(|_| Errno::EFAULT)?;

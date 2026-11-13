@@ -25,7 +25,7 @@ use eggos_toolkit::widget::{CONTROL_HEIGHT, Kind, Length, PROGRESS_DONE, Place};
 pub const SIZE: (u32, u32) = (480, 240);
 /// The widgets one screen of the window holds at most: Settings' capacity, so the program
 /// that serves both windows instantiates one widget tree type.
-pub const CAPACITY: usize = 341;
+pub const CAPACITY: usize = 391;
 /// The window's title while installing.
 pub const INSTALL_TITLE: &str = "Install";
 /// The window's title while uninstalling.
@@ -283,7 +283,7 @@ pub fn wrap<'a>(words: &'a str, width: i32, lines: &mut [&'a str]) -> usize {
 /// One screen of the installer's window. See the module documentation.
 #[derive(Debug, Clone)]
 pub struct Dialog {
-    tree: WidgetTree<CAPACITY>,
+    tree: alloc::boxed::Box<WidgetTree<CAPACITY>>,
     root: Option<WidgetId>,
     buttons: [Option<(WidgetId, Request)>; MAX_BUTTONS],
     escape: Request,
@@ -295,7 +295,7 @@ pub struct Dialog {
 
 impl Dialog {
     fn new(escape: Request) -> Self {
-        let mut tree = WidgetTree::new();
+        let mut tree = alloc::boxed::Box::new(WidgetTree::new());
         let root = tree.add(None, Place::fill(), Kind::panel(Token::WindowBackground));
         Self {
             tree,

@@ -456,6 +456,7 @@ fn field_of(fields: &TextFieldFields) -> Field {
         scroll: fields.scroll,
         placeholder: placeholder_text(fields),
         escape: Escape::Clear,
+        masked: false,
     }
 }
 

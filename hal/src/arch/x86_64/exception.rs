@@ -1398,7 +1398,6 @@ x86_64_user_test_end:
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
     clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
-    // `uc_mcontext.r12` in the ucontext: the sigcontext at 40, r8 to r15 from its start.
     saved_r12 = const 40 + 4 * 8,
     saved_fpstate = const 40 + 184,
     fxsave_mxcsr = const 24,
@@ -1411,7 +1410,6 @@ x86_64_user_test_end:
     saved_r13 = const 40 + 5 * 8,
     saved_r14 = const 40 + 6 * 8,
     saved_r15 = const 40 + 7 * 8,
-    // `uc_mcontext`'s `rip`, `trapno` and `cr2`.
     saved_rip = const 40 + 16 * 8,
     saved_trapno = const 40 + 160,
     saved_cr2 = const 40 + 176,
@@ -1425,47 +1423,30 @@ x86_64_user_test_end:
     options(att_syntax)
 );
 
-/// Every vector the IDT can hold.
 const VECTORS: usize = 256;
-/// The vectors with a stub at `exception_stubs + vector * STUB_SIZE`: the exceptions 0-31 and
 const CONTIGUOUS_STUBS: usize = POWER_BUTTON_VECTOR as usize + 1;
 const _: () = assert!(POWER_BUTTON_VECTOR as usize == LAST_DEVICE_VECTOR as usize + 1);
 const _: () = assert!(TIMER_VECTOR < WAKEUP_VECTOR && WAKEUP_VECTOR < CONSOLE_INPUT_VECTOR);
 const _: () = assert!(CONSOLE_INPUT_VECTOR == 50 && FIRST_DEVICE_VECTOR == 51);
 const _: () = assert!(LAST_DEVICE_VECTOR == 82);
-/// Vectors below this are the architecture's exceptions.
 const FIRST_INTERRUPT_VECTOR: u64 = 32;
-/// Every stub starts on a 16-byte boundary.
 const STUB_SIZE: usize = 16;
 
-/// Code segment selector of the boot GDT (`boot_gdt` in the entry code).
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
-/// Present, DPL 0, 64-bit interrupt gate (interrupts stay masked in the handler).
 const INTERRUPT_GATE: u8 = 0x8e;
 
-/// `#PF`'s vector.
 const PAGE_FAULT_VECTOR: u64 = 14;
-/// Page-fault error code bit 0: the entry was present (a protection violation).
 const PAGE_FAULT_PRESENT: u64 = 1 << 0;
-/// Page-fault error code bit 1: the access wrote memory.
 const PAGE_FAULT_WRITE: u64 = 1 << 1;
-/// Page-fault error code bit 2: the access was made from user mode.
 const PAGE_FAULT_USER: u64 = 1 << 2;
-/// Page-fault error code bit 3: a reserved bit was set in an entry.
 const PAGE_FAULT_RESERVED_BIT: u64 = 1 << 3;
-/// Page-fault error code bit 4: the fault was an instruction fetch.
 const PAGE_FAULT_INSTRUCTION_FETCH: u64 = 1 << 4;
 
 unsafe extern "C" {
-    /// Start of the stubs; not callable from Rust, only its address is used.
     fn exception_stubs();
-    /// The stub for [`APIC_SPURIOUS_VECTOR`]; likewise only its address is used.
     fn apic_spurious_stub();
 }
 
-/// What the stub and `exception_common` save for a trap in the kernel, lowest address first,
-/// followed by what the CPU pushed: the registers a call may change, the others the handler
-/// keeps itself.
 #[repr(C)]
 struct TrapFrame {
     r11: u64,
@@ -1488,7 +1469,6 @@ struct TrapFrame {
 
 const _: () = assert!(core::mem::size_of::<TrapFrame>() == 16 * 8);
 
-/// A 64-bit IDT gate descriptor (SDM vol. 3A, figure 6-8).
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct GateDescriptor {
@@ -1527,7 +1507,6 @@ impl GateDescriptor {
     }
 }
 
-/// The operand of `lidt`.
 #[repr(C, packed)]
 struct DescriptorTablePointer {
     limit: u16,
@@ -1543,30 +1522,18 @@ unsafe impl Sync for InterruptDescriptorTable {}
 static IDT: InterruptDescriptorTable =
     InterruptDescriptorTable(UnsafeCell::new([GateDescriptor::MISSING; VECTORS]));
 
-/// The same gates with the double fault, NMI, machine check and debug exceptions on the
-/// interrupt stack table (D248), which a CPU loads once its own TSS is loaded.
 static IDT_WITH_STACKS: InterruptDescriptorTable =
     InterruptDescriptorTable(UnsafeCell::new([GateDescriptor::MISSING; VECTORS]));
 
-/// Each vector that runs on its own stack, with its TSS interrupt-stack-table index (1 to 7).
 const STACK_VECTORS: [(usize, u8); 4] = [(8, 1), (2, 2), (18, 3), (1, 4)];
 
-/// Whether returns to user mode clear the CPU's buffers with `verw` (D249): set at boot on a
-/// CPU that has `MD_CLEAR` and is not reported immune to MDS. Read by the entry code.
 static CLEAR_CPU_BUFFERS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// A writable data selector, the operand `verw` checks while it clears the buffers.
 static VERW_SELECTOR: u16 = 0x10;
 
-/// Whether programs run with the user view (KPTI, D502): set at boot on an Intel CPU that is
-/// not reported immune to rogue data cache loads (Meltdown) by `IA32_ARCH_CAPABILITIES.RDCL_NO`.
 static USER_VIEW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 const ARCH_CAPABILITIES_RDCL_NO: u64 = 1;
-/// A user view's root carries this `CR3` bit, which the CPU ignores without PCIDs, so an NMI,
-/// machine check, debug or double fault taken around the switch knows which tables it runs on.
 const USER_VIEW_MARKER: u64 = 1 << 11;
-/// The bytes kept at the top of each interrupt-stack-table stack: the `CR3` an exception taken
-/// with the user view saved, then the kernel's root to switch to.
 const IST_SLOT_BYTES: u64 = 16;
 const CR3_ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 const CR4_GLOBAL_PAGES: u64 = 1 << 7;
@@ -1640,12 +1607,6 @@ pub(super) unsafe fn set_user_view(block: usize, root: u64) {
     }
 }
 
-/// Before entering a program under the user view: its root's user half becomes the active
-/// tables', and the active root is kept where the way back in finds it (the block and the top
-/// of each interrupt-stack-table stack).
-///
-/// # Safety
-/// Interrupts are masked and the active tables are the program's address space's.
 unsafe fn fill_user_view() {
     let tables = tables_of(<super::X86_64 as crate::Platform>::cpu_local());
     // SAFETY: this CPU's block, with interrupts masked (the caller's duty); both roots are page
@@ -1704,7 +1665,6 @@ pub(super) extern "C" fn install() {
     }
 }
 
-/// Fills the IDT, before any CPU loads it.
 fn fill() {
     let stubs = exception_stubs as *const () as u64;
     let gates = IDT.0.get();
@@ -1714,7 +1674,6 @@ fn fill() {
             APIC_SPURIOUS_VECTOR.into(),
             apic_spurious_stub as *const () as u64,
         )]);
-    // Vectors without a stub keep a not-present gate: delivering one raises #NP (reported).
     for (vector, stub) in stub_gates {
         // SAFETY: `fill` is the only writer and runs once, from `install`, before any CPU loads
         // the IDT, so nothing else accesses the table; `vector` is below 256, in bounds.
@@ -1730,8 +1689,6 @@ fn fill() {
     }
 }
 
-/// Loads the IDT whose double fault, NMI, machine check and debug gates use the interrupt
-/// stack table, on a CPU whose TSS holds its stacks and is loaded.
 fn load_with_stacks() {
     let gates = IDT_WITH_STACKS.0.get();
     let pointer = DescriptorTablePointer {
@@ -1760,17 +1717,13 @@ pub(super) extern "C" fn load() {
     }
 }
 
-/// Called by `exception_common` with the saved registers, for a trap in the kernel.
 extern "C" fn x86_64_exception(frame: &mut TrapFrame) {
     if interrupt(frame.vector) {
         return;
     }
-    // `int3` is a trap: the saved `rip` already points after it, so resuming needs no fix-up.
     deliver(&exception(frame.vector, frame.error_code, frame.rip));
 }
 
-/// Handles the interrupt `vector`, if the kernel takes it; returns whether it did (if not, it
-/// is an exception or an unexpected interrupt, to be reported).
 #[inline(always)]
 fn interrupt(vector: u64) -> bool {
     match vector {
@@ -1778,7 +1731,6 @@ fn interrupt(vector: u64) -> bool {
             timer::interrupt();
             true
         }
-        // The exceptions, without the rarer interrupts' checks.
         vector if vector < FIRST_INTERRUPT_VECTOR => false,
         vector if vector == u64::from(WAKEUP_VECTOR) => {
             timer::wakeup_interrupt();
@@ -1799,7 +1751,6 @@ fn interrupt(vector: u64) -> bool {
             message_interrupts::interrupt(vector);
             true
         }
-        // Spurious: the APIC needs no end of interrupt for it.
         vector if vector == u64::from(APIC_SPURIOUS_VECTOR) => true,
         vector => LEGACY_PIC_VECTORS.contains(&vector) && timer::legacy_pic_interrupt(vector),
     }
@@ -1827,8 +1778,6 @@ pub(super) fn page_fault(kind: ExceptionKind, error_code: u64) -> Option<crate::
     })
 }
 
-/// Describes the exception or unexpected interrupt `vector`, with the faulting address for a
-/// page fault.
 fn exception(vector: u64, error_code: u64, rip: u64) -> Exception {
     let fault_address = if vector == PAGE_FAULT_VECTOR {
         let cr2: u64;
@@ -1843,32 +1792,22 @@ fn exception(vector: u64, error_code: u64, rip: u64) -> Exception {
     decode(vector, error_code, rip, fault_address)
 }
 
-/// Selectors of the per-CPU GDT (D47): the boot GDT's two, then user data and code in the
-/// order `sysretq` needs (`IA32_STAR`), then the TSS.
 const KERNEL_DATA_SELECTOR: u64 = 0x10;
 const USER_DATA_SELECTOR: u64 = 0x18 | 3;
 const USER_CODE_SELECTOR: u64 = 0x20 | 3;
 const TSS_SELECTOR: u16 = 0x28;
 
-/// `rflags` bits a program may set: carry, parity, adjust, zero, sign, direction, overflow and
-/// ID (which old-style CPUID detection toggles). Interrupts are always enabled in ring 3 and
-/// I/O privilege stays 0. Alignment check stays clear: interrupt gates keep it, and with SMAP
-/// it would open user memory to the kernel.
 const USER_RFLAGS: u64 = 0xcd5 | 1 << 21;
-/// CR0 bits for the FP/SIMD units (D49): monitor coprocessor, emulation, task switched,
-/// numeric error.
 const CR0_MP: u64 = 1 << 1;
 const CR0_EM: u64 = 1 << 2;
 const CR0_TS: u64 = 1 << 3;
 const CR0_NE: u64 = 1 << 5;
-/// `CR4.FSGSBASE`: lets ring 3 write its own FS and GS bases (`wrfsbase`, `wrgsbase`).
 const CR4_FSGSBASE: u64 = 1 << 16;
 const CR4_OSXSAVE: u64 = 1 << 18;
 const CR4_PKE: u64 = 1 << 22;
 const CR4_CET: u64 = 1 << 23;
 const CR4_UINTR: u64 = 1 << 25;
 const CR4_DENIED_TO_PROGRAMS: u64 = CR4_FSGSBASE | CR4_OSXSAVE | CR4_PKE | CR4_CET | CR4_UINTR;
-/// CR4 bits for SSE (D54): the OS saves SSE state with `FXSAVE`, and handles #XM.
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 const CR4_UMIP: u64 = 1 << 11;
@@ -1876,24 +1815,12 @@ const CR4_SMEP: u64 = 1 << 20;
 const CR4_SMAP: u64 = 1 << 21;
 const CPUID_7_EBX_SMAP: u32 = 1 << 20;
 
-/// Whether the CPUs run with SMAP (D259): the kernel reaches user pages only inside
-/// `with_user_access`, between `stac` and `clac`. Read by the entry code and that function.
 static SMAP_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// Branch-prediction controls (D260): `IA32_SPEC_CTRL.IBRS` set once per CPU where the CPU has
-/// enhanced IBRS, and an `IA32_PRED_CMD.IBPB` barrier when the kernel switches between programs'
-/// address spaces where the CPU has IBPB.
 static PREDICTION_BARRIER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// Whether every entry from user mode sets `IA32_SPEC_CTRL.IBRS` and every return clears it
-/// (D267): on CPUs with IBRS but not enhanced IBRS, so neither a program's indirect branches nor
-/// its returns (Retbleed) steer the kernel's. Read by the entry code.
 static IBRS_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// Whether every entry from user mode issues an `IA32_PRED_CMD.IBPB` barrier (D332): on AMD Zen
-/// 1 to 4 without `SRSO_NO`, whose return predictions a program can train to steer the kernel's
-/// returns (Speculative Return Stack Overflow), where the barrier flushes them: always on Zen 1
-/// and 2, with `IBPB_BRTYPE` on Zen 3 and 4. Read by the entry code.
 static IBPB_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 const CPUID_EXTENDED_IBPB: u32 = 1 << 12;
 const CPUID_EXTENDED_IBPB_BRTYPE: u32 = 1 << 28;
@@ -1905,7 +1832,8 @@ const AMD_ZEN_3_4: u32 = 0x19;
 /// (D289): on CPUs without enhanced IBRS, so a `ret` after the switch never predicts from what
 /// the last thread (or a program before it) left there, and an empty buffer never falls back to
 /// the indirect predictor (Skylake's underflow). Read by the switch code.
-pub(super) static RSB_FILL_ON_SWITCH: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+pub(super) static RSB_FILL_ON_SWITCH: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(0);
 const IA32_SPEC_CTRL: u32 = 0x48;
 const IA32_PRED_CMD: u32 = 0x49;
 const SPEC_CTRL_IBRS: u64 = 1;
@@ -1941,7 +1869,6 @@ fn set_up_branch_predictions() {
     unsafe { super::write_msr(IA32_SPEC_CTRL, SPEC_CTRL_IBRS) };
 }
 
-/// Turns [`IBPB_ON_ENTRY`] on where SRSO needs it (D332).
 fn set_up_return_predictions() {
     if !is_amd() || super::timer::cpuid(0x8000_0000, 0)[0] < 0x8000_0008 {
         return;
@@ -1963,12 +1890,22 @@ fn set_up_return_predictions() {
 
 fn is_amd() -> bool {
     let [_, ebx, ecx, edx] = super::timer::cpuid(0, 0);
-    [ebx, edx, ecx] == [u32::from_le_bytes(*b"Auth"), u32::from_le_bytes(*b"enti"), u32::from_le_bytes(*b"cAMD")]
+    [ebx, edx, ecx]
+        == [
+            u32::from_le_bytes(*b"Auth"),
+            u32::from_le_bytes(*b"enti"),
+            u32::from_le_bytes(*b"cAMD"),
+        ]
 }
 
 fn is_intel() -> bool {
     let [_, ebx, ecx, edx] = super::timer::cpuid(0, 0);
-    [ebx, edx, ecx] == [u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ineI"), u32::from_le_bytes(*b"ntel")]
+    [ebx, edx, ecx]
+        == [
+            u32::from_le_bytes(*b"Genu"),
+            u32::from_le_bytes(*b"ineI"),
+            u32::from_le_bytes(*b"ntel"),
+        ]
 }
 
 /// Issues an indirect branch prediction barrier where the CPU has one, so a program cannot
@@ -1989,15 +1926,21 @@ pub(super) fn smap_on() -> bool {
 const CPUID_7_EBX_SMEP: u32 = 1 << 7;
 const CPUID_7_ECX_UMIP: u32 = 1 << 2;
 
-/// The protections CR4 gets where the CPU has them (D251): SMEP, so the kernel never executes a
-/// user page, and UMIP, so programs cannot read the descriptor-table registers' kernel addresses.
 fn supervisor_protections() -> u64 {
     if super::timer::cpuid(0, 0)[0] < 7 {
         return 0;
     }
     let [_, ebx, ecx, _] = super::timer::cpuid(7, 0);
-    let smep = if ebx & CPUID_7_EBX_SMEP != 0 { CR4_SMEP } else { 0 };
-    let umip = if ecx & CPUID_7_ECX_UMIP != 0 { CR4_UMIP } else { 0 };
+    let smep = if ebx & CPUID_7_EBX_SMEP != 0 {
+        CR4_SMEP
+    } else {
+        0
+    };
+    let umip = if ecx & CPUID_7_ECX_UMIP != 0 {
+        CR4_UMIP
+    } else {
+        0
+    };
     set_up_branch_predictions();
     set_up_return_predictions();
     let smap = if ebx & CPUID_7_EBX_SMAP != 0 {
@@ -2008,14 +1951,9 @@ fn supervisor_protections() -> u64 {
     };
     smep | umip | smap
 }
-const CR4_SMEP: u64 = 1 << 20;
 const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;
-/// `rflags` bit 1, always set.
 const RFLAGS_FIXED: u64 = 1 << 1;
-/// What `syscall` clears in `rflags` (IA32_FMASK): interrupts, trap, direction, alignment
-/// check, nested task. The entry runs on the program's stack until it switches; nothing may
-/// interrupt it, and the kernel's code needs the direction flag clear.
 const SYSCALL_MASKED_RFLAGS: u64 = 1 << 9 | 1 << 8 | 1 << 10 | 1 << 18 | 1 << 14;
 
 const IA32_EFER: u32 = 0xc000_0080;
@@ -2023,16 +1961,11 @@ const EFER_SYSCALL: u64 = 1 << 0;
 const IA32_STAR: u32 = 0xc000_0081;
 const IA32_LSTAR: u32 = 0xc000_0082;
 const IA32_FMASK: u32 = 0xc000_0084;
-/// The FS segment's base in 64-bit mode: the running program's thread pointer.
 const IA32_FS_BASE: u32 = 0xc000_0100;
-/// The GS base `swapgs` swaps in on the way to ring 3: the program's GS base.
 const IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
 
 unsafe extern "C" {
-    /// Enters ring 3 with `context`'s registers; returns once an interrupt, exception or
-    /// `syscall` from ring 3 has saved them back.
     fn x86_64_enter_user(context: *mut Registers);
-    /// `syscall`'s entry point; only its address is used.
     fn x86_64_syscall_entry();
     static x86_64_user_test_start: u8;
     static x86_64_user_test_checks: u8;
@@ -2085,12 +2018,10 @@ pub(super) unsafe fn set_up_user_mode(hal: &HalCpuLocal) {
     let tss_limit = core::mem::size_of::<Tss>() as u64 - 1;
     let gdt: [u64; GDT_ENTRIES] = [
         0,
-        // Accessed bits preset, so the CPU never writes them.
-        0x00af_9b00_0000_ffff, // 0x08: 64-bit code, ring 0 (the boot GDT's)
-        0x00cf_9300_0000_ffff, // 0x10: data, ring 0 (the boot GDT's)
-        0x00cf_f300_0000_ffff, // 0x18: data, ring 3
-        0x00af_fb00_0000_ffff, // 0x20: 64-bit code, ring 3
-        // 0x28: an available 64-bit TSS (type 9), present, ring 0, then its base's top half.
+        0x00af_9b00_0000_ffff,
+        0x00cf_9300_0000_ffff,
+        0x00cf_f300_0000_ffff,
+        0x00af_fb00_0000_ffff,
         tss_limit | (tss_base & 0xff_ffff) << 16 | 0x89 << 40 | (tss_base >> 24 & 0xff) << 56,
         tss_base >> 32,
     ];
@@ -2206,10 +2137,7 @@ const _: () = assert!(USER_DATA_SELECTOR - 3 - 8 == KERNEL_DATA_SELECTOR);
 /// tables' kernel half is the kernel's.
 pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     let registers = &mut context.arch;
-    // `sysretq` to a non-canonical `rip` faults in ring 0 on the program's stack, and `iretq`
-    // to one faults in ring 0 with the program's GS base: never enter with one.
     if registers.rip >= X86_64::USER_END {
-        // As the fetch's page fault would report it, from user mode, kept as for one.
         registers.vector = PAGE_FAULT_VECTOR;
         registers.error_code = PAGE_FAULT_USER | PAGE_FAULT_INSTRUCTION_FETCH;
         registers.fault_address = registers.rip;
@@ -2234,10 +2162,8 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
         SYSCALL_VECTOR => UserExit::Syscall,
         vector if interrupt(vector) => UserExit::Interrupt,
         vector => {
-            // Unchanged for an exception taken again on the way in (none can be).
             debug_assert_ne!(vector, RESTORE_ALL_VECTOR);
             let exception = exception(vector, registers.error_code, registers.rip);
-            // With `vector` and `error_code`, all `last_exception` needs.
             registers.fault_address = exception.address.unwrap_or(0);
             UserExit::Exception(exception)
         }

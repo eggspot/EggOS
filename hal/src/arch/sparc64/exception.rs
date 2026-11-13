@@ -37,7 +37,6 @@ pub(super) mod pstate {
     pub const USER: u64 = INTERRUPTS | FP;
 }
 
-/// `TSTATE.PSTATE.PRIV`: the trap came from the kernel.
 const TSTATE_PRIVILEGED: u64 = pstate::PRIVILEGED << 8;
 const TSTATE_PSTATE_SHIFT: u32 = 8;
 /// The register windows of the UltraSPARC IIi QEMU's `sun4u` models.
@@ -46,7 +45,6 @@ const STACK_BIAS: u64 = 2047;
 const FRAME: u64 = 192;
 const KERNEL_TRAP_FRAME: u64 = FRAME + 64;
 
-/// Trap types.
 mod trap {
     pub const INSTRUCTION_ACCESS_EXCEPTION: u64 = 0x008;
     pub const INSTRUCTION_ACCESS_ERROR: u64 = 0x00a;
@@ -511,8 +509,6 @@ pub(super) fn drop_translations(start: u64, length: u64) {
     unsafe { core::arch::asm!("membar #Sync", options(nostack)) };
 }
 
-/// The context number the next address space gets: 1 to 8191, handed out round, the TLB
-/// flushed when they wrap so a new one never meets an old one's translations.
 static NEXT_CONTEXT: crate::atomic::AtomicU64 = crate::atomic::AtomicU64::new(1);
 const LAST_CONTEXT: u64 = 8191;
 
@@ -541,8 +537,6 @@ pub(super) fn next_address_space() {
     };
 }
 
-/// Where traps from the kernel land, at TL 0 with interrupts off: `trap_type`, the trapping
-/// `pc`, and the fault registers.
 extern "C" fn sparc64_kernel_exception(trap_type: u64, pc: u64, address: u64, status: u64) {
     if interrupt(trap_type) {
         return;
@@ -550,7 +544,6 @@ extern "C" fn sparc64_kernel_exception(trap_type: u64, pc: u64, address: u64, st
     deliver(&decode(trap_type, address, status, pc));
 }
 
-/// Handles interrupt trap `trap_type`, if it is one; whether it was.
 fn interrupt(trap_type: u64) -> bool {
     if !(trap::FIRST_INTERRUPT..=trap::LAST_INTERRUPT).contains(&trap_type) {
         return false;
@@ -561,7 +554,9 @@ fn interrupt(trap_type: u64) -> bool {
         crate::interrupt::deliver(Interrupt::Timer);
     } else {
         // SAFETY: `%clear_softint` clears only the level's soft interrupt bit.
-        unsafe { core::arch::asm!("wr {0}, 0, %asr21", in(reg) 1u64 << level, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!("wr {0}, 0, %asr21", in(reg) 1u64 << level, options(nomem, nostack))
+        };
     }
     true
 }
@@ -597,7 +592,12 @@ impl crate::user::sparc64::Registers {
     /// [`UserContext::last_exception`]: the exception `run_user` returned, from the trap type
     /// and fault registers it kept.
     pub(crate) fn last_exception(&self) -> Exception {
-        decode(self.trap_type, self.fault_address, self.fault_status, self.pc)
+        decode(
+            self.trap_type,
+            self.fault_address,
+            self.fault_status,
+            self.pc,
+        )
     }
 }
 
@@ -620,18 +620,37 @@ pub(super) fn page_fault(_kind: ExceptionKind, trap_type: u64) -> Option<PageFau
 fn decode(trap_type: u64, address: u64, status: u64, pc: u64) -> Exception {
     let page = address & !0x1fff;
     let (kind, name, fault_address) = match trap_type {
-        trap::INSTRUCTION_ACCESS_EXCEPTION => (ExceptionKind::InstructionFault, "instruction access", Some(pc)),
-        trap::INSTRUCTION_ACCESS_ERROR | trap::DATA_ACCESS_ERROR => (ExceptionKind::Other, "access error", None),
-        trap::ILLEGAL_INSTRUCTION | trap::PRIVILEGED_OPCODE | trap::FP_DISABLED => {
-            (ExceptionKind::IllegalInstruction, "illegal instruction", None)
+        trap::INSTRUCTION_ACCESS_EXCEPTION => (
+            ExceptionKind::InstructionFault,
+            "instruction access",
+            Some(pc),
+        ),
+        trap::INSTRUCTION_ACCESS_ERROR | trap::DATA_ACCESS_ERROR => {
+            (ExceptionKind::Other, "access error", None)
         }
-        trap::FP_EXCEPTION_IEEE | trap::FP_EXCEPTION_OTHER | trap::DIVISION_BY_ZERO | trap::TAG_OVERFLOW => {
-            (ExceptionKind::Arithmetic, "arithmetic", None)
-        }
+        trap::ILLEGAL_INSTRUCTION | trap::PRIVILEGED_OPCODE | trap::FP_DISABLED => (
+            ExceptionKind::IllegalInstruction,
+            "illegal instruction",
+            None,
+        ),
+        trap::FP_EXCEPTION_IEEE
+        | trap::FP_EXCEPTION_OTHER
+        | trap::DIVISION_BY_ZERO
+        | trap::TAG_OVERFLOW => (ExceptionKind::Arithmetic, "arithmetic", None),
         trap::DATA_ACCESS_EXCEPTION => (ExceptionKind::DataFault, "data access", Some(address)),
-        trap::ADDRESS_NOT_ALIGNED..=trap::LAST_NOT_ALIGNED => (ExceptionKind::Alignment, "address not aligned", Some(address)),
-        trap::FIRST_INTERRUPT..=trap::LAST_INTERRUPT => (ExceptionKind::Interrupt, "interrupt", None),
-        trap::INSTRUCTION_MISS => (ExceptionKind::InstructionFault, "TLB miss (fetch)", Some(page)),
+        trap::ADDRESS_NOT_ALIGNED..=trap::LAST_NOT_ALIGNED => (
+            ExceptionKind::Alignment,
+            "address not aligned",
+            Some(address),
+        ),
+        trap::FIRST_INTERRUPT..=trap::LAST_INTERRUPT => {
+            (ExceptionKind::Interrupt, "interrupt", None)
+        }
+        trap::INSTRUCTION_MISS => (
+            ExceptionKind::InstructionFault,
+            "TLB miss (fetch)",
+            Some(page),
+        ),
         trap::DATA_MISS => (ExceptionKind::DataFault, "TLB miss (data)", Some(page)),
         trap::DATA_PROTECTION => (ExceptionKind::DataFault, "TLB protection", Some(page)),
         trap::BREAKPOINT => (ExceptionKind::Breakpoint, "breakpoint (ta 1)", None),
@@ -1592,11 +1611,7 @@ sparc64_user_test_end:
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
 
-/// Where the test programs' handlers find the interrupted state, from the `siginfo_t` they
-/// get: `struct pt_regs` right after it (`u_regs[16]`, `%g0`-`%o7`, then `TSTATE`, `%pc`,
-/// `%npc`), then the pointer to the FP registers, the `stack_t` and the mask.
 const FRAME_REGS: usize = 128;
-/// `%fsr`'s read-only `ver` field, which differs between CPUs and is not program state.
 const FSR_VERSION: u64 = 0x7 << 17;
 
 unsafe extern "C" {

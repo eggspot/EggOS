@@ -5,9 +5,9 @@
 //! (no page faults to fix up, no user processes to signal yet): the kernel reports it with
 //! [`report`] and stops with the self-test fail marker.
 
-use eggos_hal::atomic::AtomicU64;
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::{Exception, ExceptionKind};
 
 /// What to do after an exception.

@@ -54,7 +54,6 @@ unsafe extern "C" {
     fn ppc64_fp_restore(state: *const u8);
 }
 
-/// Runs `body` with FP, vector and VSX on for the kernel, then off again.
 fn with_units(body: impl FnOnce()) {
     let saved: u64;
     // SAFETY: turning the units on only lets the next instructions use them; `MSR` is put back

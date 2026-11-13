@@ -40,12 +40,10 @@ eggos_thread_start:
     frame_size = const FRAME_WORDS * 8,
 );
 
-/// 32 bytes of ABI header, the link register, CR, `r14` to `r31`, padding to 16 bytes.
 const FRAME_WORDS: usize = 4 + 2 + 18;
 
 unsafe extern "C" {
     pub(super) fn eggos_switch_thread(save: *mut usize, resume: usize);
-    /// Only its address is used: a new thread's first switch returns into it.
     fn eggos_thread_start();
 }
 

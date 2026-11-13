@@ -13,13 +13,14 @@
 #![cfg_attr(eggos_user, no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, all(eggos_user, target_arch = "aarch64")))]
+#[cfg(any(
+    test,
+    all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
+))]
 extern crate alloc;
 
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod appkit;
-#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
-mod uikit;
 #[cfg(any(
     test,
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
@@ -58,7 +59,11 @@ mod export_trie;
 ))]
 mod fixups;
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
+mod uikit;
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 use eggos_c_format as format;
+#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
+mod bundled;
 #[cfg(any(
     test,
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
@@ -95,8 +100,6 @@ mod raising_methods;
     all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))
 ))]
 mod spawn_actions;
-#[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
-mod bundled;
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod start;
 #[cfg(any(

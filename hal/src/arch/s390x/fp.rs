@@ -32,7 +32,6 @@ eggos_fp_restore:
 
 const _: () = assert!(core::mem::offset_of!(crate::fp::S390xState, fpc) == 128);
 
-/// CR0's additional-floating-point control.
 const CR0_AFP: u64 = 1 << 18;
 
 unsafe extern "C" {

@@ -324,7 +324,7 @@ impl Curve {
         )
     }
 
-    fn from_affine(&self, point: &AffinePoint) -> Point {
+    fn affine_to_point(&self, point: &AffinePoint) -> Point {
         Point {
             x: self.field.to_montgomery(&from_be(&point.x)),
             y: self.field.to_montgomery(&from_be(&point.y)),
@@ -337,7 +337,10 @@ impl Curve {
             return None;
         }
         let (x, y) = self.affine(point);
-        Some(AffinePoint { x: to_be(&x), y: to_be(&y) })
+        Some(AffinePoint {
+            x: to_be(&x),
+            y: to_be(&y),
+        })
     }
 
     fn right_side(&self, x: &Limbs) -> Limbs {
@@ -442,13 +445,13 @@ pub fn on_curve(point: &AffinePoint) -> bool {
 /// `scalar · point`, or `None` for the identity. Constant time in the scalar.
 pub fn multiply(point: &AffinePoint, scalar: &[u8; SCALAR_BYTES]) -> Option<AffinePoint> {
     let curve = Curve::new();
-    curve.to_affine(&curve.multiply_point(&curve.from_affine(point), &from_be(scalar)))
+    curve.to_affine(&curve.multiply_point(&curve.affine_to_point(point), &from_be(scalar)))
 }
 
 /// `a + b`, or `None` for the identity.
 pub fn add(a: &AffinePoint, b: &AffinePoint) -> Option<AffinePoint> {
     let curve = Curve::new();
-    curve.to_affine(&curve.add(&curve.from_affine(a), &curve.from_affine(b)))
+    curve.to_affine(&curve.add(&curve.affine_to_point(a), &curve.affine_to_point(b)))
 }
 
 /// `-point`.
@@ -608,4 +611,3 @@ mod group_tests {
         });
     }
 }
-

@@ -110,7 +110,11 @@ impl Aes {
 fn inverse_affine(planes: Planes) -> Planes {
     const CONSTANT: u8 = 0x05;
     core::array::from_fn(|bit| {
-        let constant = if CONSTANT >> bit & 1 == 1 { u16::MAX } else { 0 };
+        let constant = if CONSTANT >> bit & 1 == 1 {
+            u16::MAX
+        } else {
+            0
+        };
         planes[(bit + 2) % 8] ^ planes[(bit + 5) % 8] ^ planes[(bit + 7) % 8] ^ constant
     })
 }

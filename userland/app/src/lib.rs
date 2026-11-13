@@ -8,7 +8,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(all(feature = "window", eggos_user))]
+#[cfg(feature = "window")]
 extern crate alloc;
 
 #[cfg(all(feature = "window", eggos_user))]

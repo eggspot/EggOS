@@ -13,7 +13,6 @@ use crate::dyld_info::{self, DyldInfo, Location, Table};
 use crate::fixups::{ChainedFixups, Source};
 use crate::foundation;
 use crate::libsystem;
-use crate::uikit;
 use crate::linux::{self, PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::macho::{
     self, Cpu, InvalidMachO, MachO, NoSlice, SG_READ_ONLY, Start, VM_PROT_EXECUTE, VM_PROT_READ,
@@ -21,6 +20,7 @@ use crate::macho::{
 };
 use crate::objc;
 use crate::swift;
+use crate::uikit;
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_runtime::errno::Errno;
@@ -442,7 +442,6 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
 struct Binder<'p, 'a> {
     program: &'p MachO<'a>,
     translated: bool,
-    /// For each library ordinal (from 1), the app's own library loaded for it (D409).
     carried: [Option<usize>; macho::MAX_LIBRARIES],
 }
 
@@ -536,9 +535,6 @@ fn expand_run_paths<'e>(
     count
 }
 
-/// Maps the app's own library linked as `linked`, found from `search`, and the libraries it
-/// carries in turn, as dyld does: its fixups, imports and Objective-C metadata, then its
-/// protection; the index `bundled` keeps it under.
 fn load_library(
     linked: &'static [u8],
     search: &Search<'_>,
@@ -656,7 +652,6 @@ fn load_library(
     })
     .ok_or(Failure::Memory)
 }
-
 
 #[cfg(target_arch = "aarch64")]
 fn translated_binds_natively(name: &[u8]) -> bool {

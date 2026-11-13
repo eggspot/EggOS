@@ -152,7 +152,14 @@ pub fn forget_view(gone: Id) {
     removed.free();
 }
 
-extern "C" fn init_with_rect(this: Id, _: Sel, rect: Frame, options: usize, owner: Id, user_info: Id) -> Id {
+extern "C" fn init_with_rect(
+    this: Id,
+    _: Sel,
+    rect: Frame,
+    options: usize,
+    owner: Id,
+    user_info: Id,
+) -> Id {
     if this.is_null() {
         return this;
     }

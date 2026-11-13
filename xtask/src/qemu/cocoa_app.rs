@@ -541,11 +541,6 @@ fn wait_for_panel(
     }
 }
 
-fn console_text(boot: &mut Boot<'_>) -> String {
-    boot.console.extend(boot.output.try_iter().flatten());
-    String::from_utf8_lossy(&boot.console).into_owned()
-}
-
 fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
     let installed = format!("Installed {APP} in /Applications/{APP}.");
     let opened = format!("Opened {APP}.");
@@ -652,13 +647,13 @@ pub fn check(
     boot.wait_for_prompts(4)?;
     type_line(&mut boot, &format!("bg; {}", list_line("listed")))?;
     boot.wait_for_prompts(5)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     let Some(window) = window_titled(&console, "listed", APP) else {
         return Err(boot.fail(format!("{}: `wm list` does not list {APP}", arch.name)));
     };
     type_line(&mut boot, &show_line(window, "tree"))?;
     boot.wait_for_prompts(6)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     if let Some(problem) = game_tree_problem(&shown_tree(&console, "tree")) {
         return Err(boot.fail(format!("{}: `wm show {window}`: {problem}", arch.name)));
     }
@@ -668,14 +663,14 @@ pub fn check(
     wait_for_panel(&mut boot, &mut screen, &last_board, &expected)?;
     type_line(&mut boot, &list_line("panel"))?;
     boot.wait_for_prompts(8)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     let title = format!("{PANEL_PREFIX}{APP}");
     let Some(panel) = window_titled(&console, "panel", &title) else {
         return Err(boot.fail(format!("{}: `wm list` does not list `{title}`", arch.name)));
     };
     type_line(&mut boot, &show_line(panel, "panel-tree"))?;
     boot.wait_for_prompts(9)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     if let Some(problem) =
         panel_tree_problem(&shown_tree(&console, "panel-tree"), icon_file.is_some())
     {

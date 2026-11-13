@@ -14,13 +14,13 @@ use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::dispose;
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, methods, send, send1, send2, sel};
+use crate::objc::{Runtime, methods, sel, send, send1, send2};
 use core::ffi::{c_char, c_int};
 
 const MODAL_OK: isize = 1;
 const MODAL_CANCEL: isize = 0;
 const O_NONBLOCK_CLOEXEC: usize = 0o4000 | 0o2_000_000;
-const EAGAIN: i32 = 11;
+const EAGAIN: u16 = 11;
 const IDLE: [i64; 2] = [0, 20_000_000];
 const PICK: &[u8] = b"/bin/pick\0";
 const MOST_ARGUMENTS: usize = 64;
@@ -118,7 +118,11 @@ macro_rules! flag_accessors {
 }
 
 flag_accessors!(can_choose_files, set_can_choose_files, choose_files);
-flag_accessors!(can_choose_directories, set_can_choose_directories, choose_directories);
+flag_accessors!(
+    can_choose_directories,
+    set_can_choose_directories,
+    choose_directories
+);
 flag_accessors!(allows_multiple, set_allows_multiple, multiple);
 
 extern "C" fn ignore_word(_: Id, _: Sel, _: usize) {}
@@ -162,7 +166,11 @@ fn command_of(this: Id) -> Command {
         starts: Buffer::new(),
     };
     command.push(b"pick");
-    let mode: &[u8] = match (fields.is_open, fields.choose_files, fields.choose_directories) {
+    let mode: &[u8] = match (
+        fields.is_open,
+        fields.choose_files,
+        fields.choose_directories,
+    ) {
         (false, _, _) => b"save",
         (true, false, true) => b"folder",
         (true, _, _) => b"open",
@@ -222,7 +230,11 @@ fn run_pick(command: &Command, output: &mut Buffer<u8>) -> Option<c_int> {
     let mut ends = [0 as c_int; 2];
     crate::libsystem::file::open_pipe(&mut ends, O_NONBLOCK_CLOEXEC).ok()?;
     let mut pointers: [*const c_char; MOST_ARGUMENTS] = [core::ptr::null(); MOST_ARGUMENTS];
-    for (pointer, &start) in pointers.iter_mut().zip(command.starts.as_slice()).take(MOST_ARGUMENTS - 1) {
+    for (pointer, &start) in pointers
+        .iter_mut()
+        .zip(command.starts.as_slice())
+        .take(MOST_ARGUMENTS - 1)
+    {
         *pointer = command.arena.as_slice()[start..].as_ptr().cast();
     }
     let mut actions: *mut Actions = core::ptr::null_mut();
@@ -275,9 +287,16 @@ fn run_pick(command: &Command, output: &mut Buffer<u8>) -> Option<c_int> {
 
 fn urls_of(lines: &[u8]) -> Id {
     let mut urls: Buffer<Id> = Buffer::new();
-    for line in lines.split(|&byte| byte == b'\n').filter(|line| !line.is_empty()) {
+    for line in lines
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
         let path = crate::foundation::string_from_utf8(line);
-        let url = send1(class_pointer(&NSURL).cast(), sel!("fileURLWithPath:"), path as usize);
+        let url = send1(
+            class_pointer(&NSURL).cast(),
+            sel!("fileURLWithPath:"),
+            path as usize,
+        );
         if !url.is_null() {
             urls.push(url);
         }

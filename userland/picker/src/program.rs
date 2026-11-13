@@ -22,7 +22,10 @@ const NO_WINDOW: i32 = 3;
 fn working_folder(out: &mut [u8; PATH_CAPACITY]) -> &[u8] {
     // SAFETY: `getcwd` writes at most the buffer's length into it.
     let written = unsafe {
-        syscall::call(number::GETCWD, [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0])
+        syscall::call(
+            number::GETCWD,
+            [out.as_mut_ptr() as usize, out.len(), 0, 0, 0, 0],
+        )
     };
     match written > 0 {
         true => {
@@ -45,13 +48,14 @@ pub fn run(startup: &Startup) -> i32 {
     };
     let (width, height) = DEFAULT_SIZE;
     let title = options.title.clone();
-    let mut window = match Window::create_with_flags(&title, width, height, MINIMUM_SIZE, PERSON_INPUT_ONLY) {
-        Ok(window) => window,
-        Err(_) => {
-            write_all(STANDARD_ERROR, b"pick: cannot show a window\n");
-            return NO_WINDOW;
-        }
-    };
+    let mut window =
+        match Window::create_with_flags(&title, width, height, MINIMUM_SIZE, PERSON_INPUT_ONLY) {
+            Ok(window) => window,
+            Err(_) => {
+                write_all(STANDARD_ERROR, b"pick: cannot show a window\n");
+                return NO_WINDOW;
+            }
+        };
     let mut folder = [0u8; PATH_CAPACITY];
     let working = working_folder(&mut folder);
     let mut files = LinuxFiles::new();

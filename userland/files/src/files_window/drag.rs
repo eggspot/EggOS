@@ -6,6 +6,8 @@
 //! same targets.
 
 use super::*;
+use eggos_toolkit::canvas::Canvas;
+use eggos_toolkit::colour;
 
 /// How long the pointer rests on a folder before the window browses into it.
 pub const DRAG_SPRING_MS: u32 = 1000;
@@ -43,7 +45,6 @@ pub(super) struct Picked {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Arriving {
     serial: u32,
-    path: Option<Path>,
     count: usize,
     spot: Option<Spot>,
     spot_since: u32,
@@ -74,9 +75,7 @@ pub fn drop_action(modifiers: Modifiers, same_file_system: bool, onto_trash: boo
         DropAction::Link
     } else if ctrl || alt {
         DropAction::Copy
-    } else if shift || super_key {
-        DropAction::Move
-    } else if same_file_system {
+    } else if shift || super_key || same_file_system {
         DropAction::Move
     } else {
         DropAction::Copy
@@ -94,7 +93,10 @@ pub fn drag_words(name: &[u8], count: usize) -> Name {
     let text = core::str::from_utf8(name).unwrap_or("");
     match text.chars().count() > DRAG_WORDS_MAX_GLYPHS {
         true => {
-            let end = text.char_indices().nth(DRAG_WORDS_MAX_GLYPHS - 3).map_or(text.len(), |(at, _)| at);
+            let end = text
+                .char_indices()
+                .nth(DRAG_WORDS_MAX_GLYPHS - 3)
+                .map_or(text.len(), |(at, _)| at);
             let _ = write!(words, "{}...", &text[..end]);
         }
         false => {
@@ -143,7 +145,13 @@ impl FilesWindow {
                 .is_ok_and(|status| status.kind == files::Kind::Directory)
     }
 
-    fn spot_at(&self, files: &mut impl Files, x: i32, y: i32, dragged: Option<&Path>) -> Option<Spot> {
+    fn spot_at(
+        &self,
+        files: &mut impl Files,
+        x: i32,
+        y: i32,
+        dragged: Option<&Path>,
+    ) -> Option<Spot> {
         if let Some(index) = self.place_at(x, y) {
             let place = *self.places().get(index)?;
             let from_share = dragged.is_some_and(|path| is_within(path.as_bytes(), HOST_SHARE));
@@ -241,7 +249,9 @@ impl FilesWindow {
     /// The pointer resting on a folder springs into it (section 5).
     pub(super) fn drag_tick(&mut self, files: &mut impl Files) {
         let resting = match (self.picked, self.arriving) {
-            (Some(picked), _) if picked.started => picked.spot.map(|spot| (spot, picked.spot_since)),
+            (Some(picked), _) if picked.started => {
+                picked.spot.map(|spot| (spot, picked.spot_since))
+            }
             (_, Some(arriving)) => arriving.spot.map(|spot| (spot, arriving.spot_since)),
             _ => None,
         };
@@ -252,7 +262,10 @@ impl FilesWindow {
             return;
         }
         let springs = match spot {
-            Spot::Place(index) => !matches!(self.places().get(index), Some(Place::Trash | Place::HostShare)),
+            Spot::Place(index) => !matches!(
+                self.places().get(index),
+                Some(Place::Trash | Place::HostShare)
+            ),
             _ => true,
         };
         if !springs {
@@ -284,19 +297,27 @@ impl FilesWindow {
 
     /// A drag from another window is over this one at (`x`, `y`): `paths` its payload's paths
     /// (none for text), read once per `serial` by the program.
-    pub fn drag_over(&mut self, files: &mut impl Files, x: i32, y: i32, serial: u32, paths: &[Path]) {
+    pub fn drag_over(
+        &mut self,
+        files: &mut impl Files,
+        x: i32,
+        y: i32,
+        serial: u32,
+        paths: &[Path],
+    ) {
         let first = paths.first().copied();
         let spot = match first {
             Some(path) => self.spot_at(files, x, y, Some(&path)),
             None => None,
         };
         let since = match self.arriving {
-            Some(arriving) if arriving.serial == serial && arriving.spot == spot => arriving.spot_since,
+            Some(arriving) if arriving.serial == serial && arriving.spot == spot => {
+                arriving.spot_since
+            }
             _ => self.now_ms,
         };
         self.arriving = Some(Arriving {
             serial,
-            path: first,
             count: paths.len(),
             spot,
             spot_since: since,
@@ -313,7 +334,14 @@ impl FilesWindow {
     }
 
     /// The drag from another window was let go here at (`x`, `y`) with `modifiers` held.
-    pub fn drag_dropped(&mut self, files: &mut impl Files, x: i32, y: i32, paths: &[Path], modifiers: Modifiers) {
+    pub fn drag_dropped(
+        &mut self,
+        files: &mut impl Files,
+        x: i32,
+        y: i32,
+        paths: &[Path],
+        modifiers: Modifiers,
+    ) {
         self.arriving = None;
         self.damage_drag();
         let Some(first) = paths.first() else {
@@ -332,7 +360,13 @@ impl FilesWindow {
         }
     }
 
-    fn drop_paths(&mut self, files: &mut impl Files, paths: &[Path], spot: Spot, modifiers: Modifiers) {
+    fn drop_paths(
+        &mut self,
+        files: &mut impl Files,
+        paths: &[Path],
+        spot: Spot,
+        modifiers: Modifiers,
+    ) {
         let Some(location) = self.folder_of_spot(spot) else {
             return;
         };
@@ -362,7 +396,13 @@ impl FilesWindow {
         }
     }
 
-    fn drop_into(&mut self, files: &mut impl Files, path: &Path, folder: Path, modifiers: Modifiers) -> bool {
+    fn drop_into(
+        &mut self,
+        files: &mut impl Files,
+        path: &Path,
+        folder: Path,
+        modifiers: Modifiers,
+    ) -> bool {
         if is_within(folder.as_bytes(), HOST_SHARE) {
             self.show_notice(format_args!("The host share is read-only."));
             return false;
@@ -375,7 +415,10 @@ impl FilesWindow {
             self.show_notice(format_args!("Cannot move a folder into itself."));
             return false;
         }
-        let same_file_system = match (files.status(path.as_bytes()), files.status(folder.as_bytes())) {
+        let same_file_system = match (
+            files.status(path.as_bytes()),
+            files.status(folder.as_bytes()),
+        ) {
             (Ok(from), Ok(into)) => from.device == into.device,
             _ => false,
         };
@@ -385,8 +428,10 @@ impl FilesWindow {
             false => drop_action(modifiers, same_file_system, false),
         };
         if action == DropAction::Link {
-            let made = free_path(files, folder.as_bytes(), |number| link_name(name, is_folder, number))
-                .and_then(|link| files.make_link(path.as_bytes(), link.as_bytes()));
+            let made = free_path(files, folder.as_bytes(), |number| {
+                link_name(name, is_folder, number)
+            })
+            .and_then(|link| files.make_link(path.as_bytes(), link.as_bytes()));
             if let Err(error) = made {
                 self.show_notice(format_args!(
                     "Could not make a link to {} ({}).",
@@ -397,10 +442,16 @@ impl FilesWindow {
             }
             return true;
         }
-        let target = match free_path(files, folder.as_bytes(), |number| copy_name(name, is_folder, number)) {
+        let target = match free_path(files, folder.as_bytes(), |number| {
+            copy_name(name, is_folder, number)
+        }) {
             Ok(target) => target,
             Err(error) => {
-                self.show_notice(format_args!("Could not copy {} ({}).", Shown(name), errno_text(error)));
+                self.show_notice(format_args!(
+                    "Could not copy {} ({}).",
+                    Shown(name),
+                    errno_text(error)
+                ));
                 return false;
             }
         };
@@ -426,7 +477,9 @@ impl FilesWindow {
 
     fn ghost_words(&self) -> Option<(Name, (i32, i32))> {
         match (self.picked, self.arriving) {
-            (Some(picked), _) if picked.started => Some((drag_words(picked.path.file_name(), 1), picked.at)),
+            (Some(picked), _) if picked.started => {
+                Some((drag_words(picked.path.file_name(), 1), picked.at))
+            }
             _ => None,
         }
     }
@@ -495,10 +548,22 @@ mod tests {
     fn the_modifiers_at_the_release_choose_the_action() {
         assert_eq!(drop_action(NONE, true, false), DropAction::Move);
         assert_eq!(drop_action(NONE, false, false), DropAction::Copy);
-        assert_eq!(drop_action(Modifiers(Modifiers::CTRL), true, false), DropAction::Copy);
-        assert_eq!(drop_action(Modifiers(Modifiers::ALT), true, false), DropAction::Copy);
-        assert_eq!(drop_action(Modifiers(Modifiers::SHIFT), false, false), DropAction::Move);
-        assert_eq!(drop_action(Modifiers(Modifiers::SUPER), false, false), DropAction::Move);
+        assert_eq!(
+            drop_action(Modifiers(Modifiers::CTRL), true, false),
+            DropAction::Copy
+        );
+        assert_eq!(
+            drop_action(Modifiers(Modifiers::ALT), true, false),
+            DropAction::Copy
+        );
+        assert_eq!(
+            drop_action(Modifiers(Modifiers::SHIFT), false, false),
+            DropAction::Move
+        );
+        assert_eq!(
+            drop_action(Modifiers(Modifiers::SUPER), false, false),
+            DropAction::Move
+        );
         let link = Modifiers(Modifiers::CTRL | Modifiers::SHIFT);
         assert_eq!(drop_action(link, true, false), DropAction::Link);
         let finder_link = Modifiers(Modifiers::SUPER | Modifiers::ALT);

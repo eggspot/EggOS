@@ -3,19 +3,15 @@
 //! frequency and raises interrupt 11; wake-ups between cores are IPIs (interrupt 12) through
 //! the IOCSR interrupt block.
 
-use crate::atomic::AtomicU64;
 use super::{csr, csr_read, csr_write, iocsr};
+use crate::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
-/// `ECFG.LIE`'s timer and IPI bits.
 const TIMER_INTERRUPT: u64 = 1 << 11;
 const IPI_INTERRUPT: u64 = 1 << 12;
-/// `TCFG`: enabled, one-shot; the count is the rest of the value, a multiple of 4.
 const TCFG_ENABLE: u64 = 1;
 const TCFG_COUNT: u64 = !3;
-/// The longest one-shot count `TCFG` takes, about 2^46 ticks.
 const LONGEST_COUNT: u64 = (1 << 46) - 4;
-/// The IPI vector the kernel's wake-ups use.
 const WAKE_VECTOR: u32 = 0;
 
 static FREQUENCY: AtomicU64 = AtomicU64::new(100_000_000);
@@ -23,7 +19,9 @@ static FREQUENCY: AtomicU64 = AtomicU64::new(100_000_000);
 fn cpucfg(word: u64) -> u64 {
     let value: u64;
     // SAFETY: `cpucfg` only reads the CPU's configuration words.
-    unsafe { core::arch::asm!("cpucfg {0}, {1}", out(reg) value, in(reg) word, options(nomem, nostack)) };
+    unsafe {
+        core::arch::asm!("cpucfg {0}, {1}", out(reg) value, in(reg) word, options(nomem, nostack))
+    };
     value
 }
 

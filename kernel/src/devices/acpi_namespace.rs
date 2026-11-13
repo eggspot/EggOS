@@ -48,7 +48,6 @@ const HUNDRED_NANOSECONDS_PER_SECOND: u128 = 10_000_000;
 const MICROSECONDS_PER_SECOND: u128 = 1_000_000;
 const SLEEP_STATE_OFF: u64 = 5;
 
-/// A system-memory region mapped at boot: `length` bytes at physical `start`, at `virt`.
 #[derive(Debug, Clone, Copy)]
 struct MappedRegion {
     start: u64,
@@ -70,7 +69,6 @@ pub struct KernelHost {
     controller: Option<ControllerPorts>,
 }
 
-/// An embedded controller's data and command ports, reached through the HAL.
 #[derive(Debug, Clone, Copy)]
 struct ControllerPorts {
     data: u16,
@@ -144,11 +142,11 @@ impl KernelHost {
             as u64
     }
 
-    fn configuration_address(
-        &self,
-        function: PciFunction,
-    ) -> Result<(&Ecam, Address), HostError> {
-        let ecam = self.configuration.as_ref().ok_or(HostError::UnsupportedSpace)?;
+    fn configuration_address(&self, function: PciFunction) -> Result<(&Ecam, Address), HostError> {
+        let ecam = self
+            .configuration
+            .as_ref()
+            .ok_or(HostError::UnsupportedSpace)?;
         if function.segment != 0 {
             return Err(HostError::OutOfRange);
         }
@@ -302,15 +300,12 @@ impl Host for KernelHost {
     }
 }
 
-/// The namespace once loaded, the devices `_STA` says are absent, and what [`start_events`]
-/// found.
 struct Loaded {
     interpreter: Interpreter<KernelHost>,
     absent: Vec<Path>,
     events: Option<Events>,
 }
 
-/// The general-purpose event blocks, the embedded controller and the power button devices.
 struct Events {
     blocks: Vec<GpeBlock>,
     controller: Option<(Path, Option<u16>)>,
@@ -423,14 +418,22 @@ pub fn is_present(path: &[u8]) -> bool {
 pub fn prepare_to_power_off() {
     if let Some(loaded) = NAMESPACE.lock().as_mut() {
         let off = [Object::Integer(SLEEP_STATE_OFF)];
-        let _ = loaded.interpreter.evaluate_child(&Path::root(), b"_PTS", &off);
+        let _ = loaded
+            .interpreter
+            .evaluate_child(&Path::root(), b"_PTS", &off);
     }
 }
 
 /// The last notifications AML sent (`Notify`), oldest first: the object's path and the value.
 pub fn notifications() -> Vec<(Path, u64)> {
     match NAMESPACE.lock().as_mut() {
-        Some(loaded) => loaded.interpreter.host().notifications.iter().cloned().collect(),
+        Some(loaded) => loaded
+            .interpreter
+            .host()
+            .notifications
+            .iter()
+            .cloned()
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -450,8 +453,7 @@ pub fn start_events<P: Platform>() -> Result<(), &'static str> {
         for block in &blocks {
             for index in 0..block.events() {
                 let number = block.base + index;
-                if controller_event == Some(number) || event_method(interpreter, number).is_some()
-                {
+                if controller_event == Some(number) || event_method(interpreter, number).is_some() {
                     set_event_enabled::<P>(block, index, true);
                 }
             }
@@ -476,12 +478,12 @@ pub fn start_events<P: Platform>() -> Result<(), &'static str> {
     .map_err(|_| "no thread for ACPI events")
 }
 
-/// Finds the embedded controller (`PNP0C09`), takes its data and command ports from `_CRS` and
-/// its event from `_GPE`, and runs its `_REG` to say its space can be used: its path and event.
 fn set_up_controller(interpreter: &mut Interpreter<KernelHost>) -> Option<(Path, Option<u16>)> {
-    let path = interpreter.devices_with_id(&[b"PNP0C09"]).into_iter().next()?;
-    let Ok(Some(Object::Buffer(template))) = interpreter.evaluate_child(&path, b"_CRS", &[])
-    else {
+    let path = interpreter
+        .devices_with_id(&[b"PNP0C09"])
+        .into_iter()
+        .next()?;
+    let Ok(Some(Object::Buffer(template))) = interpreter.evaluate_child(&path, b"_CRS", &[]) else {
         return None;
     };
     let ports = eggos_acpi::resources::io_ports(&template);
@@ -517,17 +519,17 @@ fn hex_name(kind: u8, number: u8) -> [u8; 4] {
     ]
 }
 
-/// The `\_GPE` method of event `number` and whether it is an edge event's (`_Exx`) rather than
-/// a level event's (`_Lxx`).
 fn event_method(interpreter: &Interpreter<KernelHost>, number: u16) -> Option<(Path, bool)> {
     if number >= HANDLED_EVENTS {
         return None;
     }
     let scope = Path::root().child(NameSeg::new(b"_GPE"));
-    [(b'E', true), (b'L', false)].into_iter().find_map(|(kind, edge)| {
-        let path = scope.child(NameSeg(hex_name(kind, number as u8)));
-        interpreter.namespace().find(&path).map(|_| (path, edge))
-    })
+    [(b'E', true), (b'L', false)]
+        .into_iter()
+        .find_map(|(kind, edge)| {
+            let path = scope.child(NameSeg(hex_name(kind, number as u8)));
+            interpreter.namespace().find(&path).map(|_| (path, edge))
+        })
 }
 
 fn set_event_enabled<P: Platform>(block: &GpeBlock, index: u16, enabled: bool) {
@@ -541,8 +543,6 @@ fn set_event_enabled<P: Platform>(block: &GpeBlock, index: u16, enabled: bool) {
     P::write_io_port(port, 8, wanted);
 }
 
-/// Handles what raised the system control interrupt: every enabled event whose status is set,
-/// then what AML notified.
 fn handle_events<P: Platform>() {
     let (notified, power_buttons) = {
         let mut namespace = NAMESPACE.lock();
@@ -603,7 +603,6 @@ fn handle_events<P: Platform>() {
     }
 }
 
-/// Collects the embedded controller's events and runs the `_Qxx` method each names.
 fn answer_queries(interpreter: &mut Interpreter<KernelHost>, controller: &Path) {
     for _ in 0..MOST_QUERIES_PER_EVENT {
         let Some(ports) = interpreter.host().controller else {

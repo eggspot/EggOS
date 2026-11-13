@@ -56,7 +56,7 @@ impl Ink {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GlyphRect {
+pub(super) struct GlyphRect {
     x: u8,
     y: u8,
     width: u8,
@@ -69,6 +69,15 @@ impl GlyphRect {
         let (x, y) = (u32::from(self.x), u32::from(self.y));
         (x..x + u32::from(self.width)).contains(&column)
             && (y..y + u32::from(self.height)).contains(&row)
+    }
+
+    pub(super) fn placed(&self, x: u32, y: u32, scale: u32) -> Rect {
+        Rect::new(
+            x + u32::from(self.x) * scale,
+            y + u32::from(self.y) * scale,
+            u32::from(self.width) * scale,
+            u32::from(self.height) * scale,
+        )
     }
 }
 
@@ -111,7 +120,7 @@ const NO_ANSWER_MARK: [GlyphRect; 2] = [
 ];
 
 impl NetworkState {
-    fn glyph(self) -> [&'static [GlyphRect]; 4] {
+    pub(super) fn glyph(self) -> [&'static [GlyphRect]; 4] {
         match self {
             Self::Connected(_) => [&MACHINE, &CABLE, &NETWORK_REACHED, &[]],
             Self::GettingAddress => [&MACHINE, &CABLE, &NETWORK_NOT_REACHED, &ASKING_DOTS],
@@ -311,15 +320,7 @@ impl Desktop {
         }
         let scale = self.bar_scale();
         for rect in state.glyph().into_iter().flatten() {
-            canvas.fill(
-                Rect::new(
-                    x + u32::from(rect.x) * scale,
-                    y + u32::from(rect.y) * scale,
-                    u32::from(rect.width) * scale,
-                    u32::from(rect.height) * scale,
-                ),
-                rect.ink.pixel(),
-            );
+            canvas.fill(rect.placed(x, y, scale), rect.ink.pixel());
         }
     }
 }

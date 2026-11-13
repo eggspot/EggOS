@@ -272,7 +272,6 @@ impl<R: RegisterIo> Rtkit<R> {
         Ok(())
     }
 
-    /// Lends memory for a system endpoint's buffer request and answers it.
     fn give_buffer(
         &mut self,
         memory: &mut dyn SharedMemory,
@@ -380,10 +379,18 @@ mod tests {
         let mut controls: Vec<u32> = messages.iter().map(|_| 0).collect();
         controls.push(1 << 17);
         regs.script_reads(RECEIVE_CONTROL, &controls);
-        let low: Vec<u32> = messages.iter().map(|&(payload, _)| payload as u32).collect();
-        let high: Vec<u32> = messages.iter().map(|&(payload, _)| (payload >> 32) as u32).collect();
-        let endpoints: Vec<u32> =
-            messages.iter().map(|&(_, endpoint)| u32::from(endpoint)).collect();
+        let low: Vec<u32> = messages
+            .iter()
+            .map(|&(payload, _)| payload as u32)
+            .collect();
+        let high: Vec<u32> = messages
+            .iter()
+            .map(|&(payload, _)| (payload >> 32) as u32)
+            .collect();
+        let endpoints: Vec<u32> = messages
+            .iter()
+            .map(|&(_, endpoint)| u32::from(endpoint))
+            .collect();
         regs.script_reads(RECEIVE, &low);
         regs.script_reads(RECEIVE + 4, &high);
         regs.script_reads(RECEIVE + 8, &endpoints);

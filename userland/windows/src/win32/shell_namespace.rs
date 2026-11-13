@@ -89,7 +89,6 @@ impl<const N: usize> Table<N> {
     }
 }
 
-/// A shell folder or a shell item: its table, its reference count and its absolute list.
 #[repr(C)]
 #[derive(Debug)]
 struct Node {
@@ -98,7 +97,6 @@ struct Node {
     list: *mut u8,
 }
 
-/// A folder's children, listed when it was made: their one-item lists back to back.
 #[repr(C)]
 #[derive(Debug)]
 struct Children {
@@ -109,10 +107,6 @@ struct Children {
     at: usize,
 }
 
-/// The list at `list` with its terminator, if it ends within [`LONGEST_LIST`] bytes.
-///
-/// # Safety
-/// `list` must be null or a readable item ID list.
 unsafe fn list_bytes<'a>(list: *const u8) -> Option<&'a [u8]> {
     if list.is_null() {
         return None;
@@ -140,7 +134,11 @@ fn new_list(parts: &[&[u8]]) -> *mut u8 {
     let mut at = 0;
     for part in parts {
         // SAFETY: the fresh block holds `length` bytes, the parts' and a zeroed terminator.
-        unsafe { block.add(at).copy_from_nonoverlapping(part.as_ptr(), part.len()) };
+        unsafe {
+            block
+                .add(at)
+                .copy_from_nonoverlapping(part.as_ptr(), part.len())
+        };
         at += part.len();
     }
     block
@@ -292,12 +290,10 @@ fn hand_out(result: Result<*mut Node, HResult>, wanted: *const Guid, out: *mut u
     answer
 }
 
-/// A new shell folder over the absolute list `list`, which it takes.
 fn new_folder(list: *mut u8) -> Result<*mut Node, HResult> {
     new_node(FOLDER_TABLE.address(), list)
 }
 
-/// A new shell item over the absolute list `list`, which it takes.
 fn new_item(list: *mut u8) -> Result<*mut Node, HResult> {
     new_node(ITEM_TABLE.address(), list)
 }
@@ -328,7 +324,10 @@ unsafe extern "efiapi" fn item_query_interface(
 
 unsafe extern "efiapi" fn node_add_reference(this: *mut Node) -> u32 {
     // SAFETY: the caller's duty: a live node.
-    unsafe { node(this) }.references.fetch_add(1, Atomic::Relaxed) + 1
+    unsafe { node(this) }
+        .references
+        .fetch_add(1, Atomic::Relaxed)
+        + 1
 }
 
 unsafe extern "efiapi" fn node_release(this: *mut Node) -> u32 {
@@ -583,8 +582,14 @@ fn compare_lists(a: &[u8], b: &[u8]) -> Ordering {
             (None, Some(_)) => return Ordering::Less,
             (Some(_), None) => return Ordering::Greater,
             (Some(a), Some(b)) => {
-                let a = a.unwrap_or(Item { name: b"", flags: 0 });
-                let b = b.unwrap_or(Item { name: b"", flags: 0 });
+                let a = a.unwrap_or(Item {
+                    name: b"",
+                    flags: 0,
+                });
+                let b = b.unwrap_or(Item {
+                    name: b"",
+                    flags: 0,
+                });
                 let order = item_lists::compare(&a, &b);
                 if order != Ordering::Equal {
                     return order;
@@ -713,7 +718,9 @@ unsafe extern "efiapi" fn folder_get_display_name_of(
     // union at offset 8, which holds the string's pointer for `STRRET_WSTR`.
     unsafe {
         name.cast::<u32>().write_unaligned(STRRET_WSTR);
-        name.add(STRRET_POINTER_OFFSET).cast::<usize>().write_unaligned(block as usize);
+        name.add(STRRET_POINTER_OFFSET)
+            .cast::<usize>()
+            .write_unaligned(block as usize);
     }
     S_OK
 }
@@ -739,7 +746,9 @@ fn rename_in(folder: &[u8], relative: &[u8], new_name: &[u16]) -> Result<*mut u8
     let mut to = [0u8; PATH_CAPACITY];
     to[..=parent_length].copy_from_slice(&from[..=parent_length]);
     let to_length = parent_length + 1 + name.len();
-    to.get_mut(parent_length + 1..to_length).ok_or(E_INVALIDARG)?.copy_from_slice(name);
+    to.get_mut(parent_length + 1..to_length)
+        .ok_or(E_INVALIDARG)?
+        .copy_from_slice(name);
     let mut from_nul = [0u8; PATH_CAPACITY + 1];
     let mut to_nul = [0u8; PATH_CAPACITY + 1];
     let from_nul_length = terminated(&from[..from_length], &mut from_nul).ok_or(E_INVALIDARG)?;
@@ -774,8 +783,13 @@ unsafe extern "efiapi" fn folder_set_name_of(
         return E_INVALIDARG;
     }
     // SAFETY: the caller's duty: a live folder, a relative list and a NUL-terminated name.
-    let (list, relative, name) =
-        unsafe { (node_list(this), list_bytes(relative), super::file::wide_string(name)) };
+    let (list, relative, name) = unsafe {
+        (
+            node_list(this),
+            list_bytes(relative),
+            super::file::wide_string(name),
+        )
+    };
     let Some(relative) = relative else {
         return E_INVALIDARG;
     };
@@ -811,7 +825,10 @@ unsafe extern "efiapi" fn children_query_interface(
 
 unsafe extern "efiapi" fn children_add_reference(this: *mut Children) -> u32 {
     // SAFETY: the caller's duty: a live enumerator.
-    unsafe { children(this) }.references.fetch_add(1, Atomic::Relaxed) + 1
+    unsafe { children(this) }
+        .references
+        .fetch_add(1, Atomic::Relaxed)
+        + 1
 }
 
 unsafe extern "efiapi" fn children_release(this: *mut Children) -> u32 {
@@ -840,8 +857,9 @@ fn next_list(found: &mut Children) -> Option<*mut u8> {
     let lists = listed(found);
     let rest = lists.get(found.at..)?;
     let length = item_lists::length(rest).filter(|&length| length > 2)?;
+    let list = new_list(&[without_terminator(&rest[..length])]);
     found.at += length;
-    Some(new_list(&[without_terminator(&rest[..length])]))
+    Some(list)
 }
 
 unsafe extern "efiapi" fn children_next(
@@ -957,7 +975,11 @@ unsafe extern "efiapi" fn item_bind_to_handler(
         unsafe { out.write(0) };
         return E_INVALIDARG;
     }
-    hand_out(new_folder(new_list(&[without_terminator(list)])), interface, out)
+    hand_out(
+        new_folder(new_list(&[without_terminator(list)])),
+        interface,
+        out,
+    )
 }
 
 unsafe extern "efiapi" fn item_get_parent(this: *mut Node, out: *mut usize) -> HResult {
@@ -1135,10 +1157,6 @@ fn absolute_list_of_windows(name: &[u16]) -> Result<*mut u8, HResult> {
     parse_in_folder(&desktop, name).map(|(made, _)| made)
 }
 
-/// The absolute list of the layer's own folder or item object `object`, a copy.
-///
-/// # Safety
-/// `object` must be null or a live COM object.
 unsafe fn list_of_object(object: usize) -> Option<*mut u8> {
     if object == 0 {
         return None;
@@ -1176,7 +1194,9 @@ unsafe extern "efiapi" fn il_clone_first(list: *const u8) -> *mut u8 {
     let Some(bytes) = (unsafe { list_bytes(list) }) else {
         return core::ptr::null_mut();
     };
-    let first = item_lists::offsets(bytes).next().map_or(0, |(_, size)| size);
+    let first = item_lists::offsets(bytes)
+        .next()
+        .map_or(0, |(_, size)| size);
     new_list(&[&bytes[..first]])
 }
 
@@ -1359,7 +1379,11 @@ unsafe extern "efiapi" fn sh_create_item_from_parsing_name(
     }
     // SAFETY: `SHCreateItemFromParsingName`'s contract: a NUL-terminated name.
     let name = unsafe { super::file::wide_string(name) };
-    hand_out(absolute_list_of_windows(name).and_then(new_item), interface, out)
+    hand_out(
+        absolute_list_of_windows(name).and_then(new_item),
+        interface,
+        out,
+    )
 }
 
 unsafe extern "efiapi" fn sh_create_item_from_id_list(

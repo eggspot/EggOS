@@ -17,9 +17,9 @@ use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
 use crate::keys::{DisplayChange, InputChange, KeysChange};
 use crate::network_pane::NetworkPane;
-use crate::wifi_section::{self, WifiSection};
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
+use crate::wifi_section::{self, WifiSection};
 use crate::windows_pane::{self, WindowsPane};
 use crate::zone_picker::{self, ZonePicker};
 use alloc::boxed::Box;
@@ -51,7 +51,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 225
+pub const CAPACITY: usize = 230
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -78,11 +78,8 @@ const WEARABLE_SUMMARY_TOP: i32 = 32;
 const WEARABLE_FACTS_TOP: i32 = 56;
 /// What a wearable's pane page says under its facts (settings-forms-v0.5.md 1.4).
 pub const WEARABLE_HINT: &str = "Change these from your phone or the CLI.";
-/// A narrow pane's content is at most this wide (settings-forms-v0.5.md 2).
 const PAGE_CONTENT_MAX: i32 = 480;
-/// A control's height on a narrow page: a finger's target.
 const TOUCH_CONTROL: i32 = 48;
-/// Where the Keyboard pane's repeat rows start on a narrow page, under its last dropdown.
 const KEYBOARD_REPEAT_TOP_NARROW: i32 = 760;
 const LIST_TOP: i32 = 44;
 const SIDEBAR_ROW: i32 = 32;
@@ -110,7 +107,6 @@ const SET_BUTTON: (i32, i32, i32, i32) = (352, 150, 96, 28);
 const STATUS_LINE: i32 = 196;
 const REMEDY_LINE: i32 = 216;
 const DATE_AND_TIME_PANE_HEIGHT: i32 = 408;
-/// The Display pane's height, its Rotation row included (docs/ux/display-rotation-v0.5.md).
 const DISPLAY_PANE_HEIGHT: i32 = 428;
 
 const LAYOUT_LIST: (i32, i32, i32, i32) = (16, 64, 208, 96);
@@ -127,8 +123,6 @@ const SWITCH_KEY_LABEL: (i32, i32) = (16, 282);
 const SWITCH_KEY: (i32, i32, i32, i32) = (96, 276, 128, 28);
 const ON_SCREEN_LABEL: (i32, i32) = (16, 318);
 const ON_SCREEN: (i32, i32, i32, i32) = (16, 336, 208, 28);
-/// The on-screen keyboard's modes as the Keyboard pane offers them, in `keyboard.on_screen`'s
-/// order (docs/ux/on-screen-keyboard-v0.5.md 1.1, D317).
 const ON_SCREEN_LABELS: [&str; 3] = ["Automatic", "Always", "Never"];
 const NO_ROWS: [&str; MAX_KEYBOARD_LAYOUTS] = [""; MAX_KEYBOARD_LAYOUTS];
 const FOUR_LAYOUTS: &str = "Four layouts is the most.";
@@ -518,17 +512,23 @@ const PANE_WORDS: [&[&str]; 12] = [
 /// The profile cards' labels, in the settings file's `PROFILES` order.
 pub const PROFILE_LABELS: [&str; 3] = ["Windows", "macOS", "Linux"];
 
+/// The network [`Request::WifiJoin`] names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiJoin {
+    /// The network's name.
+    pub name: Text<{ wifi_section::MAX_NAME_BYTES }>,
+    /// Its passphrase, empty for an open network.
+    pub passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
+    /// Whether it hides its name.
+    pub hidden: bool,
+}
+
 /// What the program must do for the user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     /// Write `/var/lib/eggos/wifi.conf` naming this network and passphrase, as `wifi connect`
     /// does, then say how it went ([`SettingsWindow::wifi_join_saved`]) (D283).
-    WifiJoin {
-        name: Text<{ wifi_section::MAX_NAME_BYTES }>,
-        passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
-        /// Mark it `hidden=yes`, so the driver asks for it by name (D298, D319).
-        hidden: bool,
-    },
+    WifiJoin(alloc::boxed::Box<WifiJoin>),
     /// Remove `/var/lib/eggos/wifi.conf`, as `wifi forget` does (D283).
     WifiForget,
     /// Show the Components pane (D283: the Wi-Fi firmware is installed there).
@@ -793,17 +793,33 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
             "{} \u{d7} {}, scale {}",
             facts.resolution.0, facts.resolution.1, facts.scale
         ),
-        KEYBOARD => write!(text, "Layouts, repeat and the on-screen keyboard"),
+        KEYBOARD => write!(text, "Layouts, repeat, on-screen keyboard"),
         MOUSE => write!(
             text,
             "{} hand{}",
-            if facts.input.left_handed { "Left" } else { "Right" },
-            if facts.input.natural_scrolling { ", natural scrolling" } else { "" }
+            if facts.input.left_handed {
+                "Left"
+            } else {
+                "Right"
+            },
+            if facts.input.natural_scrolling {
+                ", natural scrolling"
+            } else {
+                ""
+            }
         ),
         ACCESSIBILITY => {
             let on = [
-                (facts.display.high_contrast, "High contrast", "high contrast"),
-                (facts.display.reduce_motion, "Reduce motion", "reduce motion"),
+                (
+                    facts.display.high_contrast,
+                    "High contrast",
+                    "high contrast",
+                ),
+                (
+                    facts.display.reduce_motion,
+                    "Reduce motion",
+                    "reduce motion",
+                ),
                 (facts.keys.sticky_keys, "Sticky keys", "sticky keys"),
                 (facts.keys.slow_keys, "Slow keys", "slow keys"),
             ];
@@ -824,13 +840,24 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
         DATE_AND_TIME => write!(
             text,
             "{}, {}",
-            if facts.time_automatic { "Automatic" } else { "Set by hand" },
-            eggos_calendar::zone::ZONES.get(facts.time_zone).map_or("UTC", |(name, _)| *name)
+            if facts.time_automatic {
+                "Automatic"
+            } else {
+                "Set by hand"
+            },
+            eggos_calendar::zone::ZONES
+                .get(facts.time_zone)
+                .map_or("UTC", |(name, _)| *name)
         ),
         AGENTS => write!(text, "Which agents may act for you"),
         WINDOWS => write!(text, "Registry of Windows programs"),
         COMPONENTS => write!(text, "Install and remove parts of EggOS"),
-        _ => write!(text, "EggOS {}, {}", facts.version, facts.architecture.as_str()),
+        _ => write!(
+            text,
+            "EggOS {}, {}",
+            facts.version,
+            facts.architecture.as_str()
+        ),
     };
     text
 }
@@ -838,7 +865,7 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
 /// The Settings window's widgets and what they show.
 #[derive(Debug)]
 pub struct SettingsWindow {
-    tree: WidgetTree<CAPACITY>,
+    tree: alloc::boxed::Box<WidgetTree<CAPACITY>>,
     widgets: Widgets,
     storage: StoragePane,
     agents: AgentsPane,
@@ -1011,7 +1038,7 @@ impl Builder<'_> {
 impl SettingsWindow {
     /// The window showing `facts`, the Appearance pane first, the search field focused.
     pub fn new(facts: Facts) -> Self {
-        let mut tree = WidgetTree::new();
+        let mut tree = alloc::boxed::Box::new(WidgetTree::new());
         let mut build = Builder { tree: &mut tree };
         let sidebar = build.add(
             None,
@@ -1077,12 +1104,22 @@ impl SettingsWindow {
         });
         let wearable_facts = build.add(
             Some(pane_area),
-            Place::at(PADDING, WEARABLE_FACTS_TOP, Length::Fill(PADDING), Length::Content),
+            Place::at(
+                PADDING,
+                WEARABLE_FACTS_TOP,
+                Length::Fill(PADDING),
+                Length::Content,
+            ),
             Kind::label("", Token::Text),
         );
         let wearable_hint = build.add(
             Some(pane_area),
-            Place::at(PADDING, WEARABLE_FACTS_TOP + 20, Length::Fill(PADDING), Length::Content),
+            Place::at(
+                PADDING,
+                WEARABLE_FACTS_TOP + 20,
+                Length::Fill(PADDING),
+                Length::Content,
+            ),
             Kind::label(WEARABLE_HINT, Token::TextDim),
         );
         let frame = Frame {
@@ -1216,7 +1253,11 @@ impl SettingsWindow {
         let on_screen_keyboard = build.add(
             Some(keyboard),
             at(ON_SCREEN),
-            Kind::dropdown("On-screen keyboard", &ON_SCREEN_LABELS, facts.on_screen_keyboard.min(2)),
+            Kind::dropdown(
+                "On-screen keyboard",
+                &ON_SCREEN_LABELS,
+                facts.on_screen_keyboard.min(2),
+            ),
         );
         let third_level = build.label(
             keyboard,
@@ -1553,21 +1594,33 @@ impl SettingsWindow {
     }
 
     /// How setting `shell.form` went ([`Request::SetShellForm`]), with the form shown after.
-    pub fn shell_form_saved(&mut self, setting: usize, form_in_use: usize, saved: Result<(), Errno>) {
+    pub fn shell_form_saved(
+        &mut self,
+        setting: usize,
+        form_in_use: usize,
+        saved: Result<(), Errno>,
+    ) {
         if saved.is_ok() {
             self.facts.form_setting = setting;
         }
         self.facts.form_in_use = form_in_use;
-        self.display.layout_saved(&mut self.tree, &self.facts, saved);
+        self.display
+            .layout_saved(&mut self.tree, &self.facts, saved);
     }
 
     /// How setting `display.rotation` went ([`Request::SetDisplayRotation`]): saved, then
     /// applied (D333).
-    pub fn display_rotation_saved(&mut self, index: usize, saved: Result<(), Errno>, applied: Result<(), Errno>) {
+    pub fn display_rotation_saved(
+        &mut self,
+        index: usize,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
         if saved.is_ok() {
             self.facts.rotation = index;
         }
-        self.display.rotation_saved(&mut self.tree, &self.facts, saved, applied);
+        self.display
+            .rotation_saved(&mut self.tree, &self.facts, saved, applied);
     }
 
     /// How saving the display's size went ([`Request::SetDisplayResolution`]).
@@ -1575,7 +1628,8 @@ impl SettingsWindow {
         if saved.is_ok() {
             self.facts.resolution_choice = size;
         }
-        self.display.resolution_saved(&mut self.tree, &self.facts, saved);
+        self.display
+            .resolution_saved(&mut self.tree, &self.facts, saved);
     }
 
     /// How saving the display's scale went ([`Request::SetDisplayScale`]).
@@ -1694,7 +1748,9 @@ impl SettingsWindow {
             .set_drill_down(&mut self.tree, shape == Shape::Pages, pane_width);
         let layout = match shape {
             Shape::Pages => crate::components_pane::Layout::Phone { width: pane_width },
-            Shape::Sidebar { row: SIDEBAR_ROW_TOUCH } => crate::components_pane::Layout::Tablet,
+            Shape::Sidebar {
+                row: SIDEBAR_ROW_TOUCH,
+            } => crate::components_pane::Layout::Tablet,
             Shape::Sidebar { .. } => crate::components_pane::Layout::Desktop,
         };
         self.components.set_layout(&mut self.tree, layout);
@@ -1729,7 +1785,11 @@ impl SettingsWindow {
                 0,
                 0,
                 Length::Fill(0),
-                Length::Px(if content.is_some() { display } else { DISPLAY_PANE_HEIGHT }),
+                Length::Px(if content.is_some() {
+                    display
+                } else {
+                    DISPLAY_PANE_HEIGHT
+                }),
             ),
         );
         let storage = self.storage.reflow(&mut self.tree, content);
@@ -1739,7 +1799,11 @@ impl SettingsWindow {
                 0,
                 0,
                 Length::Fill(0),
-                Length::Px(if content.is_some() { storage } else { PANE_HEIGHT }),
+                Length::Px(if content.is_some() {
+                    storage
+                } else {
+                    PANE_HEIGHT
+                }),
             ),
         );
         let agents = self.agents.reflow(&mut self.tree, content);
@@ -1749,7 +1813,11 @@ impl SettingsWindow {
                 0,
                 0,
                 Length::Fill(0),
-                Length::Px(if content.is_some() { agents } else { PANE_HEIGHT }),
+                Length::Px(if content.is_some() {
+                    agents
+                } else {
+                    PANE_HEIGHT
+                }),
             ),
         );
         let accessibility = self.accessibility.reflow(&mut self.tree, content);
@@ -1759,7 +1827,11 @@ impl SettingsWindow {
                 0,
                 0,
                 Length::Fill(0),
-                Length::Px(if content.is_some() { accessibility } else { PANE_HEIGHT }),
+                Length::Px(if content.is_some() {
+                    accessibility
+                } else {
+                    PANE_HEIGHT
+                }),
             ),
         );
         self.lay_out_frame();
@@ -1782,8 +1854,6 @@ impl SettingsWindow {
         }
     }
 
-    /// Puts the list page's icons, chevrons and summaries beside its shown rows (D433), or
-    /// hides them in the sidebar shapes.
     fn mark_rows(&mut self) {
         let frame = self.frame;
         let list = self.widgets.list;
@@ -1821,7 +1891,12 @@ impl SettingsWindow {
             self.tree.set_text(*summary, words.as_str());
             self.tree.set_place(
                 *summary,
-                Place::at(x, top + position * row + below, Length::Fill(48), Length::Content),
+                Place::at(
+                    x,
+                    top + position * row + below,
+                    Length::Fill(48),
+                    Length::Content,
+                ),
             );
             position += 1;
         }
@@ -1889,10 +1964,8 @@ impl SettingsWindow {
                 );
                 self.tree.set_shown(frame.pane_area, !on_list);
                 self.tree.set_shown(frame.bar, !on_list);
-                self.tree.set_place(
-                    frame.bar,
-                    Place::at(0, 0, Length::Fill(0), Length::Px(bar)),
-                );
+                self.tree
+                    .set_place(frame.bar, Place::at(0, 0, Length::Fill(0), Length::Px(bar)));
                 self.tree.set_place(
                     frame.back,
                     Place::at(0, 0, Length::Px(bar), Length::Px(bar)),
@@ -1919,8 +1992,6 @@ impl SettingsWindow {
         self.mark_rows();
     }
 
-    /// Lays the Keyboard pane out in one column `content` wide (settings-forms-v0.5.md 2, its
-    /// worked example), or as on the desktop.
     fn reflow_keyboard(&mut self, content: Option<i32>) {
         let w = self.widgets;
         let tree = &mut self.tree;
@@ -1932,7 +2003,10 @@ impl SettingsWindow {
             tree.set_place(w.layouts, boxed(LAYOUT_LIST));
             tree.set_row_height(w.layouts, LAYOUT_ROW);
             for (row, title) in w.layout_titles.iter().enumerate() {
-                tree.set_place(*title, line(LAYOUT_LABEL_X, LAYOUT_LABEL_TOP + row as i32 * LAYOUT_ROW));
+                tree.set_place(
+                    *title,
+                    line(LAYOUT_LABEL_X, LAYOUT_LABEL_TOP + row as i32 * LAYOUT_ROW),
+                );
             }
             tree.set_place(w.add_layout, boxed(ADD_LAYOUT));
             tree.set_place(w.move_up, boxed(MOVE_UP));
@@ -1945,7 +2019,10 @@ impl SettingsWindow {
             tree.set_place(w.keyboard_status, line(PADDING, NO_DISK_LINE));
             tree.set_place(w.switch_label, line(SWITCH_KEY_LABEL.0, SWITCH_KEY_LABEL.1));
             tree.set_place(w.switch_key, boxed(SWITCH_KEY));
-            tree.set_place(w.on_screen_label, line(ON_SCREEN_LABEL.0, ON_SCREEN_LABEL.1));
+            tree.set_place(
+                w.on_screen_label,
+                line(ON_SCREEN_LABEL.0, ON_SCREEN_LABEL.1),
+            );
             tree.set_place(w.on_screen_keyboard, boxed(ON_SCREEN));
             tree.set_place(
                 w.panes[KEYBOARD],
@@ -1980,8 +2057,6 @@ impl SettingsWindow {
         );
     }
 
-    /// Lays the Date & time pane out in one column `content` wide, or as on the desktop: the
-    /// `Set to` field and `Set` stacked (R3), the zone picker's list with 48 px rows (R6).
     fn reflow_date_and_time(&mut self, content: Option<i32>) {
         let w = self.widgets;
         let line = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
@@ -1989,14 +2064,19 @@ impl SettingsWindow {
             Place::at(x, y, Length::Px(width), Length::Px(height))
         };
         let Some(c) = content else {
-            self.tree
-                .set_place(w.set_to, line(FIRST_ROW + SET_TO_ROW * SETTING_ROW + TEXT_IN_ROW));
+            self.tree.set_place(
+                w.set_to,
+                line(FIRST_ROW + SET_TO_ROW * SETTING_ROW + TEXT_IN_ROW),
+            );
             self.tree.set_place(w.set_field, boxed(SET_FIELD));
             self.tree.set_place(w.set_button, boxed(SET_BUTTON));
             self.tree.set_place(w.status, line(STATUS_LINE));
             self.tree.set_place(w.remedy, line(REMEDY_LINE));
-            self.zones
-                .reflow(&mut self.tree, crate::zone_picker::PickerLayout::DATE_AND_TIME, None);
+            self.zones.reflow(
+                &mut self.tree,
+                crate::zone_picker::PickerLayout::DATE_AND_TIME,
+                None,
+            );
             self.tree.set_place(
                 w.panes[DATE_AND_TIME],
                 Place::at(0, 0, Length::Fill(0), Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
@@ -2005,10 +2085,14 @@ impl SettingsWindow {
         };
         let set_top = FIRST_ROW + SET_TO_ROW * SETTING_ROW;
         self.tree.set_place(w.set_to, line(set_top));
-        self.tree
-            .set_place(w.set_field, boxed((PADDING, set_top + 24, c, TOUCH_CONTROL)));
-        self.tree
-            .set_place(w.set_button, boxed((PADDING, set_top + 80, c, TOUCH_CONTROL)));
+        self.tree.set_place(
+            w.set_field,
+            boxed((PADDING, set_top + 24, c, TOUCH_CONTROL)),
+        );
+        self.tree.set_place(
+            w.set_button,
+            boxed((PADDING, set_top + 80, c, TOUCH_CONTROL)),
+        );
         let status = set_top + 136;
         self.tree.set_place(w.status, line(status));
         self.tree.set_place(w.remedy, line(status + 20));
@@ -2020,12 +2104,15 @@ impl SettingsWindow {
         );
         self.tree.set_place(
             w.panes[DATE_AND_TIME],
-            Place::at(0, 0, Length::Fill(0), Length::Px(picker + 124 + 3 * TOUCH_CONTROL + 16)),
+            Place::at(
+                0,
+                0,
+                Length::Fill(0),
+                Length::Px(picker + 124 + 3 * TOUCH_CONTROL + 16),
+            ),
         );
     }
 
-    /// Lays the Appearance pane out in one column `content` wide (R7: the profile cards in a
-    /// column, then its rows by R1), or as on the desktop.
     fn reflow_appearance(&mut self, content: Option<i32>) {
         let w = self.widgets;
         let line = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
@@ -2057,7 +2144,8 @@ impl SettingsWindow {
             let y = rows_top + row as i32 * SETTING_ROW;
             self.tree.set_place(*label, line(y + TEXT_IN_ROW));
             if let Some(value) = values.get(row) {
-                self.tree.set_place(*value, Place::right(PADDING, y + TEXT_IN_ROW));
+                self.tree
+                    .set_place(*value, Place::right(PADDING, y + TEXT_IN_ROW));
             }
         }
         self.tree
@@ -2183,8 +2271,13 @@ impl SettingsWindow {
     }
 
     /// Shows how the component job the pane waited for ended, with what was read after.
-    pub fn show_component_job_ended(&mut self, succeeded: bool, read: ComponentsRead) -> Option<Request> {
-        self.components.show_job_ended(&mut self.tree, succeeded, read)
+    pub fn show_component_job_ended(
+        &mut self,
+        succeeded: bool,
+        read: ComponentsRead,
+    ) -> Option<Request> {
+        self.components
+            .show_job_ended(&mut self.tree, succeeded, read)
     }
 
     /// The edition the Components pane finished installing, to record (D263).
@@ -2216,11 +2309,19 @@ impl SettingsWindow {
 
     /// Shows the Wi-Fi driver's `status` and the `chosen` network in the Network pane's Wi-Fi
     /// section, and names the wired section's adapter after it (D283).
-    pub fn show_wifi(&mut self, status: wifi_section::Status, chosen: Option<alloc::string::String>) {
+    pub fn show_wifi(
+        &mut self,
+        status: wifi_section::Status,
+        chosen: Option<alloc::string::String>,
+    ) {
         self.wifi.show(&mut self.tree, status, chosen);
         let adapter = self.facts.network_adapter;
-        self.network
-            .show_wifi(&mut self.tree, self.wifi.has_adapter(), self.wifi.connected(), adapter.as_ref());
+        self.network.show_wifi(
+            &mut self.tree,
+            self.wifi.has_adapter(),
+            self.wifi.connected(),
+            adapter.as_ref(),
+        );
     }
 
     /// The program wrote `wifi.conf` for a join (`Ok`) or could not (`Err` with its words).
@@ -2360,7 +2461,12 @@ impl SettingsWindow {
     }
 
     /// Shows on the Storage pane how installing EggOS on `device` went, at `now_ms`.
-    pub fn show_installed(&mut self, device: &'static str, result: Result<(), StorageError>, now_ms: u32) {
+    pub fn show_disk_installed(
+        &mut self,
+        device: &'static str,
+        result: Result<(), StorageError>,
+        now_ms: u32,
+    ) {
         self.storage
             .show_installed(&mut self.tree, device, result, now_ms);
     }
@@ -2766,7 +2872,9 @@ impl SettingsWindow {
         if self.about.respond(&mut self.tree, response) {
             return None;
         }
-        if let wifi_section::Reply::Done(request) = self.wifi.respond(&mut self.tree, response, now_ms) {
+        if let wifi_section::Reply::Done(request) =
+            self.wifi.respond(&mut self.tree, response, now_ms)
+        {
             return match request {
                 Some(Request::OpenComponents) => self.open_pane(COMPONENTS),
                 other => other,
@@ -3445,7 +3553,7 @@ mod tests {
             )
         );
         assert_eq!(
-            click(&mut window, 600, 124),
+            click(&mut window, 600, 164),
             Some(Request::SetDisplayScale(2))
         );
         window.display_scale_saved(2, Ok(()));
@@ -3457,7 +3565,7 @@ mod tests {
             )
         );
         assert_eq!(
-            click(&mut window, 540, 124),
+            click(&mut window, 540, 164),
             Some(Request::SetDisplayScale(1))
         );
         window.display_scale_saved(1, Err(Errno::EPERM));
@@ -3677,7 +3785,8 @@ mod form_tests {
         assert_eq!(window.page(), Page::List);
         assert_eq!(window.widgets().focus(), Some(window.widgets.list));
         assert!(!window.go_back());
-        window.tree().set_text(window.widgets.search, "dis");
+        let search = window.widgets.search;
+        window.tree().set_text(search, "dis");
         assert!(window.go_back());
         assert_eq!(window.widgets().text_of(window.widgets.search), Some(""));
     }
@@ -3754,7 +3863,10 @@ mod reflow_tests {
         window.set_form_factor(SettingsForm::Desktop, 640);
         let pane = window.widgets().rect(w.panes[KEYBOARD]).unwrap();
         let move_up = window.widgets().rect(w.move_up).unwrap();
-        assert_eq!((move_up.x - pane.x, move_up.y - pane.y), (MOVE_UP.0, MOVE_UP.1));
+        assert_eq!(
+            (move_up.x - pane.x, move_up.y - pane.y),
+            (MOVE_UP.0, MOVE_UP.1)
+        );
     }
 }
 
@@ -3807,7 +3919,10 @@ mod list_page_tests {
     fn every_summary_fits_forty_characters() {
         let facts = Facts::example();
         for pane in 0..PANES.len() {
-            assert!(pane_summary(pane, &facts).as_str().chars().count() <= 40, "{pane}");
+            assert!(
+                pane_summary(pane, &facts).as_str().chars().count() <= 40,
+                "{pane}"
+            );
         }
     }
 }

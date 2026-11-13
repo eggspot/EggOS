@@ -196,9 +196,9 @@ impl StorageError {
             StorageError::TooSmallToInstall => {
                 String::from("The disk is smaller than 1 GB: EggOS needs 1 GB or more.")
             }
-            StorageError::NoBootFiles => {
-                String::from("EggOS was not started from its USB stick or disk, so it has nothing to install.")
-            }
+            StorageError::NoBootFiles => String::from(
+                "EggOS was not started from its USB stick or disk, so it has nothing to install.",
+            ),
             StorageError::Failed => String::from("The disk could not be read or written."),
         }
     }
@@ -1207,16 +1207,27 @@ pub struct BootFiles {
 }
 
 fn size_named(text: &str, name: &str) -> Option<usize> {
-    text.lines()
-        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')?.trim().parse().ok())
+    text.lines().find_map(|line| {
+        line.strip_prefix(name)?
+            .strip_prefix(' ')?
+            .trim()
+            .parse()
+            .ok()
+    })
 }
 
-fn read_whole(disks: &mut (impl WholeDisks + ?Sized), path: &str, bytes: usize) -> Result<Vec<u8>, StorageError> {
+fn read_whole(
+    disks: &mut (impl WholeDisks + ?Sized),
+    path: &str,
+    bytes: usize,
+) -> Result<Vec<u8>, StorageError> {
     if bytes == 0 || bytes > MAX_BOOT_FILE_BYTES {
         return Err(StorageError::NoBootFiles);
     }
     let mut buffer = Vec::new();
-    buffer.try_reserve_exact(bytes).map_err(|_| StorageError::Failed)?;
+    buffer
+        .try_reserve_exact(bytes)
+        .map_err(|_| StorageError::Failed)?;
     buffer.resize(bytes, 0);
     let read = disks
         .read_system_file(path, &mut buffer)
@@ -1275,7 +1286,13 @@ pub fn installation_layout(sectors: u64) -> Option<(eggos_gpt::Layout, [(u64, u6
     let system_first = layout.aligned(layout.first_usable);
     let system_last = system_first + SYSTEM_PARTITION_BYTES / 512 - 1;
     let data_first = layout.aligned(system_last + 1);
-    (data_first < layout.last_usable).then_some((layout, [(system_first, system_last), (data_first, layout.last_usable)]))
+    (data_first < layout.last_usable).then_some((
+        layout,
+        [
+            (system_first, system_last),
+            (data_first, layout.last_usable),
+        ],
+    ))
 }
 
 /// Installs EggOS on the unmounted disk `device` (`disk install`, D241): erases it, writes a GUID
@@ -1313,9 +1330,19 @@ pub fn install(
             name: "EggOS",
         },
     ];
-    let table = eggos_gpt::NewTable::new(layout, guid(0), &partitions).ok_or(StorageError::TooSmall)?;
+    let table =
+        eggos_gpt::NewTable::new(layout, guid(0), &partitions).ok_or(StorageError::TooSmall)?;
     let handle = disks.open(line.device, true).map_err(StorageError::of)?;
-    let result = write_installation(disks, handle, &table, files, system_first, system_last, data_first, volume_id);
+    let result = write_installation(
+        disks,
+        handle,
+        &table,
+        files,
+        system_first,
+        system_last,
+        data_first,
+        volume_id,
+    );
     let flushed = disks.flush(handle).map_err(StorageError::of);
     disks.close(handle);
     result?;
@@ -1338,15 +1365,30 @@ fn write_installation(
     data_first: u64,
     volume_id: u32,
 ) -> Result<(), StorageError> {
-    let [primary_header, primary_entries, backup_entries, backup_header] = table.places();
+    let [
+        primary_header,
+        primary_entries,
+        backup_entries,
+        backup_header,
+    ] = table.places();
     let mut header_block = [0u8; 512];
-    disks.write_at(handle, 0, &table.mbr).map_err(StorageError::of)?;
+    disks
+        .write_at(handle, 0, &table.mbr)
+        .map_err(StorageError::of)?;
     header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&table.primary_header);
-    disks.write_at(handle, primary_header * 512, &header_block).map_err(StorageError::of)?;
-    disks.write_at(handle, primary_entries * 512, &table.entries).map_err(StorageError::of)?;
-    disks.write_at(handle, backup_entries * 512, &table.entries).map_err(StorageError::of)?;
+    disks
+        .write_at(handle, primary_header * 512, &header_block)
+        .map_err(StorageError::of)?;
+    disks
+        .write_at(handle, primary_entries * 512, &table.entries)
+        .map_err(StorageError::of)?;
+    disks
+        .write_at(handle, backup_entries * 512, &table.entries)
+        .map_err(StorageError::of)?;
     header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&table.backup_header);
-    disks.write_at(handle, backup_header * 512, &header_block).map_err(StorageError::of)?;
+    disks
+        .write_at(handle, backup_header * 512, &header_block)
+        .map_err(StorageError::of)?;
     let loader_path = format!("EFI/BOOT/{}", files.loader_name);
     let volume_files = [
         eggos_fat32::File {
@@ -1358,12 +1400,17 @@ fn write_installation(
             bytes: &files.kernel,
         },
     ];
-    let sectors = u32::try_from(system_last - system_first + 1).map_err(|_| StorageError::TooSmall)?;
+    let sectors =
+        u32::try_from(system_last - system_first + 1).map_err(|_| StorageError::TooSmall)?;
     let hidden = u32::try_from(system_first).unwrap_or(u32::MAX);
     let base = system_first * 512;
-    eggos_fat32::write_volume(sectors, hidden, volume_id, &volume_files, &mut |offset, bytes| {
-        disks.write_at(handle, base + offset, bytes)
-    })
+    eggos_fat32::write_volume(
+        sectors,
+        hidden,
+        volume_id,
+        &volume_files,
+        &mut |offset, bytes| disks.write_at(handle, base + offset, bytes),
+    )
     .map_err(|error| match error {
         eggos_fat32::Error::Write(fault) => StorageError::of(fault),
         _ => StorageError::TooSmall,
@@ -1371,7 +1418,9 @@ fn write_installation(
     let zero = [0u8; ZERO_CHUNK];
     let mut offset = 0;
     while offset < DATA_START_ZEROED {
-        disks.write_at(handle, data_first * 512 + offset, &zero).map_err(StorageError::of)?;
+        disks
+            .write_at(handle, data_first * 512 + offset, &zero)
+            .map_err(StorageError::of)?;
         offset += ZERO_CHUNK as u64;
     }
     Ok(())
@@ -1420,7 +1469,9 @@ pub fn install_idle_text(record: &DiskRecord, boot_files: bool) -> String {
         Err(StorageError::InUse(place)) => {
             format!("In use at {place}: EggOS cannot be installed on a mounted disk.")
         }
-        Err(StorageError::ReadOnly) => String::from("Read-only disk: EggOS cannot be installed on it."),
+        Err(StorageError::ReadOnly) => {
+            String::from("Read-only disk: EggOS cannot be installed on it.")
+        }
         Err(StorageError::TooSmallToInstall) => {
             String::from("Smaller than 1 GB: EggOS needs a disk of 1 GB or more.")
         }
@@ -1491,12 +1542,18 @@ mod install_tests {
             install_allowed(&record(gib, Some("/home"), true), true),
             Err(StorageError::InUse(String::from("/home")))
         );
-        assert_eq!(install_allowed(&record(gib, None, true), true), Err(StorageError::ReadOnly));
+        assert_eq!(
+            install_allowed(&record(gib, None, true), true),
+            Err(StorageError::ReadOnly)
+        );
         assert_eq!(
             install_allowed(&record(512 << 20, None, false), true),
             Err(StorageError::TooSmallToInstall)
         );
-        assert_eq!(install_allowed(&record(gib, None, false), false), Err(StorageError::NoBootFiles));
+        assert_eq!(
+            install_allowed(&record(gib, None, false), false),
+            Err(StorageError::NoBootFiles)
+        );
     }
 
     #[test]
@@ -1508,7 +1565,8 @@ mod install_tests {
 
     #[test]
     fn the_layout_leaves_a_256_mib_system_partition_and_the_rest() {
-        let (_, [(first, last), (data_first, _)]) = installation_layout((2u64 << 30) / 512).unwrap();
+        let (_, [(first, last), (data_first, _)]) =
+            installation_layout((2u64 << 30) / 512).unwrap();
         assert_eq!(first, 2048);
         assert_eq!(last - first + 1, 524_288);
         assert!(data_first > last);

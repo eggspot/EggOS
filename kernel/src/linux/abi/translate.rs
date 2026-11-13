@@ -25,10 +25,16 @@ pub fn flags_to_architecture(value: u64, pairs: FlagPairs) -> u64 {
 
 /// The value `value`, the architecture's, as the generic one.
 pub fn value_to_generic(value: u64, pairs: FlagPairs) -> u64 {
-    pairs.iter().find(|&&(own, _)| own == value).map_or(value, |&(_, generic)| generic)
+    pairs
+        .iter()
+        .find(|&&(own, _)| own == value)
+        .map_or(value, |&(_, generic)| generic)
 }
 
 /// The value `value`, generic, as the architecture's.
 pub fn value_to_architecture(value: u64, pairs: FlagPairs) -> u64 {
-    pairs.iter().find(|&&(_, generic)| generic == value).map_or(value, |&(own, _)| own)
+    pairs
+        .iter()
+        .find(|&&(_, generic)| generic == value)
+        .map_or(value, |&(own, _)| own)
 }

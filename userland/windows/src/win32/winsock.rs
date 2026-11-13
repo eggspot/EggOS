@@ -589,8 +589,6 @@ unsafe extern "efiapi" fn gethostname(name: *mut u8, length: i32) -> i32 {
     0
 }
 
-/// `WSAAsyncSelect`: `socket` made non-blocking, its `events` posted to `window` as `message`
-/// (D348); no window or no events stops them.
 extern "efiapi" fn wsa_async_select(
     socket: usize,
     window: usize,

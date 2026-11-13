@@ -61,7 +61,16 @@ const VMIN: usize = 6;
 const TIOCSPGRP: usize = eggos_runtime::syscall::tty::TIOCSPGRP;
 const TERMIOS_SIZE: usize = 64;
 const STAT_SIZE: usize = 144;
-const MODE_OFFSET: usize = if cfg!(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64", target_arch = "s390x")) { 24 } else { 16 };
+const MODE_OFFSET: usize = if cfg!(any(
+    target_arch = "x86_64",
+    target_arch = "powerpc64",
+    target_arch = "mips64",
+    target_arch = "s390x"
+)) {
+    24
+} else {
+    16
+};
 const FILE_TYPE: u32 = 0o170_000;
 const DIRECTORY: u32 = 0o040_000;
 const REGULAR_FILE: u32 = 0o100_000;
@@ -96,7 +105,11 @@ struct SignalAction {
     mask_high: u64,
 }
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+#[cfg(not(any(
+    target_arch = "loongarch64",
+    target_arch = "riscv64",
+    target_arch = "mips64"
+)))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -123,14 +136,27 @@ impl SignalAction {
                 process::restore_after_signal as *const () as usize,
             ),
         };
-        #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64", target_arch = "s390x", target_arch = "sparc64"))]
+        #[cfg(any(
+            target_arch = "aarch64",
+            target_arch = "powerpc64",
+            target_arch = "s390x",
+            target_arch = "sparc64"
+        ))]
         let (flags, restorer) = (0, 0);
-        #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64"))]
+        #[cfg(any(
+            target_arch = "loongarch64",
+            target_arch = "riscv64",
+            target_arch = "mips64"
+        ))]
         let flags = 0;
         Self {
             handler,
             flags,
-            #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+            #[cfg(not(any(
+                target_arch = "loongarch64",
+                target_arch = "riscv64",
+                target_arch = "mips64"
+            )))]
             restorer,
             #[cfg(target_arch = "mips64")]
             mask_high: 0,

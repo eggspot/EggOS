@@ -214,6 +214,12 @@ pub enum Kind {
     WindowsRegistryDelete,
     /// `windows_registry_reset`: replaces a damaged registry file with an empty one (D231).
     WindowsRegistryReset,
+    /// `wifi_list`: the Wi-Fi adapter's state and the networks it heard (D280).
+    WifiList,
+    /// `wifi_connect`: names the Wi-Fi network to join (D280).
+    WifiConnect,
+    /// `wifi_forget`: stops naming a Wi-Fi network to join (D280).
+    WifiForget,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -455,23 +461,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 83] = [
-    tool(
-        &registry::COMPONENT_UPDATE,
-        Kind::ComponentUpdate,
-        twin("/bin/component", &["update", "--json"], Operand::Name),
-    ),
-    tool(
-        &registry::APP_ACTIONS,
-        Kind::AppActions,
-        twin("/bin/app", &["actions", "--json"], Operand::Name),
-    ),
-    tool(&registry::APP_DO, Kind::AppDo, twin("/bin/app", &["do"], Operand::Name)),
-    tool(
-        &registry::APP_DO_CONFIRMED,
-        Kind::AppDoConfirmed,
-        twin("/bin/app", &["do", "--confirmed"], Operand::Name),
-    ),
+pub const TOOLS: [Tool; 86] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -627,11 +617,31 @@ pub const TOOLS: [Tool; 83] = [
     tool(&registry::WM_SHOW, Kind::WmShow, window_twin(&["show"])),
     tool(&registry::WM_ACT, Kind::WmAct, window_twin(&["act"])),
     tool(&registry::WM_DRAG, Kind::WmDrag, window_twin(&["drag"])),
-    tool(&registry::WM_HOME, Kind::WmHome, twin("/bin/wm", &["home"], Operand::None)),
-    tool(&registry::WM_BACK, Kind::WmBack, twin("/bin/wm", &["back"], Operand::None)),
-    tool(&registry::WM_KEYBOARD, Kind::WmKeyboard, twin("/bin/wm", &["keyboard"], Operand::None)),
-    tool(&registry::WM_KEYBOARD_SHOW, Kind::WmKeyboardShow, twin("/bin/wm", &["keyboard", "show"], Operand::None)),
-    tool(&registry::WM_KEYBOARD_HIDE, Kind::WmKeyboardHide, twin("/bin/wm", &["keyboard", "hide"], Operand::None)),
+    tool(
+        &registry::WM_HOME,
+        Kind::WmHome,
+        twin("/bin/wm", &["home"], Operand::None),
+    ),
+    tool(
+        &registry::WM_BACK,
+        Kind::WmBack,
+        twin("/bin/wm", &["back"], Operand::None),
+    ),
+    tool(
+        &registry::WM_KEYBOARD,
+        Kind::WmKeyboard,
+        twin("/bin/wm", &["keyboard"], Operand::None),
+    ),
+    tool(
+        &registry::WM_KEYBOARD_SHOW,
+        Kind::WmKeyboardShow,
+        twin("/bin/wm", &["keyboard", "show"], Operand::None),
+    ),
+    tool(
+        &registry::WM_KEYBOARD_HIDE,
+        Kind::WmKeyboardHide,
+        twin("/bin/wm", &["keyboard", "hide"], Operand::None),
+    ),
     tool(
         &registry::SETTINGS_LIST,
         Kind::SettingsList,
@@ -835,6 +845,26 @@ pub const TOOLS: [Tool; 83] = [
             Operand::Name,
         ),
     ),
+    tool(
+        &registry::COMPONENT_UPDATE,
+        Kind::ComponentUpdate,
+        twin("/bin/component", &["update", "--json"], Operand::Name),
+    ),
+    tool(
+        &registry::APP_ACTIONS,
+        Kind::AppActions,
+        twin("/bin/app", &["actions", "--json"], Operand::Name),
+    ),
+    tool(
+        &registry::APP_DO,
+        Kind::AppDo,
+        twin("/bin/app", &["do"], Operand::None),
+    ),
+    tool(
+        &registry::APP_DO_CONFIRMED,
+        Kind::AppDoConfirmed,
+        twin("/bin/app", &["do", "--confirmed"], Operand::None),
+    ),
     of_component(
         tool(
             &registry::WINDOWS_REGISTRY_GET,
@@ -866,6 +896,21 @@ pub const TOOLS: [Tool; 83] = [
             registry_twin(&["registry", "reset", "--yes"]),
         ),
         WINDOWS_LAYER,
+    ),
+    tool(
+        &registry::WIFI_LIST,
+        Kind::WifiList,
+        twin("/bin/wifi", &["list"], Operand::None),
+    ),
+    tool(
+        &registry::WIFI_CONNECT,
+        Kind::WifiConnect,
+        twin("/bin/wifi", &["connect"], Operand::None),
+    ),
+    tool(
+        &registry::WIFI_FORGET,
+        Kind::WifiForget,
+        twin("/bin/wifi", &["forget"], Operand::None),
     ),
 ];
 

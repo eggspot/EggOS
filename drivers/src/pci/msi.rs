@@ -65,7 +65,11 @@ impl Msi {
         }
         let header = config.read32(address, at);
         let control = (header >> MESSAGE_CONTROL_SHIFT) & !MULTIPLE_MESSAGE_ENABLE_MASK | ENABLE;
-        config.write32(address, at, control << MESSAGE_CONTROL_SHIFT | header & 0xffff);
+        config.write32(
+            address,
+            at,
+            control << MESSAGE_CONTROL_SHIFT | header & 0xffff,
+        );
         true
     }
 
@@ -88,8 +92,13 @@ mod tests {
         let address = Address::new(0, 3, 0).unwrap();
         config.function(address, (0x8086, 0x10d3), (0x02, 0x00), 0);
         config.set(address, 4, u32::from(STATUS_CAPABILITY_LIST) << 16);
-        config.set(address, u16::from(CAPABILITIES_POINTER) & !3, 0x50);
-        config.register(address, 0x50, control << 16 | u32::from(CAPABILITY_ID), u32::MAX);
+        config.set(address, CAPABILITIES_POINTER & !3, 0x50);
+        config.register(
+            address,
+            0x50,
+            control << 16 | u32::from(CAPABILITY_ID),
+            u32::MAX,
+        );
         for offset in [0x54, 0x58, 0x5c, 0x60] {
             config.register(address, offset, 0, u32::MAX);
         }

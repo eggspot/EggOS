@@ -17,7 +17,8 @@ mod nodes;
 pub mod writer;
 
 pub use nodes::{
-    InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, MAX_TRANSLATIONS, Node, Ranges,
+    InterruptSpecifier, InterruptSpecifiers, MAX_INTERRUPT_CELLS, MAX_NODE_DEPTH, MAX_TRANSLATIONS,
+    Node, Ranges,
 };
 
 use crate::memory::PhysicalRange;
@@ -1194,12 +1195,18 @@ pub(crate) mod tests {
     fn the_console_is_the_uart_stdout_path_names_through_an_alias_or_a_path() {
         assert_eq!(pl011(&two_uarts(b"serial1:115200n8\0")), Some(0x904_0000));
         assert_eq!(pl011(&two_uarts(b"/pl011@9040000\0")), Some(0x904_0000));
-        assert_eq!(pl011(&two_uarts(b"/pl011@9000000:115200\0")), Some(0x900_0000));
+        assert_eq!(
+            pl011(&two_uarts(b"/pl011@9000000:115200\0")),
+            Some(0x900_0000)
+        );
         assert_eq!(pl011(&two_uarts(b"serial7\0")), Some(0x900_0000));
         let tree = two_uarts(b"serial1\0");
         let fdt = Fdt::new(&tree).unwrap();
         assert_eq!(fdt.stdout_path(), Some(&b"/pl011@9040000"[..]));
-        assert_eq!(fdt.property_at(b"/aliases", b"serial1"), Some(&b"/pl011@9040000\0"[..]));
+        assert_eq!(
+            fdt.property_at(b"/aliases", b"serial1"),
+            Some(&b"/pl011@9040000\0"[..])
+        );
         assert_eq!(fdt.property_at(b"/chosen", b"bootargs"), None);
     }
 
@@ -1299,7 +1306,10 @@ pub(crate) mod tests {
         assert_eq!(framebuffer.format, crate::handoff::pixel_format::BGRX);
         assert!(framebuffer.is_usable());
         assert_eq!(simple_framebuffer(&tree(b"r5g6b5\0", b"okay\0")), None);
-        assert_eq!(simple_framebuffer(&tree(b"x8r8g8b8\0", b"disabled\0")), None);
+        assert_eq!(
+            simple_framebuffer(&tree(b"x8r8g8b8\0", b"disabled\0")),
+            None
+        );
     }
 
     #[test]
@@ -1328,7 +1338,12 @@ pub struct TreeGic {
 /// The first enabled GIC node of `blob`.
 pub fn gic(blob: &[u8]) -> Option<TreeGic> {
     const GIC_V3: &[u8] = b"arm,gic-v3";
-    const GIC_V2: [&[u8]; 4] = [b"arm,cortex-a15-gic", b"arm,gic-400", b"arm,cortex-a9-gic", b"arm,cortex-a7-gic"];
+    const GIC_V2: [&[u8]; 4] = [
+        b"arm,cortex-a15-gic",
+        b"arm,gic-400",
+        b"arm,cortex-a9-gic",
+        b"arm,cortex-a7-gic",
+    ];
     let tree = Fdt::new(blob).ok()?;
     tree.nodes().map_while(Result::ok).find_map(|node| {
         let version = if node.is_compatible(GIC_V3) {
@@ -1427,7 +1442,9 @@ pub fn pl011(blob: &[u8]) -> Option<u64> {
 }
 
 fn path_part(path: &[u8], index: usize) -> Option<&[u8]> {
-    path.split(|&byte| byte == b'/').filter(|part| !part.is_empty()).nth(index)
+    path.split(|&byte| byte == b'/')
+        .filter(|part| !part.is_empty())
+        .nth(index)
 }
 
 fn part_names(part: &[u8], name: &[u8]) -> bool {
@@ -1438,7 +1455,10 @@ impl<'a> Fdt<'a> {
     /// The value of property `property` of the node at `path` (`/aliases`); a part without a unit
     /// address names the first node of that name.
     pub fn property_at(&self, path: &[u8], property: &[u8]) -> Option<&'a [u8]> {
-        let parts = path.split(|&byte| byte == b'/').filter(|part| !part.is_empty()).count();
+        let parts = path
+            .split(|&byte| byte == b'/')
+            .filter(|part| !part.is_empty())
+            .count();
         let mut depth = 0usize;
         let mut matched = 0usize;
         for token in self.tokens() {
@@ -1446,7 +1466,10 @@ impl<'a> Fdt<'a> {
                 Token::BeginNode(name) => {
                     depth += 1;
                     let level = depth - 1;
-                    if level >= 1 && matched == level - 1 && path_part(path, level - 1).is_some_and(|part| part_names(part, name)) {
+                    if level >= 1
+                        && matched == level - 1
+                        && path_part(path, level - 1).is_some_and(|part| part_names(part, name))
+                    {
                         matched = level;
                     }
                 }
@@ -1479,7 +1502,10 @@ impl<'a> Fdt<'a> {
             return Some(named);
         }
         let aliased = self.property_at(b"/aliases", named)?;
-        aliased.split(|&byte| byte == 0).next().filter(|path| path.starts_with(b"/"))
+        aliased
+            .split(|&byte| byte == 0)
+            .next()
+            .filter(|path| path.starts_with(b"/"))
     }
 }
 
@@ -1487,14 +1513,19 @@ impl<'a> Fdt<'a> {
 pub fn stdout_node(blob: &[u8]) -> Option<Node<'_>> {
     let tree = Fdt::new(blob).ok()?;
     let path = tree.stdout_path()?;
-    let parts = path.split(|&byte| byte == b'/').filter(|part| !part.is_empty()).count();
+    let parts = path
+        .split(|&byte| byte == b'/')
+        .filter(|part| !part.is_empty())
+        .count();
     let mut matched = 0usize;
     tree.nodes().map_while(Result::ok).find(|node| {
         if node.depth == 0 {
             return parts == 0;
         }
         matched = matched.min(node.depth - 1);
-        if matched == node.depth - 1 && path_part(path, node.depth - 1).is_some_and(|part| part_names(part, node.name)) {
+        if matched == node.depth - 1
+            && path_part(path, node.depth - 1).is_some_and(|part| part_names(part, node.name))
+        {
             matched = node.depth;
         }
         matched == parts && node.depth == parts
@@ -1512,7 +1543,9 @@ pub fn riscv_has_extension(blob: &[u8], extension: &[u8]) -> bool {
         .map_while(Result::ok)
         .find(|node| !node.isa.is_empty() || !node.isa_extensions.is_empty());
     hart.is_some_and(|node| {
-        node.isa_extensions.split(|&byte| byte == 0).any(|name| name == extension)
+        node.isa_extensions
+            .split(|&byte| byte == 0)
+            .any(|name| name == extension)
             || node
                 .isa
                 .split(|&byte| byte == b'_' || byte == 0)

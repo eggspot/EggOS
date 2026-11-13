@@ -64,8 +64,14 @@ impl Filter {
 }
 
 fn trimmed(bytes: &[u8]) -> &[u8] {
-    let start = bytes.iter().position(|&byte| byte != b' ').unwrap_or(bytes.len());
-    let end = bytes.iter().rposition(|&byte| byte != b' ').map_or(start, |end| end + 1);
+    let start = bytes
+        .iter()
+        .position(|&byte| byte != b' ')
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|&byte| byte != b' ')
+        .map_or(start, |end| end + 1);
     &bytes[start..end.max(start)]
 }
 
@@ -108,5 +114,7 @@ pub fn matches(pattern: &[u8], name: &[u8]) -> bool {
             },
         }
     }
-    pattern[at.min(pattern.len())..].iter().all(|&byte| byte == b'*')
+    pattern[at.min(pattern.len())..]
+        .iter()
+        .all(|&byte| byte == b'*')
 }

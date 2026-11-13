@@ -162,7 +162,10 @@ mod tests {
         assert_eq!(chip.name(), Some("tu104"));
         assert_eq!(chip.signature_family(), Some("tu10x"));
         assert!(chip.runs_gsp());
-        assert_eq!(Chip::of_boot_0(0x1680_00a1).signature_family(), Some("tu11x"));
+        assert_eq!(
+            Chip::of_boot_0(0x1680_00a1).signature_family(),
+            Some("tu11x")
+        );
         assert!(!Chip::of_boot_0(0x1400_00a1).runs_gsp());
     }
 

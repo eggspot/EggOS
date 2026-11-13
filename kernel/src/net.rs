@@ -24,7 +24,6 @@ pub mod endpoints;
 pub mod resolv_conf;
 pub mod tcp;
 
-use eggos_hal::atomic::AtomicU64;
 use crate::console;
 use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
@@ -36,6 +35,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use eggos_drivers::desktop::NetworkState;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_net::checksum::Completion;
 use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
 use eggos_net::interface::{
@@ -120,22 +120,31 @@ impl Adapter {
     fn has_router(&self) -> bool {
         self.interface.is_link_up()
             && self.interface.address().is_some()
-            && self.interface.lease().is_some_and(|lease| lease.router.is_some())
+            && self
+                .interface
+                .lease()
+                .is_some_and(|lease| lease.router.is_some())
     }
 
     fn holds(&self, destination: Ipv4Address) -> bool {
-        self.interface.is_link_up() && self.interface.subnet().is_some_and(|subnet| subnet.contains(destination))
+        self.interface.is_link_up()
+            && self
+                .interface
+                .subnet()
+                .is_some_and(|subnet| subnet.contains(destination))
     }
 }
 
-/// The adapter a packet to `destination` leaves through: the one whose network holds it, else
-/// the first with a router, else the first whose link is up, else the first.
 fn route(adapters: &[Box<Adapter>], destination: Ipv4Address) -> Option<usize> {
     adapters
         .iter()
         .position(|adapter| adapter.holds(destination))
         .or_else(|| adapters.iter().position(|adapter| adapter.has_router()))
-        .or_else(|| adapters.iter().position(|adapter| adapter.interface.is_link_up()))
+        .or_else(|| {
+            adapters
+                .iter()
+                .position(|adapter| adapter.interface.is_link_up())
+        })
         .or_else(|| (!adapters.is_empty()).then_some(0))
 }
 
@@ -195,7 +204,11 @@ pub fn install_interrupting(device: Box<dyn NetDevice>) -> Result<(), Box<dyn Ne
 
 /// Whether a driver lent the stack a wired adapter.
 pub fn is_present() -> bool {
-    DEVICE.lock().is_some() || ADAPTERS.lock().iter().any(|adapter| adapter.name == ETHERNET_NAME)
+    DEVICE.lock().is_some()
+        || ADAPTERS
+            .lock()
+            .iter()
+            .any(|adapter| adapter.name == ETHERNET_NAME)
 }
 
 fn publish_indicator<P: Platform>() {
@@ -209,10 +222,12 @@ fn start_polling<P: Platform>() -> Result<(), &'static str> {
     if POLLING.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    thread::spawn::<P, _>(poll_forever::<P>).map(|_| ()).map_err(|_| {
-        POLLING.store(false, Ordering::Release);
-        "no thread to run the network"
-    })
+    thread::spawn::<P, _>(poll_forever::<P>)
+        .map(|_| ())
+        .map_err(|_| {
+            POLLING.store(false, Ordering::Release);
+            "no thread to run the network"
+        })
 }
 
 /// Milliseconds since boot on platform `P`'s clock.
@@ -380,7 +395,11 @@ fn indicator_state(adapters: &[Box<Adapter>]) -> NetworkState {
     let chosen = adapters
         .iter()
         .find(|adapter| adapter.interface.is_link_up() && adapter.interface.address().is_some())
-        .or_else(|| adapters.iter().find(|adapter| adapter.interface.is_link_up()))
+        .or_else(|| {
+            adapters
+                .iter()
+                .find(|adapter| adapter.interface.is_link_up())
+        })
         .or(adapters.first());
     match chosen {
         Some(adapter) => interface_state(&adapter.interface),
@@ -532,7 +551,13 @@ pub fn is_subnet_broadcast(address: Ipv4Address) -> bool {
 /// The DNS servers the default adapter's lease names, else the first lease's that names any.
 pub fn dns_servers() -> [Option<Ipv4Address>; 3] {
     let adapters = ADAPTERS.lock();
-    let of = |adapter: &Adapter| adapter.interface.lease().map(|lease| lease.dns).filter(|dns| dns.iter().any(Option::is_some));
+    let of = |adapter: &Adapter| {
+        adapter
+            .interface
+            .lease()
+            .map(|lease| lease.dns)
+            .filter(|dns| dns.iter().any(Option::is_some))
+    };
     default_adapter(&adapters)
         .and_then(of)
         .or_else(|| adapters.iter().find_map(|adapter| of(adapter)))
@@ -718,7 +743,11 @@ pub fn interfaces<P: Platform>() -> Vec<InterfaceStatus> {
     let mut interfaces = Vec::new();
     if interfaces.try_reserve_exact(1 + adapters.len()).is_ok() {
         interfaces.push(loopback_status());
-        interfaces.extend(adapters.iter().filter_map(|adapter| adapter_status(adapter, now)));
+        interfaces.extend(
+            adapters
+                .iter()
+                .filter_map(|adapter| adapter_status(adapter, now)),
+        );
     }
     interfaces
 }

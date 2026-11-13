@@ -94,7 +94,6 @@ extern "efiapi" fn get_queue_status(flags: u32) -> u32 {
     .unwrap_or(0)
 }
 
-/// `SetWindowsHookExW` and `A`: a hook of `kind` for `thread` (0: every thread of the process).
 extern "efiapi" fn set_windows_hook_ex_w(
     kind: i32,
     procedure: usize,

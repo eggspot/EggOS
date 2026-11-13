@@ -89,8 +89,6 @@ pub fn remove(handle: usize) -> bool {
     removed.is_some()
 }
 
-/// The newest hook of `kind` for the calling thread installed before `before` (every one when
-/// `None`).
 fn next(kind: i32, before: Option<usize>) -> Option<Hook> {
     if INSTALLED.load(Ordering::Acquire) == 0 {
         return None;
@@ -112,8 +110,6 @@ fn run(hook: Hook, code: i32, wparam: usize, lparam: usize) -> usize {
     unsafe { call_program(hook.procedure, [code as isize as usize, wparam, lparam, 0]) }
 }
 
-/// Calls the chain of `kind` with `code`, `wParam` and `lParam`: the newest hook's answer, or
-/// `None` when there is no hook of that kind.
 fn call(kind: i32, code: i32, wparam: usize, lparam: usize) -> Option<usize> {
     next(kind, None).map(|hook| run(hook, code, wparam, lparam))
 }
@@ -131,7 +127,6 @@ pub fn call_next(handle: usize, code: i32, wparam: usize, lparam: usize) -> usiz
         .map_or(0, |hook| run(hook, code, wparam, lparam))
 }
 
-/// `MOUSEHOOKSTRUCT`.
 #[repr(C)]
 struct MouseHook {
     x: i32,
@@ -163,14 +158,18 @@ pub fn retrieved(out: *mut Msg, removed: bool) -> bool {
                 hit_test: HTCLIENT,
                 extra: 0,
             };
-            call(kind::MOUSE, code, message.message as usize, &raw const info as usize)
+            call(
+                kind::MOUSE,
+                code,
+                message.message as usize,
+                &raw const info as usize,
+            )
         }
         _ => None,
     };
     answer.is_some_and(|answer| answer != 0)
 }
 
-/// `CWPSTRUCT`.
 #[repr(C)]
 struct SentMessage {
     lparam: usize,
@@ -179,7 +178,6 @@ struct SentMessage {
     window: usize,
 }
 
-/// `CWPRETSTRUCT`.
 #[repr(C)]
 struct SentResult {
     result: usize,
@@ -214,10 +212,14 @@ pub fn after_send(window: usize, number: u32, wparam: usize, lparam: usize, resu
         message: number,
         window,
     };
-    call(kind::CALL_WND_PROC_RET, HC_ACTION, 1, &raw const answered as usize);
+    call(
+        kind::CALL_WND_PROC_RET,
+        HC_ACTION,
+        1,
+        &raw const answered as usize,
+    );
 }
 
-/// `KBDLLHOOKSTRUCT`.
 #[repr(C)]
 struct KeyboardLowLevel {
     virtual_key: u32,
@@ -227,7 +229,6 @@ struct KeyboardLowLevel {
     extra: usize,
 }
 
-/// `MSLLHOOKSTRUCT`.
 #[repr(C)]
 struct MouseLowLevel {
     x: i32,
@@ -261,7 +262,12 @@ pub fn input_swallowed(
                 time,
                 extra: 0,
             };
-            call(kind::KEYBOARD_LL, HC_ACTION, number as usize, &raw const key as usize)
+            call(
+                kind::KEYBOARD_LL,
+                HC_ACTION,
+                number as usize,
+                &raw const key as usize,
+            )
         }
         FIRST_MOUSE..=LAST_MOUSE => {
             let mouse = MouseLowLevel {
@@ -272,14 +278,18 @@ pub fn input_swallowed(
                 time,
                 extra: 0,
             };
-            call(kind::MOUSE_LL, HC_ACTION, number as usize, &raw const mouse as usize)
+            call(
+                kind::MOUSE_LL,
+                HC_ACTION,
+                number as usize,
+                &raw const mouse as usize,
+            )
         }
         _ => None,
     };
     answer.is_some_and(|answer| answer != 0)
 }
 
-/// `CBT_CREATEWND`.
 #[repr(C)]
 struct CbtCreate {
     create: usize,

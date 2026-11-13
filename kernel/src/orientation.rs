@@ -10,14 +10,16 @@ use eggos_hal::Platform;
 
 const NOTHING_NEW: u32 = u32::MAX;
 
-static TRACKER: LeafSpinLock<OrientationTracker> = LeafSpinLock::new_leaf(OrientationTracker::new());
+static TRACKER: LeafSpinLock<OrientationTracker> =
+    LeafSpinLock::new_leaf(OrientationTracker::new());
 static NEW_DEGREES: AtomicU32 = AtomicU32::new(NOTHING_NEW);
 static SENSED: AtomicU32 = AtomicU32::new(0);
 
 /// Takes an accelerometer reading.
 pub fn note(x: i32, y: i32, z: i32) {
     SENSED.store(1, Ordering::Relaxed);
-    if let Some(facing) = TRACKER.lock().note(x, y, z) {
+    let facing = TRACKER.lock().note(x, y, z);
+    if let Some(facing) = facing {
         NEW_DEGREES.store(facing.degrees(), Ordering::Release);
     }
 }
@@ -50,8 +52,9 @@ pub fn apply_if_automatic<P: Platform>() {
     if rotation == crate::display::rotation() || fresh == NOTHING_NEW && !due::<P>() {
         return;
     }
-    let held = crate::terminal::with_windows::<P, _>(|desktop, _, _, _| desktop.focused_orientation())
-        .unwrap_or_default();
+    let held =
+        crate::terminal::with_windows::<P, _>(|desktop, _, _, _| desktop.focused_orientation())
+            .unwrap_or_default();
     let fits = match (held, crate::display::device_mode()) {
         (Orientation::Any, _) | (_, None) => true,
         (wanted_shape, Some(mode)) => {

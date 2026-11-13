@@ -84,7 +84,6 @@ pub const RX_BUFFER_BYTES: usize = 4096;
 pub const TX_DESCRIPTORS: usize = 256;
 /// One transmit descriptor (TFD) in the long format.
 pub const TFD_BYTES: usize = 256;
-/// How many receive buffers the firmware is first handed, a multiple of 8 as it wants.
 const FIRST_RX_WRITE_INDEX: u32 = 8;
 const RX_RING_SIZE_LOG2: u32 = 9;
 const TX_RING_SIZE_CODE: u32 = 5;
@@ -248,7 +247,13 @@ fn put_bytes<M: DmaMemory>(memory: &M, at: usize, bytes: &[u8]) {
     assert!(at + bytes.len() <= memory.len());
     // SAFETY: the range lies inside the block (checked), which the driver owns; the device does
     // not write these bytes while the host does.
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.as_mut_ptr().add(at), bytes.len()) };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            memory.as_mut_ptr().wrapping_add(at),
+            bytes.len(),
+        )
+    };
 }
 
 fn get_bytes<M: DmaMemory>(memory: &M, at: usize, bytes: &mut [u8]) {
@@ -256,7 +261,13 @@ fn get_bytes<M: DmaMemory>(memory: &M, at: usize, bytes: &mut [u8]) {
     fence(Ordering::SeqCst);
     // SAFETY: the range lies inside the block (checked); a volatile copy is not needed, as the
     // fence above orders the device's completed writes before the read.
-    unsafe { core::ptr::copy_nonoverlapping(memory.as_mut_ptr().add(at), bytes.as_mut_ptr(), bytes.len()) };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            memory.as_mut_ptr().wrapping_add(at),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        )
+    };
 }
 
 fn get16<M: DmaMemory>(memory: &M, at: usize) -> u16 {
@@ -282,6 +293,7 @@ pub fn older_hw_rev(raw: u32) -> u32 {
 }
 
 /// The adapter's host interface, its rings and the firmware's sections while it loads them.
+#[derive(Debug)]
 pub struct Transport<R: RegisterIo, M: DmaMemory> {
     regs: R,
     adapter: Adapter,
@@ -351,14 +363,23 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     }
 
     fn set_bits(&self, register: usize, bits: u32) {
-        self.regs.write32(register, self.regs.read32(register) | bits);
+        self.regs
+            .write32(register, self.regs.read32(register) | bits);
     }
 
     fn clear_bits(&self, register: usize, bits: u32) {
-        self.regs.write32(register, self.regs.read32(register) & !bits);
+        self.regs
+            .write32(register, self.regs.read32(register) & !bits);
     }
 
-    fn poll(&self, register: usize, bits: u32, mask: u32, microseconds: u32, wait: &mut dyn Wait) -> bool {
+    fn poll(
+        &self,
+        register: usize,
+        bits: u32,
+        mask: u32,
+        microseconds: u32,
+        wait: &mut dyn Wait,
+    ) -> bool {
         let mut left = microseconds;
         loop {
             if self.regs.read32(register) & mask == bits & mask {
@@ -380,18 +401,30 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     }
 
     fn read_prph(&self, address: u32) -> u32 {
-        self.regs.write32(HBUS_PRPH_READ_ADDRESS, (address & self.prph_mask()) | PRPH_TARGET);
+        self.regs.write32(
+            HBUS_PRPH_READ_ADDRESS,
+            (address & self.prph_mask()) | PRPH_TARGET,
+        );
         fence(Ordering::SeqCst);
         self.regs.read32(HBUS_PRPH_READ_DATA)
     }
 
     fn write_prph(&self, address: u32, value: u32) {
-        self.regs.write32(HBUS_PRPH_WRITE_ADDRESS, (address & self.prph_mask()) | PRPH_TARGET);
+        self.regs.write32(
+            HBUS_PRPH_WRITE_ADDRESS,
+            (address & self.prph_mask()) | PRPH_TARGET,
+        );
         fence(Ordering::SeqCst);
         self.regs.write32(HBUS_PRPH_WRITE_DATA, value);
     }
 
-    fn update_prph(&mut self, address: u32, set: u32, clear: u32, wait: &mut dyn Wait) -> Result<(), TransportError> {
+    fn update_prph(
+        &mut self,
+        address: u32,
+        set: u32,
+        clear: u32,
+        wait: &mut dyn Wait,
+    ) -> Result<(), TransportError> {
         self.lock_nic(wait)?;
         let value = (self.read_prph(address) & !clear) | set;
         self.write_prph(address, value);
@@ -483,7 +516,13 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         self.set_bits(CSR_HW_IF_CONFIG, HW_IF_HAP_WAKE_L1A);
         self.set_bits(CSR_GIO, GIO_L0S_DISABLED);
         self.set_bits(CSR_GP_CNTRL, GP_INIT_DONE);
-        if !self.poll(CSR_GP_CNTRL, GP_MAC_CLOCK_READY, GP_MAC_CLOCK_READY, 25_000, wait) {
+        if !self.poll(
+            CSR_GP_CNTRL,
+            GP_MAC_CLOCK_READY,
+            GP_MAC_CLOCK_READY,
+            25_000,
+            wait,
+        ) {
             return Err(TransportError::TimedOut);
         }
         Ok(())
@@ -499,7 +538,13 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         if self.adapter.family == Family::Ax200 && self.adapter.integrated {
             self.set_bits(CSR_GP_CNTRL, GP_INIT_DONE);
             wait.pause(20);
-            if !self.poll(CSR_GP_CNTRL, GP_MAC_CLOCK_READY, GP_MAC_CLOCK_READY, 25_000, wait) {
+            if !self.poll(
+                CSR_GP_CNTRL,
+                GP_MAC_CLOCK_READY,
+                GP_MAC_CLOCK_READY,
+                25_000,
+                wait,
+            ) {
                 return Err(TransportError::TimedOut);
             }
             self.force_power_gating(wait)?;
@@ -523,7 +568,11 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         let phy = firmware.phy_sku;
         let mac_step = (self.hw_rev >> 2) & 0x3;
         let mac_dash = self.hw_rev & 0x3;
-        let value = (mac_step << 2) | mac_dash | ((phy & 0x3) << 10) | (((phy >> 2) & 0x3) << 14) | (((phy >> 4) & 0x3) << 12);
+        let value = (mac_step << 2)
+            | mac_dash
+            | ((phy & 0x3) << 10)
+            | (((phy >> 2) & 0x3) << 14)
+            | (((phy >> 4) & 0x3) << 12);
         let current = self.regs.read32(CSR_HW_IF_CONFIG) & !HW_IF_RADIO_MASK;
         self.regs.write32(CSR_HW_IF_CONFIG, current | value);
     }
@@ -545,7 +594,11 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
                     put16(&self.rings, RX_FREE + index * 16, index as u16);
                     put64(&self.rings, RX_FREE + index * 16 + 8, buffer);
                 }
-                Family::Ax200 => put64(&self.rings, RX_FREE + index * 8, buffer | (index as u64 & 0xfff)),
+                Family::Ax200 => put64(
+                    &self.rings,
+                    RX_FREE + index * 8,
+                    buffer | (index as u64 & 0xfff),
+                ),
             }
         }
         fence(Ordering::SeqCst);
@@ -558,8 +611,12 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     ) -> Result<Vec<M>, TransportError> {
         let mut copies = Vec::new();
         for section in sections {
-            let data = bytes.get(section.bytes.clone()).ok_or(TransportError::BadFirmware)?;
-            let memory = allocator.allocate(data.len().max(1)).ok_or(TransportError::NoMemory)?;
+            let data = bytes
+                .get(section.bytes.clone())
+                .ok_or(TransportError::BadFirmware)?;
+            let memory = allocator
+                .allocate(data.len().max(1))
+                .ok_or(TransportError::NoMemory)?;
             put_bytes(&memory, 0, data);
             copies.push(memory);
         }
@@ -567,9 +624,14 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     }
 
     fn write_dram(&self, base: usize, lmac: usize, umac: usize) {
-        let addresses = |memories: &[M]| memories.iter().map(|memory| memory.dma_addr().get()).collect::<Vec<_>>();
+        let addresses = |memories: &[M]| {
+            memories
+                .iter()
+                .map(|memory| memory.dma_addr().get())
+                .collect::<Vec<_>>()
+        };
         let firmware = addresses(&self.sections);
-        let (lmac_images, umac_images) = firmware.split_at(lmac);
+        let (lmac_images, umac_images) = firmware.split_at(lmac.min(firmware.len()));
         for (index, address) in umac_images.iter().take(umac).enumerate() {
             put64(&self.rings, base + index * 8, *address);
         }
@@ -582,18 +644,48 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     }
 
     fn write_context_info(&self, lmac: usize, umac: usize) {
-        put16(&self.rings, CONTEXT_INFO, self.regs.read32(CSR_HW_REV) as u16);
-        put16(&self.rings, CONTEXT_INFO + 4, (CONTEXT_INFO_BYTES / 4) as u16);
+        put16(
+            &self.rings,
+            CONTEXT_INFO,
+            self.regs.read32(CSR_HW_REV) as u16,
+        );
+        put16(
+            &self.rings,
+            CONTEXT_INFO + 4,
+            (CONTEXT_INFO_BYTES / 4) as u16,
+        );
         put32(
             &self.rings,
             CONTEXT_INFO + CONTEXT_CONTROL_FLAGS,
-            CONTEXT_TFD_FORMAT_LONG | (RX_RING_SIZE_LOG2 << CONTEXT_RB_CB_SIZE_SHIFT) | CONTEXT_RB_SIZE_4K,
+            CONTEXT_TFD_FORMAT_LONG
+                | (RX_RING_SIZE_LOG2 << CONTEXT_RB_CB_SIZE_SHIFT)
+                | CONTEXT_RB_SIZE_4K,
         );
-        put64(&self.rings, CONTEXT_INFO + CONTEXT_FREE_RBD, dma(&self.rings, RX_FREE));
-        put64(&self.rings, CONTEXT_INFO + CONTEXT_USED_RBD, dma(&self.rings, RX_USED));
-        put64(&self.rings, CONTEXT_INFO + CONTEXT_STATUS, dma(&self.rings, RX_STATUS));
-        put64(&self.rings, CONTEXT_INFO + CONTEXT_COMMAND_QUEUE, dma(&self.rings, TX_RING));
-        put_bytes(&self.rings, CONTEXT_INFO + CONTEXT_COMMAND_QUEUE_SIZE, &[TX_RING_SIZE_CODE as u8]);
+        put64(
+            &self.rings,
+            CONTEXT_INFO + CONTEXT_FREE_RBD,
+            dma(&self.rings, RX_FREE),
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + CONTEXT_USED_RBD,
+            dma(&self.rings, RX_USED),
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + CONTEXT_STATUS,
+            dma(&self.rings, RX_STATUS),
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + CONTEXT_COMMAND_QUEUE,
+            dma(&self.rings, TX_RING),
+        );
+        put_bytes(
+            &self.rings,
+            CONTEXT_INFO + CONTEXT_COMMAND_QUEUE_SIZE,
+            &[TX_RING_SIZE_CODE as u8],
+        );
         self.write_dram(CONTEXT_INFO + CONTEXT_DRAM, lmac, umac);
     }
 
@@ -602,22 +694,70 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         if self.adapter.imr {
             control |= SCRATCH_IMR_DEBUG;
         }
-        put16(&self.rings, PRPH_SCRATCH, self.regs.read32(CSR_HW_REV) as u16);
-        put16(&self.rings, PRPH_SCRATCH + SCRATCH_SIZE, (SCRATCH_BYTES / 4) as u16);
+        put16(
+            &self.rings,
+            PRPH_SCRATCH,
+            self.regs.read32(CSR_HW_REV) as u16,
+        );
+        put16(
+            &self.rings,
+            PRPH_SCRATCH + SCRATCH_SIZE,
+            (SCRATCH_BYTES / 4) as u16,
+        );
         put32(&self.rings, PRPH_SCRATCH + SCRATCH_CONTROL_FLAGS, control);
-        put64(&self.rings, PRPH_SCRATCH + SCRATCH_FREE_RBD, dma(&self.rings, RX_FREE));
+        put64(
+            &self.rings,
+            PRPH_SCRATCH + SCRATCH_FREE_RBD,
+            dma(&self.rings, RX_FREE),
+        );
         self.write_dram(PRPH_SCRATCH + SCRATCH_DRAM, lmac, umac);
         let info = dma(&self.rings, PRPH_INFO);
         put64(&self.rings, CONTEXT_INFO + GEN3_PRPH_INFO, info);
-        put64(&self.rings, CONTEXT_INFO + GEN3_PRPH_SCRATCH, dma(&self.rings, PRPH_SCRATCH));
-        put32(&self.rings, CONTEXT_INFO + GEN3_PRPH_SCRATCH_SIZE, SCRATCH_BYTES as u32);
-        put64(&self.rings, CONTEXT_INFO + GEN3_CR_HEAD_INDEXES, dma(&self.rings, RX_STATUS));
-        put64(&self.rings, CONTEXT_INFO + GEN3_TR_TAIL_INDEXES, info + 2048);
-        put64(&self.rings, CONTEXT_INFO + GEN3_CR_TAIL_INDEXES, info + 3072);
-        put64(&self.rings, CONTEXT_INFO + GEN3_MTR_BASE, dma(&self.rings, TX_RING));
-        put64(&self.rings, CONTEXT_INFO + GEN3_MCR_BASE, dma(&self.rings, RX_USED));
-        put16(&self.rings, CONTEXT_INFO + GEN3_MTR_SIZE, TX_RING_SIZE_CODE as u16);
-        put16(&self.rings, CONTEXT_INFO + GEN3_MCR_SIZE, RX_RING_SIZE_LOG2 as u16);
+        put64(
+            &self.rings,
+            CONTEXT_INFO + GEN3_PRPH_SCRATCH,
+            dma(&self.rings, PRPH_SCRATCH),
+        );
+        put32(
+            &self.rings,
+            CONTEXT_INFO + GEN3_PRPH_SCRATCH_SIZE,
+            SCRATCH_BYTES as u32,
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + GEN3_CR_HEAD_INDEXES,
+            dma(&self.rings, RX_STATUS),
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + GEN3_TR_TAIL_INDEXES,
+            info + 2048,
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + GEN3_CR_TAIL_INDEXES,
+            info + 3072,
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + GEN3_MTR_BASE,
+            dma(&self.rings, TX_RING),
+        );
+        put64(
+            &self.rings,
+            CONTEXT_INFO + GEN3_MCR_BASE,
+            dma(&self.rings, RX_USED),
+        );
+        put16(
+            &self.rings,
+            CONTEXT_INFO + GEN3_MTR_SIZE,
+            TX_RING_SIZE_CODE as u16,
+        );
+        put16(
+            &self.rings,
+            CONTEXT_INFO + GEN3_MCR_SIZE,
+            RX_RING_SIZE_LOG2 as u16,
+        );
     }
 
     fn write_address(&self, register: usize, address: u64) {
@@ -637,17 +777,24 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         self.regs.write32(CSR_INT, !0);
         self.quiet_interrupts();
         self.regs.write32(CSR_UCODE_DRV_GP1_CLR, UCODE_RADIO_KILL);
-        self.regs.write32(CSR_UCODE_DRV_GP1_CLR, UCODE_COMMAND_BLOCKED);
+        self.regs
+            .write32(CSR_UCODE_DRV_GP1_CLR, UCODE_COMMAND_BLOCKED);
         self.regs.write32(CSR_INT, !0);
         self.power_up(wait)?;
         if self.adapter.family == Family::Ax200 {
             self.configure_radio(firmware);
         }
-        self.regs.write8(CSR_INT_COALESCING, INTERRUPT_COALESCING_DEFAULT);
+        self.regs
+            .write8(CSR_INT_COALESCING, INTERRUPT_COALESCING_DEFAULT);
         self.set_bits(CSR_MAC_SHADOW_CONTROL, MAC_SHADOW_ALL);
         self.fill_rx_descriptors();
         let [lmac, umac, paging] = firmware.split(Image::Regular);
-        if lmac.is_empty() || umac.is_empty() || lmac.len() > DRAM_ENTRIES || umac.len() > DRAM_ENTRIES || paging.len() > DRAM_ENTRIES {
+        if lmac.is_empty()
+            || umac.is_empty()
+            || lmac.len() > DRAM_ENTRIES
+            || umac.len() > DRAM_ENTRIES
+            || paging.len() > DRAM_ENTRIES
+        {
             return Err(TransportError::BadFirmware);
         }
         let mut images = Self::copy_sections(bytes, lmac, allocator)?;
@@ -665,9 +812,14 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
                 self.unlock_nic();
             }
             Family::Ax210 => {
-                let loader = firmware.image_loader.clone().ok_or(TransportError::BadFirmware)?;
+                let loader = firmware
+                    .image_loader
+                    .clone()
+                    .ok_or(TransportError::BadFirmware)?;
                 let loader = bytes.get(loader).ok_or(TransportError::BadFirmware)?;
-                let memory = allocator.allocate(loader.len()).ok_or(TransportError::NoMemory)?;
+                let memory = allocator
+                    .allocate(loader.len())
+                    .ok_or(TransportError::NoMemory)?;
                 put_bytes(&memory, 0, loader);
                 let loader_address = memory.dma_addr().get();
                 self.image_loader = Some(memory);
@@ -675,7 +827,8 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
                 fence(Ordering::SeqCst);
                 self.write_address(CSR_CONTEXT_INFO_ADDRESS, dma(&self.rings, CONTEXT_INFO));
                 self.write_address(CSR_IMAGE_LOADER_ADDRESS, loader_address);
-                self.regs.write32(CSR_IMAGE_LOADER_SIZE, loader.len() as u32);
+                self.regs
+                    .write32(CSR_IMAGE_LOADER_SIZE, loader.len() as u32);
                 self.set_bits(CSR_HW_IF_CONFIG, HW_IF_AUTO_FUNCTION_BOOT);
                 self.lock_nic(wait)?;
                 self.set_latency_tolerance();
@@ -701,14 +854,16 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         self.fill_rx_descriptors();
         self.regs.write32(RX_FREE_WRITE_INDEX, FIRST_RX_WRITE_INDEX);
         let payload = self.wait_notification(LEGACY_GROUP, ALIVE, wait)?;
-        let status = payload.get(..2).map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+        let status = payload
+            .get(..2)
+            .map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
         if status != ALIVE_OK {
             return Err(TransportError::FirmwareFailed(status));
         }
         let word = |at: usize| {
-            payload
-                .get(at..at + 4)
-                .map_or(0, |bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            payload.get(at..at + 4).map_or(0, |bytes| {
+                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+            })
         };
         Ok(Alive {
             length: payload.len(),
@@ -771,7 +926,12 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
 
     /// Waits for the firmware's notification `code` in `group`, taking it from those already
     /// read first: its payload.
-    pub fn wait_notification(&mut self, group: u8, code: u8, wait: &mut dyn Wait) -> Result<Vec<u8>, TransportError> {
+    pub fn wait_notification(
+        &mut self,
+        group: u8,
+        code: u8,
+        wait: &mut dyn Wait,
+    ) -> Result<Vec<u8>, TransportError> {
         loop {
             self.read_packets();
             let found = self
@@ -797,7 +957,13 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
     /// Sends command `code` of `group` (group 0's commands go as the long group's, as the
     /// firmware asks) with `payload` through the command queue and waits for its response's
     /// payload.
-    pub fn send_command(&mut self, group: u8, code: u8, payload: &[u8], wait: &mut dyn Wait) -> Result<Vec<u8>, TransportError> {
+    pub fn send_command(
+        &mut self,
+        group: u8,
+        code: u8,
+        payload: &[u8],
+        wait: &mut dyn Wait,
+    ) -> Result<Vec<u8>, TransportError> {
         if payload.len() > COMMAND_BUFFER_BYTES - WIDE_HEADER_BYTES {
             return Err(TransportError::CommandTooLong);
         }
@@ -817,12 +983,28 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         let total = WIDE_HEADER_BYTES + payload.len();
         let descriptor = TX_RING + index * TFD_BYTES;
         put_bytes(&self.rings, descriptor, &[0; TFD_BYTES]);
-        put16(&self.rings, descriptor + TB_LENGTH, total.min(FIRST_TB_BYTES) as u16);
-        put64(&self.rings, descriptor + TB_ADDRESS, dma(&self.rings, COMMAND_BUFFER));
+        put16(
+            &self.rings,
+            descriptor + TB_LENGTH,
+            total.min(FIRST_TB_BYTES) as u16,
+        );
+        put64(
+            &self.rings,
+            descriptor + TB_ADDRESS,
+            dma(&self.rings, COMMAND_BUFFER),
+        );
         let buffers = match total > FIRST_TB_BYTES {
             true => {
-                put16(&self.rings, descriptor + TB_BYTES + TB_LENGTH, (total - FIRST_TB_BYTES) as u16);
-                put64(&self.rings, descriptor + TB_BYTES + TB_ADDRESS, dma(&self.rings, COMMAND_BUFFER + FIRST_TB_BYTES));
+                put16(
+                    &self.rings,
+                    descriptor + TB_BYTES + TB_LENGTH,
+                    (total - FIRST_TB_BYTES) as u16,
+                );
+                put64(
+                    &self.rings,
+                    descriptor + TB_BYTES + TB_ADDRESS,
+                    dma(&self.rings, COMMAND_BUFFER + FIRST_TB_BYTES),
+                );
                 2
             }
             false => 1,
@@ -831,10 +1013,17 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         fence(Ordering::SeqCst);
         self.tx_next = (self.tx_next + 1) % TX_DESCRIPTORS;
         self.tx_hardware = (self.tx_hardware + 1) % self.tx_queue_size();
-        self.regs.write32(HBUS_WRITE_POINTER, (u32::from(COMMAND_QUEUE) << 16) | self.tx_hardware as u32);
+        self.regs.write32(
+            HBUS_WRITE_POINTER,
+            (u32::from(COMMAND_QUEUE) << 16) | self.tx_hardware as u32,
+        );
         loop {
             self.read_packets();
-            if let Some(at) = self.responses.iter().position(|(answered, _)| usize::from(*answered) == index) {
+            if let Some(at) = self
+                .responses
+                .iter()
+                .position(|(answered, _)| usize::from(*answered) == index)
+            {
                 let (_, packet) = self.responses.remove(at);
                 self.responses.clear();
                 return match packet.failed {
@@ -872,7 +1061,8 @@ impl<R: RegisterIo, M: DmaMemory> Transport<R, M> {
         self.lock_nic(wait)?;
         self.write_prph(UREG_DOORBELL_TO_ISR6 + UMAC_PRPH_OFFSET, DOORBELL_PNVM);
         self.unlock_nic();
-        self.wait_notification(REGULATORY_AND_NVM_GROUP, PNVM_INIT_COMPLETE, wait).map(|_| ())
+        self.wait_notification(REGULATORY_AND_NVM_GROUP, PNVM_INIT_COMPLETE, wait)
+            .map(|_| ())
     }
 
     /// The adapter's MAC address: the one the maker strapped, else the one in its OTP memory.
@@ -956,9 +1146,15 @@ mod tests {
         transport.lock_nic(&mut NoWait).unwrap();
         transport.lock_nic(&mut NoWait).unwrap();
         transport.unlock_nic();
-        assert_ne!(transport.regs.read32(CSR_GP_CNTRL) & GP_MAC_ACCESS_REQUEST, 0);
+        assert_ne!(
+            transport.regs.read32(CSR_GP_CNTRL) & GP_MAC_ACCESS_REQUEST,
+            0
+        );
         transport.unlock_nic();
-        assert_eq!(transport.regs.0.borrow()[&CSR_GP_CNTRL] & GP_MAC_ACCESS_REQUEST, 0);
+        assert_eq!(
+            transport.regs.0.borrow()[&CSR_GP_CNTRL] & GP_MAC_ACCESS_REQUEST,
+            0
+        );
     }
 
     #[test]
@@ -972,13 +1168,17 @@ mod tests {
         );
         transport.write_context_info(1, 1);
         let rings = transport.rings();
-        assert_eq!(get32(rings, CONTEXT_INFO + CONTEXT_CONTROL_FLAGS), (1 << 8) | (9 << 4) | (4 << 9));
+        assert_eq!(
+            get32(rings, CONTEXT_INFO + CONTEXT_CONTROL_FLAGS),
+            (1 << 8) | (9 << 4) | (4 << 9)
+        );
         assert_eq!(get16(rings, CONTEXT_INFO + 4), 448);
         let free = u64::from(get32(rings, CONTEXT_INFO + CONTEXT_FREE_RBD))
             | (u64::from(get32(rings, CONTEXT_INFO + CONTEXT_FREE_RBD + 4)) << 32);
         assert_eq!(free, dma(rings, RX_FREE));
         transport.fill_rx_descriptors();
-        let second = u64::from(get32(rings, RX_FREE + 8)) | (u64::from(get32(rings, RX_FREE + 12)) << 32);
+        let second =
+            u64::from(get32(rings, RX_FREE + 8)) | (u64::from(get32(rings, RX_FREE + 12)) << 32);
         assert_eq!(second, dma(&transport.rx_buffers, RX_BUFFER_BYTES) | 1);
     }
 
@@ -996,7 +1196,10 @@ mod tests {
         put_bytes(&transport.rx_buffers, 4, &[ALIVE, 0, 0, UNSOLICITED]);
         put16(&transport.rx_buffers, 8, 0xdead);
         put16(&transport.rings, RX_STATUS, 1);
-        assert_eq!(transport.wait_for_alive(&mut NoWait), Err(TransportError::FirmwareFailed(0xdead)));
+        assert_eq!(
+            transport.wait_for_alive(&mut NoWait),
+            Err(TransportError::FirmwareFailed(0xdead))
+        );
     }
 
     #[test]
@@ -1012,15 +1215,25 @@ mod tests {
         put_bytes(&transport.rx_buffers, 4, &[0x04, 0, 0, UNSOLICITED]);
         put_bytes(&transport.rx_buffers, 8, &[7, 7]);
         put32(&transport.rx_buffers, 0x40, 4 + 4);
-        put_bytes(&transport.rx_buffers, 0x44, &[0x03, SYSTEM_GROUP, 5, COMMAND_QUEUE]);
+        put_bytes(
+            &transport.rx_buffers,
+            0x44,
+            &[0x03, SYSTEM_GROUP, 5, COMMAND_QUEUE],
+        );
         put16(&transport.rings, RX_STATUS, 1);
         let notifications = transport.take_notifications();
         assert_eq!(notifications.len(), 1);
-        assert_eq!((notifications[0].code, &notifications[0].payload[..]), (0x04, &[7u8, 7][..]));
+        assert_eq!(
+            (notifications[0].code, &notifications[0].payload[..]),
+            (0x04, &[7u8, 7][..])
+        );
         assert_eq!(transport.responses.len(), 1);
         assert_eq!(transport.responses[0].0, 5);
         assert_eq!(transport.regs.read32(RX_FREE_WRITE_INDEX), 0);
-        assert_eq!(flip_address(0x0011_2233, 0x0000_4455), [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert_eq!(
+            flip_address(0x0011_2233, 0x0000_4455),
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]
+        );
         assert!(!is_valid_address(&[0x01, 0, 0, 0, 0, 1]));
         assert!(is_valid_address(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
     }

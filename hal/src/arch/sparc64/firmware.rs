@@ -18,7 +18,6 @@ static mut COMMAND_LINE: [u8; COMMAND_LINE_BYTES] = [0; COMMAND_LINE_BYTES];
 static COMMAND_LINE_LENGTH: AtomicUsize = AtomicUsize::new(0);
 static CPU_FREQUENCY: AtomicU64 = AtomicU64::new(0);
 
-/// Calls `service` with `arguments`; its first `returns` results, or `None` when it failed.
 fn call<const ARGUMENTS: usize, const RETURNS: usize>(
     interface: u64,
     service: &core::ffi::CStr,
@@ -56,11 +55,21 @@ fn find_device(interface: u64, path: &core::ffi::CStr) -> Option<u64> {
     (phandle != NO_PHANDLE && phandle != FAILED).then_some(phandle)
 }
 
-fn property(interface: u64, phandle: u64, name: &core::ffi::CStr, buffer: &mut [u8]) -> Option<usize> {
+fn property(
+    interface: u64,
+    phandle: u64,
+    name: &core::ffi::CStr,
+    buffer: &mut [u8],
+) -> Option<usize> {
     let [length] = call::<4, 1>(
         interface,
         c"getprop",
-        [phandle, name.as_ptr() as u64, buffer.as_mut_ptr() as u64, buffer.len() as u64],
+        [
+            phandle,
+            name.as_ptr() as u64,
+            buffer.as_mut_ptr() as u64,
+            buffer.len() as u64,
+        ],
     )?;
     (length != FAILED).then_some((length as usize).min(buffer.len()))
 }
@@ -109,15 +118,25 @@ pub(super) fn read(interface: u64) {
     if let Some(chosen) = find_device(interface, c"/chosen") {
         // SAFETY: as for the table.
         let line = unsafe { &mut *(&raw mut COMMAND_LINE) };
-        if let Some(length) = property(interface, chosen, c"bootargs", &mut line[..COMMAND_LINE_BYTES - 1]) {
-            let end = line[..length].iter().position(|&byte| byte == 0).unwrap_or(length);
+        if let Some(length) = property(
+            interface,
+            chosen,
+            c"bootargs",
+            &mut line[..COMMAND_LINE_BYTES - 1],
+        ) {
+            let end = line[..length]
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(length);
             COMMAND_LINE_LENGTH.store(end, Ordering::Relaxed);
         }
     }
     let mut node = find_device(interface, c"/").and_then(|root| child(interface, root));
     while let Some(phandle) = node {
         let mut kind = [0u8; 8];
-        if property(interface, phandle, c"device_type", &mut kind).is_some() && kind.starts_with(b"cpu\0") {
+        if property(interface, phandle, c"device_type", &mut kind).is_some()
+            && kind.starts_with(b"cpu\0")
+        {
             let mut clock = [0u8; 4];
             if property(interface, phandle, c"clock-frequency", &mut clock) == Some(4) {
                 CPU_FREQUENCY.store(u64::from(u32::from_be_bytes(clock)), Ordering::Relaxed);

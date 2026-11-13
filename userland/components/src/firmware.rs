@@ -196,7 +196,10 @@ pub fn matches_pin(file: &Pinned, bytes: &[u8]) -> bool {
 pub fn whence_entries(whence: &str, files: &[Pinned]) -> String {
     let mut excerpt = String::new();
     for block in blocks(whence) {
-        let paragraphs: Vec<&str> = block.split("\n\n").map(|paragraph| paragraph.trim_matches('\n')).collect();
+        let paragraphs: Vec<&str> = block
+            .split("\n\n")
+            .map(|paragraph| paragraph.trim_matches('\n'))
+            .collect();
         let ours = |paragraph: &str| {
             paragraph
                 .lines()
@@ -220,7 +223,8 @@ pub fn whence_entries(whence: &str, files: &[Pinned]) -> String {
     excerpt
 }
 
-const SEPARATOR: &str = "--------------------------------------------------------------------------";
+const SEPARATOR: &str =
+    "--------------------------------------------------------------------------";
 
 fn is_separator(line: &str) -> bool {
     line.len() >= 60 && line.bytes().all(|byte| byte == b'-')
@@ -270,7 +274,10 @@ pub fn gather(
         gathered.push((path, fetch_pinned(file)?));
     }
     for licence in component.licences {
-        gathered.push((in_folder(component, base_name(licence.path)), fetch_pinned(licence)?));
+        gathered.push((
+            in_folder(component, base_name(licence.path)),
+            fetch_pinned(licence)?,
+        ));
     }
     let whence = fetch_pinned(&WHENCE)?;
     let excerpt = whence_entries(&String::from_utf8_lossy(&whence), component.files);

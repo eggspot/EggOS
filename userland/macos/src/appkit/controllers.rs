@@ -9,7 +9,7 @@ use super::{NSWINDOWCONTROLLER_META, nib, store, with_text};
 use crate::foundation::{NSBUNDLE, class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::reference_count::dispose;
-use crate::objc::{Runtime, methods, send, send1, sel};
+use crate::objc::{Runtime, methods, sel, send, send1};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -90,7 +90,9 @@ extern "C" fn load_view(this: Id, _: Sel) {
             false => fields.nib_bundle,
         };
         let name = fields.nib_name;
-        let loaded = with_text(name, |text| nib::load_from_bundle(bundle, text.as_bytes(), this));
+        let loaded = with_text(name, |text| {
+            nib::load_from_bundle(bundle, text.as_bytes(), this)
+        });
         if let Ok(mut loaded) = loaded {
             loaded.top_level.free();
         }
@@ -139,11 +141,31 @@ macro_rules! object_property {
     };
 }
 
-object_property!(represented_object, set_represented_object, view_fields, represented_object);
+object_property!(
+    represented_object,
+    set_represented_object,
+    view_fields,
+    represented_object
+);
 object_property!(view_title, set_view_title, view_fields, title);
-object_property!(view_storyboard, set_view_storyboard, view_fields, storyboard);
-object_property!(view_identifier, set_view_identifier, view_fields, identifier);
-object_property!(window_storyboard, set_window_storyboard, window_fields, storyboard);
+object_property!(
+    view_storyboard,
+    set_view_storyboard,
+    view_fields,
+    storyboard
+);
+object_property!(
+    view_identifier,
+    set_view_identifier,
+    view_fields,
+    identifier
+);
+object_property!(
+    window_storyboard,
+    set_window_storyboard,
+    window_fields,
+    storyboard
+);
 object_property!(document, set_document, window_fields, document);
 
 extern "C" fn nib_name(this: Id, _: Sel) -> Id {

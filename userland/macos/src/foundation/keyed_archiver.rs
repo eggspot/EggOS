@@ -6,15 +6,15 @@
 //! keys its `encodeWithCoder:` gives. A class is written once, `{$classname, $classes}`.
 
 use super::{
-    Definition, NSCODER, NSDATA, NSKEYEDARCHIVER, NSKEYEDARCHIVER_META,
-    NSMUTABLEARRAY, NSMUTABLEDICTIONARY, NSMUTABLESET, autoreleased, class_pointer,
-    define as define_class, is_array, is_data, is_date, is_dictionary, is_number, is_set,
-    is_string, new_instance,
+    Definition, NSCODER, NSDATA, NSKEYEDARCHIVER, NSKEYEDARCHIVER_META, NSMUTABLEARRAY,
+    NSMUTABLEDICTIONARY, NSMUTABLESET, autoreleased, class_pointer, define as define_class,
+    is_array, is_data, is_date, is_dictionary, is_number, is_set, is_string, new_instance,
 };
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::objc_release;
 use crate::objc::root;
+use crate::objc::sel;
 use crate::objc::{Runtime, methods, send1, send2};
 
 const NO_ENTRY: u32 = u32::MAX;
@@ -49,7 +49,6 @@ enum Entry {
     Class(u32, u32),
 }
 
-/// An archiver's fields.
 #[repr(C)]
 struct Archiver {
     isa: usize,
@@ -113,10 +112,14 @@ fn text(this: Id, (start, length): (u32, u32)) -> &'static [u8] {
 
 fn class_entry(this: Id, name: &[u8]) -> u32 {
     let archiver = fields_of(this);
-    let found = archiver.entries.as_slice().iter().position(|entry| match *entry {
-        Entry::Class(start, length) => text(this, (start, length)) == name,
-        _ => false,
-    });
+    let found = archiver
+        .entries
+        .as_slice()
+        .iter()
+        .position(|entry| match *entry {
+            Entry::Class(start, length) => text(this, (start, length)) == name,
+            _ => false,
+        });
     if let Some(at) = found {
         return at as u32;
     }
@@ -181,12 +184,15 @@ fn plain(object: Id, this: Id) -> Option<Value> {
     })
 }
 
-/// The UID of `object`, written the first time it is met (D365).
 fn encode(this: Id, object: Id) -> u32 {
     if object.is_null() {
         return 0;
     }
-    let seen = fields_of(this).seen.as_slice().iter().find(|(known, _)| *known == object);
+    let seen = fields_of(this)
+        .seen
+        .as_slice()
+        .iter()
+        .find(|(known, _)| *known == object);
     if let Some(&(_, uid)) = seen {
         return uid;
     }
@@ -353,10 +359,9 @@ impl Writer {
         const ALPHABET: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         for chunk in bytes.chunks(3) {
-            let word = chunk
-                .iter()
-                .enumerate()
-                .fold(0u32, |word, (at, &byte)| word | u32::from(byte) << (16 - 8 * at));
+            let word = chunk.iter().enumerate().fold(0u32, |word, (at, &byte)| {
+                word | u32::from(byte) << (16 - 8 * at)
+            });
             for at in 0..4 {
                 match at <= chunk.len() {
                     true => self.put(&[ALPHABET[(word >> (18 - 6 * at) & 0x3f) as usize]]),
@@ -427,7 +432,6 @@ impl Writer {
     }
 }
 
-/// The archive as XML (D365), in a new NSData counted once.
 fn finish(this: Id) -> Id {
     let archiver = fields_of(this);
     if !archiver.finished.is_null() {
@@ -498,7 +502,6 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     crate::objc::reference_count::dispose(this);
 }
 
-/// An archive of `root`: its data, autoreleased.
 fn archive(root: Id) -> Id {
     let archiver = set_up(new_instance(class_pointer(&NSKEYEDARCHIVER)));
     if archiver.is_null() {
@@ -515,13 +518,7 @@ extern "C" fn archived_data_with_root_object(_: Id, _: Sel, root: Id) -> Id {
     archive(root)
 }
 
-extern "C" fn archived_data_secure(
-    _: Id,
-    _: Sel,
-    root: Id,
-    _: u8,
-    error: *mut Id,
-) -> Id {
+extern "C" fn archived_data_secure(_: Id, _: Sel, root: Id, _: u8, error: *mut Id) -> Id {
     if !error.is_null() {
         // SAFETY: the caller's `NSError **`.
         unsafe { error.write(core::ptr::null_mut()) };

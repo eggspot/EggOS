@@ -10,14 +10,12 @@
 
 /// "RSD PTR ", the RSDP signature.
 pub const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
-/// Bytes covered by the ACPI 1.0 RSDP checksum.
 const RSDP_V1_LENGTH: usize = 20;
 /// Length of the ACPI 2.0+ RSDP.
 pub const RSDP_V2_LENGTH: usize = 36;
 /// Length of every system description table header.
 pub const TABLE_HEADER_LENGTH: usize = 36;
 
-/// FADT field offsets (ACPI 6.5, table 5.9).
 const FADT_DSDT: usize = 40;
 const FADT_SMI_CMD: usize = 48;
 const FADT_ACPI_ENABLE: usize = 52;
@@ -25,20 +23,12 @@ const FADT_PM1A_CNT_BLK: usize = 64;
 const FADT_PM1B_CNT_BLK: usize = 68;
 const FADT_X_DSDT: usize = 140;
 
-/// Where the MADT's interrupt controller structures start: after the header, the local
-/// interrupt controller address and the flags (ACPI 6.5, table 5.19).
 const MADT_ENTRIES: usize = 44;
-/// MADT structure type 0, Processor Local APIC (5.2.12.2): 8 bytes, the APIC id at 3 and the
-/// flags at 4, whose bit 0 says the processor is usable.
 const MADT_LOCAL_APIC: u8 = 0;
 const MADT_LOCAL_APIC_LENGTH: usize = 8;
 const MADT_LOCAL_APIC_ENABLED: u32 = 1;
-/// MADT structure type 1, I/O APIC (5.2.12.3): 12 bytes, the registers' address at 4 and the
-/// first global system interrupt it handles at 8.
 const MADT_IO_APIC: u8 = 1;
 const MADT_IO_APIC_LENGTH: usize = 12;
-/// MADT structure type 2, Interrupt Source Override (5.2.12.5): 10 bytes, the bus at 2 (0 is
-/// ISA), the ISA line at 3, its global system interrupt at 4 and the MPS INTI flags at 8.
 const MADT_SOURCE_OVERRIDE: u8 = 2;
 const MADT_SOURCE_OVERRIDE_LENGTH: usize = 10;
 const MADT_BUS_ISA: u8 = 0;
@@ -317,8 +307,6 @@ pub fn madt_local_apic_ids(madt: &[u8], cpu: &mut dyn FnMut(u8)) {
     }
 }
 
-/// The MADT's structures of type `kind` at least `minimum_length` bytes long, in order. A
-/// structure whose length runs past the table, or is below 2, ends the walk.
 fn madt_structures(madt: &[u8], kind: u8, minimum_length: usize) -> impl Iterator<Item = &[u8]> {
     let mut at = MADT_ENTRIES;
     core::iter::from_fn(move || {
@@ -391,7 +379,6 @@ pub struct S5SleepType {
     pub b: u8,
 }
 
-/// AML opcodes used by a `Name(_S5, Package() { ... })` definition.
 const AML_NAME_OP: u8 = 0x08;
 const AML_PACKAGE_OP: u8 = 0x12;
 const AML_ZERO_OP: u8 = 0x00;
@@ -420,7 +407,6 @@ pub fn find_s5_sleep_type(aml: &[u8]) -> Option<S5SleepType> {
         })
 }
 
-/// How many more bytes a PkgLength's lead byte says follow it: its bits 7-6 (ACPI 6.5, 20.2.4).
 const fn package_length_extra_bytes(lead: u8) -> usize {
     (lead >> 6) as usize
 }
@@ -480,8 +466,6 @@ fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
-/// MADT structure types for Arm's GIC (ACPI 6.5, 5.2.12.14-17): the CPU interface (`GICC`, 80
-/// bytes and more), the distributor (`GICD`, 24) and a redistributor discovery range (`GICR`, 16).
 const MADT_GICC: u8 = 0x0b;
 const MADT_GICC_LENGTH: usize = 76;
 const MADT_GICC_FLAGS: usize = 12;
@@ -521,8 +505,9 @@ pub fn madt_gic(madt: &[u8]) -> Option<GicDescription> {
         redistributor_bytes: 0,
     };
     let enabled_cpus = || {
-        madt_structures(madt, MADT_GICC, MADT_GICC_LENGTH)
-            .filter(|entry| read_u32(entry, MADT_GICC_FLAGS).is_some_and(|flags| flags & MADT_GICC_ENABLED != 0))
+        madt_structures(madt, MADT_GICC, MADT_GICC_LENGTH).filter(|entry| {
+            read_u32(entry, MADT_GICC_FLAGS).is_some_and(|flags| flags & MADT_GICC_ENABLED != 0)
+        })
     };
     if let Some(cpu) = enabled_cpus().next() {
         description.cpu_interface = read_u64(cpu, MADT_GICC_BASE)?;
@@ -531,14 +516,22 @@ pub fn madt_gic(madt: &[u8]) -> Option<GicDescription> {
         description.redistributors = read_u64(range, 4)?;
         description.redistributor_bytes = read_u32(range, 12)?.into();
     } else {
-        let bases = || enabled_cpus().filter_map(|cpu| read_u64(cpu, MADT_GICC_REDISTRIBUTOR)).filter(|&base| base != 0);
+        let bases = || {
+            enabled_cpus()
+                .filter_map(|cpu| read_u64(cpu, MADT_GICC_REDISTRIBUTOR))
+                .filter(|&base| base != 0)
+        };
         if let (Some(low), Some(high)) = (bases().min(), bases().max()) {
             description.redistributors = low;
             description.redistributor_bytes = high - low + GICV4_REDISTRIBUTOR_BYTES;
         }
     }
     if description.version == 0 {
-        description.version = if description.redistributors != 0 { 3 } else { 2 };
+        description.version = if description.redistributors != 0 {
+            3
+        } else {
+            2
+        };
     }
     Some(description)
 }
@@ -547,7 +540,8 @@ pub fn madt_gic(madt: &[u8]) -> Option<GicDescription> {
 /// enabled CPU a validated MADT's `GICC` structures list.
 pub fn madt_gic_cpus(madt: &[u8], cpu: &mut dyn FnMut(u64)) {
     for entry in madt_structures(madt, MADT_GICC, MADT_GICC_LENGTH) {
-        let enabled = read_u32(entry, MADT_GICC_FLAGS).is_some_and(|flags| flags & MADT_GICC_ENABLED != 0);
+        let enabled =
+            read_u32(entry, MADT_GICC_FLAGS).is_some_and(|flags| flags & MADT_GICC_ENABLED != 0);
         if let (true, Some(mpidr)) = (enabled, read_u64(entry, MADT_GICC_MPIDR)) {
             cpu(mpidr & 0xff_00ff_ffff);
         }
@@ -562,7 +556,11 @@ pub type PhysicalReader<'a> = &'a dyn Fn(u64, usize) -> Option<&'static [u8]>;
 
 /// The validated table with `signature` that the root table under the RSDP at `rsdp` lists,
 /// every byte read through `read` (D236).
-pub fn find_table(rsdp: u64, signature: &[u8; 4], read: PhysicalReader<'_>) -> Option<&'static [u8]> {
+pub fn find_table(
+    rsdp: u64,
+    signature: &[u8; 4],
+    read: PhysicalReader<'_>,
+) -> Option<&'static [u8]> {
     let root = parse_rsdp(read(rsdp, RSDP_V2_LENGTH).or_else(|| read(rsdp, RSDP_V1_LENGTH))?)?;
     let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
     let root_signature = match root {
@@ -603,7 +601,11 @@ pub fn find_tables(
 }
 
 /// The validated table with `signature` at physical `address`, read through `read`.
-pub fn table_at(address: u64, signature: &[u8; 4], read: PhysicalReader<'_>) -> Option<&'static [u8]> {
+pub fn table_at(
+    address: u64,
+    signature: &[u8; 4],
+    read: PhysicalReader<'_>,
+) -> Option<&'static [u8]> {
     if address == 0 {
         return None;
     }
@@ -681,7 +683,6 @@ pub fn parse_spcr(spcr: &[u8]) -> Option<SerialPort> {
 mod tests {
     use super::*;
 
-    /// Sets the byte at `at` so that `bytes` sums to zero.
     fn fix_checksum(bytes: &mut [u8], at: usize) {
         bytes[at] = 0;
         let sum = bytes.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte));
@@ -717,7 +718,6 @@ mod tests {
         ids
     }
 
-    /// A Processor Local APIC structure.
     fn local_apic(id: u8, flags: u32) -> Vec<u8> {
         [&[0, 8, id, id][..], &flags.to_le_bytes()].concat()
     }
@@ -1063,8 +1063,10 @@ mod tests {
     fn the_spcr_names_a_pl011_console() {
         let mut spcr = vec![0u8; SPCR_MINIMUM_LENGTH];
         spcr[SPCR_INTERFACE_TYPE] = SPCR_SBSA;
-        spcr[SPCR_BASE_ADDRESS + 4..SPCR_BASE_ADDRESS + 12].copy_from_slice(&0x0900_0000u64.to_le_bytes());
-        spcr[SPCR_GLOBAL_INTERRUPT..SPCR_GLOBAL_INTERRUPT + 4].copy_from_slice(&33u32.to_le_bytes());
+        spcr[SPCR_BASE_ADDRESS + 4..SPCR_BASE_ADDRESS + 12]
+            .copy_from_slice(&0x0900_0000u64.to_le_bytes());
+        spcr[SPCR_GLOBAL_INTERRUPT..SPCR_GLOBAL_INTERRUPT + 4]
+            .copy_from_slice(&33u32.to_le_bytes());
         let port = parse_spcr(&spcr).unwrap();
         assert_eq!(port.kind, SerialKind::Pl011);
         assert_eq!(port.address, 0x0900_0000);
@@ -1080,18 +1082,24 @@ mod tests {
         memory[..RSDP_V2_LENGTH].copy_from_slice(&rsdp);
         let mut xsdt = vec![0u8; TABLE_HEADER_LENGTH + 8];
         xsdt[..4].copy_from_slice(b"XSDT");
-        xsdt[4..8].copy_from_slice(&(xsdt.len() as u32).to_le_bytes());
+        let xsdt_length = xsdt.len() as u32;
+        xsdt[4..8].copy_from_slice(&xsdt_length.to_le_bytes());
         xsdt[TABLE_HEADER_LENGTH..].copy_from_slice(&0x2000u64.to_le_bytes());
         fix_checksum(&mut xsdt, 9);
         memory[0x1000..0x1000 + xsdt.len()].copy_from_slice(&xsdt);
         let mut spcr = vec![0u8; SPCR_MINIMUM_LENGTH];
         spcr[..4].copy_from_slice(b"SPCR");
-        spcr[4..8].copy_from_slice(&(spcr.len() as u32).to_le_bytes());
+        let spcr_length = spcr.len() as u32;
+        spcr[4..8].copy_from_slice(&spcr_length.to_le_bytes());
         fix_checksum(&mut spcr, 9);
         memory[0x2000..0x2000 + spcr.len()].copy_from_slice(&spcr);
         let memory: &'static [u8] = Box::leak(memory.into_boxed_slice());
-        let read = |address: u64, length: usize| memory.get(address as usize..address as usize + length);
-        assert_eq!(find_table(0, b"SPCR", &read).map(<[u8]>::len), Some(SPCR_MINIMUM_LENGTH));
+        let read =
+            |address: u64, length: usize| memory.get(address as usize..address as usize + length);
+        assert_eq!(
+            find_table(0, b"SPCR", &read).map(<[u8]>::len),
+            Some(SPCR_MINIMUM_LENGTH)
+        );
         assert_eq!(find_table(0, b"MADT", &read), None);
     }
 

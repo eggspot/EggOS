@@ -215,7 +215,10 @@ impl ZonePicker {
                 TOUCH_ROW,
             ),
         };
-        tree.set_place(w.title, Place::at(PADDING, zone_line, Length::Content, Length::Content));
+        tree.set_place(
+            w.title,
+            Place::at(PADDING, zone_line, Length::Content, Length::Content),
+        );
         tree.set_place(w.name, Place::right(PADDING, zone_line));
         tree.set_place(w.facts, Place::right(PADDING, facts_line));
         tree.set_place(w.field, at(field));

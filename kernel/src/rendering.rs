@@ -10,7 +10,6 @@
 //! number of threads wait at once. Every other command waits for its own answer. The GPU is
 //! the display's device, reached through [`crate::display::with_renderer`].
 
-use eggos_hal::atomic::AtomicU64;
 use crate::devices::Deadline;
 use crate::devices::dma::DmaRegion;
 use crate::devices::interrupts::DeviceEvents;
@@ -22,11 +21,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::ManuallyDrop;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use eggos_drivers::dma::DmaMemory;
 pub use eggos_drivers::virtio::gpu::three_d::{
     CapsetInfo, ResourceShape, TexelBox, ThreeDCommand, Transfer, capset_info,
 };
-use eggos_drivers::dma::DmaMemory;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::memory::FRAME_SIZE;
 
 /// The most capability sets a device is asked about.
@@ -56,12 +56,8 @@ pub trait Renderer {
     fn stream(&mut self, slot: usize) -> &mut [u8];
     /// Posts the first `length` bytes of `slot`'s stream as `context`'s command stream without
     /// waiting, and returns its fence.
-    fn start_stream(
-        &mut self,
-        slot: usize,
-        context: u32,
-        length: u32,
-    ) -> Result<u64, &'static str>;
+    fn start_stream(&mut self, slot: usize, context: u32, length: u32)
+    -> Result<u64, &'static str>;
     /// Collects the answers that came: the fence of the oldest stream still in flight.
     fn oldest_stream(&mut self) -> Option<u64>;
     /// Gives up on the streams the device never answered.
@@ -344,10 +340,17 @@ impl Buffer {
             return false;
         };
         let bytes = (out.len() as u64).saturating_mul(4);
-        if offset.checked_add(bytes).is_none_or(|end| end > self.length) || offset % 4 != 0 {
+        if offset
+            .checked_add(bytes)
+            .is_none_or(|end| end > self.length)
+            || !offset.is_multiple_of(4)
+        {
             return false;
         }
-        let from = memory.as_mut_ptr().wrapping_add(offset as usize).cast::<u32>();
+        let from = memory
+            .as_mut_ptr()
+            .wrapping_add(offset as usize)
+            .cast::<u32>();
         // SAFETY: the range lies inside the buffer's DMA memory (checked), which lives as long
         // as `self`, reached through the direct map and 4-byte aligned; the GPU or a program
         // may write it meanwhile, so the copy goes through raw pointers only.
@@ -379,12 +382,11 @@ impl Drop for Buffer {
         };
         // SAFETY: taken once, here, as the buffer goes.
         let memory = unsafe { ManuallyDrop::take(memory) };
-        match released {
+        if released {
             // SAFETY: the device detached the backing and destroyed the resource (or never had
             // the memory), so it no longer reaches it; no process maps it, as each mapping
             // holds the buffer.
-            true => unsafe { memory.free() },
-            false => core::mem::forget(memory),
+            unsafe { memory.free() }
         }
     }
 }
@@ -400,8 +402,6 @@ fn release_host_blob<P: Platform>(resource: u32, _backed: bool, fence: u64) -> b
     send_quietly::<P>(&ThreeDCommand::Unref { resource }) && unmapped
 }
 
-/// The device's host-visible shared memory (D440): where it is in physical memory, how long,
-/// and its free ranges.
 #[derive(Debug)]
 struct HostWindow {
     base: u64,
@@ -488,6 +488,14 @@ impl PartialEq for Context {
 
 impl Eq for Context {}
 
+impl PartialEq for Buffer {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Buffer {}
+
 fn end_context<P: Platform>(context: u32, resources: &[u32], created: bool) {
     if !created {
         return;
@@ -545,10 +553,12 @@ impl Context {
         size: u64,
     ) -> Result<(u32, Arc<Buffer>), RenderError> {
         self.ensure_created::<P>()?;
-        let size = size.max(1).checked_next_multiple_of(FRAME_SIZE).ok_or(RenderError::NoMemory)?;
+        let size = size
+            .max(1)
+            .checked_next_multiple_of(FRAME_SIZE)
+            .ok_or(RenderError::NoMemory)?;
         let length = u32::try_from(size).map_err(|_| RenderError::NoMemory)?;
-        let memory =
-            DmaRegion::allocate(length as usize).map_err(|_| RenderError::NoMemory)?;
+        let memory = DmaRegion::allocate(length as usize).map_err(|_| RenderError::NoMemory)?;
         let address = memory.dma_addr().get();
         let physical = memory.physical();
         let resource = NEXT_RESOURCE.fetch_add(1, Ordering::Relaxed);
@@ -593,7 +603,10 @@ impl Context {
         flags: u32,
     ) -> Result<(u32, Arc<Buffer>), RenderError> {
         self.ensure_created::<P>()?;
-        let size = size.max(1).checked_next_multiple_of(FRAME_SIZE).ok_or(RenderError::NoMemory)?;
+        let size = size
+            .max(1)
+            .checked_next_multiple_of(FRAME_SIZE)
+            .ok_or(RenderError::NoMemory)?;
         let length = usize::try_from(size).map_err(|_| RenderError::NoMemory)?;
         let memory = DmaRegion::allocate(length).map_err(|_| RenderError::NoMemory)?;
         let address = memory.dma_addr().get();
@@ -637,7 +650,10 @@ impl Context {
         if !has_host_window() {
             return Err(RenderError::Invalid);
         }
-        let size = size.max(1).checked_next_multiple_of(FRAME_SIZE).ok_or(RenderError::NoMemory)?;
+        let size = size
+            .max(1)
+            .checked_next_multiple_of(FRAME_SIZE)
+            .ok_or(RenderError::NoMemory)?;
         if !stream.is_empty() {
             let fence = self.submit::<P>(stream, &[])?;
             wait_fence::<P>(fence, false)?;
@@ -793,7 +809,11 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         let state = core::mem::take(self.state.get_mut());
-        let resources: Vec<u32> = state.buffers.values().map(|buffer| buffer.resource).collect();
+        let resources: Vec<u32> = state
+            .buffers
+            .values()
+            .map(|buffer| buffer.resource)
+            .collect();
         (self.end)(self.id, &resources, state.created);
         drop(state);
     }

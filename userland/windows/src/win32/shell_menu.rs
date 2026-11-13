@@ -48,8 +48,6 @@ pub(super) fn is_shells(root: usize, point: (i32, i32)) -> bool {
     x < 0 || y < 0 || x >= width || y >= height
 }
 
-/// A menu label as the shell shows it: `&` marks dropped (`&&` kept as one), the tab before
-/// an accelerator's text two spaces, at most [`LABEL_CAPACITY`] bytes of UTF-8.
 fn shell_label(units: &[u16], out: &mut [u8; LABEL_CAPACITY]) -> usize {
     let mut utf8 = [0u8; LABEL_CAPACITY * 2];
     let (length, _) = text::write_utf8(units, &mut utf8);
@@ -79,9 +77,6 @@ fn shell_label(units: &[u16], out: &mut [u8; LABEL_CAPACITY]) -> usize {
     written
 }
 
-/// The entries of menu `popup` in the server's encoding, how many bytes they take, and each
-/// entry's command id (0 for one that cannot be chosen: a separator, a grayed item or a
-/// submenu, which shell menus do not open).
 fn entries(popup: usize) -> Result<([u8; ENTRIES_CAPACITY], usize, [usize; MAX_ITEMS]), u32> {
     try_with(|gui| {
         let menu = super::menu::table(gui)
@@ -133,7 +128,8 @@ pub(super) fn track(root: usize, popup: usize) -> Result<usize, u32> {
         WAITING.with(|waiting| *waiting = None);
         return Err(super::error::INVALID_PARAMETER);
     }
-    let finished = |_: &gui::Gui| WAITING.with(|waiting| waiting.is_none_or(|w| w.answer.is_some()));
+    let finished =
+        |_: &gui::Gui| WAITING.with(|waiting| waiting.is_none_or(|w| w.answer.is_some()));
     loop {
         match gui::wait_for(Filter::default(), true, true, &finished) {
             Next::Done | Next::Nothing => break,

@@ -1,8 +1,8 @@
 //! IEEE 802.11's key derivation function over HMAC-SHA-256 (IEEE 802.11-2020, 12.7.1.6.2),
 //! which SAE and the SHA-256 AKMs derive their keys with (D285).
 
-use eggos_crypto::hmac::Hmac;
 use eggos_crypto::HashAlgorithm;
+use eggos_crypto::hmac::Hmac;
 
 const BLOCK_BYTES: usize = 32;
 

@@ -66,7 +66,7 @@ pub struct Search<'s> {
 }
 
 fn joined(parts: &[&[u8]], out: &mut [u8; LONGEST_PATH]) -> Option<usize> {
-    let mut length = 0;
+    let mut length: usize = 0;
     for part in parts {
         let end = length.checked_add(part.len())?;
         if end >= LONGEST_PATH {
@@ -131,7 +131,12 @@ fn trie_of(image: &Image) -> &'static [u8] {
     image
         .macho
         .exports
-        .and_then(|range| image.macho.bytes.get(range.offset..range.offset + range.size))
+        .and_then(|range| {
+            image
+                .macho
+                .bytes
+                .get(range.offset..range.offset + range.size)
+        })
         .unwrap_or(&[])
 }
 
@@ -157,7 +162,10 @@ fn symbol_at(
         Symbol::Absolute(value) => Some(value),
         Symbol::Resolver { stub, .. } => Some(header + stub),
         Symbol::ThreadLocal(_) => None,
-        Symbol::Reexport { ordinal, name: other } => {
+        Symbol::Reexport {
+            ordinal,
+            name: other,
+        } => {
             let wanted = if other.is_empty() { name } else { other };
             let slot = (ordinal as usize).checked_sub(1)?;
             match found.dependencies.get(slot).copied().flatten() {

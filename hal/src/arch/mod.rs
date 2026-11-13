@@ -22,9 +22,9 @@ pub use aarch64::Aarch64 as CurrentPlatform;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
-pub(crate) use aarch64::kernel_virtual_offset;
-#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::doorbell_barrier;
+#[cfg(all(eggos_kernel, target_arch = "aarch64"))]
+pub(crate) use aarch64::kernel_virtual_offset;
 #[cfg(all(eggos_kernel, target_arch = "aarch64"))]
 pub(crate) use aarch64::zero;
 
@@ -42,9 +42,9 @@ pub(crate) use riscv32::zero;
 #[cfg(all(eggos_kernel, target_arch = "arm"))]
 pub mod arm;
 #[cfg(all(eggos_kernel, target_arch = "arm"))]
-pub(crate) use arm::KERNEL_VIRTUAL_OFFSET;
-#[cfg(all(eggos_kernel, target_arch = "arm"))]
 pub use arm::Arm as CurrentPlatform;
+#[cfg(all(eggos_kernel, target_arch = "arm"))]
+pub(crate) use arm::KERNEL_VIRTUAL_OFFSET;
 #[cfg(all(eggos_kernel, target_arch = "arm"))]
 pub(crate) use arm::doorbell_barrier;
 #[cfg(all(eggos_kernel, target_arch = "arm"))]
@@ -178,6 +178,8 @@ pub enum TestMachine {
     S390CcwVirtio,
     /// SPARC64's `sun4u` (D326).
     Sun4u,
+    /// 64-bit little-endian PowerPC's `powernv9` (D304).
+    PowerNv9,
 }
 
 /// The machine this kernel's self-tests expect; `None` in host builds.
@@ -198,6 +200,9 @@ pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::S390CcwVirtio);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "sparc64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Sun4u);
+/// The machine this kernel's self-tests expect; `None` in host builds.
+#[cfg(all(eggos_kernel, target_arch = "powerpc64"))]
+pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::PowerNv9);
 /// The machine this kernel's self-tests expect; `None` in host builds.
 #[cfg(all(eggos_kernel, target_arch = "x86_64"))]
 pub const TEST_MACHINE: Option<TestMachine> = Some(TestMachine::Q35);

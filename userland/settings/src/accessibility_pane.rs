@@ -171,7 +171,12 @@ impl AccessibilityPane {
         );
         let status = label(tree, pane, PADDING, 316, "", Token::TextDim);
         let accessibility = Self {
-            meanings: [contrast_meaning, motion_meaning, sticky_meaning, slow_meaning],
+            meanings: [
+                contrast_meaning,
+                motion_meaning,
+                sticky_meaning,
+                slow_meaning,
+            ],
             lines: [hold, navigation, always, reaches],
             contrast,
             motion,
@@ -195,7 +200,10 @@ impl AccessibilityPane {
         let Some(c) = content else {
             for (index, (check, meaning)) in boxes.iter().zip(self.meanings).enumerate() {
                 let y = 70 + 40 * index as i32;
-                tree.set_place(*check, Place::at(PADDING, y, Length::Content, Length::Px(CONTROL_HEIGHT)));
+                tree.set_place(
+                    *check,
+                    Place::at(PADDING, y, Length::Content, Length::Px(CONTROL_HEIGHT)),
+                );
                 tree.set_place(meaning, Place::right(PADDING, y + 6));
             }
             tree.set_place(hold, line(40, 236));
@@ -216,7 +224,10 @@ impl AccessibilityPane {
         };
         for (index, (check, meaning)) in boxes.iter().zip(self.meanings).enumerate() {
             let y = 64 + 80 * index as i32;
-            tree.set_place(*check, Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL)));
+            tree.set_place(
+                *check,
+                Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL)),
+            );
             tree.set_place(meaning, line(PADDING, y + 52));
         }
         tree.set_place(hold, line(PADDING, 384));
@@ -226,7 +237,10 @@ impl AccessibilityPane {
         );
         tree.set_place(navigation, line(PADDING, 472));
         tree.set_place(always, line(PADDING + c - 72, 472));
-        tree.set_place(reaches, Place::at(PADDING, 492, Length::Px(c), Length::Content));
+        tree.set_place(
+            reaches,
+            Place::at(PADDING, 492, Length::Px(c), Length::Content),
+        );
         tree.set_place(self.status, line(PADDING, 520));
         552
     }

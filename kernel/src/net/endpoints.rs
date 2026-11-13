@@ -10,13 +10,13 @@
 //! Endpoints are found through a table of weak references, so an endpoint that is no longer
 //! used frees its port with its last reference.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use eggos_hal::atomic::AtomicU64;
 use eggos_net::interface::{Datagram as Arrived, Delivery};
 use eggos_net::ipv4::Ipv4Address;
 

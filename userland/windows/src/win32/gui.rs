@@ -610,7 +610,14 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
                     .find(|hot_key| hot_key.id as u32 == id)
                     .copied()?;
                 let lparam = message::word_pair(hot_key.modifiers as usize, hot_key.key as usize);
-                gui.post(hot_key.window, hot_key.thread, message::HOT_KEY, hot_key.id as isize as usize, lparam).ok()
+                gui.post(
+                    hot_key.window,
+                    hot_key.thread,
+                    message::HOT_KEY,
+                    hot_key.id as isize as usize,
+                    lparam,
+                )
+                .ok()
             });
             None
         }

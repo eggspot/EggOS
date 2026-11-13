@@ -28,7 +28,8 @@ impl Host for FakeHost {
         value: u64,
     ) -> Result<(), HostError> {
         for byte in 0..u64::from(width / 8) {
-            self.memory.insert(address + byte, (value >> (byte * 8)) as u8);
+            self.memory
+                .insert(address + byte, (value >> (byte * 8)) as u8);
         }
         Ok(())
     }
@@ -40,7 +41,14 @@ impl Host for FakeHost {
         width: u32,
     ) -> Result<u64, HostError> {
         self.configuration_reads.push((function, offset, width));
-        let key = |byte: u16| (function.bus, function.device, function.function, offset + byte);
+        let key = |byte: u16| {
+            (
+                function.bus,
+                function.device,
+                function.function,
+                offset + byte,
+            )
+        };
         Ok((0..(width / 8) as u16).rev().fold(0, |value, byte| {
             value << 8 | u64::from(self.configuration.get(&key(byte)).copied().unwrap_or(0xff))
         }))
@@ -77,7 +85,7 @@ fn cat(parts: &[&[u8]]) -> Vec<u8> {
 }
 
 fn package_length(content: usize) -> Vec<u8> {
-    match content + 1 <= 0x3f {
+    match content < 0x3f {
         true => vec![(content + 1) as u8],
         false => {
             let total = content + 2;
@@ -126,8 +134,15 @@ fn a_method_adds_one_to_its_argument() {
 
 #[test]
 fn a_while_loop_sums_with_its_locals() {
-    let looped = package(&[0xa2], &[0x95, 0x61, 0x68, 0x75, 0x61, 0x72, 0x60, 0x61, 0x60]);
-    let body = cat(&[&[0x70, 0x00, 0x60, 0x70, 0x00, 0x61], &looped, &[0xa4, 0x60]]);
+    let looped = package(
+        &[0xa2],
+        &[0x95, 0x61, 0x68, 0x75, 0x61, 0x72, 0x60, 0x61, 0x60],
+    );
+    let body = cat(&[
+        &[0x70, 0x00, 0x60, 0x70, 0x00, 0x61],
+        &looped,
+        &[0xa4, 0x60],
+    ]);
     let mut interpreter = loaded(&method(b"SUMN", 1, &body));
     let sum = interpreter.evaluate_integer(&path(b"\\SUMN"), &[Object::Integer(4)]);
     assert_eq!(sum, Ok(10));
@@ -136,12 +151,23 @@ fn a_while_loop_sums_with_its_locals() {
 #[test]
 fn a_package_is_indexed_measured_and_changed_through_a_reference() {
     let buffer = package(&[0x11], &[0x0a, 0x02, 0x05, 0x06]);
-    let elements = package(&[0x12], &cat(&[&[0x03, 0x01, 0x0d, b'A', b'B', 0x00], &buffer]));
+    let elements = package(
+        &[0x12],
+        &cat(&[&[0x03, 0x01, 0x0d, b'A', b'B', 0x00], &buffer]),
+    );
     let body = cat(&[
         &cat(&[&[0x08], b"PKG0", &elements]),
-        &method(b"GETE", 1, &cat(&[&[0xa4, 0x83, 0x88], b"PKG0", &[0x68, 0x00]])),
+        &method(
+            b"GETE",
+            1,
+            &cat(&[&[0xa4, 0x83, 0x88], b"PKG0", &[0x68, 0x00]]),
+        ),
         &method(b"SIZE", 0, &cat(&[&[0xa4, 0x87], b"PKG0"])),
-        &method(b"SETE", 0, &cat(&[&[0x70, 0x0a, 0x07, 0x88], b"PKG0", &[0x00, 0x00]])),
+        &method(
+            b"SETE",
+            0,
+            &cat(&[&[0x70, 0x0a, 0x07, 0x88], b"PKG0", &[0x00, 0x00]]),
+        ),
     ]);
     let mut interpreter = loaded(&body);
     let second = interpreter.evaluate(&path(b"\\GETE"), &[Object::Integer(1)]);
@@ -149,7 +175,11 @@ fn a_package_is_indexed_measured_and_changed_through_a_reference() {
     let third = interpreter.evaluate(&path(b"\\GETE"), &[Object::Integer(2)]);
     assert_eq!(third, Ok(Object::Buffer(vec![5, 6])));
     assert_eq!(interpreter.evaluate_integer(&path(b"\\SIZE"), &[]), Ok(3));
-    assert!(interpreter.evaluate(&path(b"\\GETE"), &[Object::Integer(3)]).is_err());
+    assert!(
+        interpreter
+            .evaluate(&path(b"\\GETE"), &[Object::Integer(3)])
+            .is_err()
+    );
     interpreter.evaluate(&path(b"\\SETE"), &[]).unwrap();
     let Ok(Object::Package(changed)) = interpreter.evaluate(&path(b"\\PKG0"), &[]) else {
         panic!("PKG0 is not a package");
@@ -159,10 +189,21 @@ fn a_package_is_indexed_measured_and_changed_through_a_reference() {
 
 #[test]
 fn fields_write_their_bits_and_preserve_the_rest_of_the_unit() {
-    let region = cat(&[&[0x5b, 0x80], b"REG0", &[0x00, 0x0b, 0x00, 0x10, 0x0a, 0x10]]);
+    let region = cat(&[
+        &[0x5b, 0x80],
+        b"REG0",
+        &[0x00, 0x0b, 0x00, 0x10, 0x0a, 0x10],
+    ]);
     let field = package(
         &[0x5b, 0x81],
-        &cat(&[b"REG0", &[0x01], b"FLD0", &[0x08, 0x00, 0x04], b"FLD1", &[0x04]]),
+        &cat(&[
+            b"REG0",
+            &[0x01],
+            b"FLD0",
+            &[0x08, 0x00, 0x04],
+            b"FLD1",
+            &[0x04],
+        ]),
     );
     let set = method(
         b"SETF",
@@ -187,11 +228,21 @@ fn fields_write_their_bits_and_preserve_the_rest_of_the_unit() {
 
 #[test]
 fn osi_answers_windows_versions_and_not_others() {
-    let mut interpreter = loaded(&method(b"OSIT", 1, &cat(&[&[0xa4, 0x5c], b"_OSI", &[0x68]])));
+    let mut interpreter = loaded(&method(
+        b"OSIT",
+        1,
+        &cat(&[&[0xa4, 0x5c], b"_OSI", &[0x68]]),
+    ));
     let windows = Object::String(b"Windows 2015".to_vec());
     let linux = Object::String(b"Linux".to_vec());
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\OSIT"), &[windows]), Ok(u64::MAX));
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\OSIT"), &[linux]), Ok(0));
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\OSIT"), &[windows]),
+        Ok(u64::MAX)
+    );
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\OSIT"), &[linux]),
+        Ok(0)
+    );
 }
 
 #[test]
@@ -238,7 +289,10 @@ fn a_method_builds_a_buffer_through_a_buffer_field_and_its_names_go_with_it() {
     ]);
     let mut interpreter = loaded(&method(b"CRS0", 0, &body));
     let built = interpreter.evaluate(&path(b"\\CRS0"), &[]);
-    assert_eq!(built, Ok(Object::Buffer(vec![0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12])));
+    assert_eq!(
+        built,
+        Ok(Object::Buffer(vec![0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12]))
+    );
     assert_eq!(interpreter.namespace().find(&path(b"\\CRS0.RBUF")), None);
     assert_eq!(interpreter.namespace().find(&path(b"\\CRS0.VAL0")), None);
 }
@@ -272,8 +326,14 @@ fn a_pci_config_region_reads_the_function_its_device_and_bridge_name() {
             .configuration
             .insert((2, 3, 0, offset as u16), byte);
     }
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\PCI0.DEV0.VID0"), &[]), Ok(0x8086));
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\PCI0.DEV0.DID0"), &[]), Ok(0x1234));
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\PCI0.DEV0.VID0"), &[]),
+        Ok(0x8086)
+    );
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\PCI0.DEV0.DID0"), &[]),
+        Ok(0x1234)
+    );
     let expected = PciFunction {
         segment: 0,
         bus: 2,
@@ -285,13 +345,22 @@ fn a_pci_config_region_reads_the_function_its_device_and_bridge_name() {
 
 #[test]
 fn if_and_else_choose_by_a_string_comparison() {
-    let then = package(&[0xa0], &cat(&[&[0x93, 0x68, 0x0d], b"ABC\0", &[0xa4, 0x01]]));
+    let then = package(
+        &[0xa0],
+        &cat(&[&[0x93, 0x68, 0x0d], b"ABC\0", &[0xa4, 0x01]]),
+    );
     let otherwise = package(&[0xa1], &[0xa4, 0x0a, 0x02]);
     let mut interpreter = loaded(&method(b"CMPS", 1, &cat(&[&then, &otherwise])));
     let same = Object::String(b"ABC".to_vec());
     let other = Object::String(b"XYZ".to_vec());
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\CMPS"), &[same]), Ok(1));
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\CMPS"), &[other]), Ok(2));
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\CMPS"), &[same]),
+        Ok(1)
+    );
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\CMPS"), &[other]),
+        Ok(2)
+    );
 }
 
 #[test]
@@ -322,7 +391,10 @@ fn a_revision_1_dsdt_makes_integers_32_bits_wide() {
         .load_table(&table(1, &method(b"ONES", 0, &[0xa4, 0xff])))
         .unwrap();
     assert!(interpreter.has_32_bit_integers());
-    assert_eq!(interpreter.evaluate_integer(&path(b"\\ONES"), &[]), Ok(0xffff_ffff));
+    assert_eq!(
+        interpreter.evaluate_integer(&path(b"\\ONES"), &[]),
+        Ok(0xffff_ffff)
+    );
 }
 
 #[test]
@@ -336,12 +408,24 @@ fn a_table_shorter_than_its_header_says_is_refused() {
 #[test]
 fn devices_are_found_by_their_hid_or_cid() {
     let body = cat(&[
-        &device(b"EC0_", &cat(&[&[0x08], b"_HID", &[0x0c, 0x41, 0xd0, 0x0c, 0x09]])),
-        &device(b"PWRB", &cat(&[&[0x08], b"_CID", &[0x0d], b"PNP0C0C", &[0x00]])),
+        &device(
+            b"EC0_",
+            &cat(&[&[0x08], b"_HID", &[0x0c, 0x41, 0xd0, 0x0c, 0x09]]),
+        ),
+        &device(
+            b"PWRB",
+            &cat(&[&[0x08], b"_CID", &[0x0d], b"PNP0C0C", &[0x00]]),
+        ),
     ]);
     let mut interpreter = loaded(&body);
-    assert_eq!(interpreter.devices_with_id(&[b"PNP0C09"]), vec![path(b"\\EC0_")]);
-    assert_eq!(interpreter.devices_with_id(&[b"PNP0C0C"]), vec![path(b"\\PWRB")]);
+    assert_eq!(
+        interpreter.devices_with_id(&[b"PNP0C09"]),
+        vec![path(b"\\EC0_")]
+    );
+    assert_eq!(
+        interpreter.devices_with_id(&[b"PNP0C0C"]),
+        vec![path(b"\\PWRB")]
+    );
     assert!(interpreter.devices_with_id(&[b"PNP0A03"]).is_empty());
 }
 

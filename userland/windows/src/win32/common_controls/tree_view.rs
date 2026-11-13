@@ -223,11 +223,8 @@ struct TreeState {
     extended: u32,
     last_down: Option<(u32, i32, i32, usize)>,
     drag: Option<Drag>,
-    /// The edit over the label being edited (D361) and the item's index.
     editing: Option<(usize, usize)>,
-    /// The tooltip control of `TVS_INFOTIP` (D363), 0 for none.
     tips: usize,
-    /// The items whose children the parent tells when asked (`I_CHILDRENCALLBACK`, D403).
     children_asked: alloc::vec::Vec<usize>,
 }
 
@@ -875,10 +872,8 @@ const CDRF_SKIPDEFAULT: usize = 0x4;
 const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
 const CDRF_NOTIFYITEMDRAW: usize = 0x20;
 const CDIS_SELECTED: u32 = 0x1;
-const CLR_DEFAULT: u32 = 0xff00_0000;
 const MOST_CUSTOM_ITEMS: usize = 64;
 
-/// `NMTVCUSTOMDRAW`: `NMCUSTOMDRAW`, then the text colours and the item's level.
 #[repr(C)]
 struct NmTreeCustomDraw {
     header: NotifyHeader,
@@ -903,7 +898,6 @@ struct ShownItem {
     level: i32,
 }
 
-/// What the parent asked, by custom draw, for the items this paint shows (D361).
 struct CustomItems {
     items: [ShownItem; MOST_CUSTOM_ITEMS],
     draws: [RowDraw; MOST_CUSTOM_ITEMS],
@@ -1033,15 +1027,12 @@ const CHILDREN_CALLBACK: i32 = -1;
 const CALLBACK_MARK: [u16; 1] = [0xffff];
 const ASKED_UNITS: usize = 260;
 
-/// `NMTVDISPINFOW`.
 #[repr(C)]
 struct NmTreeDisplayInfo {
     header: NotifyHeader,
     item: TreeItem,
 }
 
-/// An item's text the program gives when asked (`LPSTR_TEXTCALLBACKW`, D403) is kept as this
-/// mark; readers see it as empty.
 fn item_text(tree: &TreeView, index: usize) -> &[u16] {
     match tree.text(index) {
         text if text == CALLBACK_MARK => &[],
@@ -1049,8 +1040,6 @@ fn item_text(tree: &TreeView, index: usize) -> &[u16] {
     }
 }
 
-/// # Safety
-/// As [`text_at`].
 unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
     match pointer {
         usize::MAX => &CALLBACK_MARK,
@@ -1059,7 +1048,6 @@ unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
     }
 }
 
-/// An item's text, images and children as the parent answered `TVN_GETDISPINFOW`.
 struct Asked {
     handle: usize,
     text: Option<alloc::vec::Vec<u16>>,
@@ -1079,11 +1067,18 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
             };
             let handle = tree.handle(index);
             let text = tree.text(index) == CALLBACK_MARK;
-            let images = tree.image(index) == IMAGE_CALLBACK
-                || tree.selected_image(index) == IMAGE_CALLBACK;
+            let images =
+                tree.image(index) == IMAGE_CALLBACK || tree.selected_image(index) == IMAGE_CALLBACK;
             let children = control.children_asked.contains(&handle);
             if text || images || children {
-                items.push((handle, text, images, children, tree.lparam(index), tree.state(index)));
+                items.push((
+                    handle,
+                    text,
+                    images,
+                    children,
+                    tree.lparam(index),
+                    tree.state(index),
+                ));
             }
         }
         items
@@ -1103,8 +1098,8 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
         if children {
             mask |= TVIF_CHILDREN;
         }
-        let (_, answer) = super::notify_parent_keeping(window, TVN_GETDISPINFOW, |header| {
-            NmTreeDisplayInfo {
+        let (_, answer) =
+            super::notify_parent_keeping(window, TVN_GETDISPINFOW, |header| NmTreeDisplayInfo {
                 header,
                 item: TreeItem {
                     mask,
@@ -1118,14 +1113,16 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
                     children: 0,
                     lparam,
                 },
-            }
-        });
+            });
         let Some(answer) = answer else {
             break;
         };
         let given = text.then(|| match answer.item.text {
             pointer if pointer == place => {
-                let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(ASKED_UNITS);
+                let end = buffer
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .unwrap_or(ASKED_UNITS);
                 buffer[..end].to_vec()
             }
             // SAFETY: the parent pointed `pszText` at its own NUL-terminated text.
@@ -1153,7 +1150,11 @@ fn swap_asked(window: usize, asked: &[Asked], shown: bool) {
             };
             let given = shown || one.keep;
             if let Some(text) = &one.text {
-                let units = if given { text.as_slice() } else { &CALLBACK_MARK[..] };
+                let units = if given {
+                    text.as_slice()
+                } else {
+                    &CALLBACK_MARK[..]
+                };
                 control.tree.set_text(index, units);
             }
             if let Some((image, selected)) = one.images {
@@ -1977,7 +1978,6 @@ const VK_RETURN: usize = 0x0d;
 const VK_ESCAPE: usize = 0x1b;
 const VK_F2: u32 = 0x71;
 
-/// `TVITEMW`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct LabelItem {
@@ -1993,7 +1993,6 @@ struct LabelItem {
     lparam: usize,
 }
 
-/// `NMTVDISPINFOW`.
 #[repr(C)]
 struct TreeDisplayInfo {
     header: NotifyHeader,
@@ -2015,9 +2014,6 @@ fn label_item(control: &TreeState, index: usize, text: usize) -> LabelItem {
     }
 }
 
-/// `TVM_EDITLABELW` and F2 with `TVS_EDITLABELS` (D361): an edit over item `index`'s label,
-/// once the parent's `TVN_BEGINLABELEDITW` lets it, as a list view's (D354); its handle, 0
-/// when refused.
 fn begin_label_edit(window: usize, index: usize) -> usize {
     end_label_edit(window, true);
     let mut label = [0u16; LABEL_UNITS + 1];
@@ -2047,18 +2043,28 @@ fn begin_label_edit(window: usize, index: usize) -> usize {
     }
     let style = LABEL_WS_CHILD | LABEL_WS_VISIBLE | ES_AUTOHSCROLL;
     let kind = ControlKind::Edit;
-    let made = create_child(window, kind, style, bounds, LABEL_EDITOR_ID, &label[..length]);
+    let made = create_child(
+        window,
+        kind,
+        style,
+        bounds,
+        LABEL_EDITOR_ID,
+        &label[..length],
+    );
     let Some(editor) = made else {
         return 0;
     };
     with_state::<TreeState, _>(window, |_, control| control.editing = Some((editor, index)));
     set_focus(editor);
-    gui::send(editor, super::super::controls::code::EM_SETSEL, 0, usize::MAX);
+    gui::send(
+        editor,
+        super::super::controls::code::EM_SETSEL,
+        0,
+        usize::MAX,
+    );
     editor
 }
 
-/// Ends tree view `window`'s label edit, if one runs, as a list view's does (D354), with
-/// `TVN_ENDLABELEDITW`; the parent's nonzero answer to a kept edit sets the label.
 fn end_label_edit(window: usize, accept: bool) {
     let editing = with_state::<TreeState, _>(window, |_, control| control.editing.take()).flatten();
     let Some((editor, index)) = editing else {
@@ -2134,7 +2140,6 @@ const TTN_GETDISPINFOW: u32 = -530i32 as u32;
 const INFO_TIP_UNITS: usize = 1024;
 const SHOWN_TIP_UNITS: usize = 79;
 
-/// A tree view made with `TVS_INFOTIP` makes its tooltip control (D363).
 fn make_info_tips(window: usize) {
     let wanted = with(|gui| {
         gui.windows
@@ -2152,7 +2157,6 @@ fn make_info_tips(window: usize) {
     }
 }
 
-/// One callback tool per shown item, named by its index, kept before each paint.
 fn sync_info_tips(window: usize) {
     let tips = with_state::<TreeState, _>(window, |_, control| control.tips).unwrap_or(0);
     if tips == 0 {
@@ -2179,7 +2183,6 @@ fn is_from_tips(window: usize, lparam: usize) -> bool {
             .unwrap_or(false)
 }
 
-/// `NMTVGETINFOTIPW`.
 #[repr(C)]
 struct GetInfoTip {
     header: NotifyHeader,
@@ -2189,8 +2192,6 @@ struct GetInfoTip {
     lparam: usize,
 }
 
-/// The tip of the item the tooltip asks about (D363): `TVN_GETINFOTIPW` to the parent with a
-/// 1024-unit buffer holding the item's text; an empty answer shows none.
 fn info_tip(window: usize, lparam: usize) {
     let info = lparam as *mut super::tooltip::DisplayInfo;
     // SAFETY: the tooltip control's own `NMTTDISPINFOW`, alive for this call.
@@ -2212,12 +2213,14 @@ fn info_tip(window: usize, lparam: usize) {
         item: handle,
         lparam: item_lparam,
     });
-    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(INFO_TIP_UNITS);
+    let length = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(INFO_TIP_UNITS);
     let shown = length.min(SHOWN_TIP_UNITS);
     // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
-    unsafe {
-        (*info).buffer[..shown].copy_from_slice(&buffer[..shown]);
-        (*info).buffer[shown] = 0;
-        (*info).text = (*info).buffer.as_ptr() as usize;
-    }
+    let tip = unsafe { &mut *info };
+    tip.buffer[..shown].copy_from_slice(&buffer[..shown]);
+    tip.buffer[shown] = 0;
+    tip.text = tip.buffer.as_ptr() as usize;
 }

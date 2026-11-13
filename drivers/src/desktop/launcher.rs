@@ -102,7 +102,6 @@ pub(super) struct AppMenu {
     count: u8,
 }
 
-/// One row of an app's menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuItem {
     Open,
@@ -142,7 +141,12 @@ impl AppMenu {
     /// The menu of `app` asked for at `origin`, `hover` on, with the actions `catalogue` knows
     /// for it: `read` and `change` ones under `Open`, `All actions...`, then the `destroy` ones
     /// with `Uninstall...` below a separator (docs/ux/app-actions-v0.5.md section 1).
-    pub fn new(app: AppId, origin: (u32, u32), hover: Option<usize>, catalogue: &Catalogue) -> Self {
+    pub fn new(
+        app: AppId,
+        origin: (u32, u32),
+        hover: Option<usize>,
+        catalogue: &Catalogue,
+    ) -> Self {
         let mut menu = Self {
             app,
             origin,
@@ -150,7 +154,7 @@ impl AppMenu {
             items: [MenuItem::Separator; MAX_MENU_ITEMS],
             count: 0,
         };
-        let mut push = |menu: &mut Self, item: MenuItem| {
+        let push = |menu: &mut Self, item: MenuItem| {
             if usize::from(menu.count) < MAX_MENU_ITEMS {
                 menu.items[usize::from(menu.count)] = item;
                 menu.count += 1;
@@ -190,14 +194,21 @@ impl AppMenu {
     }
 
     fn width(&self) -> u32 {
-        match self.items().iter().any(|item| matches!(item, MenuItem::AllActions)) {
+        match self
+            .items()
+            .iter()
+            .any(|item| matches!(item, MenuItem::AllActions))
+        {
             true => ACTIONS_MENU_WIDTH,
             false => MENU_WIDTH,
         }
     }
 
     fn item_top(&self, index: usize) -> u32 {
-        1 + self.items()[..index].iter().map(|item| item.height()).sum::<u32>()
+        1 + self.items()[..index]
+            .iter()
+            .map(|item| item.height())
+            .sum::<u32>()
     }
 
     /// Where it is, its border included, kept inside `bounds` less 8 px.
@@ -207,10 +218,7 @@ impl AppMenu {
         let right = bounds.right().saturating_sub(MENU_MARGIN);
         let bottom = bounds.bottom().saturating_sub(MENU_MARGIN);
         Rect::new(
-            self.origin
-                .0
-                .min(right.saturating_sub(width))
-                .max(bounds.x),
+            self.origin.0.min(right.saturating_sub(width)).max(bounds.x),
             self.origin
                 .1
                 .min(bottom.saturating_sub(height))
@@ -227,7 +235,9 @@ impl AppMenu {
         let offset = y.saturating_sub(rect.y);
         (0..self.items().len()).find(|&index| {
             let top = self.item_top(index);
-            offset >= top && offset < top + self.items()[index].height() && self.items()[index] != MenuItem::Separator
+            offset >= top
+                && offset < top + self.items()[index].height()
+                && self.items()[index] != MenuItem::Separator
         })
     }
 
@@ -651,7 +661,12 @@ impl Desktop {
                 .unwrap_or(self.row_rect(0));
             (row.x + ROW_TEXT_X, row.bottom())
         });
-        launcher.menu = Some(AppMenu::new(app, origin, at.is_none().then_some(0), &self.catalogue));
+        launcher.menu = Some(AppMenu::new(
+            app,
+            origin,
+            at.is_none().then_some(0),
+            &self.catalogue,
+        ));
     }
 
     /// Key `code` pressed or released with `modifiers` while the launcher is open.

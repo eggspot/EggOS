@@ -7,7 +7,7 @@ use crate::foundation::{NSBUNDLE, NSDATA, class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::reference_count::{dispose, objc_release};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, methods, send, send1, sel};
+use crate::objc::{Runtime, methods, sel, send, send1};
 use eggos_macos_gui::sound::{Wave, read_wave};
 
 const EXTENSIONS: [&str; 3] = ["", ".wav", ".wave"];
@@ -60,7 +60,11 @@ extern "C" fn init_with_contents_of_file(this: Id, _: Sel, path: Id, _: u8) -> I
     }
     let data = match path.is_null() {
         true => path,
-        false => send1(class_pointer(&NSDATA).cast(), sel!("dataWithContentsOfFile:"), path as usize),
+        false => send1(
+            class_pointer(&NSDATA).cast(),
+            sel!("dataWithContentsOfFile:"),
+            path as usize,
+        ),
     };
     adopt(this, data)
 }
@@ -100,7 +104,12 @@ extern "C" fn sound_named(_: Id, _: Sel, name: Id) -> Id {
                 if object.is_null() {
                     return core::ptr::null_mut();
                 }
-                let made = init_with_contents_of_file(object, sel!("initWithContentsOfFile:byReference:"), super::string(text), 1);
+                let made = init_with_contents_of_file(
+                    object,
+                    sel!("initWithContentsOfFile:byReference:"),
+                    super::string(text),
+                    1,
+                );
                 if !made.is_null() {
                     store_copy(&mut sound(made).name, name);
                     return crate::foundation::autoreleased(made);

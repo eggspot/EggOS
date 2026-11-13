@@ -31,20 +31,12 @@ impl<'a> Stream<'a> {
         }
     }
 
-    pub(crate) fn end(&self) -> usize {
-        self.code.len()
-    }
-
     pub(crate) fn is_done(&self) -> bool {
         self.at >= self.code.len()
     }
 
     pub(crate) fn peek(&self) -> Option<u8> {
         self.code.get(self.at).copied()
-    }
-
-    pub(crate) fn peek_at(&self, ahead: usize) -> Option<u8> {
-        self.code.get(self.at + ahead).copied()
     }
 
     pub(crate) fn byte(&mut self) -> Result<u8, Error> {

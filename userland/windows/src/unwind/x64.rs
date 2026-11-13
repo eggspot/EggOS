@@ -565,7 +565,10 @@ mod tests {
             bytes: &[0; 0x60],
         };
         let found = lookup_in(&table, 0, 24, &code, 0x24).unwrap();
-        assert_eq!((found.begin, found.unwind_info, found.entry), (0x20, 0x50, 12));
+        assert_eq!(
+            (found.begin, found.unwind_info, found.entry),
+            (0x20, 0x50, 12)
+        );
         assert_eq!(lookup_in(&table, 0, 24, &code, 0x30), None);
     }
 

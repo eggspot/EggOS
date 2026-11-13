@@ -3,7 +3,9 @@
 //! kernel's disks ([`crate::block`], D264), both sharing the controller behind one lock.
 
 use super::dma::DmaRegion;
-use super::{DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
+use super::{
+    DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass,
+};
 use crate::block::{BlockDevice, BlockError};
 use crate::devices::Deadline;
 use crate::input::InputDevice;
@@ -71,7 +73,7 @@ struct UsbDisk {
 
 impl UsbDisk {
     fn check_range(&self, sector: u64, length: usize) -> Result<(), BlockError> {
-        let whole = length % eggos_drivers::storage::SECTOR_SIZE == 0;
+        let whole = length.is_multiple_of(eggos_drivers::storage::SECTOR_SIZE);
         let end = sector.checked_add((length / eggos_drivers::storage::SECTOR_SIZE) as u64);
         match (whole, end) {
             (true, Some(end)) if end <= self.sectors => Ok(()),
@@ -87,14 +89,24 @@ impl BlockDevice for UsbDisk {
     fn is_read_only(&self) -> bool {
         false
     }
-    fn read(&mut self, sector: u64, buffer: &mut [u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+    fn read(
+        &mut self,
+        sector: u64,
+        buffer: &mut [u8],
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
         self.check_range(sector, buffer.len())?;
         self.controller
             .lock()
             .disk_read(self.index, sector, buffer, &mut || deadline.keep_waiting())
             .map_err(|error| BlockError::Device(error.description()))
     }
-    fn write(&mut self, sector: u64, buffer: &[u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+    fn write(
+        &mut self,
+        sector: u64,
+        buffer: &[u8],
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
         self.check_range(sector, buffer.len())?;
         self.controller
             .lock()
@@ -125,9 +137,12 @@ fn probe_xhci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     }
     let region = node.regions[0];
     if region.is_empty() {
-        return Err(ProbeError::Refused("the controller's registers are not in memory space"));
+        return Err(ProbeError::Refused(
+            "the controller's registers are not in memory space",
+        ));
     }
-    let length = usize::try_from(region.len()).map_err(|_| ProbeError::Refused("the register block is too large"))?;
+    let length = usize::try_from(region.len())
+        .map_err(|_| ProbeError::Refused("the register block is too large"))?;
     let base = probe.map_window(region)?;
     let config = probe
         .pci_config()
@@ -139,22 +154,27 @@ fn probe_xhci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let memory = DmaRegion::allocate(xhci::MEMORY_BYTES)
         .map_err(|_| ProbeError::Refused("no memory for the controller's rings"))?;
     let mut deadline = probe.deadline(START_TIMEOUT_MS);
-    let mut controller = Xhci::new(regs, memory, &mut || deadline.keep_waiting()).map_err(|(error, memory)| {
-        if let Some(memory) = memory {
-            // SAFETY: handed back only when the controller is halted and never had it, or
-            // halted after.
-            unsafe { memory.free() };
-        }
-        ProbeError::Refused(error.description())
-    })?;
+    let mut controller =
+        Xhci::new(regs, memory, &mut || deadline.keep_waiting()).map_err(|(error, memory)| {
+            if let Some(memory) = memory {
+                // SAFETY: handed back only when the controller is halted and never had it, or
+                // halted after.
+                unsafe { memory.free() };
+            }
+            ProbeError::Refused(error.description())
+        })?;
     let mut settle = probe.deadline(SETTLE_MS);
     let mut attach = probe.deadline(ATTACH_TIMEOUT_MS);
-    let attached = controller.attach_devices(&mut || settle.keep_waiting(), &mut || attach.keep_waiting());
+    let attached =
+        controller.attach_devices(&mut || settle.keep_waiting(), &mut || attach.keep_waiting());
     if attached == 0 {
-        return Err(ProbeError::Refused("no USB keyboard, mouse or disk on its ports"));
+        return Err(ProbeError::Refused(
+            "no USB keyboard, mouse or disk on its ports",
+        ));
     }
     let capabilities = controller.capabilities();
-    let interrupting = super::message_interrupts::connect(probe, id, &crate::input::DEVICE_EVENTS).is_ok();
+    let interrupting =
+        super::message_interrupts::connect(probe, id, &crate::input::DEVICE_EVENTS).is_ok();
     if interrupting {
         controller.enable_interrupts();
     }

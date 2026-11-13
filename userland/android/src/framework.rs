@@ -143,7 +143,6 @@ pub const CLASS_CAST: &str = "Ljava/lang/ClassCastException;";
 /// `OutOfMemoryError`.
 pub const OUT_OF_MEMORY: &str = "Ljava/lang/OutOfMemoryError;";
 
-/// The framework's exception classes and their superclasses.
 const EXCEPTION_PARENTS: [(&str, &str); 16] = [
     (THROWABLE, OBJECT),
     (EXCEPTION, THROWABLE),
@@ -159,7 +158,10 @@ const EXCEPTION_PARENTS: [(&str, &str); 16] = [
     (INDEX_OUT_OF_BOUNDS, RUNTIME_EXCEPTION),
     (ARRAY_INDEX, INDEX_OUT_OF_BOUNDS),
     (NEGATIVE_ARRAY_SIZE, RUNTIME_EXCEPTION),
-    ("Ljava/lang/UnsupportedOperationException;", RUNTIME_EXCEPTION),
+    (
+        "Ljava/lang/UnsupportedOperationException;",
+        RUNTIME_EXCEPTION,
+    ),
     (OUT_OF_MEMORY, ERROR),
 ];
 
@@ -181,9 +183,11 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
     let activity = ACTIVITY_CLASSES.contains(&class);
     let context = activity || CONTEXT_CLASSES.contains(&class);
     let text = TEXT_VIEWS.contains(&class);
-    let view = text
-        || matches!(class, VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW | IMAGE_VIEW)
-        || class == RECYCLER_VIEW;
+    let view =
+        text || matches!(
+            class,
+            VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW | IMAGE_VIEW
+        ) || class == RECYCLER_VIEW;
     let list = LISTS.contains(&class);
     let adapter_view = ADAPTER_VIEWS.contains(&class);
     let takes_int = shorty == "VI";
@@ -255,7 +259,10 @@ fn defined_in(
 /// layer implements.
 pub fn resolve(dex: &Dex<'_>, method: u32, compiled: &BTreeMap<u32, usize>) -> Target {
     let class_of_method = dex.method_class(method);
-    if let Some(class) = class_of_method.as_deref().filter(|class| is_replaced(class)) {
+    if let Some(class) = class_of_method
+        .as_deref()
+        .filter(|class| is_replaced(class))
+    {
         let name = dex.method_name(method).unwrap_or_default();
         let shorty = dex.method_shorty(method).unwrap_or_default();
         return Target::Native(native(class, &name, &shorty).unwrap_or(Native::Nothing));
@@ -430,9 +437,16 @@ mod tests {
 
     #[test]
     fn activities_and_text_views_are_the_framework_s() {
-        assert_eq!(native("Landroid/app/Activity;", "onCreate", "VL"), Some(Native::Nothing));
         assert_eq!(
-            native("Landroidx/appcompat/app/AppCompatActivity;", "setContentView", "VL"),
+            native("Landroid/app/Activity;", "onCreate", "VL"),
+            Some(Native::Nothing)
+        );
+        assert_eq!(
+            native(
+                "Landroidx/appcompat/app/AppCompatActivity;",
+                "setContentView",
+                "VL"
+            ),
             Some(Native::SetContentView)
         );
         assert_eq!(
@@ -440,8 +454,14 @@ mod tests {
             Some(Native::SetContentLayout)
         );
         assert_eq!(native(TEXT_VIEW, "setText", "VL"), Some(Native::SetText));
-        assert_eq!(native(BUTTON, "setText", "VI"), Some(Native::SetTextResource));
-        assert_eq!(native(BUTTON, "setOnClickListener", "VL"), Some(Native::SetOnClickListener));
+        assert_eq!(
+            native(BUTTON, "setText", "VI"),
+            Some(Native::SetTextResource)
+        );
+        assert_eq!(
+            native(BUTTON, "setOnClickListener", "VL"),
+            Some(Native::SetOnClickListener)
+        );
         assert_eq!(native("Landroid/widget/ImageView;", "setText", "VL"), None);
     }
 

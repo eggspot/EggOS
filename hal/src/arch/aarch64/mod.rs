@@ -13,8 +13,8 @@ mod fp;
 mod thread;
 mod timer;
 
-use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
+use crate::atomic::AtomicU64;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, Attributes, KernelImage, MemoryType};
@@ -216,9 +216,6 @@ eggos_secondary_start:
 /// it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_4000_0000;
 
-/// The image's virtual address minus its physical address as `_start` found it: the UEFI loader
-/// places the kernel at the same offset inside whichever gigabyte of RAM is free (D236), so the
-/// physical half is known only at run time. 0 until `_start` writes it.
 static KERNEL_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// The image's virtual address minus its physical address.
@@ -246,12 +243,8 @@ pub(crate) fn doorbell_barrier() {
     unsafe { core::arch::asm!("dmb oshst", options(nostack, preserves_flags)) };
 }
 
-/// The physical memory the boot direct map covers, and so the most the kernel reaches before
-/// the driver model (M5): 256 GiB, all of one level-1 table's first half. QEMU `virt` puts
-/// at most 255 GiB of RAM from 1 GiB on, below its high device region.
 const BOOT_DIRECT_MAP_END: u64 = 256 << 30;
 
-/// The kernel's boot mapping: read, write and execute until its own page tables are active.
 const BOOT_KERNEL: Attributes = Attributes {
     writable: true,
     executable: true,
@@ -259,69 +252,49 @@ const BOOT_KERNEL: Attributes = Attributes {
     user: false,
 };
 
-/// A boot page table (see `_start`).
 #[repr(C, align(4096))]
 struct BootTable([u64; paging::ENTRIES]);
 
-// Built by `_start` before any Rust code runs. Once the kernel's own page tables are active,
-// only secondary CPUs use them, to turn translation on (D40); nothing writes them again.
 static mut BOOT_L0_LOW: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L1_LOW: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L0_HIGH: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L1_DIRECT: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L1_KERNEL: BootTable = BootTable([0; paging::ENTRIES]);
 
-/// QEMU `virt`: start of RAM, where QEMU places the device tree for a non-Linux kernel (it
-/// passes the tree's address in `x0` only to Linux images). The kernel links far enough above
-/// it for QEMU's 1 MiB tree to fit (see `linker.ld`).
 const RAM_BASE: usize = 0x4000_0000;
 
-/// QEMU `virt`: PL011 UART0.
 const UART0_BASE: usize = 0x0900_0000;
 
-/// The direct map: the start of the high half, translated through `TTBR1_EL1` (D29).
 const DIRECT_MAP_OFFSET: usize = 0xffff_0000_0000_0000;
 
-/// `TCR_EL1` (Arm ARM D19.2.139) for 48-bit halves with the 4 KiB granule, walks through
-/// inner shareable, write-back cached memory; `IPS` (the physical address size) is added from
-/// `ID_AA64MMFR0_EL1` at run time.
 const TCR: u64 = {
     let t0sz = 64 - 48;
     let t1sz = (64 - 48) << 16;
-    let walks0 = (0b01 << 8) | (0b01 << 10) | (0b11 << 12); // IRGN0, ORGN0 write-back; SH0 inner
-    let walks1 = (0b01 << 24) | (0b01 << 26) | (0b11 << 28); // likewise for TTBR1
-    let granule1 = 0b10 << 30; // TG1: 4 KiB (TG0 = 0b00 is 4 KiB too)
+    let walks0 = (0b01 << 8) | (0b01 << 10) | (0b11 << 12);
+    let walks1 = (0b01 << 24) | (0b01 << 26) | (0b11 << 28);
+    let granule1 = 0b10 << 30;
     t0sz | t1sz | walks0 | walks1 | granule1 | TCR_TBI0_USER_TOP_BYTE_IGNORED
 };
 const TCR_TBI0_USER_TOP_BYTE_IGNORED: u64 = 1 << 37;
 const TCR_IPS_SHIFT: u32 = 32;
-/// The largest `IPS` the 4 KiB granule takes without FEAT_LPA2: 48 bits.
 const TCR_IPS_MAX: u64 = 0b101;
-/// `SCTLR_EL1`: M (MMU on), C (data cache), I (instruction cache).
 const SCTLR_MMU_AND_CACHES: u64 = (1 << 0) | (1 << 2) | (1 << 12);
 const SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE: u64 = (1 << 15) | (1 << 26);
-/// `SCTLR_EL1`'s bits that are 1 on Armv8.0 (RES1: EOS, EIS, SPAN, TSCXT, ITD, nTLSMD), and
-/// what EL0 may do as on Linux (D250): `DC ZVA` (DZE), `WFI` and `WFE` without trapping (nTWI,
-/// nTWE). `UMA`, `E0E`, `EE` and alignment checks stay 0, whatever the firmware left.
 const SCTLR_RES1: u64 = 0x30d0_0800;
 const SCTLR_USER_ZERO_AND_WAIT: u64 = (1 << 14) | (1 << 16) | (1 << 18);
-/// The whole `SCTLR_EL1` the kernel runs with, written, not ORed into the firmware's value.
-const SCTLR_EL1_VALUE: u64 =
-    SCTLR_RES1 | SCTLR_MMU_AND_CACHES | SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE | SCTLR_USER_ZERO_AND_WAIT;
+const SCTLR_EL1_VALUE: u64 = SCTLR_RES1
+    | SCTLR_MMU_AND_CACHES
+    | SCTLR_USER_CACHE_TYPE_AND_MAINTENANCE
+    | SCTLR_USER_ZERO_AND_WAIT;
 
-/// PSCI 0.2+ `SYSTEM_OFF` and 64-bit `CPU_ON` function IDs (Arm DEN 0022, 5.1).
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const PSCI_CPU_ON: u64 = 0xc400_0003;
-/// PSCI return codes `CPU_ON` gives (Arm DEN 0022, 5.2.2).
 const PSCI_SUCCESS: i64 = 0;
 const PSCI_INVALID_PARAMETERS: i64 = -2;
 const PSCI_ALREADY_ON: i64 = -4;
 const PSCI_ON_PENDING: i64 = -5;
 
-/// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
-/// with the boot page tables: switches to the kernel's page tables, sets this CPU's timer and
-/// interrupts up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
@@ -331,7 +304,6 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     (start.entry)(start.argument)
 }
 
-/// The early console, UART0.
 #[inline]
 fn atomics_capability() -> u64 {
     const HWCAP_ATOMICS: u64 = 1 << 8;
@@ -349,8 +321,6 @@ fn atomics_capability() -> u64 {
     }
 }
 
-/// Where the console's PL011 is: [`UART0_BASE`] on QEMU `virt` started without the UEFI loader,
-/// else the one the ACPI `SPCR` names (D236); [`NO_UART`] when there is none the kernel drives.
 static UART_ADDRESS: AtomicUsize = AtomicUsize::new(UNKNOWN_UART);
 const UNKNOWN_UART: usize = usize::MAX;
 const NO_UART: usize = 0;
@@ -392,8 +362,6 @@ fn uart0() -> Option<Pl011<Mmio>> {
     }))
 }
 
-/// The validated ACPI table with `signature` under the RSDP at physical `rsdp`, read through the
-/// boot direct map.
 fn acpi_table_from(rsdp: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     if rsdp == 0 {
         return None;
@@ -401,7 +369,6 @@ fn acpi_table_from(rsdp: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     crate::acpi::find_table(rsdp, signature, &read_acpi_memory)
 }
 
-/// Every validated ACPI table with `signature` under the RSDP at physical `rsdp` (D538).
 fn acpi_tables_from(rsdp: u64, signature: &[u8; 4], each: &mut dyn FnMut(&'static [u8])) {
     if rsdp != 0 {
         crate::acpi::find_tables(rsdp, signature, &read_acpi_memory, each);
@@ -430,8 +397,6 @@ pub(super) fn device_tree_bytes() -> Option<&'static [u8]> {
     unsafe { boot_memory::device_tree_blob(device_tree_address()) }
 }
 
-/// Where the firmware's device tree is: the handoff's (none when it passed none), else the
-/// start of RAM, where QEMU `virt` loads it.
 fn device_tree_address() -> usize {
     match crate::handoff::handoff::<Aarch64>() {
         Some(handoff) => usize::try_from(handoff.device_tree).unwrap_or(0),
@@ -445,8 +410,6 @@ fn psci_system_call(function: u64) {
     unsafe { psci_call(function, 0, 0, 0) };
 }
 
-/// Whether PSCI is called with `smc` rather than `hvc`: what the ACPI `FADT`'s Arm boot flags
-/// say when the UEFI loader started the kernel (D237); `hvc` on QEMU `virt` without EL2.
 fn psci_uses_smc() -> bool {
     const FADT_ARM_BOOT_ARCH: usize = 129;
     const PSCI_USE_HVC: u16 = 1 << 1;
@@ -459,12 +422,6 @@ fn psci_uses_smc() -> bool {
         .is_some_and(|flags| flags & PSCI_USE_HVC == 0)
 }
 
-/// Calls PSCI `function` with three arguments through the machine's conduit and returns `x0`.
-///
-/// # Safety
-/// The call's effects must be ones the caller allows (starting a CPU at an entry the caller
-/// prepared, powering off). SMCCC v1.0 lets the callee corrupt x0-x17, so all are clobbered;
-/// `dsb ish` completes the caller's writes for other CPUs first, as neither call is a barrier.
 unsafe fn psci_call(function: u64, first: u64, second: u64, third: u64) -> i64 {
     let result: i64;
     if psci_uses_smc() {
@@ -634,7 +591,6 @@ impl Platform for Aarch64 {
         // which nothing writes; the direct map covers it. If QEMU loaded none, the header check
         // fails and the map is empty.
         let mut map = unsafe { boot_memory::device_tree_memory_map(RAM_BASE) };
-        // The kernel's page tables are built through the boot direct map.
         map.retain_within(PhysicalRange {
             start: 0,
             end: BOOT_DIRECT_MAP_END,
@@ -667,8 +623,6 @@ impl Platform for Aarch64 {
             // SAFETY: as in `memory_map`.
             None => unsafe { boot_memory::device_tree_ram(RAM_BASE) },
         };
-        // RAM beyond the boot direct map is never handed out (see `memory_map`), so it is left
-        // unmapped.
         map.retain_within(PhysicalRange {
             start: 0,
             end: BOOT_DIRECT_MAP_END,
@@ -712,7 +666,10 @@ impl Platform for Aarch64 {
             // SAFETY: the firmware's DSDT is in RAM the direct map covers (checked) and nothing
             // writes it.
             Some(unsafe {
-                core::slice::from_raw_parts((address as usize).wrapping_add(DIRECT_MAP_OFFSET) as *const u8, length)
+                core::slice::from_raw_parts(
+                    (address as usize).wrapping_add(DIRECT_MAP_OFFSET) as *const u8,
+                    length,
+                )
             })
         })
     }
@@ -826,7 +783,6 @@ impl Platform for Aarch64 {
     }
 
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
-        // Without PAN (not turned on yet), EL1 reaches EL0 pages directly.
         access()
     }
 
@@ -864,7 +820,6 @@ impl Platform for Aarch64 {
         let ctr: u64;
         // SAFETY: reading the cache type register has no side effects.
         unsafe { core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
-        // CTR_EL0.DminLine: log2 of the smallest data cache line, in words.
         let line = 4usize << (ctr >> 16 & 0xf);
         let mut address = start & !(line - 1);
         while address < start + length {
@@ -978,10 +933,10 @@ impl Platform for Aarch64 {
 
     unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
         unsafe extern "C" {
-            /// The secondary entry point in the boot code above.
             fn eggos_secondary_start();
         }
-        let entry = (eggos_secondary_start as *const () as u64).wrapping_sub(kernel_virtual_offset());
+        let entry =
+            (eggos_secondary_start as *const () as u64).wrapping_sub(kernel_virtual_offset());
         let context = core::ptr::from_ref(start) as u64;
         // SAFETY: CPU_ON starts CPU `cpu` at the physical address `entry`, the secondary entry
         // code, with `context` in x0; the caller guarantees what that code relies on (the
@@ -1015,8 +970,6 @@ impl Platform for Aarch64 {
     }
 }
 
-/// The memory map the UEFI loader's handoff carries: its RAM, then every other range reserved;
-/// with `whole`, every range as RAM, for the direct map (D236).
 fn handoff_memory_map(handoff: &crate::handoff::Handoff, whole: bool) -> MemoryMap {
     let mut map = MemoryMap::new();
     for range in crate::handoff::memory_ranges::<Aarch64>(handoff) {

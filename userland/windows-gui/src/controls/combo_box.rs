@@ -117,7 +117,10 @@ impl ComboBox {
     pub fn shown_text(&self) -> &[u16] {
         match &self.edit {
             Some(edit) => edit.text(),
-            None => self.selected().and_then(|index| self.items.text(index)).unwrap_or(&[]),
+            None => self
+                .selected()
+                .and_then(|index| self.items.text(index))
+                .unwrap_or(&[]),
         }
     }
 
@@ -125,7 +128,10 @@ impl ComboBox {
     /// a row is chosen or the arrows move the selection.
     pub fn show_selection_in_edit(&mut self) {
         let mut copy = [0u16; edit::EDIT_CAPACITY];
-        let chosen = self.selected().and_then(|index| self.items.text(index)).unwrap_or(&[]);
+        let chosen = self
+            .selected()
+            .and_then(|index| self.items.text(index))
+            .unwrap_or(&[]);
         let length = chosen.len().min(copy.len());
         copy[..length].copy_from_slice(&chosen[..length]);
         if let Some(field) = &mut self.edit {
@@ -413,7 +419,12 @@ pub fn edit_area(rect: Rect) -> Rect {
 
 /// Where a simple combo box at `rect` shows its list (D343): under its edit field.
 pub fn simple_list_rect(rect: Rect) -> Rect {
-    Rect::new(rect.left, rect.top + BOX_HEIGHT + SIMPLE_GAP, rect.right, rect.bottom)
+    Rect::new(
+        rect.left,
+        rect.top + BOX_HEIGHT + SIMPLE_GAP,
+        rect.right,
+        rect.bottom,
+    )
 }
 
 /// The edit field of an editable combo box at `rect`: the whole closed box for a simple one,
@@ -455,12 +466,26 @@ pub fn paint_closed(
         let button = closed_box(rect);
         let button = Rect::new(field_rect.right, button.top, button.right, button.bottom);
         let (fill, border, chevron) = match (look.enabled, combo.is_open()) {
-            (false, _) => (palette.button_disabled_fill, palette.button_disabled_border, palette.text_disabled),
-            (true, true) => (palette.button_pressed_fill, palette.button_pressed_border, palette.text),
+            (false, _) => (
+                palette.button_disabled_fill,
+                palette.button_disabled_border,
+                palette.text_disabled,
+            ),
+            (true, true) => (
+                palette.button_pressed_fill,
+                palette.button_pressed_border,
+                palette.text,
+            ),
             (true, false) => (palette.button_fill, palette.button_border, palette.text),
         };
         framed(surface, button, palette.rounded, border, fill);
-        draw_chevron(surface, button.right - CHEVRON_FROM_RIGHT, button.top + CHEVRON_TOP, &CHEVRON_DOWN, chevron);
+        draw_chevron(
+            surface,
+            button.right - CHEVRON_FROM_RIGHT,
+            button.top + CHEVRON_TOP,
+            &CHEVRON_DOWN,
+            chevron,
+        );
         return;
     }
     let rect = closed_box(rect);

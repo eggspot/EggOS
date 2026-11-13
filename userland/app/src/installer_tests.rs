@@ -1566,7 +1566,11 @@ fn an_android_package_installs_whole_named_after_its_file_and_runs_its_dex() {
     install(&mut files, plan, &mut [0u8; 64]).unwrap();
     let manifest = manifest_of(&files, "Notes");
     assert!(manifest.contains("source=android"), "{manifest}");
-    assert!(files.find("/Applications/Notes/lib/x86_64/libnotes.so").is_some());
+    assert!(
+        files
+            .find("/Applications/Notes/lib/x86_64/libnotes.so")
+            .is_some()
+    );
 }
 
 #[test]

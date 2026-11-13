@@ -95,7 +95,6 @@ fn shown_tree(console: &str, step: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether the tree shows the result: an element whose name or value is exactly `42`.
 fn shows_result(lines: &[String]) -> bool {
     lines.iter().any(|line| {
         line.split('"')
@@ -126,6 +125,36 @@ fn wait_for_window(
             )));
         }
         std::thread::sleep(POLL);
+    }
+}
+
+fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
+    let installed = format!("Installed {APP} in /Applications/{APP}.");
+    let opened = format!("Opened {APP}.");
+    for wanted in [
+        installed.as_str(),
+        &format!("{STATUS_PREFIX}install 0"),
+        opened.as_str(),
+        &format!("{STATUS_PREFIX}open 0"),
+        &format!("{STATUS_PREFIX}about 0"),
+        &format!("{STATUS_PREFIX}after 0"),
+        POWER_DOWN_LINE,
+    ] {
+        if !has_line(console, wanted) {
+            return Err(format!("{arch}: the console has no `{wanted}` line"));
+        }
+    }
+    let listed = format!("{APP}\tmacos\t{arch}\t/Applications/{APP}/{APP}.app/");
+    if !console.lines().any(|line| line.starts_with(&listed)) {
+        return Err(format!(
+            "{arch}: `app list` does not list {APP} as a macOS app"
+        ));
+    }
+    match clean_exit {
+        true => Ok(()),
+        false => Err(format!(
+            "{arch}: QEMU did not exit cleanly after the UDCalc test"
+        )),
     }
 }
 
@@ -167,13 +196,13 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     boot.wait_for_prompts(4)?;
     type_line(&mut boot, &format!("bg; {}", list_line("listed")))?;
     boot.wait_for_prompts(5)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     let Some(window) = window_titled(&console, "listed", APP) else {
         return Err(boot.fail(format!("{}: `wm list` does not list {APP}", arch.name)));
     };
     type_line(&mut boot, &show_line(window, "tree"))?;
     boot.wait_for_prompts(6)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     if !shows_result(&shown_tree(&console, "tree")) {
         return Err(boot.fail(format!(
             "{}: after typing 12+30=, `wm show {window}` has no element reading {RESULT}",
@@ -185,7 +214,7 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     std::thread::sleep(SETTLE);
     type_line(&mut boot, &list_line("panel"))?;
     boot.wait_for_prompts(8)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     let title = format!("{PANEL_PREFIX}{APP}");
     if window_titled(&console, "panel", &title).is_none() {
         return Err(boot.fail(format!("{}: `wm list` does not list `{title}`", arch.name)));
@@ -200,14 +229,17 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     }
     type_line(&mut boot, &list_line("after"))?;
     boot.wait_for_prompts(9)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     if window_titled(&console, "after", APP).is_some() {
         return Err(boot.fail(format!("{}: {APP}'s window outlived Cmd+Q", arch.name)));
     }
     type_line(&mut boot, POWER_OFF)?;
     let (console, clean_exit) = boot.finish()?;
     verdict(arch.name, &console, clean_exit)?;
-    eprintln!("xtask: {}: UDCalc boot test passed ({APP} {VERSION})", arch.name);
+    eprintln!(
+        "xtask: {}: UDCalc boot test passed ({APP} {VERSION})",
+        arch.name
+    );
     Ok(())
 }
 

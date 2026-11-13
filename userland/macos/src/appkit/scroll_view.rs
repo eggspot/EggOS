@@ -285,9 +285,21 @@ macro_rules! flag_accessors {
     };
 }
 
-flag_accessors!(has_vertical_scroller, set_has_vertical_scroller, scrollers.vertical);
-flag_accessors!(has_horizontal_scroller, set_has_horizontal_scroller, scrollers.horizontal);
-flag_accessors!(autohides_scrollers, set_autohides_scrollers, scrollers.autohides);
+flag_accessors!(
+    has_vertical_scroller,
+    set_has_vertical_scroller,
+    scrollers.vertical
+);
+flag_accessors!(
+    has_horizontal_scroller,
+    set_has_horizontal_scroller,
+    scrollers.horizontal
+);
+flag_accessors!(
+    autohides_scrollers,
+    set_autohides_scrollers,
+    scrollers.autohides
+);
 
 extern "C" fn draws_background(this: Id, _: Sel) -> u8 {
     u8::from(scroll_view(this).draws_background)
@@ -419,7 +431,11 @@ extern "C" fn scroll_wheel(this: Id, _: Sel, event: Id) {
         }
         return;
     }
-    scroll_axis(this, vertical, geometry::wheel(offset, notches, view_length, document));
+    scroll_axis(
+        this,
+        vertical,
+        geometry::wheel(offset, notches, view_length, document),
+    );
 }
 
 fn local_pixel(this: Id, event: Id) -> (i32, i32) {
@@ -437,7 +453,10 @@ extern "C" fn mouse_down(this: Id, _: Sel, event: Id) {
     let laid = layout_of(this);
     let pressed = [(true, laid.vertical), (false, laid.horizontal)]
         .into_iter()
-        .find_map(|(vertical, rect)| rect.filter(|rect| rect.contains(x, y)).map(|rect| (vertical, rect)));
+        .find_map(|(vertical, rect)| {
+            rect.filter(|rect| rect.contains(x, y))
+                .map(|rect| (vertical, rect))
+        });
     let Some((vertical, track)) = pressed else {
         return;
     };
@@ -518,7 +537,10 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
         false => document_size(scroll_view(this).clip),
     };
     drawing::with_canvas(|canvas, height, origin, _, _| {
-        let outer = pixel_rect(Frame::new(origin.x, origin.y, frame.width, frame.height), height);
+        let outer = pixel_rect(
+            Frame::new(origin.x, origin.y, frame.width, frame.height),
+            height,
+        );
         let place = |rect: Rect| rect.offset(outer.x, outer.y);
         if bordered {
             for line in border_lines(Rect::new(0, 0, outer.width, outer.height)) {
@@ -538,7 +560,8 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
                 false => (laid.content.0, document.0, offset.0),
             };
             let length = if vertical { track.height } else { track.width };
-            let Some((start, thumb)) = geometry::thumb(length, view_length, document, offset) else {
+            let Some((start, thumb)) = geometry::thumb(length, view_length, document, offset)
+            else {
                 continue;
             };
             let rect = match vertical {
@@ -668,11 +691,13 @@ extern "C" fn clip_draw_rect(this: Id, _: Sel, _: Frame) {
     if !fields.draws_background {
         return;
     }
-    let fill = drawing::colour_of(fields.background)
-        .map_or(colour::FIELD, |colour| colour.pixel);
+    let fill = drawing::colour_of(fields.background).map_or(colour::FIELD, |colour| colour.pixel);
     let frame = fields.view.frame;
     drawing::with_canvas(|canvas, height, origin, _, _| {
-        let rect = pixel_rect(Frame::new(origin.x, origin.y, frame.width, frame.height), height);
+        let rect = pixel_rect(
+            Frame::new(origin.x, origin.y, frame.width, frame.height),
+            height,
+        );
         canvas.fill(rect, fill);
     });
 }

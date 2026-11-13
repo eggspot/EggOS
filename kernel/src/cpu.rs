@@ -6,7 +6,6 @@
 //! (D43): a secondary CPU checks its timer, starts its scheduler, reports in and runs its idle
 //! thread, which runs the threads placed on it.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::address_space::LazilyLoaded;
 use crate::heap::{FrameSource, GlobalFrames};
 use crate::random::CpuKey;
@@ -16,6 +15,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::cpu::{
     CpuStart, HAL_CPU_LOCAL_OFFSET, HalCpuLocal, MAX_PAGE_TABLE_ROOTS, StartCpuError,
 };

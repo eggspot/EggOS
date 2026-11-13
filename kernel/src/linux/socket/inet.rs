@@ -15,10 +15,10 @@
 //! identifier and the checksum filled in, and reads the echo replies with that identifier. A
 //! receive waits until a datagram comes, the socket's timeout passes or a signal comes.
 
-use eggos_hal::atomic::AtomicU64;
 use super::{
-    HEADER_CONTROL_LENGTH, HEADER_FLAGS, HEADER_NAME_LENGTH, MSGHDR_SIZE, SOL_SOCKET, TIMEVAL_SIZE, deadline, finish, interrupted, message, option,
-    read_header, read_int, timeout_nanoseconds, timeval,
+    HEADER_CONTROL_LENGTH, HEADER_FLAGS, HEADER_NAME_LENGTH, MSGHDR_SIZE, SOL_SOCKET, TIMEVAL_SIZE,
+    deadline, finish, interrupted, message, option, read_header, read_int, timeout_nanoseconds,
+    timeval,
 };
 use crate::linux::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use crate::linux::signals;
@@ -33,6 +33,7 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::user::UserContext;
 use eggos_net::icmp;
 use eggos_net::interface::SendError;
@@ -657,8 +658,7 @@ fn gather<P: Platform>(process: &Process<P>, buffers: &Iovecs) -> Result<Vec<u8>
 }
 
 fn is_broadcast(address: Ipv4Address) -> bool {
-    address.is_broadcast()
-        || crate::net::is_subnet_broadcast(address)
+    address.is_broadcast() || crate::net::is_subnet_broadcast(address)
 }
 
 fn send<P: Platform>(
@@ -841,7 +841,8 @@ fn recvmsg<P: Platform>(
             process
                 .write_user_memory(header.name, &bytes[..copied])
                 .map_err(|_| Errno::EFAULT)?;
-            written[HEADER_NAME_LENGTH..][..4].copy_from_slice(&(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
+            written[HEADER_NAME_LENGTH..][..4]
+                .copy_from_slice(&(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
         }
         let truncated = received.copied < received.length;
         let message_flags = if truncated { MSG_TRUNC } else { 0 };

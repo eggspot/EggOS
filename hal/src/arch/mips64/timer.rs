@@ -5,27 +5,21 @@
 //! what `Count` moved on since the last read anywhere, which needs a read at least every 2^31
 //! ticks; with no deadline, `Compare` is set half a wrap ahead, so a tick comes by itself.
 
-use crate::atomic::AtomicU64;
 use super::{cpu_number, ipi_register};
+use crate::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
-/// `Cause.IP` bits of the timer and the IPIs.
 const TIMER_PENDING: u64 = 1 << 15;
 const IPI_PENDING: u64 = 1 << 14;
-/// The IPI block's registers: status, enable, set and clear.
 const IPI_STATUS: u64 = 0x00;
 const IPI_ENABLE: u64 = 0x04;
 const IPI_SET: u64 = 0x08;
 const IPI_CLEAR: u64 = 0x0c;
-/// The IPI the kernel's wake-ups use.
 const WAKE_BIT: u32 = 1;
-/// The furthest ahead `Compare` is set: half a wrap, so the extension never misses one.
 const LONGEST_COUNT: u64 = 1 << 31;
-/// The shortest: a deadline already passed still raises the interrupt.
 const SHORTEST_COUNT: u64 = 64;
 
 static FREQUENCY: AtomicU64 = AtomicU64::new(100_000_000);
-/// The 64-bit clock as last read on any CPU.
 static CLOCK: AtomicU64 = AtomicU64::new(0);
 
 /// Sets the counter's frequency from the boot parameters' CPU clock.
@@ -87,7 +81,9 @@ pub(super) fn set_deadline(deadline: u64) {
     if deadline == u64::MAX {
         return disarm();
     }
-    let ahead = deadline.saturating_sub(now()).clamp(SHORTEST_COUNT, LONGEST_COUNT);
+    let ahead = deadline
+        .saturating_sub(now())
+        .clamp(SHORTEST_COUNT, LONGEST_COUNT);
     set_compare(count().wrapping_add(ahead as u32));
 }
 

@@ -36,12 +36,10 @@ eggos_thread_start:
     reserved_instruction = const 5,
 );
 
-/// `ra`, s0-s7, `s8` and two words of padding, which keep `sp` 16-byte aligned.
 const FRAME_WORDS: usize = 12;
 
 unsafe extern "C" {
     pub(super) fn eggos_switch_thread(save: *mut usize, resume: usize);
-    /// Only its address is used: a new thread's first switch returns into it.
     fn eggos_thread_start();
 }
 

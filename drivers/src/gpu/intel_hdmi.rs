@@ -131,7 +131,7 @@ fn deviation(dco: u64, central: u64) -> Option<u64> {
 }
 
 fn split(divider: u32) -> Option<(u32, u32, u32)> {
-    if divider % 2 == 0 {
+    if divider.is_multiple_of(2) {
         let half = divider / 2;
         return match half {
             1 | 2 | 3 | 5 => Some((2, 1, half)),
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(pll.dco_khz % 742_500, 0);
         let divider = pll.dco_khz / 742_500;
         assert_eq!(divider as u32, pll.pdiv * pll.qdiv * pll.kdiv);
-        assert!(divider % 2 == 0);
+        assert!(divider.is_multiple_of(2));
         assert!(deviation(pll.dco_khz, pll.central_khz).is_some());
     }
 
@@ -246,7 +246,10 @@ mod tests {
             kdiv: 2,
         };
         assert_eq!(pll.configuration_1(), FREQUENCY_ENABLE | 0x2000 << 9 | 371);
-        assert_eq!(pll.configuration_2(), 3 << 8 | QDIV_MODE | 1 << 5 | 1 << 2 | 1);
+        assert_eq!(
+            pll.configuration_2(),
+            3 << 8 | QDIV_MODE | 1 << 5 | 1 << 2 | 1
+        );
     }
 
     #[derive(Default)]
@@ -283,9 +286,7 @@ mod tests {
         bus.status
             .borrow_mut()
             .extend([HARDWARE_READY, HARDWARE_READY, WAIT_PHASE, 0]);
-        bus.data
-            .borrow_mut()
-            .extend([0xffff_ff00, 0x00ff_ffff]);
+        bus.data.borrow_mut().extend([0xffff_ff00, 0x00ff_ffff]);
         let mut out = [0u8; 8];
         read_edid(&bus, 5, &mut out, &mut || true).unwrap();
         assert_eq!(out, [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);

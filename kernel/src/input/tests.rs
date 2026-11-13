@@ -493,7 +493,7 @@ fn every_event_packs_into_a_word_and_back() {
         })
     );
     assert_eq!(InputEvent::unpack(0), None);
-    assert_eq!(InputEvent::unpack(7), None);
+    assert_eq!(InputEvent::unpack(8), None);
     assert_eq!(InputEvent::unpack(BUTTON | 3 << 8), None);
 }
 

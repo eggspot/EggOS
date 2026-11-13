@@ -104,11 +104,8 @@ eggos_fp_restore:
 
 const _: () = assert!(core::mem::offset_of!(crate::fp::Riscv64State, fcsr) == 256);
 
-/// `sstatus.FS`: Off 0, Initial 1, Clean 2, Dirty 3 (both bits).
 const SSTATUS_FS: usize = 3 << 13;
-/// The bit that tells Dirty from Clean.
 const SSTATUS_FS_DIRTY_BIT: usize = 1 << 13;
-/// `sstatus.FS` Clean.
 const SSTATUS_FS_CLEAN: usize = 2 << 13;
 
 unsafe extern "C" {

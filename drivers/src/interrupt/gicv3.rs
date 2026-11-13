@@ -139,8 +139,10 @@ impl<R: RegisterIo> Gicv3Distributor<R> {
     pub fn enable(&self) {
         self.regs.write32(GICD_CTLR, 0);
         self.wait_for_writes();
-        self.regs
-            .write32(GICD_CTLR, GICD_CTLR_AFFINITY_ROUTING | GICD_CTLR_ENABLE_GROUP_1);
+        self.regs.write32(
+            GICD_CTLR,
+            GICD_CTLR_AFFINITY_ROUTING | GICD_CTLR_ENABLE_GROUP_1,
+        );
         self.wait_for_writes();
     }
 
@@ -293,7 +295,8 @@ impl<C: CpuInterfaceRegisters> Gicv3CpuInterface<C> {
     }
 
     pub fn end_of_interrupt(&self, interrupt: Acknowledged) {
-        self.registers.write_end_of_interrupt(u64::from(interrupt.raw));
+        self.registers
+            .write_end_of_interrupt(u64::from(interrupt.raw));
     }
 
     /// Sends SGI `id` to the CPU with MPIDR affinity `affinity`.

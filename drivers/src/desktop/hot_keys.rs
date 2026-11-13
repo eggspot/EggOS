@@ -5,9 +5,9 @@
 //! taken, none the shell's own shortcuts use, each by one client at a time: a client learns
 //! of its own combinations and nothing else of the person's typing.
 
+use super::Desktop;
 use super::protocol::{EventRecord, EventSink, WindowError, event};
 use super::shortcuts::shortcut;
-use super::Desktop;
 use crate::input::keymap::Modifiers;
 
 /// The most hot keys the server keeps.
@@ -21,7 +21,10 @@ pub(super) struct HotKey {
     held: u8,
 }
 
-const KEPT: u8 = Modifiers::SHIFT.bits() | Modifiers::ALT.bits() | Modifiers::CTRL.bits() | Modifiers::SUPER.bits();
+const KEPT: u8 = Modifiers::SHIFT.bits()
+    | Modifiers::ALT.bits()
+    | Modifiers::CTRL.bits()
+    | Modifiers::SUPER.bits();
 const NEEDED: u8 = Modifiers::ALT.bits() | Modifiers::CTRL.bits() | Modifiers::SUPER.bits();
 
 impl Desktop {
@@ -46,7 +49,9 @@ impl Desktop {
             return Ok(());
         }
         let held = held & KEPT;
-        if held & NEEDED == 0 || shortcut(code, Modifiers::from_bits(held), self.profile, false).is_some() {
+        if held & NEEDED == 0
+            || shortcut(code, Modifiers::from_bits(held), self.profile, false).is_some()
+        {
             return Err(WindowError::NotAllowed);
         }
         if self
@@ -73,7 +78,12 @@ impl Desktop {
 
     /// Key `code` went down with `modifiers`: whether it was a hot key, which its window
     /// heard of and the focused window does not.
-    pub(super) fn hot_key_pressed(&mut self, code: u16, modifiers: Modifiers, events: &mut dyn EventSink) -> bool {
+    pub(super) fn hot_key_pressed(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        events: &mut dyn EventSink,
+    ) -> bool {
         let held = modifiers.bits() & KEPT;
         let Some(entry) = self
             .hot_keys
@@ -84,7 +94,14 @@ impl Desktop {
         else {
             return false;
         };
-        let record = EventRecord::new(event::HOT_KEY, 0, entry.id as i32, 0, u32::from(code), u32::from(held));
+        let record = EventRecord::new(
+            event::HOT_KEY,
+            0,
+            entry.id as i32,
+            0,
+            u32::from(code),
+            u32::from(held),
+        );
         self.send(entry.slot, record, events);
         true
     }

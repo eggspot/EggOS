@@ -213,7 +213,9 @@ impl<'a> Reader<'a> {
         let bytes = self.take(count.checked_mul(2)?)?;
         Some(
             bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                 .collect(),
         )
@@ -469,7 +471,10 @@ mod tests {
     fn a_create_request_carries_its_class() {
         let class = [7u8; 16];
         let message = create(class);
-        assert_eq!(read_request(body(&message)), Some(Request::Create { class }));
+        assert_eq!(
+            read_request(body(&message)),
+            Some(Request::Create { class })
+        );
     }
 
     #[test]

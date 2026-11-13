@@ -35,16 +35,7 @@ const WS_FB_WINDOW: u8 = 0x46;
 const WS_ATTRIBUTES: u8 = 0x47;
 const WS_REGISTER_POINTER: u8 = 0x48;
 
-const ALIGN_MASKS: [u32; 8] = [
-    0xffff_ffff,
-    0xffff,
-    0xffff,
-    0xffff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-];
+const ALIGN_MASKS: [u32; 8] = [0xffff_ffff, 0xffff, 0xffff, 0xffff, 0xff, 0xff, 0xff, 0xff];
 const ALIGN_SHIFTS: [u32; 8] = [0, 0, 8, 16, 0, 8, 16, 24];
 const DESTINATION_ALIGN: [[u8; 4]; 8] = [
     [0, 0, 0, 0],
@@ -322,10 +313,16 @@ impl<'a> Interpreter<'a> {
         }
         let base = table_at(self.image, self.commands, index).ok_or(AtomError::NoTable)?;
         let size = usize::from(half(self.image, base).ok_or(AtomError::Malformed)?);
-        let end = base.checked_add(size).filter(|&end| end <= self.image.len());
+        let end = base
+            .checked_add(size)
+            .filter(|&end| end <= self.image.len());
         let end = end.ok_or(AtomError::Malformed)?;
-        let header_byte =
-            |at: usize| self.image.get(base + at).copied().ok_or(AtomError::Malformed);
+        let header_byte = |at: usize| {
+            self.image
+                .get(base + at)
+                .copied()
+                .ok_or(AtomError::Malformed)
+        };
         let workspace_dwords = usize::from(header_byte(WORKSPACE_SIZE)?);
         let parameter_bytes = usize::from(header_byte(PARAMETER_SIZE)? & PARAMETER_SIZE_MASK);
         let mut workspace = vec![0u32; workspace_dwords];
@@ -485,7 +482,10 @@ impl<C: AtomCard> State<'_, C> {
             }
             Operand::Parameter => {
                 let index = usize::from(frame.byte(image)?);
-                *frame.parameters.get_mut(index).ok_or(AtomError::Malformed)? = whole;
+                *frame
+                    .parameters
+                    .get_mut(index)
+                    .ok_or(AtomError::Malformed)? = whole;
             }
             Operand::Workspace => match frame.byte(image)? {
                 WS_QUOTIENT => self.quotient = whole,
@@ -692,7 +692,10 @@ impl<C: AtomCard> State<'_, C> {
                 let dividend = u64::from(self.remainder) << 32 | u64::from(current);
                 (self.quotient, self.remainder) = match divisor {
                     0 => (0, 0),
-                    divisor => ((dividend / divisor) as u32, (dividend / divisor >> 32) as u32),
+                    divisor => (
+                        (dividend / divisor) as u32,
+                        ((dividend / divisor) >> 32) as u32,
+                    ),
                 };
                 None
             }
@@ -790,25 +793,47 @@ mod tests {
     #[test]
     fn a_register_takes_a_parameter_then_bits_ored_in() {
         let body = vec![
-            MOVE_REG, PS, 0x10, 0x00, 0,
-            OR_REG, IMM | BYTE0, 0x10, 0x00, 0x80,
+            MOVE_REG,
+            PS,
+            0x10,
+            0x00,
+            0,
+            OR_REG,
+            IMM | BYTE0,
+            0x10,
+            0x00,
+            0x80,
             EOT,
         ];
         let image = image_with(&[body]);
         let interpreter = Interpreter::new(&image).unwrap();
         let mut card = Card::default();
-        interpreter.run(&mut card, 0, &mut [0x1234_0000, 0]).unwrap();
+        interpreter
+            .run(&mut card, 0, &mut [0x1234_0000, 0])
+            .unwrap();
         assert_eq!(card.registers[&0x10], 0x1234_0080);
     }
 
     #[test]
     fn a_loop_counts_with_a_compare_and_a_jump_below() {
         let body = vec![
-            ADD_WS, IMM | BYTE0, 0, 1,
-            DELAY_US, 5,
-            COMPARE_WS, IMM | BYTE0, 0, 3,
-            JUMP_BELOW, CODE as u8, 0,
-            MOVE_PS, WS, 1, 0,
+            ADD_WS,
+            IMM | BYTE0,
+            0,
+            1,
+            DELAY_US,
+            5,
+            COMPARE_WS,
+            IMM | BYTE0,
+            0,
+            3,
+            JUMP_BELOW,
+            CODE as u8,
+            0,
+            MOVE_PS,
+            WS,
+            1,
+            0,
             EOT,
         ];
         let image = image_with(&[body]);
@@ -822,10 +847,7 @@ mod tests {
 
     #[test]
     fn a_word_destination_keeps_the_rest_of_the_register() {
-        let body = vec![
-            MOVE_REG, IMM | WORD8 | 1 << 6, 0x20, 0x00, 0xcd, 0xab,
-            EOT,
-        ];
+        let body = vec![MOVE_REG, IMM | WORD8 | 1 << 6, 0x20, 0x00, 0xcd, 0xab, EOT];
         let image = image_with(&[body]);
         let interpreter = Interpreter::new(&image).unwrap();
         let mut card = Card::default();
@@ -841,25 +863,47 @@ mod tests {
         let image = image_with(&[caller, callee]);
         let interpreter = Interpreter::new(&image).unwrap();
         let mut parameters = [7u32, 0, 0];
-        interpreter.run(&mut Card::default(), 0, &mut parameters).unwrap();
+        interpreter
+            .run(&mut Card::default(), 0, &mut parameters)
+            .unwrap();
         assert_eq!(parameters, [7, 0, 0x5a]);
     }
 
     #[test]
     fn a_switch_jumps_to_its_matching_case() {
         let body = vec![
-            SWITCH, PS | BYTE0, 0,
-            CASE_MAGIC, 1, 21, 0,
-            CASE_MAGIC, 2, 26, 0,
-            0x5a, 0x5a,
-            EOT, EOT,
-            MOVE_PS, IMM | BYTE0, 1, 0x11, EOT,
-            MOVE_PS, IMM | BYTE0, 1, 0x22, EOT,
+            SWITCH,
+            PS | BYTE0,
+            0,
+            CASE_MAGIC,
+            1,
+            21,
+            0,
+            CASE_MAGIC,
+            2,
+            26,
+            0,
+            0x5a,
+            0x5a,
+            EOT,
+            EOT,
+            MOVE_PS,
+            IMM | BYTE0,
+            1,
+            0x11,
+            EOT,
+            MOVE_PS,
+            IMM | BYTE0,
+            1,
+            0x22,
+            EOT,
         ];
         let image = image_with(&[body]);
         let interpreter = Interpreter::new(&image).unwrap();
         let mut parameters = [2u32, 0];
-        interpreter.run(&mut Card::default(), 0, &mut parameters).unwrap();
+        interpreter
+            .run(&mut Card::default(), 0, &mut parameters)
+            .unwrap();
         assert_eq!(parameters[1], 0x22);
     }
 

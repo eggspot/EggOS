@@ -2,13 +2,12 @@
 //! Rust code runs, and what the kernel reads from it through the boot direct map. A machine
 //! started another way (QEMU's PVH or device-tree loaders) has none.
 
-use crate::atomic::AtomicU64;
 use crate::Platform;
+use crate::atomic::AtomicU64;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::Ordering;
 pub use eggos_boot_handoff::{
-    Framebuffer, HANDOFF_BYTES, Handoff, MEMORY_RANGE_BYTES, MemoryRange, memory_kind,
-    pixel_format,
+    Framebuffer, HANDOFF_BYTES, Handoff, MEMORY_RANGE_BYTES, MemoryRange, memory_kind, pixel_format,
 };
 
 /// Physical address of the handoff, 0 for none; written by the architecture's UEFI entry code.
@@ -27,8 +26,6 @@ pub fn handoff<P: Platform>() -> Option<Handoff> {
     Handoff::read(bytes)
 }
 
-/// # Safety
-/// `address..address + length` must be memory the direct map reaches and nothing writes.
 unsafe fn physical_bytes<P: Platform>(address: u64, length: usize) -> &'static [u8] {
     let virt = (address as usize).wrapping_add(P::physical_memory_offset());
     // SAFETY: guaranteed by the caller.
@@ -82,7 +79,6 @@ pub enum BootFile {
     Loader,
 }
 
-/// The largest boot file read, against a corrupt length.
 const MAX_BOOT_FILE_BYTES: u64 = 256 << 20;
 
 /// The bytes of `file`, if the loader kept it; read through the direct map, which covers the
@@ -96,7 +92,9 @@ pub fn file<P: Platform>(handoff: &Handoff, file: BootFile) -> Option<&'static [
         return None;
     }
     let inside = memory_ranges::<P>(handoff).any(|range| {
-        range.kind == memory_kind::BOOT_DATA && range.start <= address && address + length <= range.end()
+        range.kind == memory_kind::BOOT_DATA
+            && range.start <= address
+            && address + length <= range.end()
     });
     // SAFETY: the file lies inside a range of the loader's boot data (checked), which the
     // kernel's direct map covers and nothing writes.

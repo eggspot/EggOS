@@ -16,7 +16,6 @@ pub const NAME_BYTES: usize = 64;
 const MAX_APPS: usize = 64;
 const APPLICATIONS: &str = "/Applications";
 
-/// One app's name, kept while its actions file is read.
 #[derive(Clone, Copy)]
 struct AppName {
     bytes: [u8; NAME_CAPACITY],
@@ -70,7 +69,13 @@ fn read_actions<'a>(system: &mut impl System, app: &[u8], file: &'a mut [u8]) ->
 /// past [`NAME_BYTES`].
 pub fn tool_name(app: &[u8], action: &[u8], out: &mut [u8; NAME_BYTES]) -> Option<usize> {
     let mut length = 0;
-    for &byte in PREFIX.as_bytes().iter().chain(app).chain(b"_").chain(action) {
+    for &byte in PREFIX
+        .as_bytes()
+        .iter()
+        .chain(app)
+        .chain(b"_")
+        .chain(action)
+    {
         let byte = match byte {
             b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' => byte,
             b'A'..=b'Z' => byte.to_ascii_lowercase(),

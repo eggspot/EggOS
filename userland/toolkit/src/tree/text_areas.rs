@@ -17,6 +17,7 @@ pub(super) fn word_around(text: &str, at: usize) -> (usize, usize) {
         scroll: 0,
         placeholder: "",
         escape: crate::widget::Escape::Clear,
+        masked: false,
     };
     let line_start = text[..at].rfind('\n').map_or(0, |index| index + 1);
     let line_end = text[at..].find('\n').map_or(text.len(), |index| at + index);

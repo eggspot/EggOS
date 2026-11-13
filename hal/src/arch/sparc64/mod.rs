@@ -130,18 +130,12 @@ sparc64_start_high:
 /// The image's virtual address minus its physical address: the top 2 GiB (D33). `linker.ld`
 /// uses the same value and checks it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_8000_0000;
-/// The direct map: the first 2 TiB of physical memory, in the kernel half (D29); the TLB loads
-/// recognise it by the address alone.
 const DIRECT_MAP_OFFSET: usize = paging::sparc64::HIGH_HALF as usize;
 const DIRECT_MAP_END: u64 = 1 << 41;
-/// The device window (D110), walked through the kernel's root.
 const DEVICE_WINDOW: core::ops::Range<u64> = 0xffff_fc00_0000_0000..0xffff_fc80_0000_0000;
-/// The kernel's load address.
 const KERNEL_LOAD_ADDRESS: u64 = 0x40_0000;
-/// QEMU `sun4u`'s board: the 16550 on the EBus, through the APB bridge's PCI I/O window.
 const UART_BASE: u64 = 0x1fe_0200_03f8;
 const UART_CLOCK: u32 = 1_843_200;
-/// RAM without an answer from Open Firmware: the low 128 MiB.
 const DEFAULT_RAM: (u64, u64) = (0, 128 << 20);
 
 const DEVICE_TREE_BYTES: usize = 4096;
@@ -149,7 +143,6 @@ const DEVICE_TREE_BYTES: usize = 4096;
 #[repr(C, align(8))]
 struct DeviceTreeBuffer([u8; DEVICE_TREE_BYTES]);
 
-/// The device tree [`describe_machine`] writes, once.
 static mut DEVICE_TREE_BLOB: DeviceTreeBuffer = DeviceTreeBuffer([0; DEVICE_TREE_BYTES]);
 static DEVICE_TREE_STATE: AtomicU8 = AtomicU8::new(UNWRITTEN);
 static DEVICE_TREE_LENGTH: AtomicUsize = AtomicUsize::new(0);
@@ -157,11 +150,8 @@ const UNWRITTEN: u8 = 0;
 const WRITTEN: u8 = 1;
 const FAILED: u8 = 2;
 
-/// The CPU block's address: QEMU's `sun4u` has one CPU.
 static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
 
-/// Called by `_start` on the boot stack, with Open Firmware's traps still in place: asks the
-/// firmware what the HAL needs, while it can.
 extern "C" fn sparc64_boot(client_interface: u64) {
     firmware::read(client_interface);
     if let Some(frequency) = firmware::cpu_frequency() {
@@ -169,8 +159,6 @@ extern "C" fn sparc64_boot(client_interface: u64) {
     }
 }
 
-/// Writes the machine's device tree from what Open Firmware said and QEMU's board layout, once;
-/// its physical address, or 0 when it did not fit.
 fn describe_machine() -> usize {
     let address = || ((&raw const DEVICE_TREE_BLOB) as u64 - KERNEL_VIRTUAL_OFFSET) as usize;
     match DEVICE_TREE_STATE.load(Ordering::Acquire) {
@@ -200,8 +188,14 @@ fn describe_machine() -> usize {
         .cells(b"#size-cells", &[2])
         .string(b"compatible", b"eggos,sun4u")
         .string(b"model", b"QEMU sun4u");
-    writer.begin(b"chosen").string(b"bootargs", firmware::command_line()).end();
-    writer.begin(b"cpus").cells(b"#address-cells", &[1]).cells(b"#size-cells", &[0]);
+    writer
+        .begin(b"chosen")
+        .string(b"bootargs", firmware::command_line())
+        .end();
+    writer
+        .begin(b"cpus")
+        .cells(b"#address-cells", &[1])
+        .cells(b"#size-cells", &[0]);
     writer
         .begin(b"cpu@0")
         .string(b"device_type", b"cpu")
@@ -234,8 +228,6 @@ fn describe_machine() -> usize {
     }
 }
 
-/// The UART's registers by physical address, through `ASI_PHYS_BYPASS_EC_E`: uncached, with
-/// side effects, no translation needed.
 #[derive(Debug, Clone, Copy)]
 struct PhysicalRegisters(u64);
 
@@ -292,7 +284,9 @@ impl Platform for Sparc64 {
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        Err("the UART's interrupt goes through the PCI bridge's interrupt mapping, not wired yet (D326)")
+        Err(
+            "the UART's interrupt goes through the PCI bridge's interrupt mapping, not wired yet (D326)",
+        )
     }
 
     fn route_device_interrupt(
@@ -301,7 +295,8 @@ impl Platform for Sparc64 {
         Err("device interrupts need the PCI bridge's interrupt mapping (D326)")
     }
 
-    fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
+    fn message_interrupt()
+    -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         Err("sun4u's PCI bridge has no MSI (D326)")
     }
 
@@ -375,7 +370,10 @@ impl Platform for Sparc64 {
             address @ 1.. => unsafe { boot_memory::device_tree_memory_map(address) },
             0 => {
                 let mut map = MemoryMap::new();
-                map.add_ram(PhysicalRange::from_start_length(DEFAULT_RAM.0, DEFAULT_RAM.1));
+                map.add_ram(PhysicalRange::from_start_length(
+                    DEFAULT_RAM.0,
+                    DEFAULT_RAM.1,
+                ));
                 map.reserve(boot_memory::kernel_image());
                 map
             }
@@ -416,7 +414,10 @@ impl Platform for Sparc64 {
             address @ 1.. => unsafe { boot_memory::device_tree_ram(address) },
             0 => {
                 let mut map = MemoryMap::new();
-                map.add_ram(PhysicalRange::from_start_length(DEFAULT_RAM.0, DEFAULT_RAM.1));
+                map.add_ram(PhysicalRange::from_start_length(
+                    DEFAULT_RAM.0,
+                    DEFAULT_RAM.1,
+                ));
                 map
             }
         };
@@ -576,5 +577,10 @@ pub(crate) unsafe fn zero(start: *mut u8, length: usize) {
 #[inline]
 pub(crate) fn doorbell_barrier() {
     // SAFETY: a barrier: it touches no memory or register, only orders stores.
-    unsafe { core::arch::asm!("membar #StoreStore | #StoreLoad", options(nostack, preserves_flags)) };
+    unsafe {
+        core::arch::asm!(
+            "membar #StoreStore | #StoreLoad",
+            options(nostack, preserves_flags)
+        )
+    };
 }

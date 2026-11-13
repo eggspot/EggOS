@@ -47,7 +47,6 @@ pub struct Vector {
     pub paths: Vec<VectorPath>,
 }
 
-/// A dimension value's number (`TYPE_DIMENSION`): its mantissa scaled by its radix.
 fn dimension(data: u32) -> f32 {
     let mantissa = (data as i32 >> 8) as f32;
     let shift = match data >> 4 & 3 {
@@ -103,7 +102,10 @@ pub fn parse(xml: &[u8]) -> Option<Vector> {
                     let number = match kind {
                         TYPE_DIMENSION => dimension(data),
                         TYPE_FLOAT => f32::from_bits(data),
-                        _ => text.as_deref().and_then(|text| text.parse().ok()).unwrap_or(0.0),
+                        _ => text
+                            .as_deref()
+                            .and_then(|text| text.parse().ok())
+                            .unwrap_or(0.0),
                     };
                     match (name, attribute) {
                         ("vector", "width") => vector.width = number,

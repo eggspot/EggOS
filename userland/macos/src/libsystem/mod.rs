@@ -5,9 +5,9 @@
 //! unused imports are missing still runs.
 
 pub mod children;
+pub mod dispatch;
 pub mod dynamic;
 pub mod file;
-pub mod dispatch;
 pub mod heap;
 mod locale;
 mod math;

@@ -35,18 +35,13 @@ eggos_thread_start:
 
 /// The ABI's stack bias: `%sp` is 2047 below the frame's real address.
 pub(super) const STACK_BIAS: usize = 2047;
-/// The frame the switch's `save` makes: the 16-word window save area, the six outgoing argument
-/// words and the word for `%i7`, rounded to 16. Its caller's frame starts right above it, so the
-/// switch's `%fp` is always `%sp` plus this.
 const SWITCH_FRAME_BYTES: usize = 192;
 const I7_OFFSET: usize = 176;
-/// The window save area of a frame: `%l0`-`%l7`, then `%i0`-`%i7`.
 const SAVE_AREA_WORDS: usize = 16;
 const FRAME_WORDS: usize = SWITCH_FRAME_BYTES / 8 + SAVE_AREA_WORDS;
 
 unsafe extern "C" {
     pub(super) fn eggos_switch_thread(save: *mut usize, resume: usize);
-    /// Only its address is used: a new thread's first switch returns into it.
     fn eggos_thread_start();
 }
 

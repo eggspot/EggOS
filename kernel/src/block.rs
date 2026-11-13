@@ -321,12 +321,14 @@ pub fn take_all() -> [Option<Box<dyn BlockDevice>>; MAX_DISKS] {
     core::mem::take(&mut *DISKS.lock())
 }
 
-/// The most bytes of partition entries [`eggos_data_partition`] reads.
 const MAX_ENTRY_BYTES: usize = 128 * 1024;
 
 /// Where EggOS's data partition is on a disk with a GUID partition table (D238), in sectors:
 /// its first sector and how many; `None` when the disk has no valid table, or no such partition.
-pub fn eggos_data_partition(disk: &mut dyn BlockDevice, deadline: &mut Deadline) -> Option<(u64, u64)> {
+pub fn eggos_data_partition(
+    disk: &mut dyn BlockDevice,
+    deadline: &mut Deadline,
+) -> Option<(u64, u64)> {
     let block_bytes = disk.logical_block_bytes();
     if !block_bytes.is_multiple_of(SECTOR_SIZE) || block_bytes == 0 {
         return None;
@@ -345,7 +347,12 @@ pub fn eggos_data_partition(disk: &mut dyn BlockDevice, deadline: &mut Deadline)
     let length = entry_bytes.next_multiple_of(block_bytes);
     entries.try_reserve_exact(length).ok()?;
     entries.resize(length, 0);
-    disk.read(header.entries_at.checked_mul(per_block)?, &mut entries, deadline).ok()?;
+    disk.read(
+        header.entries_at.checked_mul(per_block)?,
+        &mut entries,
+        deadline,
+    )
+    .ok()?;
     let partition = eggos_gpt::partitions(&header, &entries)?
         .find(|partition| partition.kind == eggos_gpt::EGGOS_DATA_PARTITION)?;
     let first = partition.first.checked_mul(per_block)?;
@@ -358,6 +365,15 @@ pub struct Partition {
     disk: Box<dyn BlockDevice>,
     first: u64,
     sectors: u64,
+}
+
+impl core::fmt::Debug for Partition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Partition")
+            .field("first", &self.first)
+            .field("sectors", &self.sectors)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Partition {
@@ -389,11 +405,21 @@ impl BlockDevice for Partition {
     fn logical_block_bytes(&self) -> usize {
         self.disk.logical_block_bytes()
     }
-    fn read(&mut self, sector: u64, buffer: &mut [u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+    fn read(
+        &mut self,
+        sector: u64,
+        buffer: &mut [u8],
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
         let at = self.place(sector, buffer.len())?;
         self.disk.read(at, buffer, deadline)
     }
-    fn write(&mut self, sector: u64, buffer: &[u8], deadline: &mut Deadline) -> Result<(), BlockError> {
+    fn write(
+        &mut self,
+        sector: u64,
+        buffer: &[u8],
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
         let at = self.place(sector, buffer.len())?;
         self.disk.write(at, buffer, deadline)
     }

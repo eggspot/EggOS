@@ -6,8 +6,6 @@ pub mod agent_network;
 pub mod android_dynamic;
 pub mod autohotkey;
 pub mod cocoa_app;
-pub mod swift_app;
-pub mod udcalc_app;
 pub mod components;
 pub mod disks;
 pub mod dynamic_linking;
@@ -30,8 +28,10 @@ pub mod sdl_app;
 pub mod settings;
 pub mod shell;
 pub mod static_glibc;
+pub mod swift_app;
 pub mod terminals;
 pub mod text_editor;
+pub mod udcalc_app;
 pub mod win32_app;
 mod win_controls;
 mod win_controls2;
@@ -1341,6 +1341,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-process"),
             refused("macos-text"),
             refused("macos-legacy"),
+            refused("macos-cxx"),
             end,
         ];
     }
@@ -1876,7 +1877,7 @@ fn prompt_session_output(arch: &str) -> [Vec<Line>; PROMPT_SESSION.len()] {
     [
         whole(&["Applications  bin  dev  etc  home  init  media  proc  run  tmp  usr  var  work"]),
         vec![
-            Line::Around("-rwxr-xr-x 49 0 0 ", " /bin/ls"),
+            Line::Around("-rwxr-xr-x 50 0 0 ", " /bin/ls"),
             Line::Whole("ls: cannot access '/nope': No such file or directory".into()),
             Line::Whole("EGGOS-COREUTILS ls status 2".into()),
         ],
@@ -4961,7 +4962,7 @@ mod tests {
             ok.contains(&links),
             "/bin/ls has a link per utility and its own name"
         );
-        let one_link = ok.replace("-rwxr-xr-x 49 ", "-rwxr-xr-x 1 ");
+        let one_link = ok.replace("-rwxr-xr-x 50 ", "-rwxr-xr-x 1 ");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &one_link).is_err());
         let untyped = ok.replace("# uname -a", "# uname");
         assert!(verdict("riscv64", Expect::BootToPrompt, true, &untyped).is_err());

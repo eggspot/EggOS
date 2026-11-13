@@ -627,9 +627,6 @@ fn accept_syn<P: Platform>(
     true
 }
 
-/// Sends `bytes`, a segment from `source` to `destination` whose checksum is partial: whether
-/// it went, false only for a segment longer than `segment_size` of data that its adapter does
-/// not cut itself (D541), which TCP sends again in smaller segments.
 fn send_segment<P: Platform>(
     source: Ipv4Address,
     destination: Ipv4Address,
@@ -699,9 +696,6 @@ pub fn run<P: Platform>() {
     }
 }
 
-/// A buffer for the segments [`run_once`] writes: the kept one, grown to
-/// [`LARGE_SEGMENT_BYTES`] when the heap allows, else at least [`SEGMENT_BYTES`]; `None` when
-/// not even that is free.
 fn take_segment_scratch() -> Option<Vec<u8>> {
     let mut scratch = core::mem::take(&mut *SEGMENT_SCRATCH.lock());
     for wanted in [LARGE_SEGMENT_BYTES, SEGMENT_BYTES] {
@@ -723,8 +717,6 @@ fn give_back_segment_scratch(scratch: Vec<u8>) {
     }
 }
 
-/// Lets a connection to another machine send segments its adapter cuts itself, once (D541):
-/// decided outside the stream's lock, since the adapters' lock comes before it.
 fn decide_segmentation(stream: &Stream) {
     let remote = {
         let state = stream.state.lock();
@@ -763,10 +755,12 @@ fn run_once<P: Platform>() -> bool {
                     let room = segment
                         .len()
                         .min(tcp::MAX_HEADER_BYTES + connection.segment_data_bytes());
-                    connection.output(now, queues, &mut segment[..room]).map(|length| {
-                        let ends = (connection.local().0, connection.remote().0);
-                        (length, ends, connection.send_mss())
-                    })
+                    connection
+                        .output(now, queues, &mut segment[..room])
+                        .map(|length| {
+                            let ends = (connection.local().0, connection.remote().0);
+                            (length, ends, connection.send_mss())
+                        })
                 };
                 let Some((length, (source, destination), segment_size)) = written else {
                     break;

@@ -353,7 +353,10 @@ const FRACTIONAL_SCALE_MANAGER: &[Request] = &[
     request("get_fractional_scale", 1, &[NewId, Object]),
 ];
 const FRACTIONAL_SCALE: &[Request] = &[destructor("destroy", 1)];
-const LINUX_DMABUF: &[Request] = &[destructor("destroy", 1), request("create_params", 1, &[NewId])];
+const LINUX_DMABUF: &[Request] = &[
+    destructor("destroy", 1),
+    request("create_params", 1, &[NewId]),
+];
 const LINUX_BUFFER_PARAMS: &[Request] = &[
     destructor("destroy", 1),
     request("add", 1, &[Fd, Uint, Uint, Uint, Uint, Uint]),

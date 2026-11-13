@@ -62,6 +62,9 @@ pub(super) struct Tray {
     overflow_open: bool,
     overflow_hover: Option<usize>,
     last_pressed: Option<u8>,
+    balloon: [u8; BALLOON_BYTES],
+    balloon_length: usize,
+    balloon_owner: Option<(usize, u32)>,
 }
 
 impl Default for Tray {
@@ -154,7 +157,13 @@ impl Desktop {
 
     /// Forgets the icons of the window in `slot`, which is gone.
     pub(super) fn forget_tray_icons(&mut self, slot: usize, damage: &mut Damage) {
-        if self.tray.icons.iter().flatten().any(|icon| icon.slot == slot) {
+        if self
+            .tray
+            .icons
+            .iter()
+            .flatten()
+            .any(|icon| icon.slot == slot)
+        {
             self.close_tray_overflow(damage);
             self.damage_tray(damage);
             for icon in self.tray.icons.iter_mut() {
@@ -171,7 +180,6 @@ impl Desktop {
         }
     }
 
-    /// The icons not hidden by their program, oldest first, and how many there are.
     fn ordered_tray(&self) -> ([usize; MOST_TRAY_ICONS], usize) {
         let mut order = [(u32::MAX, 0usize); MOST_TRAY_ICONS];
         let mut count = 0;
@@ -189,8 +197,6 @@ impl Desktop {
         (indices, count)
     }
 
-    /// The shown icons, rightmost first (the oldest), and whether an overflow button stands
-    /// for the rest.
     fn shown_tray(&self) -> ([usize; SHOWN], usize, bool) {
         let (ordered, count) = self.ordered_tray();
         let overflow = count > SHOWN;
@@ -200,7 +206,6 @@ impl Desktop {
         (indices, shown, overflow)
     }
 
-    /// The icons the overflow button stands for, in the order they were added, and how many.
     fn overflowed_tray(&self) -> ([usize; MOST_TRAY_ICONS], usize) {
         let (ordered, count) = self.ordered_tray();
         if count <= SHOWN {
@@ -278,7 +283,11 @@ impl Desktop {
 
     pub(super) fn draw_tray(&self, canvas: &mut Canvas<'_>) {
         let taskbar = self.layout.taskbar.is_some();
-        let inset = if taskbar { TASKBAR_ICON_AT } else { TOP_BAR_ICON_AT };
+        let inset = if taskbar {
+            TASKBAR_ICON_AT
+        } else {
+            TOP_BAR_ICON_AT
+        };
         self.for_each_tray_item(|item, rect| {
             if !rect.overlaps(&canvas.clip()) {
                 return;
@@ -468,7 +477,9 @@ impl Desktop {
             return None;
         }
         let row = self.tray_overflow_row_at(x, y);
-        let on_popup = self.tray_overflow().is_some_and(|popup| contains(popup, x, y));
+        let on_popup = self
+            .tray_overflow()
+            .is_some_and(|popup| contains(popup, x, y));
         let on_button = self
             .tray_overflow_button()
             .is_some_and(|rect| contains(rect, x, y));
@@ -529,8 +540,7 @@ impl Desktop {
                 self.damage_tray_overflow(damage);
             }
             key::DOWN => {
-                self.tray.overflow_hover =
-                    Some(hover.map_or(0, |index| (index + 1).min(rows - 1)));
+                self.tray.overflow_hover = Some(hover.map_or(0, |index| (index + 1).min(rows - 1)));
                 self.damage_tray_overflow(damage);
             }
             key::ENTER | key::KEYPAD_ENTER | key::SPACE => {
@@ -626,7 +636,10 @@ fn draw_pixels(canvas: &mut Canvas<'_>, (x, y): (u32, u32), pixels: &[u32; PIXEL
 fn draw_tile(canvas: &mut Canvas<'_>, (x, y): (u32, u32), title: &str) {
     let side = TRAY_ICON_SIDE as u32;
     canvas.fill(Rect::new(x, y, side, side), colour::ICON_TILE_BORDER);
-    canvas.fill(Rect::new(x + 1, y + 1, side - 2, side - 2), colour::ICON_TILE);
+    canvas.fill(
+        Rect::new(x + 1, y + 1, side - 2, side - 2),
+        colour::ICON_TILE,
+    );
     let letter = title
         .chars()
         .find(char::is_ascii_alphanumeric)
@@ -667,8 +680,7 @@ impl Desktop {
             return Ok(());
         }
         let mut length = 0;
-        let mut glyphs = 0;
-        for character in text.chars() {
+        for (glyphs, character) in text.chars().enumerate() {
             if glyphs == BALLOON_GLYPHS {
                 for _ in 0..3 {
                     self.tray.balloon[length] = b'.';
@@ -681,7 +693,6 @@ impl Desktop {
             let encoded = shown.encode_utf8(&mut bytes).as_bytes();
             self.tray.balloon[length..length + encoded.len()].copy_from_slice(encoded);
             length += encoded.len();
-            glyphs += 1;
         }
         self.tray.balloon_length = length;
         self.tray.balloon_owner = Some((slot, key));

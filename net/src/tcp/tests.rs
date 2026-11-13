@@ -168,7 +168,10 @@ fn a_segment_limit_lets_one_segment_carry_whole_multiples_of_the_mss() {
     assert_eq!(client.connection.segment_data_bytes(), 3 * usize::from(MSS));
     client.queues.send = vec![7u8; 10_000];
     let mut out = vec![0u8; MAX_HEADER_BYTES + 5000];
-    let length = client.connection.output(1, &client.queues, &mut out).unwrap();
+    let length = client
+        .connection
+        .output(1, &client.queues, &mut out)
+        .unwrap();
     let segment = parse(CLIENT.0, SERVER.0, &out[..length]).unwrap();
     assert_eq!(segment.data.len(), 3 * usize::from(MSS));
     client.connection.set_segment_limit(None);
@@ -190,8 +193,15 @@ fn a_partial_checksum_completed_or_made_partial_again_matches_the_whole_one() {
     whole[HEADER_BYTES..].copy_from_slice(b"hello");
     let mut partial = whole;
     write_header(&mut whole, CLIENT.0, SERVER.0, &header, 5).unwrap();
-    write_header_with(&mut partial, CLIENT.0, SERVER.0, &header, 5, Completion::Partial)
-        .unwrap();
+    write_header_with(
+        &mut partial,
+        CLIENT.0,
+        SERVER.0,
+        &header,
+        5,
+        Completion::Partial,
+    )
+    .unwrap();
     assert_ne!(partial, whole);
     assert!(parse(CLIENT.0, SERVER.0, &partial).is_none());
     let mut completed = partial;

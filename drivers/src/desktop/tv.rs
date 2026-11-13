@@ -37,7 +37,6 @@ const LABEL_GLYPHS: usize = 16;
 const MENU_WIDTH: u32 = 320;
 const MENU_ROW: u32 = 32;
 const RING: u32 = 2;
-/// The panes of Settings' row, as `settings open` names them, and their titles.
 const PANES: [(&str, &str); 12] = [
     ("appearance", "Appearance"),
     ("network", "Network"),
@@ -53,7 +52,6 @@ const PANES: [(&str, &str); 12] = [
     ("about", "About"),
 ];
 
-/// Where the focus is (section 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Focus {
     Strip(u8),
@@ -61,7 +59,6 @@ enum Focus {
     Tiles,
 }
 
-/// A row of the home screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowKind {
     Open,
@@ -69,7 +66,6 @@ enum RowKind {
     Settings,
 }
 
-/// A tile's content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TileKind {
     Window(usize),
@@ -77,7 +73,6 @@ enum TileKind {
     Pane(usize),
 }
 
-/// A shell menu (section 3.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Menu {
     Tile(TileKind, usize),
@@ -100,7 +95,6 @@ pub(super) struct TvState {
     pointer_menu: Option<usize>,
 }
 
-/// The pointer menu's rows (section 5.4).
 const POINTER_ROWS: usize = 5;
 const POINTER_STEP: u32 = 8;
 const SCROLL_NOTCHES: i32 = 3;
@@ -115,12 +109,21 @@ impl Desktop {
         let mut rows = Vec::new();
         let mut order = [0u8; MAX_WINDOWS];
         let count = self.switcher_order(&mut order);
-        let open: Vec<TileKind> = order[..count].iter().map(|&slot| TileKind::Window(usize::from(slot))).collect();
+        let open: Vec<TileKind> = order[..count]
+            .iter()
+            .map(|&slot| TileKind::Window(usize::from(slot)))
+            .collect();
         if !open.is_empty() {
             rows.push((RowKind::Open, open));
         }
-        rows.push((RowKind::Apps, self.catalogue.desktop_apps().map(TileKind::App).collect()));
-        rows.push((RowKind::Settings, (0..PANES.len()).map(TileKind::Pane).collect()));
+        rows.push((
+            RowKind::Apps,
+            self.catalogue.desktop_apps().map(TileKind::App).collect(),
+        ));
+        rows.push((
+            RowKind::Settings,
+            (0..PANES.len()).map(TileKind::Pane).collect(),
+        ));
         rows
     }
 
@@ -163,7 +166,12 @@ impl Desktop {
             let rect = Rect::new(x, STRIP_BUTTON.0, STRIP_BUTTON.1, STRIP_BUTTON.2);
             let focused = self.tv.focus == Focus::Strip(index as u8) && self.tv.menu.is_none();
             self.draw_tv_panel(canvas, rect, focused, paint::INSET_R4.as_slice());
-            canvas.text(text_x, STRIP_TEXT_Y, label, if focused { colour::TEXT } else { ink_rest });
+            canvas.text(
+                text_x,
+                STRIP_TEXT_Y,
+                label,
+                if focused { colour::TEXT } else { ink_rest },
+            );
         }
         let clock = self.clock_text();
         let clock_x = self.width - TV_MARGIN_X - clock.len() as u32 * GLYPH_WIDTH as u32;
@@ -176,7 +184,12 @@ impl Desktop {
                 break;
             }
             let title = Self::row_title(*kind);
-            let pill = Rect::new(TV_MARGIN_X, row_top - 2, title.len() as u32 * GLYPH_WIDTH as u32 + 8, 20);
+            let pill = Rect::new(
+                TV_MARGIN_X,
+                row_top - 2,
+                title.len() as u32 * GLYPH_WIDTH as u32 + 8,
+                20,
+            );
             canvas.rounded(pill, &paint::INSET_R4, true, true, colour::BAR);
             canvas.text(TV_MARGIN_X + 4, row_top, title, colour::TEXT_DIM);
             let focused_row = self.tv.focus == Focus::Tiles && self.tv.row == visible;
@@ -185,7 +198,13 @@ impl Desktop {
                 let position = format!("{} of {}", self.tv.tile[row_slot] + 1, tiles.len());
                 let width = position.len() as u32 * GLYPH_WIDTH as u32 + 8;
                 let x = self.width - TV_MARGIN_X - width;
-                canvas.rounded(Rect::new(x, row_top - 2, width, 20), &paint::INSET_R4, true, true, colour::BAR);
+                canvas.rounded(
+                    Rect::new(x, row_top - 2, width, 20),
+                    &paint::INSET_R4,
+                    true,
+                    true,
+                    colour::BAR,
+                );
                 canvas.text(x + 4, row_top, &position, colour::TEXT_DIM);
             }
             let offset = self.tv.scroll[row_slot];
@@ -195,16 +214,28 @@ impl Desktop {
                     break;
                 }
                 let rect = Rect::new(x, row_top + TILE_TOP, TILE.0, TILE.1);
-                let focused = focused_row && self.tv.tile[row_slot] == index && self.tv.menu.is_none();
+                let focused =
+                    focused_row && self.tv.tile[row_slot] == index && self.tv.menu.is_none();
                 self.draw_tv_panel(canvas, rect, focused, paint::INSET_R6.as_slice());
                 match tile {
                     TileKind::Window(slot) => self.draw_tv_thumbnail(canvas, contents, *slot, rect),
                     TileKind::App(app) => {
-                        draw_icon(canvas, self.catalogue.icon(*app), IconSize::Large, x + TILE_ICON.0, rect.y + TILE_ICON.1);
+                        draw_icon(
+                            canvas,
+                            self.catalogue.icon(*app),
+                            IconSize::Large,
+                            x + TILE_ICON.0,
+                            rect.y + TILE_ICON.1,
+                        );
                         let mut windows = [0u8; MAX_WINDOWS];
                         if self.app_windows(*app, &mut windows) > 0 {
                             canvas.fill(
-                                Rect::new(x + TILE_RUNNING.0, rect.y + TILE_RUNNING.1, TILE_RUNNING.2, TILE_RUNNING.2),
+                                Rect::new(
+                                    x + TILE_RUNNING.0,
+                                    rect.y + TILE_RUNNING.1,
+                                    TILE_RUNNING.2,
+                                    TILE_RUNNING.2,
+                                ),
                                 colour::TEXT,
                             );
                         }
@@ -217,17 +248,28 @@ impl Desktop {
                         rect.y + TILE_ICON.1,
                     ),
                 }
-                let whole = rect.right() <= self.width - TV_MARGIN_X && rect.bottom() <= view_bottom;
+                let whole =
+                    rect.right() <= self.width - TV_MARGIN_X && rect.bottom() <= view_bottom;
                 if whole {
                     let label = self.tile_label(*tile);
                     let (text, cut) = windows::cut_title(&label, LABEL_GLYPHS - 3);
                     let glyphs = text.chars().count() + if cut { 3 } else { 0 };
                     let label_x = x + (TILE.0 - glyphs as u32 * GLYPH_WIDTH as u32) / 2;
-                    let top = rect.y + if matches!(tile, TileKind::Window(_)) { 84 } else { 76 };
+                    let top = rect.y
+                        + if matches!(tile, TileKind::Window(_)) {
+                            84
+                        } else {
+                            76
+                        };
                     let ink = if focused { colour::TEXT } else { ink_rest };
                     canvas.text(label_x, top, text, ink);
                     if cut {
-                        canvas.text(label_x + text.chars().count() as u32 * GLYPH_WIDTH as u32, top, windows::ellipsis(), ink);
+                        canvas.text(
+                            label_x + text.chars().count() as u32 * GLYPH_WIDTH as u32,
+                            top,
+                            windows::ellipsis(),
+                            ink,
+                        );
                     }
                 }
             }
@@ -240,7 +282,12 @@ impl Desktop {
             true => {
                 canvas.rounded(rect, corners, true, true, colour::FOCUS_RING);
                 canvas.rounded(
-                    Rect::new(rect.x + RING, rect.y + RING, rect.width - 2 * RING, rect.height - 2 * RING),
+                    Rect::new(
+                        rect.x + RING,
+                        rect.y + RING,
+                        rect.width - 2 * RING,
+                        rect.height - 2 * RING,
+                    ),
                     corners,
                     true,
                     true,
@@ -260,10 +307,21 @@ impl Desktop {
         }
     }
 
-    fn draw_tv_thumbnail(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents, slot: usize, tile: Rect) {
+    fn draw_tv_thumbnail(
+        &self,
+        canvas: &mut Canvas<'_>,
+        contents: &dyn Contents,
+        slot: usize,
+        tile: Rect,
+    ) {
         let window = self.window_at(slot);
         let (width, height) = (window.content_width.max(1), window.content_height.max(1));
-        let area = Rect::new(tile.x + THUMBNAIL.0, tile.y + THUMBNAIL.1, THUMBNAIL.2, THUMBNAIL.3);
+        let area = Rect::new(
+            tile.x + THUMBNAIL.0,
+            tile.y + THUMBNAIL.1,
+            THUMBNAIL.2,
+            THUMBNAIL.3,
+        );
         let clip = canvas.clip();
         if !area.overlaps(&clip) {
             return;
@@ -305,7 +363,12 @@ impl Desktop {
             Menu::Tile(_, row) | Menu::Power(row) => row,
         };
         let height = MENU_ROW * rows.len() as u32 + 8;
-        let rect = Rect::new((self.width - MENU_WIDTH) / 2, (self.height - height) / 2, MENU_WIDTH, height);
+        let rect = Rect::new(
+            (self.width - MENU_WIDTH) / 2,
+            (self.height - height) / 2,
+            MENU_WIDTH,
+            height,
+        );
         canvas.shadow(rect);
         canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
         canvas.rounded(
@@ -320,7 +383,15 @@ impl Desktop {
             if index == focused {
                 let row = Rect::new(rect.x + 1, top, rect.width - 2, MENU_ROW);
                 canvas.fill(row, colour::FOCUS_RING);
-                canvas.fill(Rect::new(row.x + RING, row.y + RING, row.width - 2 * RING, row.height - 2 * RING), colour::SELECTION);
+                canvas.fill(
+                    Rect::new(
+                        row.x + RING,
+                        row.y + RING,
+                        row.width - 2 * RING,
+                        row.height - 2 * RING,
+                    ),
+                    colour::SELECTION,
+                );
                 canvas.text(rect.x + 8, top + 8, ">", colour::TEXT);
             }
             canvas.text(rect.x + 24, top + 8, label, colour::TEXT);
@@ -329,7 +400,12 @@ impl Desktop {
 
     /// Key `code` in the TV form (section 3.1): the shell's keys on the home screen and in
     /// its menus, and Home and Back over an app. Returns the action when it was the shell's.
-    pub(super) fn tv_key(&mut self, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Option<Action> {
+    pub(super) fn tv_key(
+        &mut self,
+        code: u16,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
         if self.form != Form::Tv {
             return None;
         }
@@ -421,15 +497,25 @@ impl Desktop {
 
     fn send_key_to(&mut self, slot: usize, code: u16, events: &mut dyn EventSink) {
         for pressed in [1, 0] {
-            let record = super::protocol::EventRecord::new(super::protocol::event::KEY, 0, i32::from(code), pressed, 0, 0);
+            let record = super::protocol::EventRecord::new(
+                super::protocol::event::KEY,
+                0,
+                i32::from(code),
+                pressed,
+                0,
+                0,
+            );
             self.send(slot, record, events);
         }
     }
 
-    /// Key `code` while an app without `FOCUS_NAVIGABLE` is shown (section 5.3): arrows move
-    /// the pointer and OK clicks, unless keys mode passes them on; Back sends Esc; Menu opens
-    /// the pointer menu.
-    fn pointer_app_key(&mut self, slot: usize, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Option<Action> {
+    fn pointer_app_key(
+        &mut self,
+        slot: usize,
+        code: u16,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
         if let Some(row) = self.tv.pointer_menu {
             damage.add(self.screen());
             return Some(self.pointer_menu_key(slot, row, code, damage, events));
@@ -467,7 +553,14 @@ impl Desktop {
         }
     }
 
-    fn pointer_menu_key(&mut self, slot: usize, row: usize, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
+    fn pointer_menu_key(
+        &mut self,
+        slot: usize,
+        row: usize,
+        code: u16,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
         match code {
             key::UP => self.tv.pointer_menu = Some(row.saturating_sub(1)),
             key::DOWN => self.tv.pointer_menu = Some((row + 1).min(POINTER_ROWS - 1)),
@@ -483,7 +576,11 @@ impl Desktop {
                     }
                     1 | 2 => {
                         self.pointer_moved(x, y, damage, events);
-                        let notches = if row == 1 { SCROLL_NOTCHES } else { -SCROLL_NOTCHES };
+                        let notches = if row == 1 {
+                            SCROLL_NOTCHES
+                        } else {
+                            -SCROLL_NOTCHES
+                        };
                         self.wheel(notches, events);
                     }
                     3 => {
@@ -510,18 +607,43 @@ impl Desktop {
             true => "Move the pointer with arrows",
             false => "Send arrows to the app",
         };
-        let rows = ["Right click", "Scroll up", "Scroll down", arrows, "Close app"];
+        let rows = [
+            "Right click",
+            "Scroll up",
+            "Scroll down",
+            arrows,
+            "Close app",
+        ];
         let height = MENU_ROW * rows.len() as u32 + 8;
-        let rect = Rect::new((self.width - MENU_WIDTH) / 2, (self.height - height) / 2, MENU_WIDTH, height);
+        let rect = Rect::new(
+            (self.width - MENU_WIDTH) / 2,
+            (self.height - height) / 2,
+            MENU_WIDTH,
+            height,
+        );
         canvas.shadow(rect);
         canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
-        canvas.rounded(Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2), &paint::INSET_R6, true, true, colour::MENU);
+        canvas.rounded(
+            Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
+            &paint::INSET_R6,
+            true,
+            true,
+            colour::MENU,
+        );
         for (index, label) in rows.iter().enumerate() {
             let top = rect.y + 4 + MENU_ROW * index as u32;
             if index == row {
                 let line = Rect::new(rect.x + 1, top, rect.width - 2, MENU_ROW);
                 canvas.fill(line, colour::FOCUS_RING);
-                canvas.fill(Rect::new(line.x + RING, line.y + RING, line.width - 2 * RING, line.height - 2 * RING), colour::SELECTION);
+                canvas.fill(
+                    Rect::new(
+                        line.x + RING,
+                        line.y + RING,
+                        line.width - 2 * RING,
+                        line.height - 2 * RING,
+                    ),
+                    colour::SELECTION,
+                );
                 canvas.text(rect.x + 8, top + 8, ">", colour::TEXT);
             }
             canvas.text(rect.x + 24, top + 8, label, colour::TEXT);
@@ -553,7 +675,12 @@ impl Desktop {
         }
     }
 
-    fn tv_open(&mut self, tile: TileKind, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
+    fn tv_open(
+        &mut self,
+        tile: TileKind,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
         match tile {
             TileKind::Window(slot) => {
                 self.activate(slot, damage, events);
@@ -564,7 +691,13 @@ impl Desktop {
         }
     }
 
-    fn tv_menu_key(&mut self, menu: Menu, code: u16, damage: &mut Damage, events: &mut dyn EventSink) -> Action {
+    fn tv_menu_key(
+        &mut self,
+        menu: Menu,
+        code: u16,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
         let rows = self.tv_menu_rows(menu);
         let focused = match menu {
             Menu::Tile(_, row) | Menu::Power(row) => row,

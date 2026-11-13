@@ -38,8 +38,6 @@ const ARGUMENTS_MASK: u8 = 0x07;
 const SERIALIZED: u8 = 1 << 3;
 const SYNC_LEVEL_SHIFT: u8 = 4;
 
-/// Interface strings `\_OSI` answers yes to: the Windows versions firmware tests for, and the
-/// features the interpreter has.
 const INTERFACES: &[&[u8]] = &[
     b"Windows 2000",
     b"Windows 2001",
@@ -331,8 +329,16 @@ impl<H: Host> Interpreter<H> {
         if self.depth >= MAX_CALL_DEPTH {
             return Err(Error::TooDeep);
         }
-        let scope = self.namespace.path_of(id).cloned().ok_or(Error::NameNotFound)?;
-        let code = self.tables.get(method.table).cloned().ok_or(Error::NotATable)?;
+        let scope = self
+            .namespace
+            .path_of(id)
+            .cloned()
+            .ok_or(Error::NameNotFound)?;
+        let code = self
+            .tables
+            .get(method.table)
+            .cloned()
+            .ok_or(Error::NotATable)?;
         let mut frame = Frame::new(scope, method.table, true);
         for (slot, argument) in frame.arguments.iter_mut().zip(arguments) {
             *slot = argument;
@@ -534,17 +540,23 @@ impl<H: Host> Interpreter<H> {
             MUTEX => {
                 let name = stream.name_string()?;
                 let sync_level = stream.byte()? & 0x0f;
-                self.create(frame, &name, Object::Mutex {
-                    sync_level,
-                    held: 0,
-                })?;
+                self.create(
+                    frame,
+                    &name,
+                    Object::Mutex {
+                        sync_level,
+                        held: 0,
+                    },
+                )?;
             }
             EVENT => {
                 let name = stream.name_string()?;
                 self.create(frame, &name, Object::Event { signals: 0 })?;
             }
             CREATE_BIT_FIELD | CREATE_BYTE_FIELD | CREATE_WORD_FIELD | CREATE_DWORD_FIELD
-            | CREATE_QWORD_FIELD | CREATE_FIELD => self.create_buffer_field(frame, stream, opcode)?,
+            | CREATE_QWORD_FIELD | CREATE_FIELD => {
+                self.create_buffer_field(frame, stream, opcode)?
+            }
             IF => return self.if_else(frame, stream),
             ELSE => {
                 let end = stream.package_end()?;
@@ -564,7 +576,11 @@ impl<H: Host> Interpreter<H> {
                 let Target::Node(node) = target else {
                     return Err(Error::WrongType);
                 };
-                let path = self.namespace.path_of(node).cloned().ok_or(Error::NameNotFound)?;
+                let path = self
+                    .namespace
+                    .path_of(node)
+                    .cloned()
+                    .ok_or(Error::NameNotFound)?;
                 self.host.notify(&path, value);
             }
             SLEEP => {
@@ -681,7 +697,10 @@ impl<H: Host> Interpreter<H> {
         object: Object,
     ) -> Result<Path, Error> {
         let id = self.create(frame, name, object)?;
-        self.namespace.path_of(id).cloned().ok_or(Error::NameNotFound)
+        self.namespace
+            .path_of(id)
+            .cloned()
+            .ok_or(Error::NameNotFound)
     }
 
     fn find_name(&mut self, frame: &Frame, stream: &mut Stream<'_>) -> Result<NodeId, Error> {

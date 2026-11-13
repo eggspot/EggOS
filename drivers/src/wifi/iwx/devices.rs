@@ -7,8 +7,10 @@ pub const VENDOR_INTEL: u16 = 0x8086;
 pub const FIRMWARE_FOLDER: &str = "/usr/lib/firmware/intel/iwlwifi";
 
 const HW_REV_TYPE_MASK: u32 = 0x000f_fff0;
-const HW_REV_TYPE_QU_C0: u32 = 0x0000_0338;
-const HW_REV_TYPE_QUZ: u32 = 0x0000_0354;
+const HW_REV_STEP_MASK: u32 = 0x0000_000c;
+const MAC_TYPE_QU: u32 = 0x0000_0330;
+const MAC_TYPE_QUZ: u32 = 0x0000_0350;
+const STEP_C0: u32 = 0x0000_0008;
 const SUBDEVICE_SO: u16 = 0x0090;
 const KILLER_GF4: [u16; 2] = [0x1691, 0x1692];
 
@@ -101,10 +103,12 @@ pub fn identify(device: u16, subdevice: u16, hw_rev: u32) -> Option<Adapter> {
     if device == 0x2723 {
         return Some(discrete);
     }
-    if let Some(&(_, ltr_delay, xtal_latency, low_latency_xtal)) = AX201_IDS.iter().find(|(id, ..)| *id == device) {
-        let firmware = match mac {
-            HW_REV_TYPE_QUZ => QUZ_A0_HR_B0,
-            HW_REV_TYPE_QU_C0 => QU_C0_HR_B0,
+    if let Some(&(_, ltr_delay, xtal_latency, low_latency_xtal)) =
+        AX201_IDS.iter().find(|(id, ..)| *id == device)
+    {
+        let firmware = match (mac, hw_rev & HW_REV_STEP_MASK) {
+            (MAC_TYPE_QUZ, _) => QUZ_A0_HR_B0,
+            (MAC_TYPE_QU, STEP_C0) => QU_C0_HR_B0,
             _ if matches!(device, 0x02f0 | 0x06f0) => return None,
             _ => QU_B0_HR_B0,
         };
@@ -145,7 +149,11 @@ pub fn identify(device: u16, subdevice: u16, hw_rev: u32) -> Option<Adapter> {
         name: "Wi-Fi 6E AX211",
         integrated,
         imr: integrated,
-        ltr_delay: if integrated { LtrDelay::Us2500 } else { LtrDelay::None },
+        ltr_delay: if integrated {
+            LtrDelay::Us2500
+        } else {
+            LtrDelay::None
+        },
         xtal_latency: if long_crystal { 12000 } else { 0 },
         low_latency_xtal: long_crystal,
         firmware: SO_A0_GF_A0,
@@ -163,24 +171,57 @@ pub fn firmware_path(adapter: &Adapter) -> alloc::string::String {
 mod tests {
     use super::*;
 
+    const HW_REV_TYPE_QU_C0: u32 = 0x0000_0338;
+    const HW_REV_TYPE_QUZ: u32 = 0x0000_0354;
+
     #[test]
     fn each_adapter_runs_the_firmware_its_silicon_needs() {
         assert_eq!(identify(0x2723, 0x0084, 0).unwrap().firmware, CC_A0);
         let quz = identify(0xa0f0, 0x0244, HW_REV_TYPE_QUZ).unwrap();
-        assert_eq!((quz.firmware, quz.integrated, quz.ltr_delay), (QUZ_A0_HR_B0, true, LtrDelay::Us200));
-        assert_eq!(identify(0x34f0, 0x0070, HW_REV_TYPE_QU_C0).unwrap().firmware, QU_C0_HR_B0);
-        assert_eq!(identify(0x34f0, 0x0070, 0x0000_0330).unwrap().firmware, QU_B0_HR_B0);
+        assert_eq!(
+            (quz.firmware, quz.integrated, quz.ltr_delay),
+            (QUZ_A0_HR_B0, true, LtrDelay::Us200)
+        );
+        assert_eq!(
+            identify(0x34f0, 0x0070, HW_REV_TYPE_QU_C0)
+                .unwrap()
+                .firmware,
+            QU_C0_HR_B0
+        );
+        assert_eq!(
+            identify(0x34f0, 0x0070, 0x0000_0330).unwrap().firmware,
+            QU_B0_HR_B0
+        );
         assert_eq!(identify(0x02f0, 0x0070, 0x0000_0330), None);
         let ty = identify(0x2725, 0x0020, 0).unwrap();
-        assert_eq!((ty.firmware, ty.pnvm, ty.family), (TY_A0_GF_A0, Some(TY_A0_GF_A0_PNVM), Family::Ax210));
-        assert_eq!(identify(0x2725, SUBDEVICE_SO, 0).unwrap().firmware, SO_A0_GF_A0);
+        assert_eq!(
+            (ty.firmware, ty.pnvm, ty.family),
+            (TY_A0_GF_A0, Some(TY_A0_GF_A0_PNVM), Family::Ax210)
+        );
+        assert_eq!(
+            identify(0x2725, SUBDEVICE_SO, 0).unwrap().firmware,
+            SO_A0_GF_A0
+        );
         let so = identify(0x51f0, 0x0090, 0).unwrap();
-        assert_eq!((so.firmware, so.integrated, so.xtal_latency), (SO_A0_GF_A0, false, 0));
+        assert_eq!(
+            (so.firmware, so.integrated, so.xtal_latency),
+            (SO_A0_GF_A0, false, 0)
+        );
         let integrated = identify(0x7a70, 0x0090, 0).unwrap();
-        assert_eq!((integrated.integrated, integrated.imr, integrated.xtal_latency), (true, true, 12000));
+        assert_eq!(
+            (
+                integrated.integrated,
+                integrated.imr,
+                integrated.xtal_latency
+            ),
+            (true, true, 12000)
+        );
         assert!(!ty.ultra_high_band && so.ultra_high_band);
         assert_eq!(identify(0x51f0, 0x1691, 0), None);
         assert_eq!(identify(0x1234, 0, 0), None);
-        assert_eq!(firmware_path(&ty), "/usr/lib/firmware/intel/iwlwifi/iwlwifi-ty-a0-gf-a0-77.ucode");
+        assert_eq!(
+            firmware_path(&ty),
+            "/usr/lib/firmware/intel/iwlwifi/iwlwifi-ty-a0-gf-a0-77.ucode"
+        );
     }
 }

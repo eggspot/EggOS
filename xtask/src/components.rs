@@ -82,10 +82,12 @@ pub fn offered(arch: &str) -> impl Iterator<Item = &'static Offered> {
 /// then.
 pub fn base_links(arch: &str) -> Vec<(String, String)> {
     let layers = offered(arch).flat_map(|offered| {
-        offered
-            .files
-            .iter()
-            .map(|(path, _)| ((*path).to_string(), manager::installed_path(offered.name, path)))
+        offered.files.iter().map(|(path, _)| {
+            (
+                (*path).to_string(),
+                manager::installed_path(offered.name, path),
+            )
+        })
     });
     let firmware = firmware::for_arch(arch).map(|component| {
         let folder = firmware::folder_path(component);
@@ -141,7 +143,9 @@ fn firmware_cache() -> PathBuf {
 
 fn fetch_firmware(file: &Pinned) -> Result<Vec<u8>, String> {
     let path = firmware_cache().join(file.path);
-    let cached = std::fs::read(&path).ok().filter(|bytes| firmware::matches_pin(file, bytes));
+    let cached = std::fs::read(&path)
+        .ok()
+        .filter(|bytes| firmware::matches_pin(file, bytes));
     if let Some(bytes) = cached {
         return Ok(bytes);
     }
@@ -173,7 +177,8 @@ pub fn firmware_parts(arch: &str) -> Result<Vec<Packed>, String> {
                 None
             }
         });
-        let gathered = gathered.map_err(|gathering| failed.take().unwrap_or_else(|| format!("{gathering:?}")))?;
+        let gathered = gathered
+            .map_err(|gathering| failed.take().unwrap_or_else(|| format!("{gathering:?}")))?;
         parts.push(Packed {
             component: firmware::record(component, &gathered),
             contents: gathered.into_iter().map(|(_, bytes)| bytes).collect(),
@@ -220,9 +225,19 @@ mod tests {
         let names: Vec<&str> = read.components.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
-            ["desktop", "builtin-apps", "windows-apps", "mac-apps", "android-apps"]
+            [
+                "desktop",
+                "builtin-apps",
+                "windows-apps",
+                "mac-apps",
+                "android-apps"
+            ]
         );
-        for file in read.components.iter().flat_map(|component| &component.files) {
+        for file in read
+            .components
+            .iter()
+            .flat_map(|component| &component.files)
+        {
             let bytes = &image[file.offset as usize..][..file.length as usize];
             assert_eq!(index::sha256(bytes), file.sha256);
             assert!(index::is_component_path(&file.path));
@@ -236,6 +251,11 @@ mod tests {
             base_links("x86_64"),
             [
                 (
+                    "usr/libexec/builtin-apps".to_string(),
+                    "/var/lib/eggos/components/builtin-apps/root/usr/libexec/builtin-apps"
+                        .to_string()
+                ),
+                (
                     "usr/lib/eggos/windows".to_string(),
                     "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows".to_string()
                 ),
@@ -244,16 +264,33 @@ mod tests {
                     "/var/lib/eggos/components/mac-apps/root/usr/lib/eggos/macos".to_string()
                 ),
                 (
+                    "usr/lib/eggos/android".to_string(),
+                    "/var/lib/eggos/components/android-apps/root/usr/lib/eggos/android".to_string()
+                ),
+                (
                     "usr/lib/firmware/intel/iwlwifi".to_string(),
-                    "/var/lib/eggos/components/wifi-firmware/root/usr/lib/firmware/intel/iwlwifi".to_string()
+                    "/var/lib/eggos/components/wifi-firmware/root/usr/lib/firmware/intel/iwlwifi"
+                        .to_string()
                 ),
                 (
                     "usr/lib/firmware/i915".to_string(),
-                    "/var/lib/eggos/components/display-firmware/root/usr/lib/firmware/i915".to_string()
+                    "/var/lib/eggos/components/display-firmware/root/usr/lib/firmware/i915"
+                        .to_string()
                 ),
             ]
         );
-        assert!(base_links("riscv64").is_empty());
-        assert!(offered("riscv64").next().is_none());
+        assert_eq!(
+            base_links("riscv64"),
+            [(
+                "usr/libexec/builtin-apps".to_string(),
+                "/var/lib/eggos/components/builtin-apps/root/usr/libexec/builtin-apps".to_string()
+            )]
+        );
+        assert_eq!(
+            offered("riscv64")
+                .map(|offered| offered.name)
+                .collect::<Vec<_>>(),
+            ["desktop", "builtin-apps"]
+        );
     }
 }

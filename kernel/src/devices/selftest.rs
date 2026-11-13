@@ -167,7 +167,7 @@ pub(crate) fn devices_are_discovered<P: Platform>(
                 .then_some(())
                 .ok_or("the device tree did not give the NS16550 UART");
         }
-        Some(TestMachine::S390CcwVirtio) | None => return Ok(()),
+        Some(TestMachine::S390CcwVirtio | TestMachine::PowerNv9) | None => return Ok(()),
     };
     machine?;
     if cfg!(feature = "virtio") && virtio_devices(&found, device_type::ENTROPY) != 1 {

@@ -31,7 +31,6 @@ pub const RELATIVE: u32 = 12;
 #[cfg(target_arch = "sparc64")]
 pub const RELATIVE: u32 = 22;
 
-/// MIPS64's dynamic tags for its `DT_REL` table and its local GOT entries (D315).
 #[cfg(target_arch = "mips64")]
 mod mips {
     pub const PLTGOT: usize = 3;
@@ -44,13 +43,18 @@ mod mips {
     pub const GOT1_MODULE: usize = 1 << 63;
 }
 
-/// Whether n64's `r_info` (the symbol in its low 32 bits, then `r_ssym`, `r_type3`, `r_type2`
-/// and `r_type` one byte each) is a relative relocation: no symbol, `R_MIPS_REL32`, then
-/// `R_MIPS_64` or nothing.
 #[cfg(target_arch = "mips64")]
 fn is_mips_relative(info: u64) -> bool {
-    let (symbol, third, second, first) = (info as u32, (info >> 40) as u8, (info >> 48) as u8, (info >> 56) as u8);
-    symbol == 0 && third == 0 && u32::from(first) == RELATIVE && matches!(u64::from(second), 0 | mips::TYPE_64)
+    let (symbol, third, second, first) = (
+        info as u32,
+        (info >> 40) as u8,
+        (info >> 48) as u8,
+        (info >> 56) as u8,
+    );
+    symbol == 0
+        && third == 0
+        && u32::from(first) == RELATIVE
+        && matches!(u64::from(second), 0 | mips::TYPE_64)
 }
 
 /// An ELF-64 relocation with an addend.
@@ -97,13 +101,6 @@ pub unsafe fn relocate(bias: usize, dynamic: *const [usize; 2]) -> Result<(), Re
     }
 }
 
-/// MIPS64's static PIE (D315): a `DT_REL` table of relative relocations, whose addends are the
-/// words they name, then the local GOT entries, which no relocation names, each moved by
-/// `bias`, from the first after the reserved ones.
-///
-/// # Safety
-///
-/// As for [`relocate`]; the GOT `DT_PLTGOT` names is the program's, writable.
 #[cfg(target_arch = "mips64")]
 unsafe fn relocate_mips(bias: usize, dynamic: *const [usize; 2]) -> Result<(), RelocationError> {
     let (mut table, mut size, mut entry_size, mut got, mut local) = (0, 0, 16, 0, 0);
@@ -156,11 +153,6 @@ unsafe fn relocate_mips(bias: usize, dynamic: *const [usize; 2]) -> Result<(), R
     Ok(())
 }
 
-/// The `DT_RELA` table every other architecture's static PIE has.
-///
-/// # Safety
-///
-/// As for [`relocate`].
 #[cfg_attr(target_arch = "mips64", allow(dead_code))]
 unsafe fn relocate_rela(bias: usize, dynamic: *const [usize; 2]) -> Result<(), RelocationError> {
     let mut table = 0;

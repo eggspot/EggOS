@@ -57,7 +57,10 @@ pub fn partial(sum: u32) -> u16 {
 /// complement, and what UDP needs), written over the field. Nothing when the field lies past
 /// the segment's end.
 pub fn complete(segment: &mut [u8], field_at: usize) {
-    if field_at.checked_add(2).is_none_or(|end| end > segment.len()) {
+    if field_at
+        .checked_add(2)
+        .is_none_or(|end| end > segment.len())
+    {
         return;
     }
     let sum = match of(segment) {

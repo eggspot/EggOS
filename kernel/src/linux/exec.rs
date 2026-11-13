@@ -74,12 +74,8 @@ pub const MAX_STRING_SIZE: usize = 128 << 10;
 /// Linux's default `mmap_min_addr`, and the lowest address RISC-V linkers place programs at.
 pub const MINIMUM_ADDRESS: u64 = 0x1_0000;
 
-/// The largest segment alignment accepted (`p_align`).
 const MAX_ALIGN: u64 = 1 << 30;
-/// [`pie_base`]'s smallest alignment.
 const PIE_ALIGN: u64 = 2 << 20;
-/// Bytes of a pointer on the program's stack: `argc`, `argv`, `envp` and the auxiliary
-/// vector's entries are each one (D488).
 const WORD: u64 = super::abi::WORD_BYTES as u64;
 
 /// Auxiliary vector types (`AT_*`, from `getauxval(3)` and the psABIs).
@@ -229,7 +225,8 @@ impl SetIds {
         let bits = attributes.permissions;
         Self {
             user: (bits & Self::SET_USER_ID != 0).then_some(attributes.owner),
-            group: (bits & Self::SET_GROUP_ID != 0 && bits & Self::GROUP_EXECUTE != 0).then_some(attributes.group),
+            group: (bits & Self::SET_GROUP_ID != 0 && bits & Self::GROUP_EXECUTE != 0)
+                .then_some(attributes.group),
         }
     }
 }
@@ -455,9 +452,6 @@ impl Span {
     }
 }
 
-/// What is added to every address in a program's headers: 0 for an executable, which runs
-/// where it was linked; for a position-independent program, what moves it to [`pie_base`]
-/// (its lowest segment there, or as far above as that segment is above its alignment).
 fn load_bias(elf: &Elf<'_>, span: &Span, user_end: u64) -> u64 {
     if elf.kind() == Kind::Executable || span.is_empty() {
         return 0;
@@ -634,11 +628,6 @@ fn map_segments<P: Platform>(
     Ok(())
 }
 
-/// Checks a `LOAD` segment with memory: its access; if it has file bytes, that they are within
-/// the program file's `size` bytes and that its file offset and address are equal within a page (each page maps one
-/// page of the file); and its memory within user space, before and after the move by `bias`,
-/// at or above [`MINIMUM_ADDRESS`] and below the stack's reserve. Returns its (start, end) in
-/// memory.
 fn check_segment(
     size: u64,
     header: &ProgramHeader,
@@ -651,7 +640,6 @@ fn check_segment(
             "a segment with more file bytes than memory",
         ));
     }
-    // A segment without file bytes is zero pages alone: its offset means nothing.
     if header.file_size > 0 {
         if header
             .offset
@@ -668,9 +656,6 @@ fn check_segment(
             ));
         }
     }
-    // Within user space before the bias too: a position-independent program's segments are
-    // then less than `user_end` above its lowest, so moving them to the PIE base (below
-    // `user_end`) cannot wrap around.
     let start = header.virt.wrapping_add(bias);
     let limit = user_end - STACK_RESERVE - STACK_GUARD_GAP;
     let end = start
@@ -685,10 +670,6 @@ fn check_segment(
     Ok((start, end))
 }
 
-/// Maps a checked `LOAD` segment ([`check_segment`]), moved by `bias`: every page it touches
-/// gets a frame of its own with the file's bytes for that page (from the page's start, as a
-/// file mapping has them) and zero after the segment's file bytes; one without file bytes is
-/// all zero.
 fn map_segment<P: Platform>(
     process: &mut Process<P>,
     image: &[u8],
@@ -698,9 +679,6 @@ fn map_segment<P: Platform>(
     let attributes = segment_attributes(header.flags)?;
     let start = header.virt.wrapping_add(bias);
     let first_page = start & !(FRAME_SIZE - 1);
-    // The segment's file bytes, from the start of its first page: the image holds the bytes
-    // of that page before the segment just before them (checked: the offset and the address
-    // are equal within a page, and the bias is page-aligned).
     let bytes = if header.file_size == 0 {
         &[][..]
     } else {
@@ -716,7 +694,6 @@ fn map_segment<P: Platform>(
             .map_new_page(page, attributes, contents)
             .map_err(ExecError::OutOfMemory)?;
     }
-    // Every page is mapped already; the region records what the program may do there.
     process
         .add_region(first_page, end.next_multiple_of(FRAME_SIZE), attributes)
         .map_err(|_| ExecError::InvalidProgram("segments that share a page"))
@@ -739,9 +716,6 @@ fn add_segment_region<P: Platform>(
         .map_err(|_| ExecError::InvalidProgram("segments that share a page"))
 }
 
-/// The page attributes for a segment's `p_flags`. Code is readable, as on every architecture
-/// brought up. Writable code is refused: user pages are never writable and executable (D51),
-/// as kernel pages never are.
 fn segment_attributes(flags: u32) -> Result<Attributes, ExecError> {
     let write = flags & segment::WRITE != 0;
     let execute = flags & segment::EXECUTE != 0;
@@ -756,31 +730,21 @@ fn segment_attributes(flags: u32) -> Result<Attributes, ExecError> {
     }
 }
 
-/// 16 bytes for `AT_RANDOM`, which C libraries take their stack-protector canary and pointer
-/// guard from: from the kernel's random number generator (D56), one draw. Linux does not wait
-/// for the generator to be seeded here either.
 fn random_bytes<P: Platform>() -> [u8; 16] {
     let mut bytes = [0; 16];
     random::fill::<P>(&mut bytes);
     bytes
 }
 
-/// A program's stack at its entry, as Linux lays it out: from [`Self::start`], where the stack
-/// pointer points (16-byte aligned), `argc`; the `argv` pointers and a null one; the `envp`
-/// pointers and a null one; the auxiliary vector's (type, value) pairs ended by `AT_NULL`;
 #[derive(Debug)]
 struct InitialStack {
-    /// The user address of the stack's lowest byte: the stack pointer.
     start: u64,
-    /// Everything from `start` up to the top of the stack.
     bytes: Vec<u8>,
     arguments: (u64, u64),
     environment: (u64, u64),
 }
 
 impl InitialStack {
-    /// The stack for a program whose stack ends at `top` (page-aligned). `auxiliary`'s
-    /// `AT_RANDOM` and `AT_EXECFN` entries get their values here, since they point into the
     fn new(
         top: u64,
         path: &[u8],
@@ -794,8 +758,6 @@ impl InitialStack {
         if too_long(&path) || arguments.iter().chain(environment).any(too_long) {
             return Err(ExecError::ArgumentsTooLong);
         }
-        // Each list is bounded by the size check below before it could overflow anything: a
-        // string takes at least its NUL.
         let strings = |list: &[&[u8]]| {
             list.iter()
                 .fold(0u64, |sum, s| sum.saturating_add(s.len() as u64 + 1))
@@ -804,11 +766,8 @@ impl InitialStack {
         let environment_bytes = strings(environment);
         let platform_entries = u64::from(platform.is_some());
         let platform_bytes = platform.map_or(0, |name| name.len() as u64 + 1);
-        // argc, argv and its null, envp and its null, the vector and `AT_NULL`.
         let words = (arguments.len() as u64 + environment.len() as u64)
             .saturating_add(3 + 2 * (auxiliary.len() as u64 + platform_entries + 1));
-        // The 8-byte end marker, the strings, then (each 16-byte aligned) the random bytes
-        // and the pointers: at most 15 bytes of padding each.
         let most = [
             8,
             path.len() as u64 + 1,
@@ -1721,7 +1680,6 @@ mod tests {
         memory::FRAMES.lock().as_ref().unwrap().free_frames()
     }
 
-    /// Loads `image` into a new process with the self-test's arguments and environment.
     fn load_image(
         kernel: &PageTables<<P as Platform>::PageTableFormat>,
         image: &[u8],
@@ -1740,7 +1698,6 @@ mod tests {
         u64::from_le_bytes(bytes)
     }
 
-    /// The NUL-terminated string at `virt`.
     fn string(process: &Process<P>, virt: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut byte = [0];
@@ -1754,10 +1711,8 @@ mod tests {
         unreachable!()
     }
 
-    /// A stack's argc, argument strings, environment strings and auxiliary vector.
     type Stack = (u64, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<(u64, u64)>);
 
-    /// The stack at `sp`, read as a program reads it.
     fn read_stack(process: &Process<P>, sp: u64) -> Stack {
         let argc = word(process, sp);
         let mut at = sp + 8;
@@ -1806,7 +1761,6 @@ mod tests {
                 TEST_PROGRAM_ADDRESS + program.linux_start as u64
             );
             let space = process.address_space();
-            // Code with the headers before it, data and .bss across three pages.
             let text = TEST_PROGRAM_ADDRESS - FRAME_SIZE;
             for page in [text, TEST_PROGRAM_ADDRESS] {
                 assert_eq!(space.translate(page).unwrap().1, Attributes::USER_TEXT);
@@ -1828,14 +1782,10 @@ mod tests {
                 .unwrap();
             assert_eq!(&data[..16], LINUX_START_DATA_BYTES);
             assert!(data[16..].iter().all(|&byte| byte == 0));
-            // The file header is mapped where the image has it, as a file mapping would.
             let mut magic = [0; 4];
             process.read_user_memory(text, &mut magic).unwrap();
             assert_eq!(&magic, b"\x7fELF");
 
-            // The stack: 16-byte aligned, at the top of user space. Only the arguments' pages
-            // are mapped; the whole reserve is one region, mapped as it is touched, and
-            // nothing is below it.
             let sp = context.stack();
             assert_eq!(sp % 16, 0);
             assert!(USER_END - sp < FRAME_SIZE);
@@ -1858,10 +1808,8 @@ mod tests {
             );
             assert_eq!(process.region(reserve - 1), None);
             assert_eq!(word(&process, USER_END - 8), 0, "the end marker");
-            // A page the program has not touched reads as zero, mapped by the read.
             assert_eq!(word(&process, reserve), 0);
             assert!(space.translate(reserve).is_some());
-            // The segments are regions too, as mapped.
             assert_eq!(
                 process.region(text).and_then(|region| region.attributes),
                 Some(Attributes::USER_TEXT)
@@ -1877,7 +1825,6 @@ mod tests {
                 environment,
                 LINUX_START_ENVIRONMENT.map(|s| s.as_bytes().to_vec())
             );
-            // Linux's order.
             let kinds: Vec<_> = auxiliary.iter().map(|(kind, _)| *kind).collect();
             let mut linux_order = alloc::vec![
                 auxv::MINSIGSTKSZ,
@@ -1923,10 +1870,8 @@ mod tests {
             assert_eq!(value(&auxiliary, auxv::SECURE), 0);
             assert_eq!(value(&auxiliary, auxv::CLKTCK), 100);
             assert_eq!(string(&process, value(&auxiliary, auxv::EXECFN)), PATH);
-            // The random bytes are on the stack, above the vector, and 16-byte aligned.
             let random = value(&auxiliary, auxv::RANDOM);
             assert!(random > sp && random + 16 <= USER_END && random.is_multiple_of(16));
-            // AT_PHDR's table is the image's.
             let table = 4 * elf::PROGRAM_HEADER_SIZE;
             let mut headers = alloc::vec![0; table];
             process
@@ -2226,7 +2171,6 @@ mod tests {
         }
     }
 
-    /// Changes `image`'s program header `index` with `change`.
     fn with_header(image: &[u8], index: usize, change: impl FnOnce(&mut ProgramHeader)) -> Vec<u8> {
         let elf = Elf::parse(image, elf::machine::NATIVE).unwrap();
         let mut headers: Vec<_> = elf.program_headers().collect();
@@ -2244,7 +2188,6 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let good = linux_start_image::<P>();
-        // Headers: 0 PHDR, 1 text, 2 data, 3 GNU_STACK.
         let rw = segment::READ | segment::WRITE;
         let cases: [(Vec<u8>, Errno); 13] = [
             (good[..10].to_vec(), Errno::ENOEXEC),
@@ -2277,7 +2220,6 @@ mod tests {
             ),
             (with_header(&good, 1, |h| h.virt = 0), Errno::EPERM),
             (with_header(&good, 2, |h| h.virt += 8), Errno::ENOEXEC),
-            // The data segment moved onto the code's last page.
             (
                 with_header(&good, 2, |h| h.virt = TEST_PROGRAM_ADDRESS + 0x123),
                 Errno::ENOEXEC,
@@ -2299,12 +2241,9 @@ mod tests {
                 Err(*errno),
                 "case {index}"
             );
-            // Nothing was mapped: only the process's root table is taken.
             assert_eq!(before - free(), 1, "case {index}");
             drop(process);
         }
-        // A position-independent program whose second segment is so far above its first that
-        // the move would wrap around to a valid-looking address.
         let mut pie = with_header(&good, 2, |h| h.virt = 0u64.wrapping_sub(0x10_0000) | 0x123);
         pie[16..18].copy_from_slice(&3u16.to_le_bytes());
         assert_eq!(
@@ -2314,7 +2253,6 @@ mod tests {
                 .map(|_| ()),
             Err(Errno::EINVAL)
         );
-        // An entry point past the end of user space.
         let mut far = good.clone();
         far[24..32].copy_from_slice(&USER_END.to_le_bytes());
         assert_eq!(
@@ -2324,7 +2262,6 @@ mod tests {
                 .map(|_| ()),
             Err(Errno::EINVAL)
         );
-        // Program headers outside every segment.
         let outside = with_header(&good, 1, |h| {
             h.offset = FRAME_SIZE;
             h.virt = TEST_PROGRAM_ADDRESS;

@@ -40,8 +40,11 @@ pub trait Console {
     fn read_answer(&mut self, buffer: &mut [u8]) -> usize;
 }
 
+/// Downloads bytes `first` to `last` (both included) of `url` into the file `path`.
+pub type RangeDownload = fn(&str, &str, u64, u64) -> bool;
+
 /// What the command runs as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     /// The machine's architecture word, `x86_64`.
     pub arch: &'a str,
@@ -54,7 +57,7 @@ pub struct Context<'a> {
     pub download: Option<fn(&str, &str) -> bool>,
     /// Downloads bytes `first` to `last` (both included) of `url` into the file `path`, when the
     /// system can: the store's index and the files of the component asked for (D271).
-    pub download_range: Option<fn(&str, &str, u64, u64) -> bool>,
+    pub download_range: Option<RangeDownload>,
     /// The wall clock's seconds, for the stored update check (D299).
     pub now_s: u64,
 }
@@ -73,14 +76,16 @@ pub enum Command<'a> {
         json: bool,
     },
     /// `component edition`: the editions, or the components of `name` installed (D258).
-    Edition { name: Option<&'a str>, dry_run: bool },
+    Edition {
+        name: Option<&'a str>,
+        dry_run: bool,
+    },
     /// `component update`: the installed components, or `name`, brought to the store's copy,
     /// only their changed files fetched (D293).
     Update {
         name: Option<&'a str>,
         dry_run: bool,
         json: bool,
-        /// `--daily on|off`: turns the daily check on or off instead (D299).
         daily: Option<bool>,
     },
     /// `component remove`.
@@ -122,7 +127,12 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     match verb {
         "list" => Some(Command::List { json, download }),
         "cancel" if name.is_none() => Some(Command::Cancel),
-        "update" => Some(Command::Update { name, dry_run, json, daily }),
+        "update" => Some(Command::Update {
+            name,
+            dry_run,
+            json,
+            daily,
+        }),
         "edition" if !json => Some(Command::Edition { name, dry_run }),
         "install" => Some(Command::Install {
             name: name?,
@@ -153,18 +163,34 @@ pub fn run<F: Files, C: Console>(
     let mut store = manager::find_store(files, context.arch);
     let wants_store = matches!(
         command,
-        Command::Install { dry_run: false, .. } | Command::Edition { name: Some(_), dry_run: false }
+        Command::Install { dry_run: false, .. }
+            | Command::Edition {
+                name: Some(_),
+                dry_run: false
+            }
     );
-    if let (None, Command::Install { name, dry_run: false, .. }, Some(download_range)) =
-        (&store, command, context.download_range)
+    if let (
+        None,
+        Command::Install {
+            name,
+            dry_run: false,
+            ..
+        },
+        Some(download_range),
+    ) = (&store, command, context.download_range)
     {
         store = partial_store(files, context.arch, name, download_range);
     }
-    if let (None, Command::Update { name, .. }, Some(download_range)) = (&store, command, context.download_range) {
+    if let (None, Command::Update { name, .. }, Some(download_range)) =
+        (&store, command, context.download_range)
+    {
         store = update_store(files, context.arch, name, download_range);
     }
     let wants_store = wants_store || matches!(command, Command::List { download: true, .. });
-    if store.is_none() && wants_store && let Some(download) = context.download {
+    if store.is_none()
+        && wants_store
+        && let Some(download) = context.download
+    {
         crate::state::record_job(
             files,
             &crate::state::Job {
@@ -178,13 +204,24 @@ pub fn run<F: Files, C: Console>(
         );
         let path = manager::downloaded_store_path(manager::VERSION, context.arch);
         if download(&manager::store_url(manager::VERSION, context.arch), &path) {
-            store = manager::read_store(files, &path, manager::Source::Downloaded, context.arch).ok();
+            store =
+                manager::read_store(files, &path, manager::Source::Downloaded, context.arch).ok();
         }
         crate::state::end_job(files);
     }
-    if let (Command::Install { name, dry_run: false, .. }, Some(download)) = (command, context.download)
-        && store.as_ref().is_none_or(|store| store.index.component(name).is_none())
-        && let Some(component) = firmware::find(name).filter(|component| component.arches.contains(&context.arch))
+    if let (
+        Command::Install {
+            name,
+            dry_run: false,
+            ..
+        },
+        Some(download),
+    ) = (command, context.download)
+        && store
+            .as_ref()
+            .is_none_or(|store| store.index.component(name).is_none())
+        && let Some(component) =
+            firmware::find(name).filter(|component| component.arches.contains(&context.arch))
     {
         store = upstream_store(files, component, context.arch, download).or(store);
     }
@@ -196,11 +233,28 @@ pub fn run<F: Files, C: Console>(
     match command {
         Command::List { json, .. } => list(files, &mut out, store.as_ref(), json),
         Command::Cancel => cancel(files, &mut out),
-        Command::Edition { name, dry_run } => edition(files, &mut out, store.as_ref(), context.pid, name, dry_run),
-        Command::Update { daily: Some(on), json, .. } => set_daily(files, &mut out, on, json),
-        Command::Update { name, dry_run, json, .. } => {
-            update(files, &mut out, store.as_ref(), context, name, dry_run, json)
+        Command::Edition { name, dry_run } => {
+            edition(files, &mut out, store.as_ref(), context.pid, name, dry_run)
         }
+        Command::Update {
+            daily: Some(on),
+            json,
+            ..
+        } => set_daily(files, &mut out, on, json),
+        Command::Update {
+            name,
+            dry_run,
+            json,
+            ..
+        } => update(
+            files,
+            &mut out,
+            store.as_ref(),
+            context,
+            name,
+            dry_run,
+            json,
+        ),
         Command::Install {
             name,
             dry_run,
@@ -253,7 +307,9 @@ fn read_whole<F: Files>(files: &mut F, path: &str) -> Option<Vec<u8>> {
 
 fn write_whole<F: Files>(files: &mut F, path: &str, bytes: &[u8]) -> Option<()> {
     let handle = files.create(path.as_bytes(), 0o644).ok()?;
-    let written = files.write(handle, bytes).and_then(|()| files.sync_file(handle));
+    let written = files
+        .write(handle, bytes)
+        .and_then(|()| files.sync_file(handle));
     files.close(handle);
     written.ok()
 }
@@ -281,7 +337,9 @@ fn partial_store<F: Files>(
     }
     let bytes = read_whole(files, &head)?;
     let header = index::Header::parse(&bytes).ok()?;
-    let text = bytes.get(index::SECTOR as usize..)?.get(..header.index_bytes as usize)?;
+    let text = bytes
+        .get(index::SECTOR as usize..)?
+        .get(..header.index_bytes as usize)?;
     let whole = index::parse_index(&header, text, u64::MAX).ok()?;
     if whole.arch != arch {
         return None;
@@ -296,7 +354,11 @@ fn partial_store<F: Files>(
                 contents.push(Vec::new());
                 continue;
             }
-            let piece = manager::partial_piece_path(manager::VERSION, arch, &format!("{}-{number}", component.name));
+            let piece = manager::partial_piece_path(
+                manager::VERSION,
+                arch,
+                &format!("{}-{number}", component.name),
+            );
             let last = file.offset + file.length - 1;
             if !download_range(&url, &piece, file.offset, last) {
                 return None;
@@ -318,10 +380,6 @@ fn partial_store<F: Files>(
     manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
 }
 
-/// A store holding only what updating the installed components (or `only`) needs (D293): the
-/// release's index, then the changed files' bytes, each fetched with a range request and
-/// checked against its digest, packed with the index's records. `None` when the index cannot be
-/// fetched or a file does not match.
 fn update_store<F: Files>(
     files: &mut F,
     arch: &str,
@@ -336,14 +394,19 @@ fn update_store<F: Files>(
     }
     let bytes = read_whole(files, &head)?;
     let header = index::Header::parse(&bytes).ok()?;
-    let text = bytes.get(index::SECTOR as usize..)?.get(..header.index_bytes as usize)?;
+    let text = bytes
+        .get(index::SECTOR as usize..)?
+        .get(..header.index_bytes as usize)?;
     let whole = index::parse_index(&header, text, u64::MAX).ok()?;
     if whole.arch != arch {
         return None;
     }
     let installed = manager::installed(files);
     let mut packed = Vec::new();
-    for old in installed.iter().filter(|old| only.is_none_or(|name| name == old.name)) {
+    for old in installed
+        .iter()
+        .filter(|old| only.is_none_or(|name| name == old.name))
+    {
         let Some(available) = whole.component(&old.name) else {
             continue;
         };
@@ -352,12 +415,19 @@ fn update_store<F: Files>(
         };
         let mut contents = Vec::new();
         for (number, file) in available.files.iter().enumerate() {
-            let changed = plan.changed.iter().any(|changed| core::ptr::eq(*changed, file));
+            let changed = plan
+                .changed
+                .iter()
+                .any(|changed| core::ptr::eq(*changed, file));
             if !changed || file.length == 0 {
                 contents.push(Vec::new());
                 continue;
             }
-            let piece = manager::partial_piece_path(manager::VERSION, arch, &format!("{}-update-{number}", available.name));
+            let piece = manager::partial_piece_path(
+                manager::VERSION,
+                arch,
+                &format!("{}-update-{number}", available.name),
+            );
             if !download_range(&url, &piece, file.offset, file.offset + file.length - 1) {
                 return None;
             }
@@ -378,9 +448,18 @@ fn update_store<F: Files>(
     manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
 }
 
-fn set_daily<F: Files, C: Console>(files: &mut F, out: &mut Out<'_, C>, on: bool, json: bool) -> i32 {
+fn set_daily<F: Files, C: Console>(
+    files: &mut F,
+    out: &mut Out<'_, C>,
+    on: bool,
+    json: bool,
+) -> i32 {
     if !crate::state::set_daily(files, on) {
-        return out.fail(json, &eggos_commands::errors::FAILED, "could not save the daily check's setting");
+        return out.fail(
+            json,
+            &eggos_commands::errors::FAILED,
+            "could not save the daily check's setting",
+        );
     }
     match json {
         true => out.json(|writer| {
@@ -443,7 +522,10 @@ fn update<F: Files, C: Console>(
             manager::Source::Disk(_) | manager::Source::Share => "disk",
             _ => "release",
         };
-        crate::state::store_check(files, &crate::state::Checked::of(&plans, context.now_s, source));
+        crate::state::store_check(
+            files,
+            &crate::state::Checked::of(&plans, context.now_s, source),
+        );
     }
     let write_summary = |writer: &mut JsonWriter<'_>, key: &str| {
         writer.begin_object();
@@ -624,11 +706,19 @@ pub fn rows<F: Files>(files: &mut F, store: Option<&Store>) -> Vec<Row> {
     let job = crate::state::job(files);
     let job_of = |name: &str| job.clone().filter(|job| job.name == name);
     let update_of = |name: &str, is_installed: bool| {
-        checked.as_ref().filter(|_| is_installed).and_then(|checked| checked.item(name).cloned())
+        checked
+            .as_ref()
+            .filter(|_| is_installed)
+            .and_then(|checked| checked.item(name).cloned())
     };
     let state = |component: &Component, is_installed: bool| match &busy {
         Some((title, true)) if *title == component.title => "removing",
-        _ if job.as_ref().is_some_and(|job| job.name == component.name && job.kind == "updating") => "updating",
+        _ if job
+            .as_ref()
+            .is_some_and(|job| job.name == component.name && job.kind == "updating") =>
+        {
+            "updating"
+        }
         Some((title, false)) if *title == component.title => "installing",
         _ if is_installed => "installed",
         _ => "not-installed",
@@ -836,13 +926,23 @@ fn edition<F: Files, C: Console>(
     let Some(name) = name else {
         let current = crate::editions::current_preferring(names, recorded.as_deref());
         for edition in crate::editions::EDITIONS {
-            let mark = if current.is_some_and(|current| current.name == edition.name) { "*" } else { " " };
-            out.say(&alloc::format!("{mark} {}\t{}", edition.name, edition.summary));
+            let mark = if current.is_some_and(|current| current.name == edition.name) {
+                "*"
+            } else {
+                " "
+            };
+            out.say(&alloc::format!(
+                "{mark} {}\t{}",
+                edition.name,
+                edition.summary
+            ));
         }
         return 0;
     };
     let Some(edition) = crate::editions::edition(name) else {
-        out.say(&alloc::format!("No edition named \"{name}\": component edition names them."));
+        out.say(&alloc::format!(
+            "No edition named \"{name}\": component edition names them."
+        ));
         return FAILED;
     };
     let missing: alloc::vec::Vec<&str> = edition
@@ -850,14 +950,29 @@ fn edition<F: Files, C: Console>(
         .iter()
         .copied()
         .filter(|wanted| !installed.iter().any(|component| component.name == *wanted))
-        .filter(|wanted| store.is_none_or(|store| store.index.components.iter().any(|offered| offered.name == *wanted)))
+        .filter(|wanted| {
+            store.is_none_or(|store| {
+                store
+                    .index
+                    .components
+                    .iter()
+                    .any(|offered| offered.name == *wanted)
+            })
+        })
         .collect();
     if missing.is_empty() {
-        out.say(&alloc::format!("{} is installed: nothing to add.", edition.title));
+        out.say(&alloc::format!(
+            "{} is installed: nothing to add.",
+            edition.title
+        ));
         return 0;
     }
     if dry_run {
-        out.say(&alloc::format!("Would install for {}: {}", edition.title, missing.join(", ")));
+        out.say(&alloc::format!(
+            "Would install for {}: {}",
+            edition.title,
+            missing.join(", ")
+        ));
         return 0;
     }
     for component in missing {
@@ -884,7 +999,9 @@ pub fn recorded_edition<F: Files>(files: &mut F) -> Option<String> {
     let mut bytes = [0u8; 32];
     let read = files.read(handle, &mut bytes).unwrap_or(0);
     files.close(handle);
-    core::str::from_utf8(&bytes[..read]).ok().map(|text| String::from(text.trim()))
+    core::str::from_utf8(&bytes[..read])
+        .ok()
+        .map(|text| String::from(text.trim()))
 }
 
 fn install<F: Files, C: Console>(
@@ -951,32 +1068,38 @@ fn install<F: Files, C: Console>(
         let mut shown = u64::MAX;
         let installing = messages::installing(component);
         let name = component.name.clone();
-        let installed = manager::install_reporting(files, store, component, &mut |files, copied, total| {
-            if crate::state::cancel_requested(files) {
-                return false;
-            }
-            crate::state::record_job(
-                files,
-                &crate::state::Job {
-                    pid,
-                    kind: "installing".into(),
-                    name: name.clone(),
-                    phase: if copied >= total { "finishing" } else { "copying" }.into(),
-                    done: copied,
-                    total,
-                },
-            );
-            let percent = copied.saturating_mul(100) / total.max(1);
-            if terminal && percent != shown {
-                shown = percent;
-                let line = format!(
-                    "\r{installing} {percent} %, {}",
-                    messages::size_text(copied)
+        let installed =
+            manager::install_reporting(files, store, component, &mut |files, copied, total| {
+                if crate::state::cancel_requested(files) {
+                    return false;
+                }
+                crate::state::record_job(
+                    files,
+                    &crate::state::Job {
+                        pid,
+                        kind: "installing".into(),
+                        name: name.clone(),
+                        phase: if copied >= total {
+                            "finishing"
+                        } else {
+                            "copying"
+                        }
+                        .into(),
+                        done: copied,
+                        total,
+                    },
                 );
-                out.console.write_output(line.as_bytes());
-            }
-            true
-        });
+                let percent = copied.saturating_mul(100) / total.max(1);
+                if terminal && percent != shown {
+                    shown = percent;
+                    let line = format!(
+                        "\r{installing} {percent} %, {}",
+                        messages::size_text(copied)
+                    );
+                    out.console.write_output(line.as_bytes());
+                }
+                true
+            });
         crate::state::end_job(files);
         if !json {
             out.console.write_output(b"\n");

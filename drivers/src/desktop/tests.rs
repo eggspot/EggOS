@@ -379,22 +379,34 @@ fn a_pointer_the_display_draws_is_neither_painted_nor_damaged_but_still_followed
 
 #[test]
 fn a_premultiplied_pixel_with_full_alpha_covers_what_is_under_it() {
-    assert_eq!(mix_premultiplied(0xff12_3456, 0x00ab_cdef, u8::MAX), 0x0012_3456);
+    assert_eq!(
+        mix_premultiplied(0xff12_3456, 0x00ab_cdef, u8::MAX),
+        0x0012_3456
+    );
 }
 
 #[test]
 fn a_premultiplied_pixel_with_no_alpha_leaves_what_is_under_it() {
-    assert_eq!(mix_premultiplied(0x0000_0000, 0x00ab_cdef, u8::MAX), 0x00ab_cdef);
+    assert_eq!(
+        mix_premultiplied(0x0000_0000, 0x00ab_cdef, u8::MAX),
+        0x00ab_cdef
+    );
 }
 
 #[test]
 fn a_half_transparent_premultiplied_pixel_adds_its_colour_to_half_of_what_is_under_it() {
-    assert_eq!(mix_premultiplied(0x8080_0000, 0x0000_00ff, u8::MAX), 0x0080_007f);
+    assert_eq!(
+        mix_premultiplied(0x8080_0000, 0x0000_00ff, u8::MAX),
+        0x0080_007f
+    );
 }
 
 #[test]
 fn the_constant_opacity_scales_a_premultiplied_pixel_and_its_alpha() {
-    assert_eq!(mix_premultiplied(0xffff_ffff, 0x0000_0000, 0x80), 0x0080_8080);
+    assert_eq!(
+        mix_premultiplied(0xffff_ffff, 0x0000_0000, 0x80),
+        0x0080_8080
+    );
 }
 
 #[test]

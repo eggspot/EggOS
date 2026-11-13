@@ -528,7 +528,11 @@ struct SignalAction {
     mask_high: u64,
 }
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+#[cfg(not(any(
+    target_arch = "loongarch64",
+    target_arch = "riscv64",
+    target_arch = "mips64"
+)))]
 #[repr(C)]
 #[derive(Default)]
 struct SignalAction {
@@ -805,9 +809,19 @@ fn console(_: &Startup) -> bool {
     const TIOCGWINSZ: usize = eggos_runtime::syscall::tty::TIOCGWINSZ;
     const S_IFMT: u32 = 0o170_000;
     const S_IFCHR: u32 = 0o020_000;
-    #[cfg(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64", target_arch = "s390x"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        target_arch = "powerpc64",
+        target_arch = "mips64",
+        target_arch = "s390x"
+    ))]
     const MODE_OFFSET: usize = 24;
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "powerpc64", target_arch = "mips64", target_arch = "s390x")))]
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "powerpc64",
+        target_arch = "mips64",
+        target_arch = "s390x"
+    )))]
     const MODE_OFFSET: usize = 16;
     let mut window = [0u16; 4];
     let mut status = [0u8; 144];

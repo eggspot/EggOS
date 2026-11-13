@@ -4,7 +4,9 @@
 //! in the clip view's pixels, top-left origin, the clip view's left edge at 0.
 
 use eggos_toolkit::geometry::Rect;
-use eggos_toolkit::widget::{TABLE_HANDLE, TABLE_HEADER_HEIGHT, TABLE_MIN_COLUMN, TABLE_ROW_HEIGHT};
+use eggos_toolkit::widget::{
+    TABLE_HANDLE, TABLE_HEADER_HEIGHT, TABLE_MIN_COLUMN, TABLE_ROW_HEIGHT,
+};
 
 /// `NSTableViewSolidVerticalGridLineMask`.
 pub const VERTICAL_GRID: usize = 1;

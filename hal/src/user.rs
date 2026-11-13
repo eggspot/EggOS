@@ -188,7 +188,6 @@ impl UserContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidThreadPointer;
 
-/// Host builds only: for a test platform that stands in for the CPU in the kernel's host tests.
 #[cfg(not(eggos_kernel))]
 impl UserContext {
     /// The value the program's last system call returns ([`Self::set_syscall_result`]).
@@ -211,14 +210,14 @@ impl UserContext {
     }
 }
 
-#[cfg(target_arch = "arm")]
-use arm::Registers;
-#[cfg(target_arch = "arm")]
-pub use arm::UserRegisters;
 #[cfg(target_arch = "aarch64")]
 use aarch64::Registers;
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::UserRegisters;
+#[cfg(target_arch = "arm")]
+use arm::Registers;
+#[cfg(target_arch = "arm")]
+pub use arm::UserRegisters;
 #[cfg(target_arch = "loongarch64")]
 use loongarch64::Registers;
 #[cfg(target_arch = "loongarch64")]
@@ -229,16 +228,6 @@ use mips64::Registers;
 pub use mips64::UserRegisters;
 #[cfg(target_arch = "mips64")]
 pub use mips64::mips_errno;
-#[cfg(target_arch = "sparc64")]
-use sparc64::Registers;
-#[cfg(target_arch = "sparc64")]
-pub use sparc64::UserRegisters;
-#[cfg(target_arch = "sparc64")]
-pub use sparc64::sparc_errno;
-#[cfg(target_arch = "s390x")]
-use s390x::Registers;
-#[cfg(target_arch = "s390x")]
-pub use s390x::UserRegisters;
 #[cfg(target_arch = "powerpc64")]
 use powerpc64::Registers;
 #[cfg(target_arch = "powerpc64")]
@@ -247,6 +236,16 @@ pub use powerpc64::UserRegisters;
 use riscv64::Registers;
 #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 pub use riscv64::UserRegisters;
+#[cfg(target_arch = "s390x")]
+use s390x::Registers;
+#[cfg(target_arch = "s390x")]
+pub use s390x::UserRegisters;
+#[cfg(target_arch = "sparc64")]
+use sparc64::Registers;
+#[cfg(target_arch = "sparc64")]
+pub use sparc64::UserRegisters;
+#[cfg(target_arch = "sparc64")]
+pub use sparc64::sparc_errno;
 #[cfg(target_arch = "x86_64")]
 use x86_64::Registers;
 #[cfg(target_arch = "x86_64")]
@@ -649,7 +648,9 @@ pub(crate) mod loongarch64 {
             self.r[A7]
         }
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
-            [self.r[4], self.r[5], self.r[6], self.r[7], self.r[8], self.r[9]]
+            [
+                self.r[4], self.r[5], self.r[6], self.r[7], self.r[8], self.r[9],
+            ]
         }
         pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
             self.r[4..10].copy_from_slice(&arguments);
@@ -731,17 +732,14 @@ pub(crate) mod mips64 {
     const A3: usize = 7;
     const T9: usize = 25;
     const SP: usize = 29;
-    /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
     const LARGEST_ERROR: u64 = 4095;
 
-    /// MIPS's error numbers for the generic ones from 35 on (`asm/errno.h`), in the generic
-    /// order; 0 where MIPS has none and the generic number stays.
     const MIPS_ERRORS: [u16; 99] = [
-        45, 78, 46, 89, 93, 90, 0, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 50, 51, 52, 53, 54,
-        55, 0, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 74, 73, 77, 79, 80, 81, 82, 83,
-        84, 85, 86, 87, 88, 91, 92, 94, 95, 96, 97, 98, 99, 120, 121, 122, 123, 124, 125, 126,
-        127, 128, 129, 130, 131, 132, 133, 134, 143, 144, 145, 146, 147, 148, 149, 150, 151, 135,
-        137, 138, 139, 140, 1133, 159, 160, 158, 161, 162, 163, 164, 165, 166, 167, 168,
+        45, 78, 46, 89, 93, 90, 0, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 50, 51, 52, 53, 54, 55,
+        0, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 74, 73, 77, 79, 80, 81, 82, 83, 84,
+        85, 86, 87, 88, 91, 92, 94, 95, 96, 97, 98, 99, 120, 121, 122, 123, 124, 125, 126, 127,
+        128, 129, 130, 131, 132, 133, 134, 143, 144, 145, 146, 147, 148, 149, 150, 151, 135, 137,
+        138, 139, 140, 1133, 159, 160, 158, 161, 162, 163, 164, 165, 166, 167, 168,
     ];
 
     /// The number MIPS gives generic error `generic`.
@@ -798,7 +796,14 @@ pub(crate) mod mips64 {
             self.r[V0]
         }
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
-            [self.r[4], self.r[5], self.r[6], self.syscall_a3, self.r[8], self.r[9]]
+            [
+                self.r[4],
+                self.r[5],
+                self.r[6],
+                self.syscall_a3,
+                self.r[8],
+                self.r[9],
+            ]
         }
         pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
             let [a0, a1, a2, a3, a4, a5] = arguments;
@@ -943,7 +948,14 @@ pub(crate) mod s390x {
             self.gpr[NUMBER]
         }
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
-            [self.syscall_r2, self.gpr[3], self.gpr[4], self.gpr[5], self.gpr[6], self.gpr[7]]
+            [
+                self.syscall_r2,
+                self.gpr[3],
+                self.gpr[4],
+                self.gpr[5],
+                self.gpr[6],
+                self.gpr[7],
+            ]
         }
         pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
             self.syscall_r2 = arguments[0];
@@ -1032,29 +1044,21 @@ pub(crate) mod sparc64 {
     const G7: usize = 7;
     const O0: usize = 8;
     const SP: usize = 14;
-    /// The carry bits of `TSTATE.CCR` (`xcc.C` and `icc.C`): set when a system call failed.
     const CARRY: u64 = 1 << 36 | 1 << 32;
-    /// The `TSTATE` bits a program sets: `CCR` and `ASI`.
     const PROGRAM_STATE: u64 = 0xff << 32 | 0xff << 24;
-    /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
     const LARGEST_ERROR: u64 = 4095;
     const TRAP_SIZE: u64 = 4;
-    /// The 64-bit ABI's stack bias.
     const STACK_BIAS: u64 = 2047;
-    /// The `%asi` a program starts with, as on Linux: `ASI_PRIMARY_NOFAULT`.
     const INITIAL_ASI: u64 = 0x82;
 
-    /// SPARC's error numbers for the generic ones from 35 on (`asm/errno.h`, SunOS's), in the
-    /// generic order; 0 where SPARC has none and the generic number stays.
     const SPARC_ERRORS: [u16; 99] = [
         78, 63, 79, 90, 66, 62, 0, 75, 77, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105,
-        106, 107, 108, 109, 72, 111, 73, 74, 80, 113, 71, 82, 83, 84, 85, 86, 87, 88, 76, 92,
-        115, 93, 89, 114, 112, 124, 123, 110, 122, 116, 91, 68, 38, 39, 40, 41, 42, 43, 44, 45,
-        46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 37, 36, 70, 117,
-        118, 119, 120, 121, 69, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+        106, 107, 108, 109, 72, 111, 73, 74, 80, 113, 71, 82, 83, 84, 85, 86, 87, 88, 76, 92, 115,
+        93, 89, 114, 112, 124, 123, 110, 122, 116, 91, 68, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+        48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 37, 36, 70, 117, 118, 119,
+        120, 121, 69, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
     ];
 
-    /// The generic number of SPARC's error `sparc`.
     #[cfg(not(eggos_kernel))]
     fn generic_errno(sparc: u64) -> u64 {
         (35..35 + SPARC_ERRORS.len() as u64)
@@ -1118,7 +1122,14 @@ pub(crate) mod sparc64 {
             self.r[G1]
         }
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
-            [self.syscall_o0, self.r[O0 + 1], self.r[O0 + 2], self.r[O0 + 3], self.r[O0 + 4], self.r[O0 + 5]]
+            [
+                self.syscall_o0,
+                self.r[O0 + 1],
+                self.r[O0 + 2],
+                self.r[O0 + 3],
+                self.r[O0 + 4],
+                self.r[O0 + 5],
+            ]
         }
         pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
             self.syscall_o0 = arguments[0];
@@ -1221,9 +1232,7 @@ pub(crate) mod powerpc64 {
     const RESULT: usize = 3;
     const ENTRY: usize = 12;
     const THREAD_POINTER: usize = 13;
-    /// `CR0.SO`: Linux's mark of a failed system call.
     const SUMMARY_OVERFLOW: u64 = 0x1000_0000;
-    /// The highest error number a system call returns, as Linux's `-MAX_ERRNO`.
     const LARGEST_ERROR: u64 = 4095;
     const MSR_USER: u64 = 0x8000_0000_0000_d033;
 
@@ -1270,7 +1279,14 @@ pub(crate) mod powerpc64 {
             self.gpr[0]
         }
         pub(crate) fn syscall_arguments(&self) -> [u64; 6] {
-            [self.gpr[3], self.gpr[4], self.gpr[5], self.gpr[6], self.gpr[7], self.gpr[8]]
+            [
+                self.gpr[3],
+                self.gpr[4],
+                self.gpr[5],
+                self.gpr[6],
+                self.gpr[7],
+                self.gpr[8],
+            ]
         }
         pub(crate) fn set_syscall_arguments(&mut self, arguments: [u64; 6]) {
             self.gpr[3..9].copy_from_slice(&arguments);
@@ -1586,8 +1602,7 @@ pub(crate) mod x86_64 {
         pub(crate) gs_base: u64,
     }
 
-    static NEXT_SEGMENT_BASES_ID: crate::atomic::AtomicU64 =
-        crate::atomic::AtomicU64::new(1);
+    static NEXT_SEGMENT_BASES_ID: crate::atomic::AtomicU64 = crate::atomic::AtomicU64::new(1);
 
     /// [`Registers::vector`] after a `syscall`: above every IDT vector.
     #[cfg_attr(not(eggos_kernel), allow(dead_code))]

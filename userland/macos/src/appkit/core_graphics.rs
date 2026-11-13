@@ -48,7 +48,6 @@ struct Context {
 
 static CONTEXT: Exclusive<Option<Context>> = Exclusive::new(None);
 
-/// The `CGContextRef` programs get: a token, as the layer has one context.
 static CONTEXT_TOKEN: u64 = 0;
 
 /// A `CGColorRef`: an interned colour.
@@ -190,7 +189,13 @@ extern "C" fn curve_to(_: usize, x1: f64, y1: f64, x2: f64, y2: f64, x: f64, y: 
 extern "C" fn add_arc(_: usize, x: f64, y: f64, radius: f64, start: f64, end: f64, clockwise: i32) {
     with_context(|context| {
         let transform = context.state.transform;
-        context.path.arc(&transform, Point::new(x, y), radius, (start, end), clockwise != 0);
+        context.path.arc(
+            &transform,
+            Point::new(x, y),
+            radius,
+            (start, end),
+            clockwise != 0,
+        );
         let (s, c) = (eggos_math::sin(end), eggos_math::cos(end));
         context.current = Some(Point::new(x + radius * c, y + radius * s));
     });
@@ -200,7 +205,13 @@ extern "C" fn add_arc_to(_: usize, x1: f64, y1: f64, x2: f64, y2: f64, radius: f
     with_context(|context| {
         let transform = context.state.transform;
         let from = context.current.unwrap_or(Point::new(x1, y1));
-        context.path.arc_to(&transform, from, Point::new(x1, y1), Point::new(x2, y2), radius);
+        context.path.arc_to(
+            &transform,
+            from,
+            Point::new(x1, y1),
+            Point::new(x2, y2),
+            radius,
+        );
         context.current = Some(Point::new(x2, y2));
     });
 }
@@ -212,14 +223,18 @@ extern "C" fn close_path(_: usize) {
 extern "C" fn add_rect(_: usize, rect: Frame) {
     with_context(|context| {
         let transform = context.state.transform;
-        context.path.rect(&transform, (rect.x, rect.y, rect.width, rect.height));
+        context
+            .path
+            .rect(&transform, (rect.x, rect.y, rect.width, rect.height));
     });
 }
 
 extern "C" fn add_ellipse(_: usize, rect: Frame) {
     with_context(|context| {
         let transform = context.state.transform;
-        context.path.ellipse(&transform, (rect.x, rect.y, rect.width, rect.height));
+        context
+            .path
+            .ellipse(&transform, (rect.x, rect.y, rect.width, rect.height));
     });
 }
 
@@ -332,7 +347,10 @@ pub fn intern(colour: Colour, components: [f64; 4]) -> *mut CgColour {
 }
 
 extern "C" fn create_generic_rgb(red: f64, green: f64, blue: f64, alpha: f64) -> *mut CgColour {
-    intern(colour::rgb(red, green, blue, alpha), [red, green, blue, alpha])
+    intern(
+        colour::rgb(red, green, blue, alpha),
+        [red, green, blue, alpha],
+    )
 }
 
 extern "C" fn create_generic_gray(white: f64, alpha: f64) -> *mut CgColour {

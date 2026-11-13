@@ -5,8 +5,8 @@
 #![cfg_attr(not(test), no_std)]
 
 pub const SECTOR_BYTES: usize = 512;
-pub const SECTORS_PER_CLUSTER: u32 = 8;
-pub const CLUSTER_BYTES: usize = SECTOR_BYTES * SECTORS_PER_CLUSTER as usize;
+pub const MAX_CLUSTER_BYTES: usize = SECTOR_BYTES * 8;
+const SMALL_VOLUME_SECTORS: u32 = 532_480;
 const RESERVED_SECTORS: u32 = 32;
 const FATS: u32 = 2;
 const ROOT_CLUSTER: u32 = 2;
@@ -44,7 +44,12 @@ pub fn short_name(name: &str) -> Option<[u8; 11]> {
         None => (name, ""),
     };
     let allowed = |byte: &u8| byte.is_ascii_alphanumeric() || b"_-~!#$%&'()@^`{}".contains(byte);
-    if base.is_empty() || base.len() > 8 || extension.len() > 3 || !base.bytes().all(|byte| allowed(&byte)) || !extension.bytes().all(|byte| allowed(&byte)) {
+    if base.is_empty()
+        || base.len() > 8
+        || extension.len() > 3
+        || !base.bytes().all(|byte| allowed(&byte))
+        || !extension.bytes().all(|byte| allowed(&byte))
+    {
         return None;
     }
     let mut out = [b' '; 11];
@@ -61,25 +66,36 @@ pub fn short_name(name: &str) -> Option<[u8; 11]> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
     pub total_sectors: u32,
+    pub sectors_per_cluster: u32,
     pub fat_sectors: u32,
     pub clusters: u32,
 }
 
 impl Geometry {
     pub fn new(total_sectors: u32) -> Option<Self> {
+        let sectors_per_cluster = match total_sectors <= SMALL_VOLUME_SECTORS {
+            true => 1,
+            false => (MAX_CLUSTER_BYTES / SECTOR_BYTES) as u32,
+        };
         let mut fat_sectors = 1;
         for _ in 0..8 {
             let data = total_sectors.checked_sub(RESERVED_SECTORS + FATS * fat_sectors)?;
-            let clusters = data / SECTORS_PER_CLUSTER;
+            let clusters = data / sectors_per_cluster;
             fat_sectors = ((clusters + 2) * 4).div_ceil(SECTOR_BYTES as u32);
         }
         let data = total_sectors.checked_sub(RESERVED_SECTORS + FATS * fat_sectors)?;
-        let clusters = data / SECTORS_PER_CLUSTER;
+        let clusters = data / sectors_per_cluster;
         (clusters >= MIN_CLUSTERS).then_some(Self {
             total_sectors,
+            sectors_per_cluster,
             fat_sectors,
             clusters,
         })
+    }
+
+    /// The bytes of one cluster.
+    pub fn cluster_bytes(&self) -> usize {
+        SECTOR_BYTES * self.sectors_per_cluster as usize
     }
 
     fn data_start(&self) -> u32 {
@@ -88,7 +104,9 @@ impl Geometry {
 
     /// The byte offset of cluster `cluster` in the volume.
     pub fn cluster_offset(&self, cluster: u32) -> u64 {
-        (u64::from(self.data_start()) + u64::from(cluster - 2) * u64::from(SECTORS_PER_CLUSTER)) * SECTOR_BYTES as u64
+        (u64::from(self.data_start())
+            + u64::from(cluster - 2) * u64::from(self.sectors_per_cluster))
+            * SECTOR_BYTES as u64
     }
 }
 
@@ -99,6 +117,9 @@ struct Folder<'a> {
     parent: u32,
 }
 
+/// Where [`write_volume`] puts the volume's bytes: at an offset from the volume's start.
+pub type Writer<'a, E> = dyn FnMut(u64, &[u8]) -> Result<(), E> + 'a;
+
 /// Writes a FAT32 volume of `total_sectors` holding `files` through `write(offset, bytes)`,
 /// offsets in bytes from the volume's start, `hidden_sectors` before it on its disk.
 pub fn write_volume<E>(
@@ -106,13 +127,17 @@ pub fn write_volume<E>(
     hidden_sectors: u32,
     volume_id: u32,
     files: &[File<'_>],
-    write: &mut dyn FnMut(u64, &[u8]) -> Result<(), E>,
+    write: &mut Writer<'_, E>,
 ) -> Result<(), Error<E>> {
     let geometry = Geometry::new(total_sectors).ok_or(Error::TooSmall)?;
     if files.len() > MAX_FILES {
         return Err(Error::BadName);
     }
-    let mut folders = [Folder { path: "", cluster: ROOT_CLUSTER, parent: 0 }; MAX_FOLDERS];
+    let mut folders = [Folder {
+        path: "",
+        cluster: ROOT_CLUSTER,
+        parent: 0,
+    }; MAX_FOLDERS];
     let mut folder_count = 1;
     let mut next_cluster = ROOT_CLUSTER + 1;
     for file in files {
@@ -121,13 +146,23 @@ pub fn write_volume<E>(
             let path = &file.path[..at + slash];
             let name = &file.path[at..at + slash];
             short_name(name).ok_or(Error::BadName)?;
-            if !folders[..folder_count].iter().any(|folder| folder.path == path) {
+            if !folders[..folder_count]
+                .iter()
+                .any(|folder| folder.path == path)
+            {
                 if folder_count == MAX_FOLDERS {
                     return Err(Error::BadName);
                 }
                 let parent_path = &file.path[..at.saturating_sub(1)];
-                let parent = folders[..folder_count].iter().find(|folder| folder.path == parent_path).map_or(ROOT_CLUSTER, |folder| folder.cluster);
-                folders[folder_count] = Folder { path, cluster: next_cluster, parent };
+                let parent = folders[..folder_count]
+                    .iter()
+                    .find(|folder| folder.path == parent_path)
+                    .map_or(ROOT_CLUSTER, |folder| folder.cluster);
+                folders[folder_count] = Folder {
+                    path,
+                    cluster: next_cluster,
+                    parent,
+                };
                 folder_count += 1;
                 next_cluster += 1;
             }
@@ -137,7 +172,7 @@ pub fn write_volume<E>(
     }
     let mut first_clusters = [0u32; MAX_FILES];
     for (index, file) in files.iter().enumerate() {
-        let clusters = (file.bytes.len().div_ceil(CLUSTER_BYTES)) as u32;
+        let clusters = (file.bytes.len().div_ceil(geometry.cluster_bytes())) as u32;
         first_clusters[index] = if clusters == 0 { 0 } else { next_cluster };
         next_cluster += clusters;
     }
@@ -149,7 +184,7 @@ pub fn write_volume<E>(
     boot[..3].copy_from_slice(&[0xeb, 0x58, 0x90]);
     boot[3..11].copy_from_slice(b"EGGOS   ");
     boot[11..13].copy_from_slice(&(SECTOR_BYTES as u16).to_le_bytes());
-    boot[13] = SECTORS_PER_CLUSTER as u8;
+    boot[13] = geometry.sectors_per_cluster as u8;
     boot[14..16].copy_from_slice(&(RESERVED_SECTORS as u16).to_le_bytes());
     boot[16] = FATS as u8;
     boot[21] = 0xf8;
@@ -195,9 +230,13 @@ pub fn write_volume<E>(
             _ => {
                 for (index, file) in files.iter().enumerate() {
                     let first = first_clusters[index];
-                    let count = file.bytes.len().div_ceil(CLUSTER_BYTES) as u32;
+                    let count = file.bytes.len().div_ceil(geometry.cluster_bytes()) as u32;
                     if first != 0 && (first..first + count).contains(&cluster) {
-                        return if cluster + 1 == first + count { END_OF_CHAIN } else { cluster + 1 };
+                        return if cluster + 1 == first + count {
+                            END_OF_CHAIN
+                        } else {
+                            cluster + 1
+                        };
                     }
                 }
                 0
@@ -205,23 +244,35 @@ pub fn write_volume<E>(
         }
     };
     for fat in 0..FATS {
-        let fat_start = u64::from(RESERVED_SECTORS + fat * geometry.fat_sectors) * SECTOR_BYTES as u64;
+        let fat_start =
+            u64::from(RESERVED_SECTORS + fat * geometry.fat_sectors) * SECTOR_BYTES as u64;
         for index in 0..geometry.fat_sectors {
             let first = index * entries_per_sector;
-            for (slot, entry) in sector.chunks_exact_mut(4).enumerate() {
+            for (slot, entry) in sector.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let cluster = first + slot as u32;
-                let value = if cluster < next_cluster { entry_of(cluster) } else { 0 };
+                let value = if cluster < next_cluster {
+                    entry_of(cluster)
+                } else {
+                    0
+                };
                 entry.copy_from_slice(&value.to_le_bytes());
             }
-            write(fat_start + u64::from(index) * SECTOR_BYTES as u64, &sector).map_err(Error::Write)?;
+            write(fat_start + u64::from(index) * SECTOR_BYTES as u64, &sector)
+                .map_err(Error::Write)?;
         }
     }
 
     for folder in &folders[..folder_count] {
-        let mut cluster = [0u8; CLUSTER_BYTES];
+        let mut cluster = [0u8; MAX_CLUSTER_BYTES];
+        let cluster_bytes = geometry.cluster_bytes();
         let mut slot = 0;
+        let mut overflowed = false;
         let mut entry = |name: [u8; 11], attribute: u8, first: u32, size: u32| {
             let at = slot * DIRECTORY_ENTRY_BYTES;
+            if at + DIRECTORY_ENTRY_BYTES > cluster_bytes {
+                overflowed = true;
+                return;
+            }
             cluster[at..at + 11].copy_from_slice(&name);
             cluster[at + 11] = attribute;
             cluster[at + 20..at + 22].copy_from_slice(&((first >> 16) as u16).to_le_bytes());
@@ -234,7 +285,11 @@ pub fn write_volume<E>(
             entry(*b"EGGOS      ", ATTRIBUTE_VOLUME_LABEL, 0, 0);
         } else {
             entry(*b".          ", ATTRIBUTE_DIRECTORY, folder.cluster, 0);
-            let parent = if folder.parent == ROOT_CLUSTER { 0 } else { folder.parent };
+            let parent = if folder.parent == ROOT_CLUSTER {
+                0
+            } else {
+                folder.parent
+            };
             entry(*b"..         ", ATTRIBUTE_DIRECTORY, parent, 0);
         }
         for child in &folders[1..folder_count] {
@@ -247,13 +302,25 @@ pub fn write_volume<E>(
         }
         for (index, file) in files.iter().enumerate() {
             let (folder_path, name) = file.path.rsplit_once('/').unwrap_or(("", file.path));
-            if folder_path == folder.path {
-                if let Some(short) = short_name(name) {
-                    entry(short, ATTRIBUTE_ARCHIVE, first_clusters[index], file.bytes.len() as u32);
-                }
+            if folder_path == folder.path
+                && let Some(short) = short_name(name)
+            {
+                entry(
+                    short,
+                    ATTRIBUTE_ARCHIVE,
+                    first_clusters[index],
+                    file.bytes.len() as u32,
+                );
             }
         }
-        write(geometry.cluster_offset(folder.cluster), &cluster).map_err(Error::Write)?;
+        if overflowed {
+            return Err(Error::BadName);
+        }
+        write(
+            geometry.cluster_offset(folder.cluster),
+            &cluster[..cluster_bytes],
+        )
+        .map_err(Error::Write)?;
     }
 
     for (index, file) in files.iter().enumerate() {
@@ -264,10 +331,14 @@ pub fn write_volume<E>(
         let mut offset = 0;
         let mut cluster = first;
         while offset < file.bytes.len() {
-            let end = (offset + CLUSTER_BYTES).min(file.bytes.len());
-            let mut block = [0u8; CLUSTER_BYTES];
+            let end = (offset + geometry.cluster_bytes()).min(file.bytes.len());
+            let mut block = [0u8; MAX_CLUSTER_BYTES];
             block[..end - offset].copy_from_slice(&file.bytes[offset..end]);
-            write(geometry.cluster_offset(cluster), &block).map_err(Error::Write)?;
+            write(
+                geometry.cluster_offset(cluster),
+                &block[..geometry.cluster_bytes()],
+            )
+            .map_err(Error::Write)?;
             offset = end;
             cluster += 1;
         }
@@ -291,6 +362,11 @@ mod tests {
     fn a_256_mib_volume_has_fat32_geometry() {
         let geometry = Geometry::new(524_288).unwrap();
         assert!(geometry.clusters >= MIN_CLUSTERS);
+        assert_eq!(geometry.cluster_bytes(), SECTOR_BYTES);
+        assert_eq!(
+            Geometry::new(4 << 21).unwrap().cluster_bytes(),
+            MAX_CLUSTER_BYTES
+        );
         assert!(Geometry::new(65_536).is_none());
     }
 
@@ -299,8 +375,14 @@ mod tests {
         let mut image = vec![0u8; 524_288 * SECTOR_BYTES];
         let kernel = vec![0x7fu8; 10_000];
         let files = [
-            File { path: "EFI/BOOT/BOOTX64.EFI", bytes: b"MZ loader" },
-            File { path: "EGGOS/KERNEL.ELF", bytes: &kernel },
+            File {
+                path: "EFI/BOOT/BOOTX64.EFI",
+                bytes: b"MZ loader",
+            },
+            File {
+                path: "EGGOS/KERNEL.ELF",
+                bytes: &kernel,
+            },
         ];
         write_volume::<()>(524_288, 2048, 0x1234_5678, &files, &mut |offset, bytes| {
             let start = offset as usize;
@@ -312,10 +394,17 @@ mod tests {
         assert_eq!(&image[510..512], &[0x55, 0xaa]);
         let geometry = Geometry::new(524_288).unwrap();
         let root = geometry.cluster_offset(ROOT_CLUSTER) as usize;
-        let names: Vec<&[u8]> = (0..4).map(|slot| &image[root + slot * 32..root + slot * 32 + 11]).collect();
+        let names: Vec<&[u8]> = (0..4)
+            .map(|slot| &image[root + slot * 32..root + slot * 32 + 11])
+            .collect();
         assert!(names.contains(&&b"EFI        "[..]));
         assert!(names.contains(&&b"EGGOS      "[..]));
-        let eggos_entry = (0..4).find(|&slot| &image[root + slot * 32..root + slot * 32 + 11] == b"EGGOS      " && image[root + slot * 32 + 11] == ATTRIBUTE_DIRECTORY).unwrap();
+        let eggos_entry = (0..4)
+            .find(|&slot| {
+                &image[root + slot * 32..root + slot * 32 + 11] == b"EGGOS      "
+                    && image[root + slot * 32 + 11] == ATTRIBUTE_DIRECTORY
+            })
+            .unwrap();
         let at = root + eggos_entry * 32;
         let cluster = u32::from(u16::from_le_bytes([image[at + 26], image[at + 27]]));
         let folder = geometry.cluster_offset(cluster) as usize;
@@ -323,7 +412,10 @@ mod tests {
         assert_eq!(&image[kernel_at..kernel_at + 11], b"KERNEL  ELF");
         let size = u32::from_le_bytes(image[kernel_at + 28..kernel_at + 32].try_into().unwrap());
         assert_eq!(size, 10_000);
-        let first = u32::from(u16::from_le_bytes([image[kernel_at + 26], image[kernel_at + 27]]));
+        let first = u32::from(u16::from_le_bytes([
+            image[kernel_at + 26],
+            image[kernel_at + 27],
+        ]));
         let data = geometry.cluster_offset(first) as usize;
         assert_eq!(image[data], 0x7f);
     }

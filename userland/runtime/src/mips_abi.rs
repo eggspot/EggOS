@@ -60,13 +60,12 @@ const NONBLOCK: (usize, usize) = (0x80, 0o4000);
 const F_GETFL: usize = 3;
 const F_SETFL: usize = 4;
 
-/// MIPS's error numbers for the generic ones from 35 on, in the generic order (as the HAL's).
 const MIPS_ERRORS: [u16; 99] = [
-    45, 78, 46, 89, 93, 90, 0, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 50, 51, 52, 53, 54, 55,
-    0, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 74, 73, 77, 79, 80, 81, 82, 83, 84,
-    85, 86, 87, 88, 91, 92, 94, 95, 96, 97, 98, 99, 120, 121, 122, 123, 124, 125, 126, 127, 128,
-    129, 130, 131, 132, 133, 134, 143, 144, 145, 146, 147, 148, 149, 150, 151, 135, 137, 138,
-    139, 140, 1133, 159, 160, 158, 161, 162, 163, 164, 165, 166, 167, 168,
+    45, 78, 46, 89, 93, 90, 0, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 50, 51, 52, 53, 54, 55, 0,
+    59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 74, 73, 77, 79, 80, 81, 82, 83, 84, 85, 86,
+    87, 88, 91, 92, 94, 95, 96, 97, 98, 99, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130,
+    131, 132, 133, 134, 143, 144, 145, 146, 147, 148, 149, 150, 151, 135, 137, 138, 139, 140, 1133,
+    159, 160, 158, 161, 162, 163, 164, 165, 166, 167, 168,
 ];
 
 /// The generic number of MIPS error `mips`.
@@ -94,7 +93,10 @@ fn to_generic(value: usize, pairs: FlagPairs) -> usize {
 }
 
 fn value_to_mips(value: usize, pairs: FlagPairs) -> usize {
-    pairs.iter().find(|&&(_, generic)| generic == value).map_or(value, |&(mips, _)| mips)
+    pairs
+        .iter()
+        .find(|&&(_, generic)| generic == value)
+        .map_or(value, |&(mips, _)| mips)
 }
 
 fn nonblock(value: usize) -> usize {
@@ -140,7 +142,9 @@ pub fn arguments_out(number: usize, mut arguments: [usize; 6]) -> [usize; 6] {
 /// Call `number`'s result in the generic values: `F_GETFL`'s flags.
 pub fn result_in(number: usize, arguments: [usize; 6], result: isize) -> isize {
     match number {
-        number::FCNTL if arguments[1] == F_GETFL && result >= 0 => to_generic(result as usize, OPEN_FLAGS) as isize,
+        number::FCNTL if arguments[1] == F_GETFL && result >= 0 => {
+            to_generic(result as usize, OPEN_FLAGS) as isize
+        }
         _ => result,
     }
 }

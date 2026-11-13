@@ -58,7 +58,6 @@
 //! the previous one's context is saved, nothing else can take the scheduler, on this CPU or
 //! another.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::cpu::{self, Cpu};
 use crate::heap::{FrameSource, GlobalFrames};
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard, SpinLockGuard};
@@ -72,6 +71,7 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::fp::FpState;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::time::mul_div_ceil;

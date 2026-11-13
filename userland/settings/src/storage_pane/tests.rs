@@ -53,7 +53,7 @@ fn serve(window: &mut SettingsWindow, disks: &mut MemoryDisks, request: Option<R
                 .and_then(|files| storage::install(disks, device, &files))
                 .map(|_| ());
             window.show_disks(list(disks));
-            window.show_installed(device, result, 0);
+            window.show_disk_installed(device, result, 0);
         }
         _ => {}
     }
@@ -441,18 +441,18 @@ fn install_eggos_follows_the_disk_and_the_boot_files() {
     let mut disks = machine();
     let mut window = opened(&mut disks);
     let pane = window.storage_pane();
-    assert!(!pane.install_enabled(window.tree()));
+    assert!(!pane.install_enabled(window.widgets()));
     assert_eq!(
-        pane.install_line(window.tree()),
+        pane.install_line(window.widgets()),
         Some("In use at /home: EggOS cannot be installed on a mounted disk.")
     );
     select(&mut window, 2);
     let pane = window.storage_pane();
-    assert!(!pane.install_enabled(window.tree()));
+    assert!(!pane.install_enabled(window.widgets()));
     assert_eq!(
-        pane.install_line(window.tree()),
+        pane.install_line(window.widgets()),
         Some("Smaller than 1 GB: EggOS needs a disk of 1 GB or more.")
     );
     window.set_boot_files(true);
-    assert!(!window.storage_pane().install_enabled(window.tree()));
+    assert!(!window.storage_pane().install_enabled(window.widgets()));
 }

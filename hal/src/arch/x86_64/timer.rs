@@ -15,9 +15,9 @@
 //! shared: the TSC and the APIC timer's clock run at the same rate on every CPU of a machine.
 //! The same local APIC sends the wake-up interrupt between CPUs.
 
-use crate::atomic::AtomicU64;
 use super::port::PortIo;
 use crate::Interrupt;
+use crate::atomic::AtomicU64;
 use crate::cpu::TIMER_DEADLINE_OFFSET;
 use crate::memory::PhysicalRange;
 use crate::time::{mul_div_ceil, ratio_ceil, scale_ceil};
@@ -29,7 +29,6 @@ use eggos_drivers::timer::{Pit, i8254};
 
 /// Vectors of the legacy 8259 inputs 0-15 (all masked; only spurious interrupts arrive).
 pub(super) const LEGACY_PIC_VECTORS: core::ops::RangeInclusive<u64> = 0x20..=0x2f;
-/// The legacy primary's and secondary's spurious interrupts (input 7 of each).
 const LEGACY_PIC_PRIMARY_SPURIOUS: u64 = 0x27;
 const LEGACY_PIC_SECONDARY_SPURIOUS: u64 = 0x2f;
 /// The local APIC timer's vector.
@@ -44,31 +43,20 @@ pub(super) const POWER_BUTTON_VECTOR: u8 = 0x53;
 /// The local APIC's spurious-interrupt vector (its low four bits must be 1s on old CPUs).
 pub(super) const APIC_SPURIOUS_VECTOR: u8 = 0xff;
 
-/// `IA32_APIC_BASE` MSR: bits 12 and up hold the local APIC's physical address.
 const IA32_APIC_BASE: u32 = 0x1b;
 const APIC_BASE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
-/// `IA32_APIC_BASE` bit 11: the local APIC is globally enabled (its registers respond).
 const APIC_BASE_GLOBAL_ENABLE: u64 = 1 << 11;
 
-/// PIC and PIT I/O ports.
 const PIC_PRIMARY_PORT: u16 = 0x20;
 const PIC_SECONDARY_PORT: u16 = 0xa0;
 const PIT_PORT: u16 = 0x40;
 const SYSTEM_CONTROL_PORT_B: u16 = 0x61;
 
-/// Length of the frequency measurement in PIT periods: 2 ms, keeping the boot cost small. The
-/// PIT's granularity limits the error to 0.05%; in QEMU, emulation jitter makes it about 0.2%.
-/// Deadlines are still never delivered early (see the module comment).
 const MEASUREMENT_PIT_TICKS: u16 = 2386;
-/// How long to wait for the measurement before deciding there is no working PIT, in TSC
-/// ticks: about 2 s at 1 GHz, generous for any real TSC. (ACPI PM timer or HPET as fallback
-/// reference clocks: follow-up.)
 const MEASUREMENT_TIMEOUT_TSC_TICKS: u64 = 1 << 31;
 
-/// Disarmed: no deadline.
 const NO_DEADLINE: u64 = u64::MAX;
 
-/// `IA32_TSC_DEADLINE`, and CPUID.01H:ECX's bits for the TSC-deadline timer and a hypervisor.
 const IA32_TSC_DEADLINE: u32 = 0x6e0;
 const CPUID_TSC_DEADLINE: u32 = 1 << 24;
 const CPUID_HYPERVISOR: u32 = 1 << 31;
@@ -77,8 +65,6 @@ const CPUID_FREQUENCY_LEAF: u32 = 0x16;
 const HYPERVISOR_BASE_LEAF: u32 = 0x4000_0000;
 const HYPERVISOR_TIMING_LEAF: u32 = 0x4000_0010;
 
-/// Whether the timer runs in TSC-deadline mode (D247): the deadline is written as a TSC value,
-/// so the APIC timer's own clock is never needed.
 static TSC_DEADLINE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub(super) fn cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
@@ -101,8 +87,6 @@ pub(super) fn cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
     [eax, rbx as u32, ecx, edx]
 }
 
-/// The TSC's frequency as the CPU or the hypervisor states it (CPUID leaves 15h and 16h, and
-/// the hypervisor timing leaf 40000010h), without measuring (D26's follow-up, D247).
 fn stated_tsc_frequency() -> Option<u64> {
     let highest = cpuid(0, 0)[0];
     if highest >= CPUID_TSC_LEAF {
@@ -117,11 +101,17 @@ fn stated_tsc_frequency() -> Option<u64> {
                 hertz => Some(u64::from(hertz)),
             };
             if let Some(crystal) = crystal {
-                return Some(mul_div_ceil(crystal, u64::from(numerator), u64::from(denominator)));
+                return Some(mul_div_ceil(
+                    crystal,
+                    u64::from(numerator),
+                    u64::from(denominator),
+                ));
             }
         }
     }
-    if cpuid(1, 0)[2] & CPUID_HYPERVISOR != 0 && cpuid(HYPERVISOR_BASE_LEAF, 0)[0] >= HYPERVISOR_TIMING_LEAF {
+    if cpuid(1, 0)[2] & CPUID_HYPERVISOR != 0
+        && cpuid(HYPERVISOR_BASE_LEAF, 0)[0] >= HYPERVISOR_TIMING_LEAF
+    {
         let kilohertz = cpuid(HYPERVISOR_TIMING_LEAF, 0)[0];
         if kilohertz != 0 {
             return Some(u64::from(kilohertz) * 1000);
@@ -144,8 +134,6 @@ fn write_tsc_deadline(deadline: u64) {
     }
 }
 
-/// Where the kernel reaches the local APIC's registers: their physical address in the direct
-/// map (D33), set by [`init`].
 static APIC_BASE: AtomicUsize = AtomicUsize::new(0);
 static X2APIC: AtomicBool = AtomicBool::new(false);
 const IA32_APIC_BASE_X2APIC: u64 = 1 << 10;
@@ -159,9 +147,6 @@ const XAPIC_COMMAND_HIGH: usize = 0x310;
 const XAPIC_ID_SHIFT: u32 = 24;
 const XAPIC_REGISTER_SHIFT: usize = 4;
 
-/// The local APIC's registers (D531): memory-mapped in xAPIC mode, or the x2APIC MSRs, each
-/// xAPIC offset taken to its MSR, the ID read back in xAPIC's place and the two command halves
-/// joined into the one 64-bit command MSR (destinations up to 255, as xAPIC's).
 enum ApicRegisters {
     Memory(Mmio),
     Msrs { destination: Cell<u32> },
@@ -223,7 +208,6 @@ impl RegisterIo for ApicRegisters {
     }
 }
 
-/// Puts this CPU's local APIC in x2APIC mode when [`X2APIC`] says to (D531).
 fn enter_x2apic_mode() {
     if X2APIC.load(Ordering::Relaxed) {
         let base = super::read_msr(IA32_APIC_BASE);
@@ -233,7 +217,6 @@ fn enter_x2apic_mode() {
     }
 }
 
-/// The boot CPU's local APIC id, read by `init`.
 static BOOT_APIC_ID: AtomicU8 = AtomicU8::new(0);
 
 /// The boot CPU's local APIC id.
@@ -270,14 +253,9 @@ pub(super) fn wakeup_interrupt() {
     crate::interrupt::deliver(Interrupt::Wakeup);
 }
 
-/// The measured TSC frequency in Hz, set by [`init`].
 static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
-/// APIC timer counts per TSC tick, from the measured frequencies, as a fixed-point factor
-/// rounded up ([`ratio_ceil`]), set by [`init`]: arming the timer then multiplies instead of
-/// dividing.
 static APIC_COUNTS_PER_TSC_TICK: AtomicU64 = AtomicU64::new(0);
 
-/// The deadline this CPU's timer is armed for, in TSC ticks, from its per-CPU block.
 #[inline]
 fn deadline() -> u64 {
     let deadline: u64;
@@ -295,7 +273,6 @@ fn deadline() -> u64 {
     deadline
 }
 
-/// Sets the deadline [`deadline`] returns.
 #[inline]
 fn set_deadline_word(deadline: u64) {
     // SAFETY: as in `deadline`; the word is the HAL's alone, and written by its own CPU only.
@@ -342,13 +319,11 @@ pub(super) extern "C" fn init() {
     legacy_pic().remap_and_mask(*LEGACY_PIC_VECTORS.start() as u8);
 
     let apic_base_msr = super::read_msr(IA32_APIC_BASE);
-    // Set at reset; firmware that clears it hides the APIC until the next reset.
     assert!(
         apic_base_msr & APIC_BASE_GLOBAL_ENABLE != 0,
         "local APIC globally disabled by firmware"
     );
     let apic_base = apic_base_msr & APIC_BASE_ADDRESS_MASK;
-    // Below 4 GiB at reset; firmware could move it. The panic handler reports a failure.
     assert!(
         apic_base < super::BOOT_DIRECT_MAP_END,
         "local APIC outside the boot direct map"
@@ -371,7 +346,6 @@ pub(super) extern "C" fn init() {
         return;
     }
 
-    // Count the TSC and the (masked) APIC timer over a known number of PIT periods.
     apic.configure_one_shot_timer(TIMER_VECTOR, true);
     // SAFETY: ports 0x40-0x43 are the 8254; nothing else drives it.
     let pit_ports = unsafe { PortIo::new(PIT_PORT, i8254::REGISTER_BLOCK_SIZE) };
@@ -422,9 +396,7 @@ pub(super) extern "C" fn init() {
     }
 }
 
-/// The ACPI power management timer's frequency (ACPI 6.5, 4.8.3.3).
 const PM_TIMER_HZ: u64 = 3_579_545;
-/// About 2 ms of PM timer ticks, as long as the PIT's window.
 const PM_TIMER_WINDOW_TICKS: u32 = 7_159;
 const FADT_PM_TIMER_BLOCK: usize = 76;
 const FADT_FLAGS: usize = 112;
@@ -432,7 +404,6 @@ const FADT_TIMER_IS_32_BITS: u32 = 1 << 8;
 const FADT_EXTENDED_PM_TIMER_BLOCK: usize = 208;
 const GAS_SYSTEM_IO: u8 = 1;
 
-/// The PM timer's I/O port and the mask of its counting bits, from the FADT.
 fn pm_timer() -> Option<(u16, u32)> {
     let fadt = super::acpi_table(b"FACP")?;
     let read_u32 = |at: usize| Some(u32::from_le_bytes(fadt.get(at..at + 4)?.try_into().ok()?));
@@ -454,12 +425,8 @@ fn pm_timer() -> Option<(u16, u32)> {
     (port != 0).then_some((port, mask))
 }
 
-/// Measures the TSC's and the APIC timer's frequencies against the ACPI PM timer, for machines
-/// whose 8254 does not count (newer PCs gate it off, D237).
-/// The HPET's counter period in femtoseconds at most (ACPI's HPET specification, 2.3.7.1).
 const HPET_LONGEST_PERIOD_FS: u64 = 0x05f5_e100;
 const FEMTOSECONDS_PER_SECOND: u64 = 1_000_000_000_000_000;
-/// About 2 ms of HPET time, as long as the PIT's window.
 const HPET_WINDOW_FS: u64 = 2_000_000_000_000;
 const HPET_TABLE_ADDRESS: usize = 40;
 const HPET_CAPABILITIES_HIGH: usize = 0x004;
@@ -469,8 +436,6 @@ const HPET_ENABLE: u32 = 1;
 const HPET_REGISTER_BYTES: usize = 0x400;
 const GAS_SYSTEM_MEMORY: u8 = 0;
 
-/// The HPET's registers, from the ACPI `HPET` table, when they lie in the boot direct map, and
-/// its counter's frequency (D531).
 fn hpet() -> Option<(Mmio, u64)> {
     let table = super::acpi_table(b"HPET")?;
     let gas = table.get(HPET_TABLE_ADDRESS..HPET_TABLE_ADDRESS + 12)?;
@@ -484,7 +449,10 @@ fn hpet() -> Option<(Mmio, u64)> {
     // SAFETY: the ACPI `HPET` table names this block as the HPET's registers, in the boot
     // direct map (checked above), which nothing else drives; firmware maps it uncached.
     let registers = unsafe {
-        Mmio::new(super::DIRECT_MAP_OFFSET + base as usize, HPET_REGISTER_BYTES)
+        Mmio::new(
+            super::DIRECT_MAP_OFFSET + base as usize,
+            HPET_REGISTER_BYTES,
+        )
     };
     let period = u64::from(registers.read32(HPET_CAPABILITIES_HIGH));
     if period == 0 || period > HPET_LONGEST_PERIOD_FS {
@@ -493,8 +461,6 @@ fn hpet() -> Option<(Mmio, u64)> {
     Some((registers, FEMTOSECONDS_PER_SECOND / period))
 }
 
-/// Measures the TSC's and the APIC timer's frequencies against the HPET's main counter, which
-/// is turned on if the firmware left it off (D531).
 fn measure_against_hpet(apic: &LocalApic<ApicRegisters>) -> Option<(u64, u64)> {
     let (hpet, hertz) = hpet()?;
     let configuration = hpet.read32(HPET_CONFIGURATION);
@@ -550,7 +516,11 @@ fn measure_against_pm_timer(apic: &LocalApic<ApicRegisters>) -> Option<(u64, u64
             let (tsc_end, apic_end) = (now(), apic.timer_count());
             let window = u64::from(elapsed);
             let tsc = mul_div_ceil(tsc_end.wrapping_sub(tsc_start), PM_TIMER_HZ, window);
-            let counts = mul_div_ceil(apic_start.saturating_sub(apic_end).into(), PM_TIMER_HZ, window);
+            let counts = mul_div_ceil(
+                apic_start.saturating_sub(apic_end).into(),
+                PM_TIMER_HZ,
+                window,
+            );
             return Some((tsc, counts));
         }
         if now().wrapping_sub(wait_start) > MEASUREMENT_TIMEOUT_TSC_TICKS {
@@ -595,14 +565,16 @@ pub(super) fn frequency() -> u64 {
 /// instead, it would wake an idle CPU for nothing (after about 4.3 s at QEMU's 1 GHz APIC clock).
 pub(super) fn set_deadline(deadline: u64) {
     set_deadline_word(deadline);
-    match (deadline == NO_DEADLINE, TSC_DEADLINE.load(Ordering::Relaxed)) {
+    match (
+        deadline == NO_DEADLINE,
+        TSC_DEADLINE.load(Ordering::Relaxed),
+    ) {
         (true, true) => write_tsc_deadline(0),
         (true, false) => local_apic().start_timer(0),
         (false, _) => arm(deadline),
     }
 }
 
-/// Starts the APIC timer to expire at TSC `deadline` (at the earliest representable count).
 fn arm(deadline: u64) {
     if TSC_DEADLINE.load(Ordering::Relaxed) {
         write_tsc_deadline(deadline.max(1));
@@ -610,7 +582,6 @@ fn arm(deadline: u64) {
     }
     let remaining = deadline.saturating_sub(now());
     let count = scale_ceil(remaining, APIC_COUNTS_PER_TSC_TICK.load(Ordering::Relaxed));
-    // 0 would stop the timer instead of firing it at once.
     local_apic().start_timer(count.clamp(1, u32::MAX.into()) as u32);
 }
 

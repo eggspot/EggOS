@@ -30,7 +30,10 @@ pub fn set(kind: u32, bytes: Vec<u8>) -> u32 {
         let mut payload = PAYLOAD.lock();
         payload.serial = payload.serial.wrapping_add(1);
         payload.kind = kind;
-        (core::mem::replace(&mut payload.bytes, bytes), payload.serial)
+        (
+            core::mem::replace(&mut payload.bytes, bytes),
+            payload.serial,
+        )
     };
     drop(previous);
     serial
@@ -50,7 +53,10 @@ mod tests {
     fn a_drag_replaces_the_payload_and_counts_up_the_serial() {
         let first = set(1, b"/home/root/a.txt".to_vec());
         let (bytes, kind, serial) = get();
-        assert_eq!(bytes.as_deref().map(Vec::as_slice), Some(&b"/home/root/a.txt"[..]));
+        assert_eq!(
+            bytes.as_deref().map(Vec::as_slice),
+            Some(&b"/home/root/a.txt"[..])
+        );
         assert_eq!((kind, serial), (1, first));
         assert_eq!(set(2, Vec::new()), first.wrapping_add(1));
         assert_eq!(get().0, None);

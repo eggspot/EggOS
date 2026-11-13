@@ -11,11 +11,16 @@
 extern crate alloc;
 
 #[cfg(any(test, eggos_user))]
+#[cfg_attr(not(all(eggos_user, target_arch = "x86_64")), allow(dead_code))]
 mod framework;
 #[cfg(all(eggos_user, target_arch = "x86_64"))]
 mod layer;
 #[cfg(any(test, eggos_user))]
 mod vector_raster;
+
+#[cfg(eggos_user)]
+#[global_allocator]
+static MEMORY: eggos_runtime::pages::Pages = eggos_runtime::pages::Pages;
 
 #[cfg(all(eggos_user, target_arch = "x86_64"))]
 eggos_runtime::main!(layer::run);

@@ -84,7 +84,14 @@ const LUMA_TREE: [i8; 8] = [
     leaf(H_PRED),
     leaf(TM_PRED),
 ];
-const CHROMA_TREE: [i8; 6] = [leaf(DC_PRED), 2, leaf(V_PRED), 4, leaf(H_PRED), leaf(TM_PRED)];
+const CHROMA_TREE: [i8; 6] = [
+    leaf(DC_PRED),
+    2,
+    leaf(V_PRED),
+    4,
+    leaf(H_PRED),
+    leaf(TM_PRED),
+];
 const SEGMENT_TREE: [i8; 6] = [2, 4, 0, -1, -2, -3];
 
 struct BoolDecoder<'a> {
@@ -177,7 +184,10 @@ impl Quantizer {
                 step(&DC_STEPS, deltas[1]) * 2,
                 (step(&AC_STEPS, deltas[2]) * 155 / 100).max(8),
             ),
-            uv: (step(&DC_STEPS, deltas[3]).min(132), step(&AC_STEPS, deltas[4])),
+            uv: (
+                step(&DC_STEPS, deltas[3]).min(132),
+                step(&AC_STEPS, deltas[4]),
+            ),
         }
     }
 }
@@ -318,7 +328,9 @@ fn read_modes(
         }
         _ => 0,
     };
-    let skip = header.skip_probability.is_some_and(|probability| bools.read_bool(probability));
+    let skip = header
+        .skip_probability
+        .is_some_and(|probability| bools.read_bool(probability));
     let luma = bools.read_tree(&LUMA_TREE, &LUMA_MODE_PROBABILITIES);
     let mut subblocks = [implied_subblock_mode(luma); 16];
     if luma == B_PRED {
@@ -399,7 +411,11 @@ fn read_block(
         after_zero = false;
         let value = read_token_value(tokens, table);
         let signed = if tokens.read_bool(128) { -value } else { value };
-        let step = if index == 0 { coding.steps.0 } else { coding.steps.1 };
+        let step = if index == 0 {
+            coding.steps.0
+        } else {
+            coding.steps.1
+        };
         block[ZIGZAG[index]] = signed * step;
         nonzero = true;
         index += 1;
@@ -427,7 +443,9 @@ fn read_token_value(tokens: &mut BoolDecoder<'_>, table: &[u8]) -> i32 {
     };
     let extra = CATEGORY_PROBABILITIES[category]
         .iter()
-        .fold(0, |value, &probability| value << 1 | i32::from(tokens.read_bool(probability)));
+        .fold(0, |value, &probability| {
+            value << 1 | i32::from(tokens.read_bool(probability))
+        });
     CATEGORY_BASES[category] + extra
 }
 
@@ -488,7 +506,12 @@ fn read_coefficients(
     for (index, block) in blocks[16..24].iter_mut().enumerate() {
         let slot = 4 + (index / 4) * 2;
         let (row, column) = (slot + (index % 4) / 2, slot + index % 2);
-        let nonzero = read_block(tokens, &chroma, usize::from(above[column] + left[row]), block);
+        let nonzero = read_block(
+            tokens,
+            &chroma,
+            usize::from(above[column] + left[row]),
+            block,
+        );
         above[column] = u8::from(nonzero);
         left[row] = u8::from(nonzero);
         any |= nonzero;
@@ -507,7 +530,7 @@ fn inverse_walsh(input: &[i32; 16]) -> [i32; 16] {
         temp[12 + i] = d - c;
     }
     let mut out = [0i32; 16];
-    for (row, values) in temp.chunks_exact(4).enumerate() {
+    for (row, values) in temp.as_chunks::<4>().0.iter().enumerate() {
         let (a, b) = (values[0] + values[3], values[1] + values[2]);
         let (c, d) = (values[1] - values[2], values[0] - values[3]);
         out[row * 4] = (a + b + 3) >> 3;
@@ -536,7 +559,7 @@ fn inverse_dct(input: &[i32; 16]) -> [i32; 16] {
         temp[12 + i] = a - d;
     }
     let mut out = [0i32; 16];
-    for (row, values) in temp.chunks_exact(4).enumerate() {
+    for (row, values) in temp.as_chunks::<4>().0.iter().enumerate() {
         let (a, b) = (values[0] + values[2], values[0] - values[2]);
         let (c, d) = rotate(values[1], values[3]);
         out[row * 4] = (a + d + 4) >> 3;
@@ -556,7 +579,9 @@ struct Plane {
 impl Plane {
     fn new(width: usize, height: usize) -> Result<Self, Error> {
         let mut pixels = Vec::new();
-        pixels.try_reserve_exact(width * height).map_err(|_| Error::OutOfMemory)?;
+        pixels
+            .try_reserve_exact(width * height)
+            .map_err(|_| Error::OutOfMemory)?;
         pixels.resize(width * height, 0);
         Ok(Self {
             pixels,
@@ -598,8 +623,12 @@ impl Plane {
 
 fn predict_block(plane: &Plane, x: usize, y: usize, size: usize, mode: u8) -> Vec<i32> {
     let (sx, sy) = (x as isize, y as isize);
-    let above: Vec<i32> = (0..size as isize).map(|i| plane.at(sx + i, sy - 1)).collect();
-    let left: Vec<i32> = (0..size as isize).map(|i| plane.at(sx - 1, sy + i)).collect();
+    let above: Vec<i32> = (0..size as isize)
+        .map(|i| plane.at(sx + i, sy - 1))
+        .collect();
+    let left: Vec<i32> = (0..size as isize)
+        .map(|i| plane.at(sx - 1, sy + i))
+        .collect();
     let corner = plane.at(sx - 1, sy - 1);
     (0..size * size)
         .map(|index| {
@@ -780,7 +809,7 @@ fn reconstruct(
             luma.add_residue(x0 + bx, y0 + by, predicted, block);
         }
     }
-    for (plane, plane_blocks) in chroma.iter_mut().zip(blocks[16..24].chunks_exact(4)) {
+    for (plane, plane_blocks) in chroma.iter_mut().zip(blocks[16..24].as_chunks::<4>().0) {
         let (cx, cy) = (mb_x * 8, mb_y * 8);
         let prediction = predict_block(plane, cx, cy, 8, modes.chroma);
         for (index, block) in plane_blocks.iter().enumerate() {
@@ -818,8 +847,18 @@ fn filter_edge(
 ) {
     let at = |offset: isize| origin.wrapping_add_signed(offset * step as isize);
     let get = |pixels: &[u8], offset: isize| i32::from(pixels[at(offset)]);
-    let (p3, p2, p1, p0) = (get(pixels, -4), get(pixels, -3), get(pixels, -2), get(pixels, -1));
-    let (q0, q1, q2, q3) = (get(pixels, 0), get(pixels, 1), get(pixels, 2), get(pixels, 3));
+    let (p3, p2, p1, p0) = (
+        get(pixels, -4),
+        get(pixels, -3),
+        get(pixels, -2),
+        get(pixels, -1),
+    );
+    let (q0, q1, q2, q3) = (
+        get(pixels, 0),
+        get(pixels, 1),
+        get(pixels, 2),
+        get(pixels, 3),
+    );
     if (p0 - q0).abs() * 2 + ((p1 - q1).abs() >> 1) > limits.edge {
         return;
     }
@@ -827,7 +866,11 @@ fn filter_edge(
     let (sp2, sp1, sp0) = (p2 - 128, p1 - 128, p0 - 128);
     let (sq0, sq1, sq2) = (q0 - 128, q1 - 128, q2 - 128);
     let adjust = |pixels: &mut [u8], outer_taps: bool| {
-        let outer = if outer_taps { clamp_signed(sp1 - sq1) } else { 0 };
+        let outer = if outer_taps {
+            clamp_signed(sp1 - sq1)
+        } else {
+            0
+        };
         let a = clamp_signed(outer + 3 * (sq0 - sp0));
         let q_step = clamp_signed(a + 4) >> 3;
         let p_step = clamp_signed(a + 3) >> 3;
@@ -840,7 +883,10 @@ fn filter_edge(
         return;
     }
     let interior = [p3 - p2, p2 - p1, p1 - p0, q1 - q0, q2 - q1, q3 - q2];
-    if interior.iter().any(|difference| difference.abs() > limits.interior) {
+    if interior
+        .iter()
+        .any(|difference| difference.abs() > limits.interior)
+    {
         return;
     }
     let high_variance =
@@ -933,14 +979,19 @@ fn to_argb(
     height: usize,
 ) -> Result<Vec<u32>, Error> {
     let mut pixels = Vec::new();
-    pixels.try_reserve_exact(width * height).map_err(|_| Error::OutOfMemory)?;
+    pixels
+        .try_reserve_exact(width * height)
+        .map_err(|_| Error::OutOfMemory)?;
     let high = |value: i32, coefficient: i32| (value * coefficient) >> 8;
     let channel = |value: i32| (value >> 6).clamp(0, 255) as u32;
     for y in 0..height {
         for x in 0..width {
             let scaled = high(i32::from(luma.pixels[y * luma.width + x]), 19077);
             let at = (y / 2) * chroma[0].width + x / 2;
-            let (u, v) = (i32::from(chroma[0].pixels[at]), i32::from(chroma[1].pixels[at]));
+            let (u, v) = (
+                i32::from(chroma[0].pixels[at]),
+                i32::from(chroma[1].pixels[at]),
+            );
             let red = scaled + high(v, 26149) - 14234;
             let green = scaled - high(u, 6419) - high(v, 13320) + 8708;
             let blue = scaled + high(u, 33050) - 17685;
@@ -956,7 +1007,9 @@ fn token_partitions(
     count: usize,
 ) -> Result<Vec<BoolDecoder<'_>>, Error> {
     let sizes_bytes = 3 * (count - 1);
-    let sizes = data.get(start..start + sizes_bytes).ok_or(Error::Truncated)?;
+    let sizes = data
+        .get(start..start + sizes_bytes)
+        .ok_or(Error::Truncated)?;
     let mut partitions = Vec::with_capacity(count);
     let mut offset = start + sizes_bytes;
     for index in 0..count {
@@ -967,7 +1020,9 @@ fn token_partitions(
             }
             None => data.len(),
         };
-        partitions.push(BoolDecoder::new(data.get(offset..end).ok_or(Error::Truncated)?));
+        partitions.push(BoolDecoder::new(
+            data.get(offset..end).ok_or(Error::Truncated)?,
+        ));
         offset = end;
     }
     Ok(partitions)
@@ -985,7 +1040,9 @@ pub fn decode(data: &[u8], limits: &Limits) -> Result<Image, Error> {
     }
     let dimension = |at: usize| -> Result<usize, Error> {
         let bytes = data.get(at..at + 2).ok_or(Error::Truncated)?;
-        Ok(usize::from(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x3fff))
+        Ok(usize::from(
+            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x3fff,
+        ))
     };
     let (width, height) = (dimension(6)?, dimension(8)?);
     if width == 0 || height == 0 {
@@ -1001,17 +1058,24 @@ pub fn decode(data: &[u8], limits: &Limits) -> Result<Image, Error> {
     let working = (columns as u64 * rows as u64).checked_mul(MACROBLOCK_BYTES);
     crate::check_working_bytes(working, limits)?;
     let first_end = FIRST_PARTITION_START + (tag >> 5) as usize;
-    let first = data.get(FIRST_PARTITION_START..first_end).ok_or(Error::Truncated)?;
+    let first = data
+        .get(FIRST_PARTITION_START..first_end)
+        .ok_or(Error::Truncated)?;
     let mut bools = BoolDecoder::new(first);
     let header = Header::read(&mut bools)?;
     let mut partitions = token_partitions(data, first_end, 1 << header.partitions_log2)?;
     let partition_count = partitions.len();
     let mut luma = Plane::new(columns * 16, rows * 16)?;
-    let mut chroma = [Plane::new(columns * 8, rows * 8)?, Plane::new(columns * 8, rows * 8)?];
+    let mut chroma = [
+        Plane::new(columns * 8, rows * 8)?,
+        Plane::new(columns * 8, rows * 8)?,
+    ];
     let mut above_modes = vec_of(columns * 4, B_DC)?;
     let mut above_contexts = vec_of(columns, [0u8; 9])?;
     let mut strengths = Vec::new();
-    strengths.try_reserve_exact(columns * rows).map_err(|_| Error::OutOfMemory)?;
+    strengths
+        .try_reserve_exact(columns * rows)
+        .map_err(|_| Error::OutOfMemory)?;
     for mb_y in 0..rows {
         let mut left_modes = [B_DC; 4];
         let mut left_context = [0u8; 9];
@@ -1054,7 +1118,9 @@ pub fn decode(data: &[u8], limits: &Limits) -> Result<Image, Error> {
 
 fn vec_of<T: Clone>(count: usize, value: T) -> Result<Vec<T>, Error> {
     let mut items = Vec::new();
-    items.try_reserve_exact(count).map_err(|_| Error::OutOfMemory)?;
+    items
+        .try_reserve_exact(count)
+        .map_err(|_| Error::OutOfMemory)?;
     items.resize(count, value);
     Ok(items)
 }
@@ -1161,7 +1227,10 @@ mod tests {
         let mut decoder = BoolDecoder::new(&bytes);
         assert_eq!(decoder.read_literal(8), 0x5a);
         assert_eq!(decoder.read_tree(&SUBBLOCK_TREE, &[120; 9]), B_HU);
-        assert_eq!(decoder.read_tree(&LUMA_TREE, &LUMA_MODE_PROBABILITIES), DC_PRED);
+        assert_eq!(
+            decoder.read_tree(&LUMA_TREE, &LUMA_MODE_PROBABILITIES),
+            DC_PRED
+        );
         assert!(decoder.read_bool(1));
     }
 
@@ -1236,9 +1305,15 @@ mod tests {
     fn inter_frames_are_unsupported_and_a_bad_start_code_is_corrupt() {
         let mut frame = skipped_frame(16, 16);
         frame[0] |= 1;
-        assert_eq!(decode(&frame, &Limits::DEFAULT).unwrap_err(), Error::Unsupported);
+        assert_eq!(
+            decode(&frame, &Limits::DEFAULT).unwrap_err(),
+            Error::Unsupported
+        );
         let mut frame = skipped_frame(16, 16);
         frame[3] = 0;
-        assert_eq!(decode(&frame, &Limits::DEFAULT).unwrap_err(), Error::Corrupt);
+        assert_eq!(
+            decode(&frame, &Limits::DEFAULT).unwrap_err(),
+            Error::Corrupt
+        );
     }
 }

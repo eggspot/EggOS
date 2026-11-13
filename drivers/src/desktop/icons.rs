@@ -294,6 +294,7 @@ fn badge_colours(source: Source) -> (u32, u8, u32) {
         Source::Windows => (colour::ICON_WINDOWS, b'W', colour::TEXT),
         Source::Macos => (colour::ICON_MAC, b'M', colour::ICON_DARK),
         Source::Linux => (colour::ICON_LINUX, b'L', colour::ICON_DARK),
+        Source::Android => (colour::ICON_ANDROID, b'A', colour::ICON_DARK),
     }
 }
 

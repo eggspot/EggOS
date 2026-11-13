@@ -5,26 +5,19 @@
 
 use super::CACHED_WINDOW;
 
-/// `struct boot_params`: `efi_loongson` (`mps`, `acpi`, `acpi20`, then `smbios_tables`, whose
-/// `vers` and `vga_bios` precede `loongson_params`).
 const LOONGSON_PARAMS: usize = 3 * 8 + 2 + 8;
 const MEMORY_OFFSET: usize = 0;
 const CPU_OFFSET: usize = 8;
-/// `efi_memory_map_loongson`: `vers`, `nr_map`, `mem_freq`, then 20-byte entries of
-/// `node_id`, `mem_type`, `mem_start` and `mem_size` in MiB.
 const MAP_COUNT: usize = 2;
 const MAP_ENTRIES: usize = 10;
 const MAP_ENTRY: usize = 20;
 const MAP_ENTRIES_MAX: usize = 128;
 const SYSTEM_RAM_LOW: u32 = 1;
 const SYSTEM_RAM_HIGH: u32 = 2;
-/// `efi_cpuinfo_loongson`: the clock at 18 and the CPU count at 22.
 const CPU_CLOCK: usize = 18;
 const CPU_COUNT: usize = 22;
-/// More is not believed: a corrupt table.
 const MAX_CPUS: u32 = 64;
 
-/// Physical addresses above this are not the low memory QEMU keeps its tables in.
 const TABLES_END: u64 = 1 << 32;
 
 /// What the kernel takes from the boot parameters.
@@ -54,7 +47,9 @@ fn bytes<const N: usize>(address: u64) -> [u8; N] {
         // SAFETY: `address` is in the low memory the firmware's tables are in, reached through
         // the cached window, which maps all physical memory from the first instruction on;
         // QEMU wrote the tables before the kernel started and nothing writes them since.
-        *byte = unsafe { core::ptr::read_volatile((CACHED_WINDOW + address + index as u64) as *const u8) };
+        *byte = unsafe {
+            core::ptr::read_volatile((CACHED_WINDOW + address + index as u64) as *const u8)
+        };
     }
     value
 }

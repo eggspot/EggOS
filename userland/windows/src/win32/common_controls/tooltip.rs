@@ -9,8 +9,8 @@ use super::super::gui::{self, Gui, with};
 use super::{Model, NotifyHeader, allocate, default_procedure, notify_parent_keeping, with_state};
 use crate::gui::windows::{self, CommonKind, ControlKind, Procedure, Window};
 use eggos_element_tree::Role;
-use eggos_windows_gui::controls::tooltip::{self as model, Placement, TipIcon, TipText};
 use eggos_windows_gui::controls::LIGHT;
+use eggos_windows_gui::controls::tooltip::{self as model, Placement, TipIcon, TipText};
 use eggos_windows_gui::surface::{Rect, Surface};
 
 const MOST_TOOLS: usize = 64;
@@ -134,7 +134,6 @@ pub(super) fn role(_window: &Window) -> (Role, u16) {
     (Role::Tooltip, 0)
 }
 
-/// `TOOLINFOW`, as far as its `cbSize` says.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct ToolInfo {
@@ -200,7 +199,6 @@ fn find(state: &TipState, owner: usize, id: usize) -> Option<usize> {
         .position(|tool| tool.is_some_and(|tool| tool.owner == owner && tool.id == id))
 }
 
-/// A tool's rectangle in its top-level window's buffer, where the pointer is tracked.
 fn tool_rect(gui: &Gui, tool: &Tool) -> Option<Rect> {
     match tool.flags & TTF_IDISHWND != 0 {
         true => {
@@ -240,8 +238,6 @@ fn state_of(gui: &Gui, control: usize) -> Option<&TipState> {
     super::read_state::<TipState, &TipState>(gui, control, |_, state| state)
 }
 
-/// The tool under `point` (buffer coordinates of `root`): the newest match of the newest
-/// control, as Win32 picks the topmost tool.
 fn tool_under(gui: &Gui, root: usize, point: (i32, i32)) -> Option<(usize, usize)> {
     let (tips, count) = tips_of(gui, root);
     tips[..count].iter().rev().find_map(|&control| {
@@ -249,12 +245,17 @@ fn tool_under(gui: &Gui, root: usize, point: (i32, i32)) -> Option<(usize, usize
         if !state.active {
             return None;
         }
-        state.tools.iter().enumerate().rev().find_map(|(index, tool)| {
-            let tool = tool.as_ref().filter(|tool| tool.flags & TTF_TRACK == 0)?;
-            tool_rect(gui, tool)
-                .filter(|rect| rect.contains(point.0, point.1))
-                .map(|_| (control, index))
-        })
+        state
+            .tools
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, tool)| {
+                let tool = tool.as_ref().filter(|tool| tool.flags & TTF_TRACK == 0)?;
+                tool_rect(gui, tool)
+                    .filter(|rect| rect.contains(point.0, point.1))
+                    .map(|_| (control, index))
+            })
     })
 }
 
@@ -265,9 +266,8 @@ pub fn pointer_moved(gui: &mut Gui, root: usize, point: (i32, i32), time: u32) {
     let tracking = gui.tip;
     if let Some((control, tool, rect, _)) = tracking.shown
         && Some((control, tool)) != under
-        && state_of(gui, control).is_some_and(|state| {
-            state.tools[tool].is_some_and(|tool| tool.flags & TTF_TRACK == 0)
-        })
+        && state_of(gui, control)
+            .is_some_and(|state| state.tools[tool].is_some_and(|tool| tool.flags & TTF_TRACK == 0))
     {
         hide(gui, rect, time);
     }
@@ -319,7 +319,10 @@ fn due(gui: &Gui, now: u32) -> Option<(Due, u32)> {
         if state.tools[tool].is_some_and(|tool| tool.flags & TTF_TRACK != 0) {
             return None;
         }
-        return Some((Due::Hide(control, tool), (since + autopop).saturating_sub(now)));
+        return Some((
+            Due::Hide(control, tool),
+            (since + autopop).saturating_sub(now),
+        ));
     }
     let (control, tool, since) = tracking.resting?;
     if tracking.spent == Some((control, tool)) {
@@ -329,8 +332,15 @@ fn due(gui: &Gui, now: u32) -> Option<(Due, u32)> {
     let hop = tracking
         .hidden_at
         .is_some_and(|hidden| now.wrapping_sub(hidden) <= state.delays[1]);
-    let delay = if hop { state.delays[1] } else { state.delays[0] };
-    Some((Due::Show(control, tool), (since + delay).saturating_sub(now)))
+    let delay = if hop {
+        state.delays[1]
+    } else {
+        state.delays[0]
+    };
+    Some((
+        Due::Show(control, tool),
+        (since + delay).saturating_sub(now),
+    ))
 }
 
 /// Milliseconds until a tip shows or hides, if one waits.
@@ -366,8 +376,9 @@ pub fn tick() {
 }
 
 fn notify_tip(control: usize, tool: usize, code: i32) -> usize {
-    let found = with_state::<TipState, _>(control, |_, state| state.tools[tool].map(|tool| tool.id))
-        .flatten();
+    let found =
+        with_state::<TipState, _>(control, |_, state| state.tools[tool].map(|tool| tool.id))
+            .flatten();
     let Some(id) = found else {
         return 0;
     };
@@ -425,8 +436,6 @@ fn asked_text(control: usize, tool: usize) -> Option<([u16; TEXT_UNITS], usize, 
     Some((out, length, info.flags & TTF_DI_SETITEM != 0))
 }
 
-/// Shows tool `tool`'s tip of `control` now: at `track` (buffer coordinates) for a tracking
-/// tool, else as its kind places it.
 fn show(control: usize, tool: usize, track: Option<(i32, i32)>) {
     let callback = with_state::<TipState, _>(control, |_, state| {
         state.tools[tool].is_some_and(|tool| tool.callback)
@@ -495,7 +504,10 @@ fn place_shown(
             },
             (None, _) => Placement::Pointer(pointer),
         };
-        (model::place(placement, (laid.width, laid.height), content), root)
+        (
+            model::place(placement, (laid.width, laid.height), content),
+            root,
+        )
     };
     let now = super::super::user32::now_ms();
     gui.tip.root = root;
@@ -540,8 +552,20 @@ pub fn paint_shown(gui: &Gui, root: usize) -> Option<Rect> {
         )
     };
     let mut surface = Surface::new(pixels, top.buffer_width, top.buffer_height)?;
-    model::paint(&mut surface, rect, &tip, &laid, style & TTS_BALLOON != 0, &LIGHT);
-    Some(rect.intersection(&Rect::new(0, 0, top.buffer_width as i32, top.buffer_height as i32)))
+    model::paint(
+        &mut surface,
+        rect,
+        &tip,
+        &laid,
+        style & TTS_BALLOON != 0,
+        &LIGHT,
+    );
+    Some(rect.intersection(&Rect::new(
+        0,
+        0,
+        top.buffer_width as i32,
+        top.buffer_height as i32,
+    )))
 }
 
 fn add_tool(control: usize, info: &ToolInfo) -> usize {
@@ -716,7 +740,10 @@ fn track_activate(control: usize, on: bool, lparam: usize) {
 }
 
 fn track_position(control: usize, lparam: usize) {
-    let (x, y) = (lparam as u16 as i16 as i32, (lparam >> 16) as u16 as i16 as i32);
+    let (x, y) = (
+        lparam as u16 as i16 as i32,
+        (lparam >> 16) as u16 as i16 as i32,
+    );
     let root = with(|gui| {
         let root = windows::root_of(&gui.windows, control)?;
         Some((root, gui.windows.get(root)?.menu_height))
@@ -751,20 +778,20 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
         } as usize)
         .unwrap_or(0),
         TTM_RELAYEVENT => 0,
-        TTM_GETTOOLCOUNT => with_state::<TipState, _>(window, |_, state| {
-            state.tools.iter().flatten().count()
-        })
-        .unwrap_or(0),
+        TTM_GETTOOLCOUNT => {
+            with_state::<TipState, _>(window, |_, state| state.tools.iter().flatten().count())
+                .unwrap_or(0)
+        }
         TTM_SETMAXTIPWIDTH => with_state::<TipState, _>(window, |_, state| {
             let previous = state.max_width;
             state.max_width = lparam as i32;
             previous as isize as usize
         })
         .unwrap_or(0),
-        TTM_GETMAXTIPWIDTH => with_state::<TipState, _>(window, |_, state| {
-            state.max_width as isize as usize
-        })
-        .unwrap_or(0),
+        TTM_GETMAXTIPWIDTH => {
+            with_state::<TipState, _>(window, |_, state| state.max_width as isize as usize)
+                .unwrap_or(0)
+        }
         TTM_SETTITLEW => set_title(window, wparam, lparam),
         TTM_POP => {
             pop(window);

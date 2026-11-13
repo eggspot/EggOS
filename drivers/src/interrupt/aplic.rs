@@ -52,6 +52,7 @@ pub fn source_of_specifier(cells: &[u32]) -> Result<(u32, SourceMode), &'static 
 }
 
 /// One APLIC domain, through its registers in `regs`.
+#[derive(Debug)]
 pub struct Aplic<R: RegisterIo> {
     regs: R,
 }
@@ -67,13 +68,15 @@ impl<R: RegisterIo> Aplic<R> {
 
     /// Turns the domain's interrupts on, delivered as MSIs.
     pub fn enable_msi_delivery(&self) {
-        self.regs.write32(DOMAIN_CONFIGURATION, INTERRUPTS_ENABLED | MSI_DELIVERY);
+        self.regs
+            .write32(DOMAIN_CONFIGURATION, INTERRUPTS_ENABLED | MSI_DELIVERY);
     }
 
     /// Makes `source` (1 to [`MOST_SOURCES`]) signal in `mode` and arrive at hart index
     /// `hart` as identity `identity`, and enables it.
     pub fn route(&self, source: u32, mode: SourceMode, hart: u32, identity: u32) {
-        self.regs.write32(Self::per_source(SOURCE_CONFIGURATIONS, source), mode as u32);
+        self.regs
+            .write32(Self::per_source(SOURCE_CONFIGURATIONS, source), mode as u32);
         self.regs.write32(
             Self::per_source(TARGETS, source),
             hart << HART_INDEX_SHIFT | identity & IDENTITY_MASK,
@@ -145,8 +148,14 @@ mod tests {
 
     #[test]
     fn specifiers_give_the_source_and_its_mode() {
-        assert_eq!(source_of_specifier(&[33, 4]), Ok((33, SourceMode::LevelHigh)));
-        assert_eq!(source_of_specifier(&[7, 1]), Ok((7, SourceMode::EdgeRising)));
+        assert_eq!(
+            source_of_specifier(&[33, 4]),
+            Ok((33, SourceMode::LevelHigh))
+        );
+        assert_eq!(
+            source_of_specifier(&[7, 1]),
+            Ok((7, SourceMode::EdgeRising))
+        );
         assert!(source_of_specifier(&[0, 4]).is_err());
     }
 }

@@ -7,6 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use eggos_android_package::vector::{Colour, Vector};
+use eggos_math::roundf;
 
 const CURVE_STEPS: usize = 16;
 const SUBROWS: usize = 4;
@@ -46,8 +47,8 @@ impl Tokens<'_> {
         let mut seen_dot = false;
         let mut seen_exponent = false;
         while let Some(&byte) = self.bytes.get(self.at) {
-            let sign_allowed = self.at == start
-                || matches!(self.bytes.get(self.at - 1), Some(b'e' | b'E'));
+            let sign_allowed =
+                self.at == start || matches!(self.bytes.get(self.at - 1), Some(b'e' | b'E'));
             match byte {
                 b'0'..=b'9' => {}
                 b'-' | b'+' if sign_allowed => {}
@@ -57,7 +58,10 @@ impl Tokens<'_> {
             }
             self.at += 1;
         }
-        core::str::from_utf8(&self.bytes[start..self.at]).ok()?.parse().ok()
+        core::str::from_utf8(&self.bytes[start..self.at])
+            .ok()?
+            .parse()
+            .ok()
     }
 
     fn point(&mut self) -> Option<Point> {
@@ -161,7 +165,9 @@ pub fn polygons(data: &str) -> Vec<Vec<Point>> {
                     }
                     _ => reflected(last_control, current),
                 };
-                let (Some(second), Some(end)) = (tokens.point(), tokens.point()) else { break };
+                let (Some(second), Some(end)) = (tokens.point(), tokens.point()) else {
+                    break;
+                };
                 let (second, end) = (offset(second, current), offset(end, current));
                 cubic(current, first, second, end, &mut shape);
                 control = Some(second);
@@ -205,8 +211,8 @@ fn over(pixel: &mut u32, colour: u32, coverage: f32) {
     let alpha = (colour >> 24) as f32 / 255.0 * coverage;
     let channel = |shift: u32| (colour >> shift & 0xff) as f32 * alpha;
     let below = |shift: u32| (*pixel >> shift & 0xff) as f32 * (1.0 - alpha);
-    let mix = |shift: u32| ((channel(shift) + below(shift)).round() as u32).min(255) << shift;
-    let out_alpha = (alpha * 255.0 + (*pixel >> 24) as f32 * (1.0 - alpha)).round() as u32;
+    let mix = |shift: u32| (roundf(channel(shift) + below(shift)) as u32).min(255) << shift;
+    let out_alpha = roundf(alpha * 255.0 + (*pixel >> 24) as f32 * (1.0 - alpha)) as u32;
     *pixel = out_alpha.min(255) << 24 | mix(16) | mix(8) | mix(0);
 }
 
@@ -240,14 +246,17 @@ fn fill(pixels: &mut [u32], width: usize, shapes: &[Vec<Point>], even_odd: bool,
                 if !inside {
                     continue;
                 }
-                let first = pair[0].0.max(0.0).round() as usize;
-                let last = (pair[1].0.min(width as f32)).round() as usize;
+                let first = roundf(pair[0].0.max(0.0)) as usize;
+                let last = roundf(pair[1].0.min(width as f32)) as usize;
                 for value in coverage.iter_mut().take(last.min(width)).skip(first) {
                     *value += 1.0 / SUBROWS as f32;
                 }
             }
         }
-        for (pixel, &amount) in pixels[row * width..(row + 1) * width].iter_mut().zip(&coverage) {
+        for (pixel, &amount) in pixels[row * width..(row + 1) * width]
+            .iter_mut()
+            .zip(&coverage)
+        {
             if amount > 0.0 {
                 over(pixel, colour, amount.min(1.0));
             }
@@ -261,7 +270,7 @@ pub fn rasterize(
     vector: &Vector,
     colour_of: impl Fn(Colour) -> Option<u32>,
 ) -> Option<(usize, Vec<u32>)> {
-    let (width, height) = (vector.width.round(), vector.height.round());
+    let (width, height) = (roundf(vector.width), roundf(vector.height));
     if !(1.0..=LARGEST_SIDE).contains(&width) || !(1.0..=LARGEST_SIDE).contains(&height) {
         return None;
     }
@@ -275,7 +284,12 @@ pub fn rasterize(
         };
         let shapes: Vec<Vec<Point>> = polygons(&path.data)
             .into_iter()
-            .map(|shape| shape.into_iter().map(|(x, y)| (x * scale_x, y * scale_y)).collect())
+            .map(|shape| {
+                shape
+                    .into_iter()
+                    .map(|(x, y)| (x * scale_x, y * scale_y))
+                    .collect()
+            })
             .collect();
         fill(&mut pixels, width, &shapes, path.even_odd, colour);
     }

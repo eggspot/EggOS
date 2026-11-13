@@ -67,7 +67,11 @@ struct SignalAction {
     mask_high: u64,
 }
 
-#[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+#[cfg(not(any(
+    target_arch = "loongarch64",
+    target_arch = "riscv64",
+    target_arch = "mips64"
+)))]
 #[repr(C)]
 struct SignalAction {
     handler: usize,
@@ -94,14 +98,27 @@ fn termination_action() -> SignalAction {
         SA_RESTORER,
         eggos_runtime::process::restore_after_signal as *const () as usize,
     );
-    #[cfg(any(target_arch = "aarch64", target_arch = "powerpc64", target_arch = "s390x", target_arch = "sparc64"))]
+    #[cfg(any(
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "s390x",
+        target_arch = "sparc64"
+    ))]
     let (flags, restorer) = (0, 0);
-    #[cfg(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64"))]
+    #[cfg(any(
+        target_arch = "loongarch64",
+        target_arch = "riscv64",
+        target_arch = "mips64"
+    ))]
     let flags = 0;
     SignalAction {
         handler: note_termination as *const () as usize,
         flags,
-        #[cfg(not(any(target_arch = "loongarch64", target_arch = "riscv64", target_arch = "mips64")))]
+        #[cfg(not(any(
+            target_arch = "loongarch64",
+            target_arch = "riscv64",
+            target_arch = "mips64"
+        )))]
         restorer,
         #[cfg(target_arch = "mips64")]
         mask_high: 0,

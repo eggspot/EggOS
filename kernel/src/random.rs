@@ -21,7 +21,6 @@
 pub mod blake2s;
 pub mod chacha20;
 
-use eggos_hal::atomic::AtomicU64;
 use crate::cpu;
 use crate::sync::{LeafSpinLock, SpinLock};
 use crate::thread::WaitQueue;
@@ -30,6 +29,7 @@ use chacha20::{BLOCK_SIZE, KEY_SIZE};
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::random::SeedSource;
 
 /// Credited bits that make the generator seeded: a 256-bit key's worth, as on Linux.

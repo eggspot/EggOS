@@ -25,9 +25,6 @@
 
 #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 use crate::atomic::AtomicU64;
-use core::cell::UnsafeCell;
-#[cfg(target_arch = "x86_64")]
-
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
 /// has called [`CpuStart::entry`]; the architecture's entry code reads it through the boot
@@ -112,7 +109,8 @@ impl HalCpuLocal {
                 context_top: 0,
                 entry_stack_top: 0,
                 entry_stack: EntryStack([0; ENTRY_STACK_BYTES]),
-                exception_stacks: [const { ExceptionStack([0; EXCEPTION_STACK_BYTES]) }; EXCEPTION_STACKS],
+                exception_stacks: [const { ExceptionStack([0; EXCEPTION_STACK_BYTES]) };
+                    EXCEPTION_STACKS],
             })),
         }
     }
@@ -219,8 +217,12 @@ impl Default for HalCpuLocal {
     }
 }
 
-/// Where a per-CPU block holds its [`HalCpuLocal`]: right after the block's own address.
-pub const HAL_CPU_LOCAL_OFFSET: usize = 8;
+/// Where a per-CPU block holds its [`HalCpuLocal`]: right after the block's own address, at
+/// the first offset its alignment allows (16 on x86_64, whose entry stacks are 16-byte aligned).
+pub const HAL_CPU_LOCAL_OFFSET: usize = match core::mem::align_of::<HalCpuLocal>() {
+    align if align > 8 => align,
+    _ => 8,
+};
 
 /// Where this CPU's `TSS.RSP0` is in a per-CPU block (x86_64).
 #[cfg(target_arch = "x86_64")]

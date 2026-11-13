@@ -63,7 +63,8 @@ pub mod size {
     pub const SET_PROFILE: usize = 4;
     pub const APPS_CHANGED: usize = 0;
     pub const OPEN_APP: usize = 68;
-    pub const GET_LAUNCH: usize = super::get_launch_reply::COMMAND + crate::desktop::catalogue::COMMAND_CAPACITY;
+    pub const GET_LAUNCH: usize =
+        super::get_launch_reply::COMMAND + crate::desktop::catalogue::COMMAND_CAPACITY;
     pub const TYPE_IN_TERMINAL: usize = 260;
     pub const START_MOVE_OR_RESIZE: usize = 12;
     pub const CAPTURE_WINDOW: usize = 40;

@@ -156,14 +156,17 @@ pub struct SystemImages {
 }
 
 fn word(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn file_header(file: &[u8]) -> Option<(usize, usize, usize)> {
     let header = word(file, 12)? as usize;
     let data = word(file, 16)? as usize;
     let data_bytes = word(file, 20)? as usize;
-    data.checked_add(data_bytes).filter(|&end| end <= file.len())?;
+    data.checked_add(data_bytes)
+        .filter(|&end| end <= file.len())?;
     Some((header, data, data_bytes))
 }
 
@@ -216,7 +219,7 @@ pub fn wpr_meta(
         0,
     ];
     let mut meta = [0u8; WPR_META_BYTES];
-    for (slot, value) in meta.chunks_exact_mut(8).zip(fields) {
+    for (slot, value) in meta.as_chunks_mut::<8>().0.iter_mut().zip(fields) {
         slot.copy_from_slice(&value.to_le_bytes());
     }
     meta
@@ -245,7 +248,10 @@ pub fn write_radix3(table: &mut [u8], table_address: u64, pages: &[u64]) -> Opti
         put((PAGE_BYTES + page * PAGE_ENTRY_BYTES) as usize, address);
     }
     for (index, &page) in pages.iter().enumerate() {
-        put(RADIX3_FIRST_LEVELS as usize + index * PAGE_ENTRY_BYTES as usize, page);
+        put(
+            RADIX3_FIRST_LEVELS as usize + index * PAGE_ENTRY_BYTES as usize,
+            page,
+        );
     }
     Some(())
 }
@@ -253,7 +259,9 @@ pub fn write_radix3(table: &mut [u8], table_address: u64, pages: &[u64]) -> Opti
 /// The tag libos knows a memory region by: its name's first eight letters, the first the
 /// most significant.
 pub fn libos_id(name: &str) -> u64 {
-    name.bytes().take(8).fold(0, |id, letter| id << 8 | u64::from(letter))
+    name.bytes()
+        .take(8)
+        .fold(0, |id, letter| id << 8 | u64::from(letter))
 }
 
 /// libos's arguments page: one contiguous system memory region per name in
@@ -275,7 +283,7 @@ pub fn libos_arguments(regions: &[(u64, u64); 4]) -> [u8; PAGE_BYTES as usize] {
 /// reads after its first word.
 pub fn write_log_pages(log: &mut [u8], address: u64) {
     let pages = log.len() as u64 / PAGE_BYTES;
-    for (page, slot) in (0..pages).zip(log[8..].chunks_exact_mut(8)) {
+    for (page, slot) in (0..pages).zip(log[8..].as_chunks_mut::<8>().0.iter_mut()) {
         slot.copy_from_slice(&(address + page * PAGE_BYTES).to_le_bytes());
     }
 }
@@ -376,7 +384,10 @@ pub fn booter_fuse(engine_mask: u16, ucode_id: u8) -> Option<usize> {
 pub fn booter_identity(file: &[u8]) -> Option<(u16, u8)> {
     let (header, _, _) = file_header(file)?;
     let meta = word(file, header.checked_add(16)?)? as usize;
-    Some((word(file, meta.checked_add(4)?)? as u16, word(file, meta.checked_add(8)?)? as u8))
+    Some((
+        word(file, meta.checked_add(4)?)? as u16,
+        word(file, meta.checked_add(8)?)? as u8,
+    ))
 }
 
 /// The booter file `file` (`booter_load-<version>.bin`), signed for the fuse value `fuse`;
@@ -390,7 +401,9 @@ pub fn booter(file: &[u8], fuse: u32) -> Option<Booter> {
     let meta = field(16)? as usize;
     let count = word(file, field(24)? as usize)? as usize;
     let load = field(28)? as usize;
-    let signature_bytes = signatures_bytes.checked_div(count).filter(|&bytes| bytes > 0)?;
+    let signature_bytes = signatures_bytes
+        .checked_div(count)
+        .filter(|&bytes| bytes > 0)?;
     let fuse_version = word(file, meta)?;
     let index = match fuse {
         0 => count - 1,
@@ -399,10 +412,13 @@ pub fn booter(file: &[u8], fuse: u32) -> Option<Booter> {
     if index >= count {
         return None;
     }
-    let source = signatures.checked_add(first_signature)?.checked_add(index * signature_bytes)?;
+    let source = signatures
+        .checked_add(first_signature)?
+        .checked_add(index * signature_bytes)?;
     let signature = file.get(source..source.checked_add(signature_bytes)?)?;
     let mut body = file.get(data..data + data_bytes)?.to_vec();
-    body.get_mut(place..place.checked_add(signature_bytes)?)?.copy_from_slice(signature);
+    body.get_mut(place..place.checked_add(signature_bytes)?)?
+        .copy_from_slice(signature);
     let load_field = |at: usize| word(file, load.checked_add(at)?).map(|value| value as usize);
     let (data_start, data_size) = (load_field(8)?, load_field(12)?);
     let (code_start, code_size) = (load_field(20)?, load_field(24)?);

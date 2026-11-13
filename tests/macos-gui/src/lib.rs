@@ -113,6 +113,7 @@ impl MacPaint {
                 scroll: 0,
                 placeholder: PLACEHOLDER,
                 escape: Escape::Clear,
+                masked: false,
             },
             field_focused: true,
             key: true,

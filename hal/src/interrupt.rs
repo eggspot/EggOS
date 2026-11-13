@@ -76,7 +76,16 @@ pub struct InterruptMessage {
 /// one (GIC ids of devices start at 32, PLIC sources at 1), so 0 marks a free line.
 #[cfg(any(
     test,
-    all(eggos_kernel, any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "mips64", target_arch = "powerpc64", target_arch = "riscv64"))
+    all(
+        eggos_kernel,
+        any(
+            target_arch = "aarch64",
+            target_arch = "loongarch64",
+            target_arch = "mips64",
+            target_arch = "powerpc64",
+            target_arch = "riscv64"
+        )
+    )
 ))]
 #[derive(Debug)]
 pub(crate) struct SourceLines {
@@ -85,7 +94,16 @@ pub(crate) struct SourceLines {
 
 #[cfg(any(
     test,
-    all(eggos_kernel, any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "mips64", target_arch = "powerpc64", target_arch = "riscv64"))
+    all(
+        eggos_kernel,
+        any(
+            target_arch = "aarch64",
+            target_arch = "loongarch64",
+            target_arch = "mips64",
+            target_arch = "powerpc64",
+            target_arch = "riscv64"
+        )
+    )
 ))]
 impl SourceLines {
     pub(crate) const fn new() -> Self {
@@ -137,7 +155,6 @@ impl SourceLines {
     }
 
     /// The source routed to `line`, if any.
-    #[cfg(test)]
     pub(crate) fn source_of(&self, line: DeviceLine) -> Option<u32> {
         use core::sync::atomic::Ordering;
         let source = self.sources.get(line.index())?.load(Ordering::Acquire);

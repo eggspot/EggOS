@@ -2,7 +2,6 @@
 //! such as "did the architecture entry point zero `.bss`". The QEMU test runner reads the
 //! verdict markers from the console.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::HEAP;
 use crate::address_space::AddressSpace;
 use crate::elf::{self, ProgramHeader, segment};
@@ -17,6 +16,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::Write;
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType};
 use eggos_hal::random::SeedSource;

@@ -209,7 +209,9 @@ impl<H: Host> Interpreter<H> {
                 let start = self.integer_operand(frame, stream)?;
                 let length = self.integer_operand(frame, stream)?;
                 let piece = |bytes: &[u8]| {
-                    let start = usize::try_from(start).unwrap_or(usize::MAX).min(bytes.len());
+                    let start = usize::try_from(start)
+                        .unwrap_or(usize::MAX)
+                        .min(bytes.len());
                     let length = usize::try_from(length).unwrap_or(usize::MAX);
                     let end = start.saturating_add(length).min(bytes.len());
                     bytes[start..end].to_vec()
@@ -235,10 +237,7 @@ impl<H: Host> Interpreter<H> {
             OBJECT_TYPE => {
                 let target = self.super_name(frame, stream)?;
                 let kind = match &target {
-                    Target::Node(node) => self
-                        .namespace
-                        .get(*node)
-                        .map_or(0, Object::object_type),
+                    Target::Node(node) => self.namespace.get(*node).map_or(0, Object::object_type),
                     Target::Debug => crate::object::object_type::DEBUG,
                     other => self.dereferenced(frame, other)?.object_type(),
                 };
@@ -512,8 +511,6 @@ impl<H: Host> Interpreter<H> {
     }
 }
 
-/// `ConcatenateResTemplate`: both templates without their end tags, then one end tag with a
-/// zero checksum.
 fn concatenate_resources(first: &[u8], second: &[u8]) -> Vec<u8> {
     let without_end = |template: &[u8]| -> Vec<u8> {
         let mut at = 0;
@@ -538,8 +535,6 @@ fn concatenate_resources(first: &[u8], second: &[u8]) -> Vec<u8> {
     joined
 }
 
-/// `ToInteger`'s reading of a string: hexadecimal after `0x`, decimal otherwise, up to the
-/// first character that is not a digit.
 fn parse_integer(text: &[u8]) -> u64 {
     let text = text.trim_ascii_start();
     let (digits, radix) = match text {
@@ -551,7 +546,9 @@ fn parse_integer(text: &[u8]) -> u64 {
         let Some(digit) = (byte as char).to_digit(radix) else {
             break;
         };
-        value = value.wrapping_mul(u64::from(radix)).wrapping_add(u64::from(digit));
+        value = value
+            .wrapping_mul(u64::from(radix))
+            .wrapping_add(u64::from(digit));
     }
     value
 }

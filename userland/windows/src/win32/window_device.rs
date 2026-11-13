@@ -197,7 +197,14 @@ impl Device {
 
     /// Makes Linux key `code` with keymap `modifiers` hot key `id` of `window` for the whole
     /// desktop, or gives it up with `remove` (D398).
-    pub fn register_hot_key(&self, window: u32, id: u32, code: u16, modifiers: u8, remove: bool) -> Result<(), Errno> {
+    pub fn register_hot_key(
+        &self,
+        window: u32,
+        id: u32,
+        code: u16,
+        modifiers: u8,
+        remove: bool,
+    ) -> Result<(), Errno> {
         let mut argument = [0u8; 16];
         put(&mut argument, 0, window);
         put(&mut argument, 4, id);

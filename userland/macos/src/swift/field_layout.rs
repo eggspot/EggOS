@@ -5,7 +5,12 @@
 
 /// The offsets of fields of `(size, alignment)` placed from `start`, written into `offsets`;
 /// the instance size after the last and the instance's alignment mask (at least `minimum_mask`).
-pub fn lay_out(start: usize, fields: &[(usize, usize)], offsets: &mut [usize], minimum_mask: usize) -> (usize, usize) {
+pub fn lay_out(
+    start: usize,
+    fields: &[(usize, usize)],
+    offsets: &mut [usize],
+    minimum_mask: usize,
+) -> (usize, usize) {
     let mut at = start;
     let mut mask = minimum_mask;
     for (slot, &(size, alignment)) in offsets.iter_mut().zip(fields) {

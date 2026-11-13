@@ -176,10 +176,6 @@ pub(super) fn translate(
     })
 }
 
-/// The narrow text at `pointer`, at most [`LONGEST_TEXT`] bytes.
-///
-/// # Safety
-/// `pointer` must be a readable NUL-terminated string.
 unsafe fn narrow_at<'a>(pointer: usize) -> &'a [u8] {
     let start = pointer as *const u8;
     let mut length = 0;
@@ -195,11 +191,6 @@ fn is_text_pointer(pointer: usize) -> bool {
     pointer >= RESOURCE_LIMIT && pointer != TEXT_CALLBACK
 }
 
-/// Calls `send` with the wide form of the narrow text at `pointer` (a pointer that is not text
-/// passes as it is).
-///
-/// # Safety
-/// `pointer` must be a resource number, `LPSTR_TEXTCALLBACKA`, null or a readable string.
 unsafe fn with_wide_text(pointer: usize, send: impl FnOnce(usize) -> usize) -> usize {
     if !is_text_pointer(pointer) {
         return send(pointer);
@@ -211,16 +202,14 @@ unsafe fn with_wide_text(pointer: usize, send: impl FnOnce(usize) -> usize) -> u
     }
 }
 
-/// Writes `units` (up to a NUL) as UTF-8 into the program's `capacity` bytes at `out`, cut at a
-/// whole character and NUL-terminated; the bytes written.
-///
-/// # Safety
-/// `out` must hold `capacity` writable bytes.
 unsafe fn narrow_into(units: &[u16], out: usize, capacity: usize) -> usize {
     if out == 0 || capacity == 0 {
         return 0;
     }
-    let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
     // SAFETY: the caller's duty.
     let target = unsafe { core::slice::from_raw_parts_mut(out as *mut u8, capacity) };
     let (written, _) = text::write_utf8(&units[..end], &mut target[..capacity - 1]);
@@ -235,11 +224,15 @@ fn read_word<T: Copy>(bytes: &[u8], at: usize) -> T {
 
 fn write_word<T: Copy>(bytes: &mut [u8], at: usize, value: T) {
     // SAFETY: as in `read_word`, writable.
-    unsafe { bytes.as_mut_ptr().add(at).cast::<T>().write_unaligned(value) }
+    unsafe {
+        bytes
+            .as_mut_ptr()
+            .add(at)
+            .cast::<T>()
+            .write_unaligned(value)
+    }
 }
 
-/// # Safety
-/// `lparam` must be null or the program's structure the rule describes.
 unsafe fn through_structure(
     call: &dyn Fn(usize, usize) -> usize,
     wparam: usize,
@@ -320,11 +313,6 @@ unsafe fn through_structure(
     }
 }
 
-/// `SB_GETTEXTA` (`out` the program's buffer) and `SB_GETTEXTLENGTHA`: the part's text in
-/// bytes of UTF-8, its drawing type in the high word as the `W` message gives it.
-///
-/// # Safety
-/// `out` must be null or hold the bytes `SB_GETTEXTLENGTHA` gave.
 unsafe fn status_text(
     send: &dyn Fn(u32, usize, usize) -> usize,
     part: usize,
@@ -341,7 +329,10 @@ unsafe fn status_text(
     let _ = send(SB_GETTEXTW, part, block as usize);
     // SAFETY: the control wrote at most its length and a NUL into this call's block.
     let wide = unsafe { core::slice::from_raw_parts(block, units) };
-    let end = wide.iter().position(|unit| *unit == 0).unwrap_or(wide.len());
+    let end = wide
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(wide.len());
     let bytes = text::utf8_length(&wide[..end]);
     if writes && out != 0 {
         // SAFETY: the caller's duty: room for the length `SB_GETTEXTLENGTHA` gave and a NUL.
@@ -352,10 +343,6 @@ unsafe fn status_text(
     kind | bytes
 }
 
-/// `TB_ADDSTRINGA` with no module: NUL-separated strings ended by an empty one.
-///
-/// # Safety
-/// `lparam` must be such a list.
 unsafe fn strings(call: &dyn Fn(usize, usize) -> usize, lparam: usize) -> usize {
     if lparam == 0 {
         return call(0, 0);
@@ -384,10 +371,6 @@ unsafe fn strings(call: &dyn Fn(usize, usize) -> usize, lparam: usize) -> usize 
     answer
 }
 
-/// `TB_ADDBUTTONSA` and `TB_INSERTBUTTONA`: buttons whose `iString` may point at narrow text.
-///
-/// # Safety
-/// `lparam` must be `count` readable `TBBUTTON`s (one for an insert).
 unsafe fn buttons(
     call: &dyn Fn(usize, usize) -> usize,
     wparam: usize,
@@ -427,11 +410,6 @@ unsafe fn buttons(
     answer
 }
 
-/// `TB_GETBUTTONTEXTA`: the text of button `id` in bytes of UTF-8, written to `out` when it is
-/// not null.
-///
-/// # Safety
-/// `out` must be null or hold the bytes a call with null gave and a NUL.
 unsafe fn button_text(call: &dyn Fn(usize, usize) -> usize, id: usize, out: usize) -> usize {
     let length = call(id, 0);
     if length == usize::MAX || length as isize == -1 {
@@ -445,7 +423,10 @@ unsafe fn button_text(call: &dyn Fn(usize, usize) -> usize, id: usize, out: usiz
     let _ = call(id, block as usize);
     // SAFETY: the control wrote its text and a NUL into this call's block.
     let wide = unsafe { core::slice::from_raw_parts(block, units) };
-    let end = wide.iter().position(|unit| *unit == 0).unwrap_or(wide.len());
+    let end = wide
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(wide.len());
     let bytes = text::utf8_length(&wide[..end]);
     if out != 0 {
         // SAFETY: the caller's duty.

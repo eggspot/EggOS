@@ -412,14 +412,15 @@ fn check_name(name: &[u8]) -> Result<(), Refused> {
     }
 }
 
-/// The largest file: Linux's largest offset, or on a 32-bit kernel the pages its index can
-/// count (16 TiB, D495).
 const MAX_FILE_SIZE: u64 = {
     let pages = (usize::MAX as u64).saturating_mul(PAGE_SIZE as u64);
-    if pages < i64::MAX as u64 { pages } else { i64::MAX as u64 }
+    if pages < i64::MAX as u64 {
+        pages
+    } else {
+        i64::MAX as u64
+    }
 };
 
-/// The pages that hold `size` bytes, which [`MAX_FILE_SIZE`] keeps within a `usize`.
 fn pages_for(size: u64) -> usize {
     usize::try_from(size.div_ceil(PAGE_SIZE as u64)).unwrap_or(usize::MAX)
 }

@@ -75,7 +75,6 @@ const RETRY_PAUSE_MS: u64 = 100;
 const REAP_PAUSE_MS: u64 = 10;
 const COMMAND_LINE_BYTES: usize = 1024;
 const SIGPIPE: usize = 13;
-const SIG_IGN: u64 = 1;
 const SIGNAL_SET_BYTES: usize = eggos_runtime::signal::SET_BYTES;
 const HOME_MODE: usize = 0o755;
 
@@ -252,7 +251,7 @@ fn wait_for_channel(channel: usize, prompt: Option<usize>, deadline_ms: u64) -> 
 }
 
 fn ignore_broken_pipes() {
-    let action = eggos_runtime::signal::action(SIG_IGN);
+    let action = eggos_runtime::signal::action(eggos_runtime::signal::IGNORE);
     let _ = call(
         number::RT_SIGACTION,
         [SIGPIPE, action.as_ptr() as usize, 0, SIGNAL_SET_BYTES, 0, 0],
@@ -920,7 +919,11 @@ impl System for Linux {
     }
 
     fn folder_entries(&mut self, path: &str, each: &mut dyn FnMut(&[u8])) {
-        const O_DIRECTORY_FLAG: usize = if cfg!(target_arch = "aarch64") { 0o40_000 } else { 0o200_000 };
+        const O_DIRECTORY_FLAG: usize = if cfg!(target_arch = "aarch64") {
+            0o40_000
+        } else {
+            0o200_000
+        };
         let mut buffer = [0u8; MAX_PATH_BYTES + 1];
         let Some(path) = c_path(path, &mut buffer) else {
             return;
@@ -932,7 +935,14 @@ impl System for Linux {
         loop {
             let read = call(
                 number::GETDENTS64,
-                [folder, entries.as_mut_ptr() as usize, entries.len(), 0, 0, 0],
+                [
+                    folder,
+                    entries.as_mut_ptr() as usize,
+                    entries.len(),
+                    0,
+                    0,
+                    0,
+                ],
             );
             let Ok(length) = read else {
                 break;
@@ -947,7 +957,10 @@ impl System for Linux {
                     break;
                 }
                 let name = &entries[at + 19..at + record];
-                let name = &name[..name.iter().position(|&byte| byte == 0).unwrap_or(name.len())];
+                let name = &name[..name
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(name.len())];
                 if name != b"." && name != b".." {
                     each(name);
                 }

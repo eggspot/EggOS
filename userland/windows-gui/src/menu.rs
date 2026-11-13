@@ -21,11 +21,9 @@ const DROP_DOWN_EXTRA_WIDTH: i32 = 48;
 const ITEM_TEXT_LEFT: i32 = 28;
 const CHECK_LEFT: i32 = 7;
 const CHECK_TOP: i32 = 5;
-/// The submenu arrow: a triangle 4 wide and 7 tall, its right edge this far from the row's.
 const ARROW_RIGHT: i32 = 10;
 const ARROW_TOP: i32 = 8;
 const ARROW_HEIGHT: i32 = 7;
-/// How far a submenu overlaps its parent drop-down.
 const CASCADE_OVERLAP: i32 = 2;
 
 /// One bar entry or drop-down item as the layout sees it.
@@ -161,7 +159,12 @@ pub fn item_top(rect: Rect, items: &[MenuLabel<'_>], index: usize) -> Option<i32
 /// The submenu of `items` that the item whose row starts at `row_top` of the drop-down at
 /// `parent` opens (D337): at the parent's right edge, its first item level with that row,
 /// flipped to the parent's left when it would leave a content `content_width` wide.
-pub fn cascade_rect(items: &[MenuLabel<'_>], parent: Rect, row_top: i32, content_width: i32) -> Rect {
+pub fn cascade_rect(
+    items: &[MenuLabel<'_>],
+    parent: Rect,
+    row_top: i32,
+    content_width: i32,
+) -> Rect {
     let sized = drop_down_rect(items, 0, content_width);
     let width = sized.right - sized.left;
     let height = sized.bottom - sized.top;
@@ -220,7 +223,15 @@ pub fn paint_drop_down(
             let tip = row.right - ARROW_RIGHT;
             for step in 0..=ARROW_HEIGHT / 2 {
                 let length = ARROW_HEIGHT - 2 * step;
-                surface.fill(Rect::sized(tip - ARROW_HEIGHT / 2 + step, row.top + ARROW_TOP + step, 1, length), colour);
+                surface.fill(
+                    Rect::sized(
+                        tip - ARROW_HEIGHT / 2 + step,
+                        row.top + ARROW_TOP + step,
+                        1,
+                        length,
+                    ),
+                    colour,
+                );
             }
         }
         let mut cells = [Cell::Space; MAX_LABEL_CELLS];

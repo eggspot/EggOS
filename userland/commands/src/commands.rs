@@ -12,8 +12,9 @@ use crate::errors::{
     READ_ONLY, SETTING_READ_ONLY, STILL_DOWNLOADING, TIMED_OUT, TOO_MANY_ENTRIES, USAGE,
 };
 use crate::errors::{
-    COMPONENT_BUSY, DECLINED_BY_USER, IN_USE, INSTALL_FAILED, NEEDED_BY, NEEDS_CONFIRMATION,
-    NO_STORE, NO_SUCH_COMPONENT, REMOVE_FAILED, STORE_DAMAGED, STORE_DETACHED,
+    COMPONENT_BUSY, DECLINED_BY_USER, FIXED_BY_FORM, IN_USE, INSTALL_FAILED, NEEDED_BY,
+    NEEDS_CONFIRMATION, NO_STORE, NO_SUCH_COMPONENT, NOT_IN_THIS_FORM, REMOVE_FAILED,
+    STORE_DAMAGED, STORE_DETACHED,
 };
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
@@ -1004,7 +1005,10 @@ pub const APP_DO: CommandDefinition = CommandDefinition {
             ValueType::Text,
             "The arguments' values as a JSON object of text, numbers and booleans.",
         ),
-        long_flag("confirmed", "The user agreed to an action that deletes or overwrites."),
+        long_flag(
+            "confirmed",
+            "The user agreed to an action that deletes or overwrites.",
+        ),
     ],
     operands: &[
         operand("name", ValueType::Text, Count::One),
@@ -1984,10 +1988,16 @@ pub const COMPONENT_EDITION: CommandDefinition = CommandDefinition {
         exits(&INSTALL_FAILED, 1),
         exits(&PERMISSION_DENIED, 1),
     ],
-    examples: &[example(
-        "component edition",
-        "  server\tThe base alone: no desktop and no foreign apps.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
-    )],
+    examples: &[
+        example(
+            "component edition",
+            "* server\tThe base alone: no desktop and no foreign apps.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
+        ),
+        example(
+            "component edition --dry-run personal",
+            "Would install for Personal: windows-apps\n",
+        ),
+    ],
     surface: Surface::Gui("Settings: Components"),
 };
 
@@ -2075,7 +2085,10 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
         exits(&INSTALL_FAILED, 1),
         exits(&PERMISSION_DENIED, 1),
     ],
-    examples: &[],
+    examples: &[example(
+        "component update --dry-run --json",
+        "{\"updated\":[],\"fetched_bytes\":0}\n",
+    )],
     surface: COMPONENT_SURFACE,
 };
 
@@ -3464,11 +3477,18 @@ pub const WIFI_CONNECT: CommandDefinition = CommandDefinition {
                   reads; the Wi-Fi driver joins it after its next scan, and wifi list then says \
                   connected. An open network takes no passphrase; --hidden joins a network that \
                   hides its name, probing for it by name (D298).",
-    options: &[long_flag("hidden", "The network hides its name: probe for it by name.")],
+    options: &[long_flag(
+        "hidden",
+        "The network hides its name: probe for it by name.",
+    )],
     operands: &[WIFI_SSID, WIFI_PASSPHRASE],
     outputs: TEXT_ONLY,
     max_effect: Effect::Change,
-    errors: &[exits(&USAGE, 1), exits(&PERMISSION_DENIED, 1), exits(&FAILED, 1)],
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
     examples: &[example(
         "wifi connect home correct-horse",
         "Joining home after the next scan; wifi list shows when it is connected.\n",
@@ -3486,7 +3506,11 @@ pub const WIFI_FORGET: CommandDefinition = CommandDefinition {
     operands: &[],
     outputs: TEXT_ONLY,
     max_effect: Effect::Destroy,
-    errors: &[exits(&USAGE, 1), exits(&NO_SUCH_FILE, 1), exits(&PERMISSION_DENIED, 1)],
+    errors: &[
+        exits(&USAGE, 1),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&PERMISSION_DENIED, 1),
+    ],
     examples: &[Example {
         line: "wifi forget",
         output: "No network to join.\n",
@@ -3732,13 +3756,20 @@ pub const SETTINGS: CommandDefinition = CommandDefinition {
 
 const SETTINGS_LIST_TEXT: &str = concat!(
     "shell.profile=macos\n",
+    "shell.form=auto\n",
+    "shell.form_in_use=desktop\n",
+    "input.present=keyboard,pointer\n",
     "appearance.theme=dark\n",
     "display.scale=1\n",
-    "display.resolution=1280x800\n",
+    "display.resolution=auto\n",
+    "display.size=1280x800\n",
+    "display.resolution_changeable=yes\n",
+    "display.rotation=auto\n",
     "display.pointer=software\n",
     "keyboard.layout=us\n",
     "keyboard.layouts=us\n",
     "keyboard.switch_key=profile\n",
+    "keyboard.on_screen=auto\n",
     "time.zone=UTC\n",
     "time.automatic=on\n",
     "time.sync=none\n",
@@ -3950,7 +3981,10 @@ pub const DISK_INSTALL: CommandDefinition = CommandDefinition {
                   on a terminal; --yes answers for them, and without a terminal it needs --yes. \
                   --dry-run says what would be erased and writes nothing. A mounted or read-only \
                   disk is refused, and so is a system not started by EggOS's UEFI loader.",
-    options: &[named_flag(b'y', "yes", "Install without asking."), DRY_RUN_OPTION],
+    options: &[
+        named_flag(b'y', "yes", "Install without asking."),
+        DRY_RUN_OPTION,
+    ],
     operands: &[DISK_OPERAND],
     outputs: TEXT_ONLY,
     max_effect: Effect::Destroy,
@@ -4307,12 +4341,12 @@ pub static COMMANDS: [CommandDefinition; 116] = [
     CHMOD,
     CLIP_GET,
     CLIP_SET,
-    COMPONENT_EDITION,
     COMPONENT_CANCEL,
+    COMPONENT_EDITION,
     COMPONENT_INSTALL,
-    COMPONENT_UPDATE,
     COMPONENT_LIST,
     COMPONENT_REMOVE,
+    COMPONENT_UPDATE,
     CP,
     DATE,
     DEVICE_LIST,

@@ -30,14 +30,12 @@ const CORE_UPDATE: u32 = 0x0200;
 const SOR_CONTROL: u32 = 0x0300;
 const SOR_STRIDE: u32 = 0x20;
 const WINDOW_CONTROL: u32 = 0x1000;
-const WINDOW_FORMAT_BOUNDS: u32 = 0x1004;
 const WINDOW_USAGE_BOUNDS: u32 = 0x1010;
 const HEAD_OUTPUT_RESOURCE: u32 = 0x2004;
 const HEAD_PIXEL_CLOCK: u32 = 0x200c;
 const HEAD_PIXEL_CLOCK_MAX: u32 = 0x2028;
 const HEAD_USAGE_BOUNDS: u32 = 0x2030;
 const HEAD_VIEWPORT_POINT_IN: u32 = 0x2048;
-const HEAD_VIEWPORT_SIZE_IN: u32 = 0x204c;
 const HEAD_VIEWPORT_SIZE_OUT: u32 = 0x2058;
 const HEAD_RASTER: u32 = 0x2064;
 const WINDOW_UPDATE: u32 = 0x0200;
@@ -80,7 +78,8 @@ pub struct Push {
 
 impl Push {
     fn methods(&mut self, offset: u32, data: &[u32]) {
-        self.words.push((data.len() as u32) << METHOD_COUNT_SHIFT | offset);
+        self.words
+            .push((data.len() as u32) << METHOD_COUNT_SHIFT | offset);
         self.words.extend_from_slice(data);
     }
 }
@@ -96,7 +95,10 @@ pub fn raster(timing: &Timing) -> [u32; 4] {
         timing.width + timing.horizontal_blank,
         timing.height + timing.vertical_blank,
     );
-    let sync_end = (timing.horizontal_sync_width - 1, timing.vertical_sync_width - 1);
+    let sync_end = (
+        timing.horizontal_sync_width - 1,
+        timing.vertical_sync_width - 1,
+    );
     let blank_end = (
         total.0 - timing.width - timing.horizontal_sync_offset - 1,
         total.1 - timing.height - timing.vertical_sync_offset - 1,
@@ -114,8 +116,15 @@ pub fn raster(timing: &Timing) -> [u32; 4] {
 /// 0 owned by it and showing `surface` (width, height), then the core's update.
 pub fn core_methods(sor: u32, timing: &Timing, surface: (u32, u32)) -> Push {
     let mut push = Push::default();
-    let polarity = if timing.horizontal_sync_positive { 0 } else { HSYNC_NEGATIVE }
-        | if timing.vertical_sync_positive { 0 } else { VSYNC_NEGATIVE };
+    let polarity = if timing.horizontal_sync_positive {
+        0
+    } else {
+        HSYNC_NEGATIVE
+    } | if timing.vertical_sync_positive {
+        0
+    } else {
+        VSYNC_NEGATIVE
+    };
     let hertz = timing.clock_khz * 1000;
     let size = pair(timing.width, timing.height);
     push.methods(SOR_CONTROL + sor * SOR_STRIDE, &[1 | PROTOCOL_DP_A]);
@@ -139,7 +148,10 @@ pub fn window_methods(surface: (u32, u32, u32), handle: u32) -> Push {
     let (width, height, pitch) = surface;
     let size = pair(width, height);
     push.methods(WINDOW_PRESENT, &[0]);
-    push.methods(WINDOW_SIZE, &[size, 0, FORMAT_X8R8G8B8, pitch >> PITCH_UNIT_SHIFT]);
+    push.methods(
+        WINDOW_SIZE,
+        &[size, 0, FORMAT_X8R8G8B8, pitch >> PITCH_UNIT_SHIFT],
+    );
     push.methods(WINDOW_CONTEXT_DMA, &[handle]);
     push.methods(WINDOW_OFFSET, &[0]);
     push.methods(WINDOW_POINT_IN, &[0]);
@@ -209,7 +221,11 @@ pub fn stream_symbols(
     let watermark = watermark.max(WATERMARK_LEAST);
     let framing = if enhanced { 3 * 8 * lanes64 } else { 0 };
     let remainder = surface_width % lanes64;
-    let steering = if remainder != 0 { (lanes64 - remainder) * BITS_PER_PIXEL } else { 0 };
+    let steering = if remainder != 0 {
+        (lanes64 - remainder) * BITS_PER_PIXEL
+    } else {
+        0
+    };
     let blanking_bits = 3 * 8 * lanes64 + framing + 3 * 8 * 4 + steering;
     let blanking_clocks = blanking_bits * PRECISION / (8 * lanes64);
     let least_blank = blanking_clocks * pixel_rate / symbol_rate / PRECISION + 12;
@@ -279,7 +295,7 @@ mod tests {
 
     #[test]
     fn hash_entries_name_the_channel_offset_and_client() {
-        assert_eq!(hash_slot(0x0000_0401, 1), 0x1 ^ 0x1 ^ 0x40);
+        assert_eq!(hash_slot(0x0000_0401, 1), 0x40);
         assert_eq!(hash_context(1, 0x2000, 0xc1d0_0000), 1 << 25 | 0x2000 << 9);
         assert_eq!(context_dma(0x100, 0x200), [0x5, 0x1, 0, 0x2, 0]);
     }

@@ -96,7 +96,8 @@ impl BootKeyboard {
         }
         self.previous.copy_from_slice(report);
         if sent > 0 {
-            send(SYNC);
+            event(SYNC);
+            sent += 1;
         }
         sent
     }
@@ -139,7 +140,10 @@ impl BootMouse {
         let motion = [
             (relative::X, i32::from(report[1] as i8)),
             (relative::Y, i32::from(report[2] as i8)),
-            (relative::WHEEL, report.get(3).map_or(0, |&wheel| i32::from(wheel as i8))),
+            (
+                relative::WHEEL,
+                report.get(3).map_or(0, |&wheel| i32::from(wheel as i8)),
+            ),
         ];
         for (code, value) in motion {
             if value != 0 {
@@ -151,7 +155,8 @@ impl BootMouse {
             }
         }
         if sent > 0 {
-            send(SYNC);
+            event(SYNC);
+            sent += 1;
         }
         sent
     }

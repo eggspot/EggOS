@@ -1,7 +1,9 @@
 //! NVM Express controllers (NVMe 1.4 base specification; D238): the admin queue, one I/O queue
 //! pair, the first active namespace, read, write and flush, polled.
 
-use super::{Covering, Error, SECTOR_SIZE, copy_in, copy_out, covering, read32, write32, write64, zero};
+use super::{
+    Covering, Error, SECTOR_SIZE, copy_in, copy_out, covering, read32, write32, write64, zero,
+};
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
 use core::sync::atomic::{Ordering, fence};
@@ -156,7 +158,10 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<Self, (Error, Option<M>)> {
         if memory.len() < MEMORY_BYTES {
-            return Err((Error::Unsupported("too little DMA memory for an NVMe controller"), Some(memory)));
+            return Err((
+                Error::Unsupported("too little DMA memory for an NVMe controller"),
+                Some(memory),
+            ));
         }
         let capabilities = read64(&regs, CAP);
         let max_entries = (capabilities & 0xffff) as usize + 1;
@@ -164,7 +169,10 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         let supports_nvm = capabilities >> 37 & 1 == 1;
         let minimum_page = 1usize << (12 + ((capabilities >> 48) & 0xf));
         if !supports_nvm || minimum_page > PAGE {
-            return Err((Error::Unsupported("the controller has no NVM command set with 4 KiB pages"), Some(memory)));
+            return Err((
+                Error::Unsupported("the controller has no NVM command set with 4 KiB pages"),
+                Some(memory),
+            ));
         }
         let entries = QUEUE_ENTRIES.min(max_entries).max(2);
         let mut controller = Self {
@@ -188,7 +196,12 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         }
     }
 
-    fn wait_status(&self, mask: u32, wanted: u32, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    fn wait_status(
+        &self,
+        mask: u32,
+        wanted: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         loop {
             let status = self.regs.read32(CSTS);
             if status == u32::MAX {
@@ -220,11 +233,14 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         zero(&self.memory, 0, DATA);
         let base = self.memory.dma_addr().get();
         let entries = self.admin.entries as u32;
-        self.regs.write32(AQA, ((entries - 1) << 16) | (entries - 1));
+        self.regs
+            .write32(AQA, ((entries - 1) << 16) | (entries - 1));
         self.regs.write32(ASQ, (base + ADMIN_SQ as u64) as u32);
-        self.regs.write32(ASQ + 4, ((base + ADMIN_SQ as u64) >> 32) as u32);
+        self.regs
+            .write32(ASQ + 4, ((base + ADMIN_SQ as u64) >> 32) as u32);
         self.regs.write32(ACQ, (base + ADMIN_CQ as u64) as u32);
-        self.regs.write32(ACQ + 4, ((base + ADMIN_CQ as u64) >> 32) as u32);
+        self.regs
+            .write32(ACQ + 4, ((base + ADMIN_CQ as u64) >> 32) as u32);
         self.regs.write32(
             CC,
             CC_ENABLE | CC_IO_SUBMISSION_ENTRY_64_BYTES | CC_IO_COMPLETION_ENTRY_16_BYTES,
@@ -233,7 +249,9 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
 
         let identify = base + IDENTIFY as u64;
         self.admin_command(
-            Command::new(ADMIN_IDENTIFY).data(identify, 0).dword(10, IDENTIFY_CONTROLLER),
+            Command::new(ADMIN_IDENTIFY)
+                .data(identify, 0)
+                .dword(10, IDENTIFY_CONTROLLER),
             keep_waiting,
         )?;
         let mut controller = [0u8; 1024];
@@ -246,7 +264,9 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         self.volatile_write_cache = controller[525] & 1 != 0;
 
         self.admin_command(
-            Command::new(ADMIN_IDENTIFY).data(identify, 0).dword(10, IDENTIFY_ACTIVE_NAMESPACES),
+            Command::new(ADMIN_IDENTIFY)
+                .data(identify, 0)
+                .dword(10, IDENTIFY_ACTIVE_NAMESPACES),
             keep_waiting,
         )?;
         let namespace = read32(&self.memory, IDENTIFY);
@@ -263,8 +283,9 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         )?;
         let mut description = [0u8; 256];
         copy_out(&self.memory, IDENTIFY, &mut description);
-        let (blocks, block_bytes) = namespace_size(&description)
-            .ok_or(Error::Unsupported("the namespace's block size is not one the kernel takes"))?;
+        let (blocks, block_bytes) = namespace_size(&description).ok_or(Error::Unsupported(
+            "the namespace's block size is not one the kernel takes",
+        ))?;
         self.blocks = blocks;
         self.block_bytes = block_bytes;
 
@@ -286,7 +307,12 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         Ok(())
     }
 
-    fn submit(&mut self, io: bool, command: Command, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u32, Error> {
+    fn submit(
+        &mut self,
+        io: bool,
+        command: Command,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<u32, Error> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let command = command.with_id(id);
@@ -336,7 +362,11 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         }
     }
 
-    fn admin_command(&mut self, command: Command, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u32, Error> {
+    fn admin_command(
+        &mut self,
+        command: Command,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<u32, Error> {
         self.submit(false, command, keep_waiting)
     }
 
@@ -355,13 +385,24 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         self.volatile_write_cache
     }
 
-    fn transfer_blocks(&mut self, opcode: u8, first: u64, blocks: u64, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    fn transfer_blocks(
+        &mut self,
+        opcode: u8,
+        first: u64,
+        blocks: u64,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let bytes = blocks as usize * self.block_bytes;
         let base = self.memory.dma_addr().get();
         let data = base + DATA as u64;
-        let (first_entry, second_entry, list_entries) = prp_entries(data, bytes, base + PRP_LIST as u64);
+        let (first_entry, second_entry, list_entries) =
+            prp_entries(data, bytes, base + PRP_LIST as u64);
         for index in 0..list_entries {
-            write64(&self.memory, PRP_LIST + index * 8, data + ((index + 1) * PAGE) as u64);
+            write64(
+                &self.memory,
+                PRP_LIST + index * 8,
+                data + ((index + 1) * PAGE) as u64,
+            );
         }
         let command = Command::new(opcode)
             .namespace(self.namespace)
@@ -391,17 +432,30 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
     }
 
     /// Reads the sectors from `sector` on into `buffer`, a whole number of sectors.
-    pub fn read(&mut self, sector: u64, buffer: &mut [u8], keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    pub fn read(
+        &mut self,
+        sector: u64,
+        buffer: &mut [u8],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let sectors = self.check(sector, buffer.len())?;
         let chunk = self.chunk_sectors();
         let mut done = 0u64;
         while done < sectors {
             let count = chunk.min(sectors - done);
-            let Covering { first_block, blocks, skip_bytes } = covering(sector + done, count, self.block_bytes);
+            let Covering {
+                first_block,
+                blocks,
+                skip_bytes,
+            } = covering(sector + done, count, self.block_bytes);
             self.transfer_blocks(IO_READ, first_block, blocks, keep_waiting)?;
             let start = done as usize * SECTOR_SIZE;
             let length = count as usize * SECTOR_SIZE;
-            copy_out(&self.memory, DATA + skip_bytes, &mut buffer[start..start + length]);
+            copy_out(
+                &self.memory,
+                DATA + skip_bytes,
+                &mut buffer[start..start + length],
+            );
             done += count;
         }
         Ok(())
@@ -409,19 +463,32 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
 
     /// Writes `buffer`, a whole number of sectors, to the sectors from `sector` on; a partial
     /// logical block is read first and written whole.
-    pub fn write(&mut self, sector: u64, buffer: &[u8], keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    pub fn write(
+        &mut self,
+        sector: u64,
+        buffer: &[u8],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let sectors = self.check(sector, buffer.len())?;
         let chunk = self.chunk_sectors();
         let mut done = 0u64;
         while done < sectors {
             let count = chunk.min(sectors - done);
-            let Covering { first_block, blocks, skip_bytes } = covering(sector + done, count, self.block_bytes);
+            let Covering {
+                first_block,
+                blocks,
+                skip_bytes,
+            } = covering(sector + done, count, self.block_bytes);
             let length = count as usize * SECTOR_SIZE;
             if skip_bytes != 0 || length != blocks as usize * self.block_bytes {
                 self.transfer_blocks(IO_READ, first_block, blocks, keep_waiting)?;
             }
             let start = done as usize * SECTOR_SIZE;
-            copy_in(&self.memory, DATA + skip_bytes, &buffer[start..start + length]);
+            copy_in(
+                &self.memory,
+                DATA + skip_bytes,
+                &buffer[start..start + length],
+            );
             fence(Ordering::SeqCst);
             self.transfer_blocks(IO_WRITE, first_block, blocks, keep_waiting)?;
             done += count;
@@ -441,8 +508,14 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
     /// Deletes the I/O queues, shuts the controller down normally and disables it, handing the
     /// registers and the memory back when the controller no longer uses it.
     pub fn shut_down(mut self, keep_waiting: &mut dyn FnMut() -> bool) -> (R, Option<M>) {
-        let _ = self.admin_command(Command::new(ADMIN_DELETE_SUBMISSION_QUEUE).dword(10, 1), keep_waiting);
-        let _ = self.admin_command(Command::new(ADMIN_DELETE_COMPLETION_QUEUE).dword(10, 1), keep_waiting);
+        let _ = self.admin_command(
+            Command::new(ADMIN_DELETE_SUBMISSION_QUEUE).dword(10, 1),
+            keep_waiting,
+        );
+        let _ = self.admin_command(
+            Command::new(ADMIN_DELETE_COMPLETION_QUEUE).dword(10, 1),
+            keep_waiting,
+        );
         let configuration = self.regs.read32(CC);
         self.regs.write32(CC, configuration | CC_SHUTDOWN_NORMAL);
         let _ = self.wait_status(CSTS_SHUTDOWN_MASK, CSTS_SHUTDOWN_COMPLETE, keep_waiting);
@@ -471,8 +544,14 @@ mod tests {
     #[test]
     fn small_transfers_take_one_or_two_prp_entries_and_large_ones_a_list() {
         assert_eq!(prp_entries(0x10_0000, 512, 0x9000), (0x10_0000, 0, 0));
-        assert_eq!(prp_entries(0x10_0000, 8192, 0x9000), (0x10_0000, 0x10_1000, 0));
-        assert_eq!(prp_entries(0x10_0000, 16384, 0x9000), (0x10_0000, 0x9000, 3));
+        assert_eq!(
+            prp_entries(0x10_0000, 8192, 0x9000),
+            (0x10_0000, 0x10_1000, 0)
+        );
+        assert_eq!(
+            prp_entries(0x10_0000, 16384, 0x9000),
+            (0x10_0000, 0x9000, 3)
+        );
     }
 
     #[test]

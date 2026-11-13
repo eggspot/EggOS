@@ -41,7 +41,12 @@ fn superclass_size(metadata: usize) -> usize {
     }
 }
 
-fn lay_out_class(metadata: usize, count: usize, field_types: *const usize, field_offsets: *mut usize) {
+fn lay_out_class(
+    metadata: usize,
+    count: usize,
+    field_types: *const usize,
+    field_offsets: *mut usize,
+) {
     let count = count.min(MOST_FIELDS);
     let mut fields = [(0usize, 1usize); MOST_FIELDS];
     for (index, field) in fields.iter_mut().enumerate().take(count) {
@@ -53,7 +58,12 @@ fn lay_out_class(metadata: usize, count: usize, field_types: *const usize, field
     }
     let start = superclass_size(metadata);
     let mut offsets = [0usize; MOST_FIELDS];
-    let (size, mask) = lay_out(start, &fields[..count], &mut offsets[..count], HEADER_ALIGN_MASK);
+    let (size, mask) = lay_out(
+        start,
+        &fields[..count],
+        &mut offsets[..count],
+        HEADER_ALIGN_MASK,
+    );
     for (index, &offset) in offsets[..count].iter().enumerate() {
         // SAFETY: the class's field offset vector, `count` words the compiler reserved.
         unsafe { field_offsets.add(index).write(offset) };

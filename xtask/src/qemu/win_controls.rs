@@ -134,6 +134,8 @@ fn as_labels(labels: &[(Vec<u16>, bool)]) -> Vec<MenuLabel<'_>> {
             separator: *separator,
             grayed: false,
             checked: false,
+            radio: false,
+            submenu: false,
         })
         .collect()
 }

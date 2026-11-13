@@ -269,6 +269,7 @@ dependencies = [
  "eggos-toolkit",
  "eggos-translate",
  "eggos-wayland",
+ "eggos-wifi",
 ]
 
 [[package]]

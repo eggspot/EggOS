@@ -105,7 +105,11 @@ pub fn decimal_variant(bytes: &[u8; 16]) -> Variant {
     low.copy_from_slice(&bytes[8..]);
     Variant {
         kind: kind::DECIMAL,
-        reserved: [(head >> 16) as u16, (head >> 32) as u16, (head >> 48) as u16],
+        reserved: [
+            (head >> 16) as u16,
+            (head >> 32) as u16,
+            (head >> 48) as u16,
+        ],
         data: [u64::from_le_bytes(low), 0],
     }
 }

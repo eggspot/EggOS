@@ -349,7 +349,11 @@ impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, 
         };
         let response = self.0.tree().handle(escape, time_ms);
         match response {
-            Response::Unused { code: crate::input::key::ESC, .. } | Response::Nothing => self.0.back(time_ms),
+            Response::Unused {
+                code: crate::input::key::ESC,
+                ..
+            }
+            | Response::Nothing => self.0.back(time_ms),
             other => {
                 self.0.respond(other, time_ms);
                 true
@@ -544,7 +548,11 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                     view.resize((width / scale) as i32, (height / scale) as i32);
                     everything = true;
                 }
-                Input::Key { code: crate::input::key::BACK, pressed, .. } => {
+                Input::Key {
+                    code: crate::input::key::BACK,
+                    pressed,
+                    ..
+                } => {
                     if pressed && !view.back(event.time_ms) {
                         window.back_unused()?;
                     }
@@ -564,12 +572,20 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                     let focus = view.text_focus();
                     let cause = match other {
                         Input::Button { pressed: true, .. } => Some(FOCUS_BY_TAP),
-                        Input::Key { code: crate::input::key::ENTER, pressed: true, .. } => Some(FOCUS_BY_ACTIVATE),
+                        Input::Key {
+                            code: crate::input::key::ENTER,
+                            pressed: true,
+                            ..
+                        } => Some(FOCUS_BY_ACTIVATE),
                         _ => None,
                     };
                     let asked = cause.is_some() && focus.0 != TEXT_FOCUS_NONE;
                     if focus != sent_text_focus || asked {
-                        let _ = window.set_text_focus(focus.0, focus.1, cause.unwrap_or(FOCUS_OTHERWISE));
+                        let _ = window.set_text_focus(
+                            focus.0,
+                            focus.1,
+                            cause.unwrap_or(FOCUS_OTHERWISE),
+                        );
                         sent_text_focus = focus;
                     }
                 }

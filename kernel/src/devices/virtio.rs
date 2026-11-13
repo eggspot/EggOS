@@ -14,10 +14,10 @@ use super::{
 use crate::sync::LeafSpinLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use eggos_drivers::channel::{self, SubchannelId};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::pci::msix::MsixTable;
-use eggos_drivers::channel::{self, SubchannelId};
 use eggos_drivers::virtio::ccw::{self as virtio_ccw, CcwTransport};
 use eggos_drivers::virtio::mmio::MmioTransport;
 use eggos_drivers::virtio::pci::{self as virtio_pci, PciTransport, VirtioPciCapability};
@@ -229,8 +229,8 @@ fn probe_ccw(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let Identity::Channel { subchannel, .. } = node.identity else {
         return Err(ProbeError::Refused("not a channel device"));
     };
-    let subchannel = SubchannelId::from_word(subchannel)
-        .ok_or(ProbeError::Refused("not a subchannel"))?;
+    let subchannel =
+        SubchannelId::from_word(subchannel).ok_or(ProbeError::Refused("not a subchannel"))?;
     let channels = probe
         .channel_subsystem()
         .ok_or(ProbeError::Refused("no channel subsystem"))?;
@@ -242,8 +242,6 @@ fn probe_ccw(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
             if error != virtio::Error::Channel(channel::ChannelError::TimedOut) {
                 // SAFETY: every channel program run with the region ended, or none started.
                 unsafe { memory.free() };
-            } else {
-                core::mem::forget(memory);
             }
             Err(ProbeError::Refused(error.description()))
         }
@@ -433,10 +431,6 @@ pub fn connect_interrupt(
     Ok(())
 }
 
-/// Gives configuration changes and each enabled queue a message line of its own (D540), all
-/// raising `events`, so the queues' interrupts can go to different CPUs: whether it did. A
-/// table too small for them, a device with one queue, or lines running out leaves the device
-/// to one line.
 fn connect_each_queue(
     probe: &mut dyn Probe,
     transport: &PciTransport<Mmio>,
@@ -518,8 +512,7 @@ mod gpu {
     use crate::display::{Mode, Rect, Scanout};
     use crate::rendering::{Renderer, ThreeDCommand};
     use eggos_drivers::virtio::gpu::{
-        CURSOR_BYTES, CURSOR_SIDE, FALLBACK_MODE, MEMORY_BYTES, Released, THREE_D_BYTES,
-        VirtioGpu,
+        CURSOR_BYTES, CURSOR_SIDE, FALLBACK_MODE, MEMORY_BYTES, Released, THREE_D_BYTES, VirtioGpu,
     };
 
     type Gpu = VirtioGpu<AnyTransport, DmaRegion>;
@@ -697,15 +690,21 @@ mod gpu {
                 return Some(self.gpu.display_mode());
             }
             self.gpu.clear_display_event();
-            self.gpu.preferred_mode(&mut || deadline.keep_waiting()).ok()
+            self.gpu
+                .preferred_mode(&mut || deadline.keep_waiting())
+                .ok()
         }
 
         fn change_mode(&mut self, mode: Mode, deadline: &mut Deadline) -> Result<(), &'static str> {
             if mode == self.mode {
                 return Ok(());
             }
-            let framebuffer = DmaRegion::allocate(mode.bytes()).map_err(|_| "no memory for the framebuffer")?;
-            match self.gpu.replace_framebuffer(framebuffer, mode, &mut || deadline.keep_waiting()) {
+            let framebuffer =
+                DmaRegion::allocate(mode.bytes()).map_err(|_| "no memory for the framebuffer")?;
+            match self
+                .gpu
+                .replace_framebuffer(framebuffer, mode, &mut || deadline.keep_waiting())
+            {
                 Ok(old) => {
                     // SAFETY: handed back by `replace_framebuffer` after the device detached and
                     // destroyed the resource it backed, so the device no longer reads it.
@@ -1134,13 +1133,9 @@ mod agent {
     type Console = VirtioConsole<AnyTransport, DmaRegion>;
 
     const ANSWER_TIMEOUT_MS: u64 = 1000;
-    /// How often a host console without interrupts is read.
     const HOST_CONSOLE_POLL: core::time::Duration = core::time::Duration::from_millis(20);
     const HOST_CONSOLE_CHUNK: usize = 64;
 
-    /// A virtio console whose port is not the agent channel: the machine's console, as `hvc0`
-    /// is Linux's (D310): the console's output is written to it as well, and what the host
-    /// types into it reaches the console's input.
     static HOST_CONSOLE: LeafSpinLock<Option<Box<Console>>> = LeafSpinLock::new_leaf(None);
     static HOST_CONSOLE_EVENTS: DeviceEvents = DeviceEvents::new();
     static HOST_CONSOLE_INTERRUPTING: core::sync::atomic::AtomicBool =
@@ -1168,31 +1163,33 @@ mod agent {
             return false;
         }
         crate::console::mirror_output(host_console_write);
-        crate::thread::spawn::<P, _>(|| loop {
-            let seen = HOST_CONSOLE_EVENTS.raised();
-            let mut bytes = [0u8; HOST_CONSOLE_CHUNK];
-            let read = {
-                let mut console = HOST_CONSOLE.lock();
-                match console.as_mut() {
-                    Some(console) => {
-                        console.poll_control();
-                        match console.has_input() {
-                            true => console.receive(&mut bytes),
-                            false => 0,
+        crate::thread::spawn::<P, _>(|| {
+            loop {
+                let seen = HOST_CONSOLE_EVENTS.raised();
+                let mut bytes = [0u8; HOST_CONSOLE_CHUNK];
+                let read = {
+                    let mut console = HOST_CONSOLE.lock();
+                    match console.as_mut() {
+                        Some(console) => {
+                            console.poll_control();
+                            match console.has_input() {
+                                true => console.receive(&mut bytes),
+                                false => 0,
+                            }
                         }
+                        None => 0,
                     }
-                    None => 0,
+                };
+                if read > 0 {
+                    crate::console::receive_from_keyboard::<P>(&bytes[..read]);
+                    continue;
                 }
-            };
-            if read > 0 {
-                crate::console::receive_from_keyboard::<P>(&bytes[..read]);
-                continue;
-            }
-            match HOST_CONSOLE_INTERRUPTING.load(core::sync::atomic::Ordering::Relaxed) {
-                true => {
-                    HOST_CONSOLE_EVENTS.wait::<P>(seen, u64::MAX);
+                match HOST_CONSOLE_INTERRUPTING.load(core::sync::atomic::Ordering::Relaxed) {
+                    true => {
+                        HOST_CONSOLE_EVENTS.wait::<P>(seen, u64::MAX);
+                    }
+                    false => crate::thread::sleep::<P>(HOST_CONSOLE_POLL),
                 }
-                false => crate::thread::sleep::<P>(HOST_CONSOLE_POLL),
             }
         })
         .is_ok()
@@ -1502,9 +1499,11 @@ mod entropy {
         if RNG.lock().is_none() {
             return false;
         }
-        crate::thread::spawn::<P, _>(|| loop {
-            crate::thread::sleep::<P>(RESEED_INTERVAL);
-            let _ = seed_random::<P>();
+        crate::thread::spawn::<P, _>(|| {
+            loop {
+                crate::thread::sleep::<P>(RESEED_INTERVAL);
+                let _ = seed_random::<P>();
+            }
         })
         .is_ok()
     }

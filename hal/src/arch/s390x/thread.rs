@@ -28,12 +28,10 @@ eggos_thread_start:
     frame_size = const FRAME_WORDS * 8,
 );
 
-/// The 160-byte save area, then r6 to r14, rounded up to 8-byte alignment of a 16-byte step.
 const FRAME_WORDS: usize = 20 + 9 + 1;
 
 unsafe extern "C" {
     pub(super) fn eggos_switch_thread(save: *mut usize, resume: usize);
-    /// Only its address is used: a new thread's first switch returns into it.
     fn eggos_thread_start();
 }
 

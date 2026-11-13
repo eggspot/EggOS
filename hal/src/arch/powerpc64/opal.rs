@@ -4,14 +4,12 @@
 //! pointer lives in this module's statics, which are in the kernel image, so their physical
 //! address is their virtual one less the kernel's offset.
 
-use crate::atomic::AtomicU64;
 use super::KERNEL_VIRTUAL_OFFSET;
+use crate::atomic::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 unsafe extern "C" {
-    /// Calls OPAL `token` with up to five arguments; its return value.
     fn ppc64_opal_call(token: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> i64;
-    /// The same with up to seven arguments.
     #[link_name = "ppc64_opal_call"]
     fn ppc64_opal_call7(token: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64) -> i64;
 }
@@ -31,7 +29,6 @@ const BUSY_EVENT: i64 = -12;
 const CONSOLE_TERMINAL: u64 = 0;
 const BUFFER_BYTES: usize = 256;
 
-/// The console's buffer and the length word OPAL reads and writes, big-endian.
 static mut BUFFER: [u8; BUFFER_BYTES] = [0; BUFFER_BYTES];
 static mut LENGTH: u64 = 0;
 static CONSOLE_HELD: AtomicBool = AtomicBool::new(false);
@@ -78,12 +75,15 @@ pub(super) fn console_write(bytes: &[u8]) {
             // SAFETY: the console lock is held, so only this CPU uses the buffer and the length.
             let (buffer, length) = unsafe {
                 let buffer = &raw mut BUFFER;
-                (*buffer)[..rest.len()].copy_from_slice(rest);
+                (&mut *buffer)[..rest.len()].copy_from_slice(rest);
                 let length = &raw mut LENGTH;
                 *length = (rest.len() as u64).to_be();
                 (buffer as *const u8, length as *const u64)
             };
-            let status = call(CONSOLE_WRITE, [CONSOLE_TERMINAL, physical(length), physical(buffer), 0, 0]);
+            let status = call(
+                CONSOLE_WRITE,
+                [CONSOLE_TERMINAL, physical(length), physical(buffer), 0, 0],
+            );
             // SAFETY: as above; OPAL wrote the count it took back.
             let taken = u64::from_be(unsafe { *(&raw const LENGTH) }) as usize;
             if taken > 0 {
@@ -108,14 +108,17 @@ pub(super) fn console_read(buffer: &mut [u8]) -> usize {
         *length = (wanted as u64).to_be();
         (&raw const BUFFER as *const u8, length as *const u64)
     };
-    let status = call(CONSOLE_READ, [CONSOLE_TERMINAL, physical(length), physical(source), 0, 0]);
+    let status = call(
+        CONSOLE_READ,
+        [CONSOLE_TERMINAL, physical(length), physical(source), 0, 0],
+    );
     // SAFETY: as above; OPAL wrote the count it read back.
     let read = match status {
         SUCCESS => (u64::from_be(unsafe { *(&raw const LENGTH) }) as usize).min(wanted),
         _ => 0,
     };
     // SAFETY: as above.
-    buffer[..read].copy_from_slice(unsafe { &(*(&raw const BUFFER))[..read] });
+    buffer[..read].copy_from_slice(unsafe { &(&*(&raw const BUFFER))[..read] });
     release_console();
     read
 }
@@ -135,7 +138,6 @@ const XIVE_SET_QUEUE_INFO: u64 = 133;
 const XIVE_MODE_EXPLOITATION: u64 = 1;
 const MAP_PE: u64 = 1;
 
-/// The words OPAL writes results into, big-endian, behind the console's lock.
 static mut RESULTS: [u64; 6] = [0; 6];
 
 fn with_results<R>(body: impl FnOnce(&[u64; 6], [u64; 6]) -> R) -> R {
@@ -161,7 +163,10 @@ pub(super) fn pci_config_read32(phb: u64, rid: u64, offset: u64) -> Option<u32> 
 
 /// Writes the 32-bit configuration word of function `rid` of PHB `phb` at `offset`.
 pub(super) fn pci_config_write32(phb: u64, rid: u64, offset: u64, value: u32) {
-    call(PCI_CONFIG_WRITE_WORD, [phb, rid, offset, u64::from(value), 0]);
+    call(
+        PCI_CONFIG_WRITE_WORD,
+        [phb, rid, offset, u64::from(value), 0],
+    );
 }
 
 /// Puts every function of PHB `phb` in PE `pe`; whether OPAL took it.
@@ -181,7 +186,10 @@ pub(super) fn pci_set_mve(phb: u64, pe: u64) {
 /// Sets PE `pe`'s second DMA window to bypass translation from bus address `base` for `size`
 /// bytes; whether OPAL took it.
 pub(super) fn pci_map_bypass(phb: u64, pe: u64, base: u64, size: u64) -> bool {
-    call(PCI_MAP_PE_DMA_WINDOW_REAL, [phb, pe, (pe << 1) | 1, base, size]) == SUCCESS
+    call(
+        PCI_MAP_PE_DMA_WINDOW_REAL,
+        [phb, pe, (pe << 1) | 1, base, size],
+    ) == SUCCESS
 }
 
 /// Binds MSI `index` of PHB `phb` to PE `pe`.
@@ -192,7 +200,10 @@ pub(super) fn pci_set_xive_pe(phb: u64, pe: u64, index: u64) {
 /// The 64-bit MSI address and data of MSI `index` of PHB `phb` in PE `pe`.
 pub(super) fn get_msi_64(phb: u64, pe: u64, index: u64) -> Option<(u64, u32)> {
     with_results(|results, addresses| {
-        let status = call_seven(GET_MSI_64, [phb, pe, index, 1, addresses[0], addresses[1], 0]);
+        let status = call_seven(
+            GET_MSI_64,
+            [phb, pe, index, 1, addresses[0], addresses[1], 0],
+        );
         // SAFETY: OPAL wrote the address and the data into the first two results.
         let (address, data) = unsafe {
             (
@@ -227,12 +238,23 @@ pub(super) fn xive_irq_info(source: u64) -> Option<IrqInfo> {
     with_results(|results, addresses| {
         let status = call_seven(
             XIVE_GET_IRQ_INFO,
-            [source, addresses[0], addresses[1], addresses[2], addresses[3], addresses[4], 0],
+            [
+                source,
+                addresses[0],
+                addresses[1],
+                addresses[2],
+                addresses[3],
+                addresses[4],
+                0,
+            ],
         );
         // SAFETY: OPAL wrote the flags, the EOI and trigger pages and the shift into the
         // first four results.
-        let read = |index: usize| u64::from_be(unsafe { core::ptr::read_volatile(&raw const results[index]) });
-        let shift = u32::from_be(unsafe { core::ptr::read_volatile(&raw const results[3] as *const u32) });
+        let read = |index: usize| {
+            u64::from_be(unsafe { core::ptr::read_volatile(&raw const results[index]) })
+        };
+        let shift =
+            u32::from_be(unsafe { core::ptr::read_volatile(&raw const results[3] as *const u32) });
         (status == SUCCESS).then(|| IrqInfo {
             flags: read(0),
             eoi_page: read(1),

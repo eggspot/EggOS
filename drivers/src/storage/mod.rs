@@ -64,13 +64,18 @@ pub fn covering(sector: u64, sectors: u64, block_bytes: usize) -> Covering {
 pub(crate) fn write32<M: DmaMemory>(memory: &M, offset: usize, value: u32) {
     assert!(offset + 4 <= memory.len() && offset.is_multiple_of(4));
     // SAFETY: inside the DMA memory (checked) and 4-aligned, which `DmaMemory` makes writable.
-    unsafe { core::ptr::write_volatile(memory.as_mut_ptr().add(offset).cast::<u32>(), value) }
+    unsafe {
+        core::ptr::write_volatile(
+            memory.as_mut_ptr().wrapping_add(offset).cast::<u32>(),
+            value,
+        )
+    }
 }
 
 pub(crate) fn read32<M: DmaMemory>(memory: &M, offset: usize) -> u32 {
     assert!(offset + 4 <= memory.len() && offset.is_multiple_of(4));
     // SAFETY: inside the DMA memory (checked) and 4-aligned, which `DmaMemory` makes readable.
-    unsafe { core::ptr::read_volatile(memory.as_mut_ptr().add(offset).cast::<u32>()) }
+    unsafe { core::ptr::read_volatile(memory.as_mut_ptr().wrapping_add(offset).cast::<u32>()) }
 }
 
 pub(crate) fn write64<M: DmaMemory>(memory: &M, offset: usize, value: u64) {
@@ -81,7 +86,12 @@ pub(crate) fn write64<M: DmaMemory>(memory: &M, offset: usize, value: u64) {
 pub(crate) fn zero<M: DmaMemory>(memory: &M, offset: usize, length: usize) {
     assert!(offset + length <= memory.len());
     // SAFETY: inside the DMA memory (checked), which `DmaMemory` makes writable.
-    unsafe { memory.as_mut_ptr().add(offset).write_bytes(0, length) }
+    unsafe {
+        memory
+            .as_mut_ptr()
+            .wrapping_add(offset)
+            .write_bytes(0, length)
+    }
 }
 
 pub(crate) fn copy_in<M: DmaMemory>(memory: &M, offset: usize, bytes: &[u8]) {
@@ -89,7 +99,11 @@ pub(crate) fn copy_in<M: DmaMemory>(memory: &M, offset: usize, bytes: &[u8]) {
     // SAFETY: inside the DMA memory (checked), which does not overlap `bytes` (kernel memory the
     // caller owns).
     unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.as_mut_ptr().add(offset), bytes.len())
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            memory.as_mut_ptr().wrapping_add(offset),
+            bytes.len(),
+        )
     }
 }
 
@@ -97,7 +111,11 @@ pub(crate) fn copy_out<M: DmaMemory>(memory: &M, offset: usize, bytes: &mut [u8]
     assert!(offset + bytes.len() <= memory.len());
     // SAFETY: as in `copy_in`, the other way.
     unsafe {
-        core::ptr::copy_nonoverlapping(memory.as_mut_ptr().add(offset), bytes.as_mut_ptr(), bytes.len())
+        core::ptr::copy_nonoverlapping(
+            memory.as_mut_ptr().wrapping_add(offset),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        )
     }
 }
 

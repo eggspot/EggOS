@@ -19,7 +19,6 @@
 //!
 //! [`Process::map_lent_frames`]: crate::process::Process::map_lent_frames
 
-use eggos_hal::atomic::AtomicU64;
 use crate::memory::FRAMES;
 use crate::process::LentFrames;
 use crate::sync::LeafSpinLock;
@@ -35,6 +34,7 @@ use eggos_drivers::desktop::{
     ContentLayout, Desktop, EventQueue, KERNEL_CLIENT, WindowId, colour, slot_of,
 };
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::memory::FRAME_SIZE;
 
 /// The most bytes of pixel buffers one client holds at once: those its windows show and those
@@ -195,8 +195,8 @@ impl GpuPicture {
         let fits = buffer.is_in_guest_memory()
             && width > 0
             && u64::from(stride) >= row
-            && stride % 4 == 0
-            && offset % 4 == 0
+            && stride.is_multiple_of(4)
+            && offset.is_multiple_of(4)
             && last_row_end <= buffer.size();
         fits.then_some(Self {
             buffer,

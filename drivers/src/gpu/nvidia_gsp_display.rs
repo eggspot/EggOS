@@ -15,6 +15,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// How the driver calls GSP-RM: a function number and its parameters, the answer's bytes.
+pub type RpcCall<'a> = dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str> + 'a;
+
 /// The remote call making an object.
 pub const ALLOC: u32 = 103;
 /// The remote call asking an object.
@@ -127,11 +130,7 @@ pub struct DisplayEngineInfo {
     pub windows: u32,
 }
 
-fn ask(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
-    command: u32,
-    parameters: &[u8],
-) -> Result<Vec<u8>, DisplayError> {
+fn ask(call: &mut RpcCall<'_>, command: u32, parameters: &[u8]) -> Result<Vec<u8>, DisplayError> {
     let answer = call(CONTROL, &control_call(CLIENT, DISPLAY, command, parameters))
         .map_err(DisplayError::Call)?;
     let returned = answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
@@ -142,10 +141,7 @@ fn ask(
 }
 
 /// Has GSP-RM give display `display` (an index into the display masks) a SOR (D530); its index.
-pub fn assign_sor(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
-    display: u32,
-) -> Result<u32, DisplayError> {
+pub fn assign_sor(call: &mut RpcCall<'_>, display: u32) -> Result<u32, DisplayError> {
     let mut question = [0u8; ASSIGN_SOR_BYTES];
     put(&mut question, 4, 1 << display);
     let answer = ask(call, ASSIGN_SOR, &question)?;
@@ -160,7 +156,7 @@ pub fn assign_sor(
 /// Reads `length` (at most 16) bytes of display `display`'s DPCD from `address` over GSP-RM's
 /// AUX channel (D530).
 pub fn read_dpcd(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     display: u32,
     address: u32,
     length: usize,
@@ -178,7 +174,7 @@ pub fn read_dpcd(
 /// Has GSP-RM train display `display`'s link at `lanes` lanes and DPCD link rate code `rate`
 /// (D530), with enhanced framing when the sink has it, repeaters included.
 pub fn train_link(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     display: u32,
     (lanes, rate): (u32, u32),
     enhanced: bool,
@@ -202,7 +198,7 @@ pub fn train_link(
 /// Configures head `head`'s single DisplayPort stream on SOR `sor` (D530): enhanced framing,
 /// the 64-symbol transfer unit, `watermark` and the horizontal and vertical blank symbols.
 pub fn configure_stream(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     (head, sor): (u32, u32),
     enhanced: bool,
     (watermark, horizontal, vertical): (u32, u32, u32),
@@ -222,7 +218,7 @@ pub fn configure_stream(
 /// Registers window 0's push buffer (device address and bytes in system memory) with GSP-RM's
 /// internal subdevice and makes window 0's channel under the display object (D530).
 pub fn bring_up_window(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     setup: &CoreSetup,
     push_buffer: (u64, u64),
 ) -> Result<(), DisplayError> {
@@ -234,8 +230,12 @@ pub fn bring_up_window(
     put(&mut push, 24, 1);
     put(&mut push, 28, window);
     push[36] = 1;
-    let payload =
-        control_call(setup.internal_client, setup.internal_subdevice, CHANNEL_PUSH_BUFFER, &push);
+    let payload = control_call(
+        setup.internal_client,
+        setup.internal_subdevice,
+        CHANNEL_PUSH_BUFFER,
+        &push,
+    );
     let answer = call(CONTROL, &payload).map_err(DisplayError::Call)?;
     answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
     let parameters = [0u8; CHANNEL_PARAMETERS_BYTES];
@@ -248,12 +248,16 @@ pub fn bring_up_window(
 /// object, registers the core channel's push buffer and makes the core channel (D529), through
 /// `call`; the [`find_sinks`] objects must exist.
 pub fn bring_up_core(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     setup: &CoreSetup,
 ) -> Result<DisplayEngineInfo, DisplayError> {
     let mut internal = |command: u32, parameters: &[u8]| -> Result<Vec<u8>, DisplayError> {
-        let payload =
-            control_call(setup.internal_client, setup.internal_subdevice, command, parameters);
+        let payload = control_call(
+            setup.internal_client,
+            setup.internal_subdevice,
+            command,
+            parameters,
+        );
         let answer = call(CONTROL, &payload).map_err(DisplayError::Call)?;
         let returned = answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
         returned
@@ -282,12 +286,20 @@ pub fn bring_up_core(
     push[36] = 1;
     internal(CHANNEL_PUSH_BUFFER, &push)?;
     let mut alloc = |parent: u32, object: u32, class: u32, parameters: &[u8]| {
-        let answer = call(ALLOC, &alloc_call(CLIENT, parent, object, class, parameters))
-            .map_err(DisplayError::Call)?;
+        let answer = call(
+            ALLOC,
+            &alloc_call(CLIENT, parent, object, class, parameters),
+        )
+        .map_err(DisplayError::Call)?;
         answered(&answer, ALLOC_STATUS, ALLOC_HEADER_BYTES).map(|_| ())
     };
     alloc(DEVICE, root << 16, root, &[])?;
-    alloc(root << 16, core << 16, core, &[0u8; CHANNEL_PARAMETERS_BYTES])?;
+    alloc(
+        root << 16,
+        core << 16,
+        core,
+        &[0u8; CHANNEL_PARAMETERS_BYTES],
+    )?;
     Ok(engine)
 }
 
@@ -313,13 +325,7 @@ fn word(bytes: &[u8], at: usize) -> Option<u32> {
 
 /// The payload of an [`ALLOC`] call making `object` of `class` under `parent`, for client
 /// `client`, with `parameters`.
-pub fn alloc_call(
-    client: u32,
-    parent: u32,
-    object: u32,
-    class: u32,
-    parameters: &[u8],
-) -> Vec<u8> {
+pub fn alloc_call(client: u32, parent: u32, object: u32, class: u32, parameters: &[u8]) -> Vec<u8> {
     let mut payload = vec![0u8; ALLOC_HEADER_BYTES + parameters.len()];
     put(&mut payload, 0, client);
     put(&mut payload, 4, parent);
@@ -360,12 +366,13 @@ pub struct Sink {
 /// Makes the client, the device and the display common object through `call` (a remote call:
 /// its function and payload in, the answer's payload out), then asks which displays have a
 /// screen and each screen's EDID.
-pub fn find_sinks(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
-) -> Result<Vec<Sink>, DisplayError> {
+pub fn find_sinks(call: &mut RpcCall<'_>) -> Result<Vec<Sink>, DisplayError> {
     let mut alloc = |parent: u32, object: u32, class: u32, parameters: &[u8]| {
-        let answer = call(ALLOC, &alloc_call(CLIENT, parent, object, class, parameters))
-            .map_err(DisplayError::Call)?;
+        let answer = call(
+            ALLOC,
+            &alloc_call(CLIENT, parent, object, class, parameters),
+        )
+        .map_err(DisplayError::Call)?;
         answered(&answer, ALLOC_STATUS, ALLOC_HEADER_BYTES).map(|_| ())
     };
     let mut root = [0u8; ROOT_PARAMETERS_BYTES];
@@ -431,11 +438,21 @@ mod tests {
     fn connected_screens_come_with_their_edids() {
         let mut calls = Vec::new();
         let sinks = find_sinks(&mut |function, payload| {
-            calls.push((function, word(payload, 12).unwrap(), word(payload, 8).unwrap()));
+            calls.push((
+                function,
+                word(payload, 12).unwrap(),
+                word(payload, 8).unwrap(),
+            ));
             answer_to(function, payload)
         })
         .unwrap();
-        assert_eq!(sinks, vec![Sink { display: 2, edid: Some(vec![1, 2, 3]) }]);
+        assert_eq!(
+            sinks,
+            vec![Sink {
+                display: 2,
+                edid: Some(vec![1, 2, 3])
+            }]
+        );
         assert_eq!(calls[0], (ALLOC, ROOT_CLASS, CLIENT));
         assert_eq!(calls[2], (ALLOC, DISPLAY_COMMON_CLASS, DISPLAY));
         assert_eq!(calls.len(), 6);
@@ -453,7 +470,11 @@ mod tests {
         };
         let engine = bring_up_core(
             &mut |function, payload| {
-                calls.push((function, word(payload, 0).unwrap(), word(payload, 8).unwrap()));
+                calls.push((
+                    function,
+                    word(payload, 0).unwrap(),
+                    word(payload, 8).unwrap(),
+                ));
                 let mut answer = payload.to_vec();
                 if function == CONTROL && word(payload, 8) == Some(DISPLAY_STATIC_INFO) {
                     put(&mut answer[CONTROL_HEADER_BYTES..], 4, 0xf);
@@ -464,7 +485,13 @@ mod tests {
             &setup,
         )
         .unwrap();
-        assert_eq!(engine, DisplayEngineInfo { heads: 4, windows: 0xf });
+        assert_eq!(
+            engine,
+            DisplayEngineInfo {
+                heads: 4,
+                windows: 0xf
+            }
+        );
         assert_eq!(calls[0], (CONTROL, 0xc1e0_0004, WRITE_INSTANCE_MEMORY));
         assert_eq!(calls[2], (CONTROL, 0xc1e0_0004, CHANNEL_PUSH_BUFFER));
         assert_eq!(calls[4], (ALLOC, CLIENT, 0xc67d << 16));

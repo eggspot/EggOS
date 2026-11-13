@@ -59,7 +59,13 @@ pub fn authentication_request(own: Address, bssid: Address) -> Vec<u8> {
 
 /// An SAE authentication frame `own` sends to `bssid` (D285): transaction `sequence` (1 for a
 /// commit, 2 for a confirm), its status and its SAE body.
-pub fn sae_authentication(own: Address, bssid: Address, sequence: u16, status: u16, body: &[u8]) -> Vec<u8> {
+pub fn sae_authentication(
+    own: Address,
+    bssid: Address,
+    sequence: u16,
+    status: u16,
+    body: &[u8],
+) -> Vec<u8> {
     let mut frame = header(SUBTYPE_AUTHENTICATION, 0, bssid, own, bssid);
     frame.extend_from_slice(&SAE.to_le_bytes());
     frame.extend_from_slice(&sequence.to_le_bytes());
@@ -80,7 +86,12 @@ pub fn sae_answer(frame: &[u8], bssid: Address) -> Option<(u16, u16, Vec<u8>)> {
 
 /// The association request `own` sends to `bssid` for network `ssid`, with the RSN element
 /// `rsn` for a protected network (WPA2's or WPA3's) or none for an open one.
-pub fn association_request(own: Address, bssid: Address, ssid: &[u8], rsn: Option<&[u8]>) -> Vec<u8> {
+pub fn association_request(
+    own: Address,
+    bssid: Address,
+    ssid: &[u8],
+    rsn: Option<&[u8]>,
+) -> Vec<u8> {
     let mut frame = header(SUBTYPE_ASSOCIATION_REQUEST, 0, bssid, own, bssid);
     let mut capability = CAPABILITY_ESS | CAPABILITY_SHORT_SLOT;
     let protected = rsn.is_some();
@@ -123,8 +134,12 @@ pub fn deauthentication(own: Address, bssid: Address, reason: u16) -> Vec<u8> {
 /// Whether `frame` is a disassociation or deauthentication frame with its protected bit set:
 /// with management frame protection (WPA3) only such a frame, decrypted, ends the link.
 pub fn is_protected_ending(frame: &[u8]) -> bool {
-    matches!(frame.first(), Some(&SUBTYPE_DEAUTHENTICATION | &SUBTYPE_DISASSOCIATION))
-        && frame.get(1).is_some_and(|flags| flags & PROTECTED_FLAG != 0)
+    matches!(
+        frame.first(),
+        Some(&SUBTYPE_DEAUTHENTICATION | &SUBTYPE_DISASSOCIATION)
+    ) && frame
+        .get(1)
+        .is_some_and(|flags| flags & PROTECTED_FLAG != 0)
 }
 
 /// The reason code of `frame` when it is `bssid` ending the station's association or
@@ -165,7 +180,13 @@ pub fn beacon_interval(frame: &[u8]) -> Option<u16> {
 /// The data frame `own` sends to `destination` through access point `bssid`: the MAC header
 /// and the LLC/SNAP-wrapped payload of `ethertype`, unencrypted (CCMP protects the part after
 /// the header).
-pub fn data_frame(own: Address, bssid: Address, destination: Address, ethertype: u16, payload: &[u8]) -> Vec<u8> {
+pub fn data_frame(
+    own: Address,
+    bssid: Address,
+    destination: Address,
+    ethertype: u16,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut frame = header(TYPE_DATA, TO_DS, bssid, own, destination);
     frame.extend_from_slice(&LLC_SNAP);
     frame.extend_from_slice(&ethertype.to_be_bytes());
@@ -190,8 +211,15 @@ pub fn is_protected_data(frame: &[u8]) -> bool {
 /// A data frame's payload from access point `bssid`, as Ethernet sees it: destination, source,
 /// ethertype and the bytes after the LLC/SNAP header. `body` is the frame's body, decrypted when
 /// it was protected.
-pub fn ethernet_from(frame: &[u8], body: &[u8], bssid: Address) -> Option<(Address, Address, u16, Vec<u8>)> {
-    if data_header_bytes(frame)? > frame.len() || frame[1] & (TO_DS | FROM_DS) != FROM_DS || frame[10..16] != bssid {
+pub fn ethernet_from(
+    frame: &[u8],
+    body: &[u8],
+    bssid: Address,
+) -> Option<(Address, Address, u16, Vec<u8>)> {
+    if data_header_bytes(frame)? > frame.len()
+        || frame[1] & (TO_DS | FROM_DS) != FROM_DS
+        || frame[10..16] != bssid
+    {
         return None;
     }
     if body.get(..6)? != LLC_SNAP {
@@ -215,9 +243,13 @@ mod tests {
     fn authentication_and_association_requests_carry_what_the_access_point_reads() {
         let auth = authentication_request(OWN, AP);
         assert_eq!(auth.len(), 30);
-        assert_eq!((auth[0], &auth[4..10], &auth[10..16]), (0xb0, &AP[..], &OWN[..]));
+        assert_eq!(
+            (auth[0], &auth[4..10], &auth[10..16]),
+            (0xb0, &AP[..], &OWN[..])
+        );
         assert_eq!(&auth[24..30], &[0, 0, 1, 0, 0, 0]);
-        let association = association_request(OWN, AP, b"home", Some(&crate::frames::WPA2_PERSONAL_RSN));
+        let association =
+            association_request(OWN, AP, b"home", Some(&crate::frames::WPA2_PERSONAL_RSN));
         assert_eq!(&association[28..34], &[0, 4, b'h', b'o', b'm', b'e']);
         assert!(association.ends_with(&crate::frames::WPA2_PERSONAL_RSN));
         let commit = sae_authentication(OWN, AP, 1, 0, &[19, 0, 9]);
@@ -225,7 +257,10 @@ mod tests {
         let mut answer = header(SUBTYPE_AUTHENTICATION, 0, OWN, AP, AP);
         answer.extend_from_slice(&[3, 0, 2, 0, 0, 0, 7, 7]);
         assert_eq!(sae_answer(&answer, AP), Some((2, 0, vec![7, 7])));
-        assert_ne!(u16::from_le_bytes([association[24], association[25]]) & CAPABILITY_PRIVACY, 0);
+        assert_ne!(
+            u16::from_le_bytes([association[24], association[25]]) & CAPABILITY_PRIVACY,
+            0
+        );
     }
 
     #[test]
@@ -242,7 +277,10 @@ mod tests {
     #[test]
     fn leaving_and_being_sent_away_carry_their_reason() {
         let leave = deauthentication(OWN, AP, 3);
-        assert_eq!((leave[0], &leave[4..10], &leave[24..26]), (0xc0, &AP[..], &[3, 0][..]));
+        assert_eq!(
+            (leave[0], &leave[4..10], &leave[24..26]),
+            (0xc0, &AP[..], &[3, 0][..])
+        );
         let mut sent_away = header(SUBTYPE_DISASSOCIATION, 0, OWN, AP, AP);
         sent_away.extend_from_slice(&8u16.to_le_bytes());
         assert_eq!(ended_by(&sent_away, OWN, AP), Some(8));
@@ -262,7 +300,10 @@ mod tests {
         let mut received = header(TYPE_DATA, FROM_DS, OWN, AP, [7; 6]);
         let body = vec![0xaa, 0xaa, 3, 0, 0, 0, 0x08, 0x00, 42];
         received.extend_from_slice(&body);
-        assert_eq!(ethernet_from(&received, &body, AP), Some((OWN, [7; 6], 0x0800, vec![42])));
+        assert_eq!(
+            ethernet_from(&received, &body, AP),
+            Some((OWN, [7; 6], 0x0800, vec![42]))
+        );
         assert_eq!(ethernet_from(&received, &body, OWN), None);
         assert!(!is_protected_data(&received));
     }

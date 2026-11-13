@@ -11,8 +11,6 @@ mod autohotkey;
 mod bench;
 mod ci_artifact;
 mod cocoa_app;
-mod swift_app;
-mod udcalc_app;
 mod components;
 mod dynamic_linking;
 mod elf;
@@ -34,7 +32,9 @@ mod rustc_version;
 mod sdl_app;
 mod sha256;
 mod static_glibc;
+mod swift_app;
 mod test_layout;
+mod udcalc_app;
 mod usb_image;
 mod win32_app;
 mod windows;
@@ -348,7 +348,10 @@ pub const ARCHES: &[Arch] = &[
             "-device",
             "virtio-rng-pci,disable-legacy=on",
         ],
-        display_args: &["-device", "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800"],
+        display_args: &[
+            "-device",
+            "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800",
+        ],
         input_args: &[
             "-device",
             "virtio-keyboard-pci,disable-legacy=on",
@@ -367,8 +370,16 @@ pub const ARCHES: &[Arch] = &[
         target: "powerpc64le-unknown-linux-gnu",
         user_target: "powerpc64le-unknown-linux-musl",
         qemu: "qemu-system-ppc64",
-        machine_args: &["-machine", "powernv9", "-device", "virtio-rng-pci,disable-legacy=on"],
-        display_args: &["-device", "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800"],
+        machine_args: &[
+            "-machine",
+            "powernv9",
+            "-device",
+            "virtio-rng-pci,disable-legacy=on",
+        ],
+        display_args: &[
+            "-device",
+            "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800",
+        ],
         input_args: &[
             "-device",
             "virtio-keyboard-pci,disable-legacy=on",
@@ -389,110 +400,123 @@ pub const ARCHES: &[Arch] = &[
 /// user targets ship no prebuilt `core` and build with a nightly toolchain's `build-std`
 /// ([`TIER_3_TARGETS`], D324, D494); SPARC64's are tier 2 (D327), and so are RV32's kernel
 /// target and 32-bit Arm's two (D494).
-pub const NAMED_ONLY_ARCHES: &[Arch] = &[Arch {
-    name: "mips64el",
-    target: "mips64el-unknown-linux-gnuabi64",
-    user_target: "mips64el-unknown-linux-muslabi64",
-    qemu: "qemu-system-mips64el",
-    machine_args: &[
-        "-machine",
-        "loongson3-virt",
-        "-cpu",
-        "Loongson-3A4000",
-        "-device",
-        "virtio-rng-pci,disable-legacy=on",
-    ],
-    display_args: &["-device", "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800"],
-    input_args: &[
-        "-device",
-        "virtio-keyboard-pci,disable-legacy=on",
-        "-device",
-        "virtio-tablet-pci,disable-legacy=on",
-        "-device",
-        "virtio-mouse-pci,disable-legacy=on",
-    ],
-    offscreen_args: &[],
-    disk_device: "virtio-blk-pci,disable-legacy=on",
-    agent_bus_device: "virtio-serial-pci,disable-legacy=on",
-    network_device: "virtio-net-pci,disable-legacy=on",
-}, Arch {
-    name: "s390x",
-    target: "s390x-unknown-linux-gnu",
-    user_target: "s390x-unknown-linux-musl",
-    qemu: "qemu-system-s390x",
-    machine_args: &["-machine", "s390-ccw-virtio", "-cpu", "max", "-device", "virtio-rng-ccw"],
-    display_args: &["-device", "virtio-gpu-ccw,xres=1280,yres=800"],
-    input_args: &[
-        "-device",
-        "virtio-keyboard-ccw",
-        "-device",
-        "virtio-tablet-ccw",
-        "-device",
-        "virtio-mouse-ccw",
-    ],
-    offscreen_args: &[],
-    disk_device: "virtio-blk-ccw",
-    agent_bus_device: "virtio-serial-ccw",
-    network_device: "virtio-net-ccw",
-}, Arch {
-    name: "sparc64",
-    target: "sparcv9-sun-solaris",
-    user_target: "sparc64-unknown-linux-gnu",
-    qemu: "qemu-system-sparc64",
-    machine_args: &["-machine", "sun4u"],
-    display_args: &[],
-    input_args: &[],
-    offscreen_args: &[],
-    disk_device: "virtio-blk-pci,disable-legacy=on",
-    agent_bus_device: "virtio-serial-pci,disable-legacy=on",
-    network_device: "virtio-net-pci,disable-legacy=on",
-}, Arch {
-    name: "riscv32",
-    target: "riscv32imac-unknown-none-elf",
-    user_target: "riscv32gc-unknown-linux-musl",
-    qemu: "qemu-system-riscv32",
-    machine_args: &[
-        "-machine",
-        "virt",
-        "-bios",
-        "default",
-        "-global",
-        "virtio-mmio.force-legacy=false",
-        "-device",
-        "virtio-rng-device",
-    ],
-    display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
-    input_args: MMIO_INPUT_ARGS,
-    offscreen_args: &[],
-    disk_device: MMIO_DISK_DEVICE,
-    agent_bus_device: "virtio-serial-device",
-    network_device: "virtio-net-device",
-}, Arch {
-    name: "armv7",
-    target: "armv7a-none-eabi",
-    user_target: "armv7-unknown-linux-musleabihf",
-    qemu: "qemu-system-arm",
-    machine_args: &[
-        "-machine",
-        "virt,highmem=off,gic-version=2",
-        "-cpu",
-        "cortex-a15",
-        "-global",
-        "virtio-mmio.force-legacy=false",
-        "-device",
-        "virtio-rng-device",
-    ],
-    display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
-    input_args: MMIO_INPUT_ARGS,
-    offscreen_args: &[],
-    disk_device: MMIO_DISK_DEVICE,
-    agent_bus_device: "virtio-serial-device",
-    network_device: "virtio-net-device",
-}];
+pub const NAMED_ONLY_ARCHES: &[Arch] = &[
+    Arch {
+        name: "mips64el",
+        target: "mips64el-unknown-linux-gnuabi64",
+        user_target: "mips64el-unknown-linux-muslabi64",
+        qemu: "qemu-system-mips64el",
+        machine_args: &[
+            "-machine",
+            "loongson3-virt",
+            "-cpu",
+            "Loongson-3A4000",
+            "-device",
+            "virtio-rng-pci,disable-legacy=on",
+        ],
+        display_args: &[
+            "-device",
+            "virtio-gpu-pci,disable-legacy=on,xres=1280,yres=800",
+        ],
+        input_args: &[
+            "-device",
+            "virtio-keyboard-pci,disable-legacy=on",
+            "-device",
+            "virtio-tablet-pci,disable-legacy=on",
+            "-device",
+            "virtio-mouse-pci,disable-legacy=on",
+        ],
+        offscreen_args: &[],
+        disk_device: "virtio-blk-pci,disable-legacy=on",
+        agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+        network_device: "virtio-net-pci,disable-legacy=on",
+    },
+    Arch {
+        name: "s390x",
+        target: "s390x-unknown-linux-gnu",
+        user_target: "s390x-unknown-linux-musl",
+        qemu: "qemu-system-s390x",
+        machine_args: &[
+            "-machine",
+            "s390-ccw-virtio",
+            "-cpu",
+            "max",
+            "-device",
+            "virtio-rng-ccw",
+        ],
+        display_args: &["-device", "virtio-gpu-ccw,xres=1280,yres=800"],
+        input_args: &[
+            "-device",
+            "virtio-keyboard-ccw",
+            "-device",
+            "virtio-tablet-ccw",
+            "-device",
+            "virtio-mouse-ccw",
+        ],
+        offscreen_args: &[],
+        disk_device: "virtio-blk-ccw",
+        agent_bus_device: "virtio-serial-ccw",
+        network_device: "virtio-net-ccw",
+    },
+    Arch {
+        name: "sparc64",
+        target: "sparcv9-sun-solaris",
+        user_target: "sparc64-unknown-linux-gnu",
+        qemu: "qemu-system-sparc64",
+        machine_args: &["-machine", "sun4u"],
+        display_args: &[],
+        input_args: &[],
+        offscreen_args: &[],
+        disk_device: "virtio-blk-pci,disable-legacy=on",
+        agent_bus_device: "virtio-serial-pci,disable-legacy=on",
+        network_device: "virtio-net-pci,disable-legacy=on",
+    },
+    Arch {
+        name: "riscv32",
+        target: "riscv32imac-unknown-none-elf",
+        user_target: "riscv32gc-unknown-linux-musl",
+        qemu: "qemu-system-riscv32",
+        machine_args: &[
+            "-machine",
+            "virt",
+            "-bios",
+            "default",
+            "-global",
+            "virtio-mmio.force-legacy=false",
+            "-device",
+            "virtio-rng-device",
+        ],
+        display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
+        input_args: MMIO_INPUT_ARGS,
+        offscreen_args: &[],
+        disk_device: MMIO_DISK_DEVICE,
+        agent_bus_device: "virtio-serial-device",
+        network_device: "virtio-net-device",
+    },
+    Arch {
+        name: "armv7",
+        target: "armv7a-none-eabi",
+        user_target: "armv7-unknown-linux-musleabihf",
+        qemu: "qemu-system-arm",
+        machine_args: &[
+            "-machine",
+            "virt,highmem=off,gic-version=2",
+            "-cpu",
+            "cortex-a15",
+            "-global",
+            "virtio-mmio.force-legacy=false",
+            "-device",
+            "virtio-rng-device",
+        ],
+        display_args: &["-device", "virtio-gpu-device,xres=1280,yres=800"],
+        input_args: MMIO_INPUT_ARGS,
+        offscreen_args: &[],
+        disk_device: MMIO_DISK_DEVICE,
+        agent_bus_device: "virtio-serial-device",
+        network_device: "virtio-net-device",
+    },
+];
 
-/// The targets of [`NAMED_ONLY_ARCHES`] that ship no prebuilt `core` (tier 3): s390x's kernel
-/// target is tier 2 and builds on the pinned toolchain; its user target is not (D324). SPARC64's
-/// two are tier 2 (D327).
 const TIER_3_TARGETS: &[&str] = &[
     "mips64el-unknown-linux-gnuabi64",
     "mips64el-unknown-linux-muslabi64",
@@ -500,8 +524,6 @@ const TIER_3_TARGETS: &[&str] = &[
     "riscv32gc-unknown-linux-musl",
 ];
 
-/// The arguments and environment that build `core`, `alloc` and the compiler's builtins from
-/// source with the nightly toolchain, when `args` name one of [`TIER_3_TARGETS`].
 fn nightly_build_std(args: &[&str]) -> Option<([&'static str; 2], (&'static str, &'static str))> {
     let nightly = TIER_3_TARGETS.iter().any(|target| args.contains(target));
     nightly.then_some((
@@ -1946,20 +1968,29 @@ fn initramfs_with(
         (COREUTILS_PATH, initramfs::Content::Program(&coreutils)),
         (SETTINGS_PATH, initramfs::Content::Program(&settings)),
         (APP_WINDOW_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
-        (FILES_PATH, initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK)),
+        (
+            FILES_PATH,
+            initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK),
+        ),
         (PICK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (
             TEXT_EDITOR_PATH,
             initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK),
         ),
-        (EDIT_PATH, initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK)),
+        (
+            EDIT_PATH,
+            initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK),
+        ),
         (DISK_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (TERMINAL_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (
             TASK_MANAGER_PATH,
             initramfs::Content::HardLink(SETTINGS_PATH),
         ),
-        (DOWNLOADS_PATH, initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK)),
+        (
+            DOWNLOADS_PATH,
+            initramfs::Content::SymbolicLink(BUILTIN_APPS_LINK),
+        ),
         (APP_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (COMPONENT_PATH, initramfs::Content::HardLink(SETTINGS_PATH)),
         (MCP_SERVER_PATH, initramfs::Content::Program(&mcp_server)),
@@ -1987,11 +2018,12 @@ fn initramfs_with(
             .iter()
             .map(|(path, host)| (*path, initramfs::Content::Program(host.as_str()))),
     );
-    members.extend(
-        component_links
-            .iter()
-            .map(|(path, target)| (path.as_str(), initramfs::Content::SymbolicLink(target.as_str()))),
-    );
+    members.extend(component_links.iter().map(|(path, target)| {
+        (
+            path.as_str(),
+            initramfs::Content::SymbolicLink(target.as_str()),
+        )
+    }));
     if let Some(command) = windows_command(&embedded, &component_links) {
         members.push((WINDOWS_COMMAND_PATH, command));
     }

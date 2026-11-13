@@ -160,12 +160,17 @@ unsafe impl Sync for SingleBaseRecord {}
 // SAFETY: as above.
 unsafe impl Sync for PointerRecord {}
 
-/// Whether `address .. address + length` lies in one of the layer's own records above.
 fn own(address: u64, length: u64) -> bool {
     let ranges: [(u64, u64); 3] = [
         (&raw const VTABLES as u64, size_of::<Vtables>() as u64),
-        (&raw const TYPE_EXCEPTION as u64, size_of::<TypeRecord>() as u64),
-        (&raw const TYPE_BAD_ALLOC as u64, size_of::<SingleBaseRecord>() as u64),
+        (
+            &raw const TYPE_EXCEPTION as u64,
+            size_of::<TypeRecord>() as u64,
+        ),
+        (
+            &raw const TYPE_BAD_ALLOC as u64,
+            size_of::<SingleBaseRecord>() as u64,
+        ),
     ];
     let records = [
         &raw const TYPE_INT as u64,
@@ -222,13 +227,27 @@ fn name_byte(address: u64) -> Option<u8> {
     }
     byte(address).or_else(|| {
         let is_own_name = [
-            TYPE_INT.name, TYPE_UNSIGNED_INT.name, TYPE_LONG.name, TYPE_UNSIGNED_LONG.name,
-            TYPE_LONG_LONG.name, TYPE_UNSIGNED_LONG_LONG.name, TYPE_CHAR.name,
-            TYPE_SIGNED_CHAR.name, TYPE_UNSIGNED_CHAR.name, TYPE_SHORT.name,
-            TYPE_UNSIGNED_SHORT.name, TYPE_BOOL.name, TYPE_FLOAT.name, TYPE_DOUBLE.name,
-            TYPE_VOID.name, TYPE_EXCEPTION.name, TYPE_BAD_ALLOC.record.name,
-            TYPE_CONST_CHAR_POINTER.record.name, TYPE_CHAR_POINTER.record.name,
-            TYPE_VOID_POINTER.record.name, TYPE_CONST_VOID_POINTER.record.name,
+            TYPE_INT.name,
+            TYPE_UNSIGNED_INT.name,
+            TYPE_LONG.name,
+            TYPE_UNSIGNED_LONG.name,
+            TYPE_LONG_LONG.name,
+            TYPE_UNSIGNED_LONG_LONG.name,
+            TYPE_CHAR.name,
+            TYPE_SIGNED_CHAR.name,
+            TYPE_UNSIGNED_CHAR.name,
+            TYPE_SHORT.name,
+            TYPE_UNSIGNED_SHORT.name,
+            TYPE_BOOL.name,
+            TYPE_FLOAT.name,
+            TYPE_DOUBLE.name,
+            TYPE_VOID.name,
+            TYPE_EXCEPTION.name,
+            TYPE_BAD_ALLOC.record.name,
+            TYPE_CONST_CHAR_POINTER.record.name,
+            TYPE_CHAR_POINTER.record.name,
+            TYPE_VOID_POINTER.record.name,
+            TYPE_CONST_VOID_POINTER.record.name,
         ]
         .into_iter()
         .any(|name| {
@@ -374,13 +393,13 @@ pub fn dynamic_cast(sub: u64, wanted: u64) -> u64 {
         return 0;
     }
     // SAFETY: `sub` points at a live polymorphic object, whose first word is its vtable's
-    // address point, the offset to the top and the type record in the two words before it.
-    let (whole, dynamic) = unsafe {
-        let vtable = (sub as *const u64).read_unaligned();
-        let to_top = ((vtable - 16) as *const i64).read_unaligned();
-        let dynamic = ((vtable - 8) as *const u64).read_unaligned();
-        (sub.wrapping_add(to_top as u64), dynamic)
-    };
+    // address point.
+    let vtable = unsafe { (sub as *const u64).read_unaligned() };
+    // SAFETY: the offset to the top is the word two before the vtable's address point.
+    let to_top = unsafe { ((vtable - 16) as *const i64).read_unaligned() };
+    // SAFETY: the type record is the word just before the vtable's address point.
+    let dynamic = unsafe { ((vtable - 8) as *const u64).read_unaligned() };
+    let whole = sub.wrapping_add(to_top as u64);
     if same_type(wanted, dynamic) {
         return whole;
     }
@@ -407,9 +426,18 @@ mod tests {
     #[test]
     fn the_fundamental_records_know_their_kind_and_name() {
         assert_eq!(kind(&raw const TYPE_INT as u64), Kind::Fundamental);
-        assert_eq!(kind(&raw const TYPE_CONST_CHAR_POINTER as u64), Kind::Pointer);
-        assert!(same_type(&raw const TYPE_INT as u64, &raw const TYPE_INT as u64));
-        assert!(!same_type(&raw const TYPE_INT as u64, &raw const TYPE_LONG as u64));
+        assert_eq!(
+            kind(&raw const TYPE_CONST_CHAR_POINTER as u64),
+            Kind::Pointer
+        );
+        assert!(same_type(
+            &raw const TYPE_INT as u64,
+            &raw const TYPE_INT as u64
+        ));
+        assert!(!same_type(
+            &raw const TYPE_INT as u64,
+            &raw const TYPE_LONG as u64
+        ));
     }
 
     #[test]
@@ -417,10 +445,21 @@ mod tests {
         let object = 0x1000;
         assert_eq!(catches(0, &raw const TYPE_INT as u64, object), Some(object));
         assert_eq!(
-            catches(&raw const TYPE_INT as u64, &raw const TYPE_INT as u64, object),
+            catches(
+                &raw const TYPE_INT as u64,
+                &raw const TYPE_INT as u64,
+                object
+            ),
             Some(object)
         );
-        assert_eq!(catches(&raw const TYPE_LONG as u64, &raw const TYPE_INT as u64, object), None);
+        assert_eq!(
+            catches(
+                &raw const TYPE_LONG as u64,
+                &raw const TYPE_INT as u64,
+                object
+            ),
+            None
+        );
     }
 
     #[test]

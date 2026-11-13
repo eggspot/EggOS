@@ -2,8 +2,8 @@
 //! descriptors (Intel's 8254x and 82574 software developer's manuals; D240).
 
 use super::{
-    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS, TRANSMIT_RING,
-    buffer_address, is_valid_mac, put_frame, take_frame,
+    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS,
+    TRANSMIT_RING, buffer_address, is_valid_mac, put_frame, take_frame,
 };
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
@@ -72,12 +72,29 @@ pub fn family_of(device: u16) -> Option<Family> {
         0x100e | 0x100f | 0x1010 | 0x1011 | 0x1012 | 0x1013 | 0x1015 | 0x1016 | 0x1017 | 0x101d
         | 0x1026 | 0x1027 | 0x1028 | 0x1075 | 0x1076 | 0x1077 | 0x1078 | 0x1079 | 0x107a
         | 0x107b | 0x107c | 0x108a | 0x1099 | 0x10b5 => Some(Family::Classic),
-        0x10d3 | 0x10f6 | 0x150c | 0x153a | 0x153b | 0x1559 | 0x155a | 0x156f | 0x1570
-        | 0x15a0..=0x15a3 | 0x15b7..=0x15be | 0x15d6..=0x15d8 | 0x15df..=0x15e3
-        | 0x15f4..=0x15fc | 0x0d4c..=0x0d4f | 0x0d53 | 0x0d55 | 0x0dc5..=0x0dc8
-        | 0x1a1c..=0x1a1f | 0x550a..=0x5511 | 0x57a0 | 0x57a1 | 0x57b3..=0x57ba => {
-            Some(Family::Express)
-        }
+        0x10d3
+        | 0x10f6
+        | 0x150c
+        | 0x153a
+        | 0x153b
+        | 0x1559
+        | 0x155a
+        | 0x156f
+        | 0x1570
+        | 0x15a0..=0x15a3
+        | 0x15b7..=0x15be
+        | 0x15d6..=0x15d8
+        | 0x15df..=0x15e3
+        | 0x15f4..=0x15fc
+        | 0x0d4c..=0x0d4f
+        | 0x0d53
+        | 0x0d55
+        | 0x0dc5..=0x0dc8
+        | 0x1a1c..=0x1a1f
+        | 0x550a..=0x5511
+        | 0x57a0
+        | 0x57a1
+        | 0x57b3..=0x57ba => Some(Family::Express),
         _ => None,
     }
 }
@@ -96,9 +113,17 @@ pub struct E1000<R: RegisterIo, M: DmaMemory> {
 impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
     /// Resets the adapter at `regs` and starts it with its rings in `memory`
     /// ([`super::MEMORY_BYTES`]). On failure `memory` is handed back.
-    pub fn new(regs: R, memory: M, family: Family, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Self, (Error, M)> {
+    pub fn new(
+        regs: R,
+        memory: M,
+        family: Family,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, (Error, M)> {
         if memory.len() < super::MEMORY_BYTES {
-            return Err((Error::Unsupported("too little DMA memory for a network adapter"), memory));
+            return Err((
+                Error::Unsupported("too little DMA memory for a network adapter"),
+                memory,
+            ));
         }
         regs.write32(IMC, u32::MAX);
         let control = regs.read32(CTRL);
@@ -139,10 +164,18 @@ impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
         for word in 0..MULTICAST_TABLE_WORDS {
             self.regs.write32(MTA + word * 4, 0);
         }
-        zero(&self.memory, RECEIVE_RING, TRANSMIT_RING + RING_ENTRIES * DESCRIPTOR_BYTES - RECEIVE_RING);
+        zero(
+            &self.memory,
+            RECEIVE_RING,
+            TRANSMIT_RING + RING_ENTRIES * DESCRIPTOR_BYTES - RECEIVE_RING,
+        );
         for index in 0..RING_ENTRIES {
             let descriptor = RECEIVE_RING + index * DESCRIPTOR_BYTES;
-            write64(&self.memory, descriptor, buffer_address(&self.memory, RECEIVE_BUFFERS, index));
+            write64(
+                &self.memory,
+                descriptor,
+                buffer_address(&self.memory, RECEIVE_BUFFERS, index),
+            );
         }
         let base = self.memory.dma_addr().get();
         let ring_bytes = (RING_ENTRIES * DESCRIPTOR_BYTES) as u32;
@@ -152,17 +185,22 @@ impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
         self.regs.write32(RDLEN, ring_bytes);
         self.regs.write32(RDH, 0);
         self.regs.write32(RDT, (RING_ENTRIES - 1) as u32);
-        self.regs.write32(RCTL, RCTL_ENABLE | RCTL_BROADCAST | RCTL_STRIP_CRC);
+        self.regs
+            .write32(RCTL, RCTL_ENABLE | RCTL_BROADCAST | RCTL_STRIP_CRC);
         let transmit = base + TRANSMIT_RING as u64;
         self.regs.write32(TDBAL, transmit as u32);
         self.regs.write32(TDBAH, (transmit >> 32) as u32);
         self.regs.write32(TDLEN, ring_bytes);
         self.regs.write32(TDH, 0);
         self.regs.write32(TDT, 0);
-        self.regs.write32(TCTL, TCTL_ENABLE | TCTL_PAD_SHORT | TCTL_COLLISION_THRESHOLD | TCTL_COLLISION_DISTANCE);
+        self.regs.write32(
+            TCTL,
+            TCTL_ENABLE | TCTL_PAD_SHORT | TCTL_COLLISION_THRESHOLD | TCTL_COLLISION_DISTANCE,
+        );
         self.regs.write32(TIPG, TIPG_DEFAULT);
         let control = self.regs.read32(CTRL);
-        self.regs.write32(CTRL, control | CTRL_SET_LINK_UP | CTRL_AUTO_SPEED);
+        self.regs
+            .write32(CTRL, control | CTRL_SET_LINK_UP | CTRL_AUTO_SPEED);
     }
 
     pub fn mac(&self) -> [u8; 6] {
@@ -196,7 +234,9 @@ impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
             fence(Ordering::SeqCst);
             let length = (read32(&self.memory, descriptor + 8) & 0xffff) as usize;
             let complete = status & END_OF_PACKET != 0 && (word >> 8) as u8 == 0;
-            let taken = complete.then(|| take_frame(&self.memory, index, length.min(BUFFER_BYTES), frame)).flatten();
+            let taken = complete
+                .then(|| take_frame(&self.memory, index, length.min(BUFFER_BYTES), frame))
+                .flatten();
             write32(&self.memory, descriptor + 12, 0);
             fence(Ordering::SeqCst);
             self.regs.write32(RDT, index as u32);
@@ -211,11 +251,17 @@ impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), Error> {
         let index = self.transmit_next;
         let descriptor = TRANSMIT_RING + index * DESCRIPTOR_BYTES;
-        if self.transmit_used[index] && read32(&self.memory, descriptor + 12) as u8 & DESCRIPTOR_DONE == 0 {
+        if self.transmit_used[index]
+            && read32(&self.memory, descriptor + 12) as u8 & DESCRIPTOR_DONE == 0
+        {
             return Err(Error::QueueFull);
         }
         put_frame(&self.memory, index, frame)?;
-        write64(&self.memory, descriptor, buffer_address(&self.memory, TRANSMIT_BUFFERS, index));
+        write64(
+            &self.memory,
+            descriptor,
+            buffer_address(&self.memory, TRANSMIT_BUFFERS, index),
+        );
         write32(
             &self.memory,
             descriptor + 8,
@@ -230,7 +276,11 @@ impl<R: RegisterIo, M: DmaMemory> E1000<R, M> {
     }
 }
 
-fn read_mac<R: RegisterIo>(regs: &R, family: Family, keep_waiting: &mut dyn FnMut() -> bool) -> Option<[u8; 6]> {
+fn read_mac<R: RegisterIo>(
+    regs: &R,
+    family: Family,
+    keep_waiting: &mut dyn FnMut() -> bool,
+) -> Option<[u8; 6]> {
     let low = regs.read32(RAL).to_le_bytes();
     let high = regs.read32(RAH).to_le_bytes();
     let mac = [low[0], low[1], low[2], low[3], high[0], high[1]];
@@ -271,7 +321,10 @@ mod tests {
         let regs = FakeRegs::default();
         regs.script_reads(RAL, &[0x1200_5452]);
         regs.script_reads(RAH, &[0x8000_5634]);
-        assert_eq!(read_mac(&regs, Family::Classic, &mut || false), Some([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]));
+        assert_eq!(
+            read_mac(&regs, Family::Classic, &mut || false),
+            Some([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])
+        );
     }
 
     #[test]

@@ -71,10 +71,11 @@ pub fn paint_window(gui: &Gui, handle: usize) -> Option<Rect> {
         let look = BarLook {
             enabled: entry.enabled(),
             focused: false,
-            hovered: held == Some(Held {
-                window: handle,
-                vertical,
-            }),
+            hovered: held
+                == Some(Held {
+                    window: handle,
+                    vertical,
+                }),
         };
         bar_model::paint(&mut surface, rect, entry.bar(vertical), look, palette);
     }

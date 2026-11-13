@@ -526,8 +526,15 @@ impl Interface {
             destination_port,
         };
         let completion = self.transmit_checksums;
-        udp::write_header_with(datagram, source, destination, header, data.len(), completion)
-            .ok_or(SendError::TooLong)?;
+        udp::write_header_with(
+            datagram,
+            source,
+            destination,
+            header,
+            data.len(),
+            completion,
+        )
+        .ok_or(SendError::TooLong)?;
         let ip = ipv4::Header {
             source,
             destination,

@@ -196,15 +196,13 @@ impl<F: Format> PageTables<F> {
         frames: &mut FrameAllocator,
         leaf: &mut impl FnMut(&mut FrameAllocator, u64, usize),
     ) {
-        self.for_each_used_entry(table, level, 0..F::entries(level), |entry| {
-            match F::decode(entry, level) {
-                Entry::Table(next) if level > 0 => {
-                    self.free_table_tree(next, level - 1, frames, leaf)
-                }
-                Entry::Leaf(phys, _) => leaf(frames, phys, level),
-                Entry::Kept(phys) => leaf(frames, phys, 0),
-                _ => {}
-            }
+        self.for_each_used_entry(table, level, 0..F::entries(level), |entry| match F::decode(
+            entry, level,
+        ) {
+            Entry::Table(next) if level > 0 => self.free_table_tree(next, level - 1, frames, leaf),
+            Entry::Leaf(phys, _) => leaf(frames, phys, level),
+            Entry::Kept(phys) => leaf(frames, phys, 0),
+            _ => {}
         });
         // SAFETY: a table of the low half, allocated from `frames` by `map_leaf`, reached once
         // (a table hangs from one entry), and walked by nothing any more (see `free_user_half`).
@@ -740,25 +738,24 @@ struct TableEntry {
 
 impl TableEntry {
     fn read(&self) -> u64 {
-        // SAFETY: the pointer is an aligned entry of the format's width inside a table frame
-        // that `new_table` took from the frame allocator (which owns it from then on) and
-        // zeroed, reached through the physical memory offset the tables were given. Volatile,
-        // because the page-table walker reads the entries behind the compiler's back.
-        unsafe {
-            match self.narrow {
-                true => u64::from(self.place.cast::<u32>().read_volatile()),
-                false => self.place.cast::<u64>().read_volatile(),
-            }
+        match self.narrow {
+            // SAFETY: the pointer is an aligned entry of the format's width inside a table
+            // frame that `new_table` took from the frame allocator (which owns it from then on)
+            // and zeroed, reached through the physical memory offset the tables were given.
+            // Volatile, because the page-table walker reads the entries behind the compiler's
+            // back.
+            true => u64::from(unsafe { self.place.cast::<u32>().read_volatile() }),
+            // SAFETY: as for the narrow entry.
+            false => unsafe { self.place.cast::<u64>().read_volatile() },
         }
     }
 
     fn write(&self, value: u64) {
-        // SAFETY: as in `read`; the tables own the frame, so nothing else writes it.
-        unsafe {
-            match self.narrow {
-                true => self.place.cast::<u32>().write_volatile(value as u32),
-                false => self.place.cast::<u64>().write_volatile(value),
-            }
+        match self.narrow {
+            // SAFETY: as in `read`; the tables own the frame, so nothing else writes it.
+            true => unsafe { self.place.cast::<u32>().write_volatile(value as u32) },
+            // SAFETY: as for the narrow entry.
+            false => unsafe { self.place.cast::<u64>().write_volatile(value) },
         }
     }
 }
@@ -782,7 +779,8 @@ pub fn device_window<P: Platform>() -> core::ops::Range<u64> {
         return window;
     }
     let image = P::kernel_image();
-    let size = <P::PageTableFormat as Format>::leaf_bytes(<P::PageTableFormat as Format>::LEVELS - 1);
+    let size =
+        <P::PageTableFormat as Format>::leaf_bytes(<P::PageTableFormat as Format>::LEVELS - 1);
     let image_entry = image.virtual_address(image.start) & !(size - 1);
     let start = image_entry.wrapping_sub(size);
     start..image_entry
@@ -806,7 +804,7 @@ fn new_table<F: Format>(frames: &mut FrameAllocator, level: usize) -> Result<u64
         let entries = start.cast::<u64>();
         for index in 0..((FRAME_SIZE as usize) << order) / 8 {
             // SAFETY: an entry of the table just allocated and zeroed above, which this code owns.
-            unsafe { entries.add(index).write(empty) };
+            unsafe { entries.wrapping_add(index).write(empty) };
         }
     }
     Ok(table)

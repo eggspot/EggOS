@@ -21,6 +21,7 @@ use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
+use crate::objc::sel;
 use crate::objc::{Runtime, methods, send, send1};
 use eggos_plist::{Document, Kind, Object};
 
@@ -30,7 +31,6 @@ const ROOT_KEY: &[u8] = b"root";
 const KEY_BYTES: usize = 256;
 const MOST_OBJECTS: usize = 1 << 20;
 
-/// An unarchiver's fields.
 #[repr(C)]
 struct Unarchiver {
     isa: usize,
@@ -138,7 +138,9 @@ fn uids_of(this: Id, list: Option<Object<'_>>, out: &mut Buffer<Id>) {
         return;
     };
     for item in items {
-        let decoded = item.uid().map_or(core::ptr::null_mut(), |uid| decode_uid(this, uid));
+        let decoded = item
+            .uid()
+            .map_or(core::ptr::null_mut(), |uid| decode_uid(this, uid));
         if !decoded.is_null() {
             out.push(decoded);
         }
@@ -215,11 +217,11 @@ fn native(this: Id, object: &Object<'_>, name: &[u8]) -> Option<Id> {
     })
 }
 
-/// The object `uid` names, decoded once and shared; nil for `$null`, a bad UID, a class that
-/// is not there, or a cycle through natively decoded objects.
 fn decode_uid(this: Id, uid: u64) -> Id {
     let unarchiver = fields(this);
-    let Some(index) = usize::try_from(uid).ok().filter(|&index| index < unarchiver.objects)
+    let Some(index) = usize::try_from(uid)
+        .ok()
+        .filter(|&index| index < unarchiver.objects)
     else {
         return core::ptr::null_mut();
     };
@@ -397,10 +399,12 @@ extern "C" fn decode_bool_for_key(this: Id, _: Sel, key: Id) -> u8 {
         return 0;
     };
     let value = value_for(this, &document, key);
-    let truth = value
-        .as_ref()
-        .and_then(Object::boolean)
-        .or_else(|| value.as_ref().and_then(Object::integer).map(|value| value != 0));
+    let truth = value.as_ref().and_then(Object::boolean).or_else(|| {
+        value
+            .as_ref()
+            .and_then(Object::integer)
+            .map(|value| value != 0)
+    });
     u8::from(truth == Some(true))
 }
 
@@ -471,7 +475,11 @@ extern "C" fn unarchive_object_with_data(_: Id, _: Sel, data: Id) -> Id {
 }
 
 extern "C" fn unarchive_object_with_file(_: Id, _: Sel, path: Id) -> Id {
-    let data = send1(class_pointer(&NSDATA).cast(), sel!("dataWithContentsOfFile:"), path as usize);
+    let data = send1(
+        class_pointer(&NSDATA).cast(),
+        sel!("dataWithContentsOfFile:"),
+        path as usize,
+    );
     unarchive(data)
 }
 

@@ -40,7 +40,8 @@ pub struct Timing {
 impl Timing {
     /// Its refresh rate in millihertz.
     pub fn refresh_mhz(&self) -> u32 {
-        let total = u64::from(self.width + self.horizontal_blank) * u64::from(self.height + self.vertical_blank);
+        let total = u64::from(self.width + self.horizontal_blank)
+            * u64::from(self.height + self.vertical_blank);
         match total {
             0 => 0,
             total => (u64::from(self.clock_khz) * 1_000_000 / total) as u32,
@@ -122,7 +123,8 @@ impl Edid {
     /// The base block `block`, if its header and checksum are right.
     pub fn parse(block: &[u8]) -> Option<Self> {
         let block = block.get(..BLOCK_BYTES)?;
-        if block[..8] != HEADER || block.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) != 0 {
+        if block[..8] != HEADER || block.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) != 0
+        {
             return None;
         }
         let packed = u16::from_be_bytes([block[8], block[9]]);
@@ -144,7 +146,10 @@ impl Edid {
             }
             if descriptor[3] == NAME_TAG {
                 let text = &descriptor[5..5 + NAME_BYTES];
-                let length = text.iter().position(|&byte| byte == b'\n').unwrap_or(NAME_BYTES);
+                let length = text
+                    .iter()
+                    .position(|&byte| byte == b'\n')
+                    .unwrap_or(NAME_BYTES);
                 edid.name[..length].copy_from_slice(&text[..length]);
                 edid.name_length = length;
             }
@@ -154,7 +159,9 @@ impl Edid {
 
     /// The monitor's name, or empty.
     pub fn name(&self) -> &str {
-        core::str::from_utf8(&self.name[..self.name_length]).unwrap_or("").trim_end()
+        core::str::from_utf8(&self.name[..self.name_length])
+            .unwrap_or("")
+            .trim_end()
     }
 }
 
@@ -168,7 +175,8 @@ mod tests {
         block[8..10].copy_from_slice(&0x10acu16.to_be_bytes());
         block[10..12].copy_from_slice(&0x4142u16.to_le_bytes());
         let timing = [
-            0x02, 0x3a, 0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c, 0x45, 0x00, 0, 0, 0, 0, 0, 0x1e,
+            0x02, 0x3a, 0x80, 0x18, 0x71, 0x38, 0x2d, 0x40, 0x58, 0x2c, 0x45, 0x00, 0, 0, 0, 0, 0,
+            0x1e,
         ];
         block[54..72].copy_from_slice(&timing);
         block[72..77].copy_from_slice(&[0, 0, 0, NAME_TAG, 0]);
@@ -197,9 +205,15 @@ mod tests {
         let timing = Timing::reduced_blanking(1920, 1080, 60).unwrap();
         assert_eq!(timing.clock_khz, 133_320);
         assert_eq!((timing.horizontal_blank, timing.vertical_blank), (80, 31));
-        assert_eq!((timing.vertical_sync_offset, timing.vertical_sync_width), (17, 8));
+        assert_eq!(
+            (timing.vertical_sync_offset, timing.vertical_sync_width),
+            (17, 8)
+        );
         assert!(timing.horizontal_sync_positive && !timing.vertical_sync_positive);
-        assert_eq!(Timing::reduced_blanking(640, 2, 60).unwrap().vertical_blank, 15);
+        assert_eq!(
+            Timing::reduced_blanking(640, 2, 60).unwrap().vertical_blank,
+            15
+        );
         assert_eq!(Timing::reduced_blanking(0, 1080, 60), None);
         assert_eq!(Timing::reduced_blanking(1920, 1080, 5000), None);
     }

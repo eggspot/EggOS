@@ -69,7 +69,10 @@ fn attributes(chunk: &[u8], pool: &[String]) -> Option<Vec<Attribute>> {
             _ => None,
         };
         found.push(Attribute {
-            name: pool.get(word(chunk, at + 4)? as usize).cloned().unwrap_or_default(),
+            name: pool
+                .get(word(chunk, at + 4)? as usize)
+                .cloned()
+                .unwrap_or_default(),
             text,
             kind,
             data,
@@ -219,13 +222,24 @@ mod tests {
             "greet",
         ]);
         let mut body = strings;
-        body.extend(element(START_ELEMENT, 0, &[(1, NO_STRING, TYPE_INT_DEC, 1)]));
-        body.extend(element(START_ELEMENT, 2, &[(3, NO_STRING, TYPE_REFERENCE, 0x7f0f_0001)]));
+        body.extend(element(
+            START_ELEMENT,
+            0,
+            &[(1, NO_STRING, TYPE_INT_DEC, 1)],
+        ));
+        body.extend(element(
+            START_ELEMENT,
+            2,
+            &[(3, NO_STRING, TYPE_REFERENCE, 0x7f0f_0001)],
+        ));
         body.extend(element(END_ELEMENT, 2, &[]));
         body.extend(element(
             START_ELEMENT,
             4,
-            &[(5, NO_STRING, TYPE_REFERENCE, 0x7f08_0002), (6, 7, TYPE_STRING, 7)],
+            &[
+                (5, NO_STRING, TYPE_REFERENCE, 0x7f08_0002),
+                (6, 7, TYPE_STRING, 7),
+            ],
         ));
         body.extend(element(END_ELEMENT, 4, &[]));
         body.extend(element(END_ELEMENT, 0, &[]));

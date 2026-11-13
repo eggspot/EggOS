@@ -540,7 +540,10 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::KeyboardLayout(_) | Change::KeyboardLayouts(_) | Change::KeyboardSwitchKey(_) => {
             keyboard.map_or(Ok(()), |choice| machine.apply_keyboard(choice))
         }
-        Change::TimeZone(_) | Change::DisplayScale(_) | Change::DisplayResolution(_) | Change::Automatic(false) => Ok(()),
+        Change::TimeZone(_)
+        | Change::DisplayScale(_)
+        | Change::DisplayResolution(_)
+        | Change::Automatic(false) => Ok(()),
         Change::Automatic(true) if saved.is_ok() => machine.start_clock_sync(),
         Change::Automatic(true) => Ok(()),
         Change::Input(input) => {
@@ -740,7 +743,10 @@ mod tests {
             Ok(())
         }
 
-        fn save_display_resolution(&mut self, _size: Option<(u32, u32)>) -> Result<(), &'static [u8]> {
+        fn save_display_resolution(
+            &mut self,
+            _size: Option<(u32, u32)>,
+        ) -> Result<(), &'static [u8]> {
             Ok(())
         }
 

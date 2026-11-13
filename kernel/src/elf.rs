@@ -328,8 +328,16 @@ pub mod build {
         put_address(&mut image, field::ENTRY, entry);
         put_address(&mut image, field::PROGRAM_HEADER_OFFSET, HEADER_SIZE as u64);
         put_u16(&mut image, field::HEADER_SIZE, HEADER_SIZE as u16);
-        put_u16(&mut image, field::PROGRAM_HEADER_SIZE, PROGRAM_HEADER_SIZE as u16);
-        put_u16(&mut image, field::PROGRAM_HEADER_COUNT, headers.len() as u16);
+        put_u16(
+            &mut image,
+            field::PROGRAM_HEADER_SIZE,
+            PROGRAM_HEADER_SIZE as u16,
+        );
+        put_u16(
+            &mut image,
+            field::PROGRAM_HEADER_COUNT,
+            headers.len() as u16,
+        );
         for (index, header) in headers.iter().enumerate() {
             let at = HEADER_SIZE + index * PROGRAM_HEADER_SIZE;
             let entry = &mut image[at..at + PROGRAM_HEADER_SIZE];
@@ -453,7 +461,7 @@ mod tests {
         assert_eq!(with(4, &[1]), Err(InvalidElf("not a 64-bit ELF image")));
         assert_eq!(
             with(5, &[2]),
-            Err(InvalidElf("not a little-endian ELF image"))
+            Err(InvalidElf("an ELF image in the other byte order"))
         );
         assert_eq!(with(6, &[0]), Err(InvalidElf("an unknown ELF version")));
         for kind in [1u16, 4] {

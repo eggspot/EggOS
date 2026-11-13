@@ -17,13 +17,11 @@ const SIGP_INITIAL_CPU_RESET: u64 = 0x0b;
 const SIGP_SET_PREFIX: u64 = 0x0d;
 const NOT_OPERATIONAL: u64 = 3;
 const BUSY: u64 = 2;
-/// CR0's AFP-register control: a new CPU starts with the extra FP registers trapping.
 const CR0_AFP: u64 = 1 << 18;
 
 #[repr(C, align(8192))]
 struct Lowcore([u8; LOWCORE_BYTES]);
 
-/// What the real-mode code reads, at offsets it knows: keep in step with `s390x_secondary_real`.
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
 struct SecondaryStart {
@@ -113,7 +111,9 @@ pub(super) fn cpus(cpu: &mut dyn FnMut(u64)) {
 fn store_control_0() -> u64 {
     let mut value = 0u64;
     // SAFETY: `stctg` stores CR0 into `value`, which this function owns.
-    unsafe { core::arch::asm!("stctg %c0, %c0, 0({0})", in(reg_addr) &raw mut value, options(nostack)) };
+    unsafe {
+        core::arch::asm!("stctg %c0, %c0, 0({0})", in(reg_addr) &raw mut value, options(nostack))
+    };
     value
 }
 
@@ -147,7 +147,10 @@ pub(super) unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCp
         });
         let lowcores = &raw mut LOWCORES;
         let lowcore = &raw mut (*lowcores)[index];
-        (slot as u64 - KERNEL_VIRTUAL_OFFSET, lowcore as u64 - KERNEL_VIRTUAL_OFFSET)
+        (
+            slot as u64 - KERNEL_VIRTUAL_OFFSET,
+            lowcore as u64 - KERNEL_VIRTUAL_OFFSET,
+        )
     };
     let new = (DIRECT_MAP_OFFSET + lowcore_physical) as *mut u8;
     let own = DIRECT_MAP_OFFSET as *const u8;
@@ -163,11 +166,15 @@ pub(super) unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCp
             (copied.end - copied.start) as usize,
         );
         let words = new as *mut u64;
-        words.add(lowcore::RESTART_NEW as usize / 8).write_volatile(psw::REAL);
+        words
+            .add(lowcore::RESTART_NEW as usize / 8)
+            .write_volatile(psw::REAL);
         words
             .add(lowcore::RESTART_NEW as usize / 8 + 1)
             .write_volatile(s390x_secondary_real as *const () as u64 - KERNEL_VIRTUAL_OFFSET);
-        words.add(lowcore::CPU_START as usize / 8).write_volatile(block_physical);
+        words
+            .add(lowcore::CPU_START as usize / 8)
+            .write_volatile(block_physical);
     }
     super::doorbell_barrier();
     for (order, parameter) in [

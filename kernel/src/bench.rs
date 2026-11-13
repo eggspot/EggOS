@@ -6,7 +6,6 @@
 //! so the elapsed time is an instruction count: the same on every host and every run, which
 //! is what lets CI compare it against a committed baseline (D27).
 
-use eggos_hal::atomic::AtomicU64;
 use crate::HEAP;
 use crate::devices::interrupts::DeviceEvents;
 use crate::linux::Errno;
@@ -37,6 +36,7 @@ use eggos_drivers::virtio::input::{self as virtio_input, VirtioInput};
 use eggos_drivers::virtio::queue::{self, Buffer, SplitQueue};
 use eggos_drivers::virtio::rng as virtio_rng;
 use eggos_drivers::virtio::{self, Transport};
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::fdt::Fdt;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
@@ -2015,8 +2015,8 @@ fn fp_process_switch_round_trip<P: Platform>(memory: &mut Memory<P>, n: u64) {
 mod tests {
     use super::*;
     use crate::interrupt;
-    use eggos_hal::atomic::AtomicU64;
     use core::sync::atomic::Ordering;
+    use eggos_hal::atomic::AtomicU64;
     use eggos_hal::{ExitStatus, Interrupt};
 
     struct CountingPlatform;

@@ -28,8 +28,10 @@ pub(crate) struct FakeDevice {
     pub enabled: bool,
     pub pending: Option<Irb>,
     pub commands: Vec<(u8, u16)>,
-    pub answer: Box<dyn FnMut(u8, &mut [u8]) -> u8 + Send>,
+    pub answer: Answer,
 }
+
+pub(crate) type Answer = Box<dyn FnMut(u8, &mut [u8]) -> u8 + Send>;
 
 pub(crate) struct FakeChannels(pub Mutex<RefCell<FakeDevice>>);
 
@@ -53,7 +55,8 @@ impl ChannelSubsystem for FakeChannels {
         let device = guard.borrow();
         *schib = Schib::default();
         schib.0[PMCW_FLAGS] = DEVICE_NUMBER_VALID | if device.enabled { ENABLED } else { 0 };
-        schib.0[PMCW_DEVICE_NUMBER..PMCW_DEVICE_NUMBER + 2].copy_from_slice(&0x0002u16.to_be_bytes());
+        schib.0[PMCW_DEVICE_NUMBER..PMCW_DEVICE_NUMBER + 2]
+            .copy_from_slice(&0x0002u16.to_be_bytes());
         ConditionCode::DONE
     }
 
@@ -79,7 +82,8 @@ impl ChannelSubsystem for FakeChannels {
         let count = u16::from_be_bytes([word[2], word[3]]);
         let data = u32::from_be_bytes([word[4], word[5], word[6], word[7]]) as u64;
         // SAFETY: the test's buffer holds `count` data bytes there.
-        let bytes = unsafe { core::slice::from_raw_parts_mut(cpu(data) as *mut u8, usize::from(count)) };
+        let bytes =
+            unsafe { core::slice::from_raw_parts_mut(cpu(data) as *mut u8, usize::from(count)) };
         device.commands.push((command, count));
         let status = (device.answer)(command, bytes);
         let mut irb = Irb::default();
@@ -107,7 +111,7 @@ impl ChannelSubsystem for FakeChannels {
     }
 }
 
-pub(crate) fn fake(answer: Box<dyn FnMut(u8, &mut [u8]) -> u8 + Send>) -> (FakeChannels, LowDma) {
+pub(crate) fn fake(answer: Answer) -> (FakeChannels, LowDma) {
     let memory = LowDma(HostDma::zeroed(1));
     let channels = FakeChannels(Mutex::new(RefCell::new(FakeDevice {
         cpu_base: memory.as_mut_ptr() as usize,
@@ -132,7 +136,10 @@ fn subchannel_word_has_its_one_bit_and_set() {
 
 #[test]
 fn format1_word_and_request_are_big_endian() {
-    assert_eq!(ccw1(0xe4, 0x20, 7, 0x8000_1000), [0xe4, 0x20, 0, 7, 0, 0, 0x10, 0]);
+    assert_eq!(
+        ccw1(0xe4, 0x20, 7, 0x8000_1000),
+        [0xe4, 0x20, 0, 7, 0, 0, 0x10, 0]
+    );
     let orb = Orb::format1(0x0001_0000, 0x1000, 0xff);
     assert_eq!(&orb.0[..12], &[0, 1, 0, 0, 0, 0x80, 0xff, 0, 0, 0, 0x10, 0]);
 }
@@ -148,7 +155,10 @@ fn enable_sets_the_enable_bit_and_subclass() {
     let enabled = enable(&channels, THE_SUBCHANNEL).unwrap();
     assert!(enabled.is_enabled());
     assert_eq!(enabled.device_number(), 2);
-    assert_eq!(enable(&channels, SubchannelId::new(0, 1)), Err(ChannelError::NotOperational));
+    assert_eq!(
+        enable(&channels, SubchannelId::new(0, 1)),
+        Err(ChannelError::NotOperational)
+    );
 }
 
 #[test]
@@ -169,7 +179,10 @@ fn unit_check_is_a_refusal() {
     let (channels, memory) = fake(Box::new(|_, _| GOOD | device_status::UNIT_CHECK));
     enable(&channels, THE_SUBCHANNEL).unwrap();
     let mut buffer = ChannelBuffer::new(memory).unwrap();
-    assert_eq!(buffer.run(&channels, THE_SUBCHANNEL, 0x83, 4), Err(ChannelError::UnitCheck));
+    assert_eq!(
+        buffer.run(&channels, THE_SUBCHANNEL, 0x83, 4),
+        Err(ChannelError::UnitCheck)
+    );
 }
 
 #[test]
@@ -189,7 +202,9 @@ fn memory_above_two_gibibytes_is_refused() {
         }
     }
     assert_eq!(
-        ChannelBuffer::new(High(HostDma::zeroed(1))).err().map(|(error, _)| error),
+        ChannelBuffer::new(High(HostDma::zeroed(1)))
+            .err()
+            .map(|(error, _)| error),
         Some(ChannelError::OutOfReach)
     );
 }

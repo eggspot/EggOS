@@ -12,15 +12,11 @@ use crate::text;
 use crate::text_area;
 use crate::widget::{self, FormFactor, LINE_HEIGHT, TEXT_AREA_LINE_PITCH};
 
-/// How long a finger rests on a word before it is selected.
 const LONG_PRESS_MS: u32 = 500;
-/// How far a finger may move and still count as resting.
 const REST_SLOP: i32 = 8;
-/// A handle's shape: a point 6 rows tall widening by 2 a row, on a 12 by 8 block.
 const HANDLE_WIDTH: i32 = 12;
 const HANDLE_POINT_ROWS: i32 = 6;
 const HANDLE_HEIGHT: i32 = 14;
-/// The square a finger grabs a handle by, centred on it.
 const HANDLE_TARGET: i32 = 44;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +53,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             let bottom = inner.y + line as i32 * TEXT_AREA_LINE_PITCH - area.scroll + LINE_HEIGHT;
             return Some((x, bottom));
         }
-        let (Some(Kind::TextField(edited)), Some(rect)) = (self.kind(field), self.rect(field)) else {
+        let (Some(Kind::TextField(edited)), Some(rect)) = (self.kind(field), self.rect(field))
+        else {
             return None;
         };
         let inner = widget::field_inner(rect);
@@ -73,7 +70,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     fn handle_rect(&self, field: WidgetId, end: End) -> Option<Rect> {
         let (x, bottom) = self.handle_point(field, end)?;
-        Some(Rect::new(x - HANDLE_WIDTH / 2, bottom, HANDLE_WIDTH, HANDLE_HEIGHT))
+        Some(Rect::new(
+            x - HANDLE_WIDTH / 2,
+            bottom,
+            HANDLE_WIDTH,
+            HANDLE_HEIGHT,
+        ))
     }
 
     fn damage_handles(&mut self) {
@@ -169,7 +171,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return true;
         }
         let grab = grab_x;
-        let (Some(Kind::TextField(field)), Some(rect)) = (self.kind(handles.field).copied(), self.rect(handles.field))
+        let (Some(Kind::TextField(field)), Some(rect)) =
+            (self.kind(handles.field).copied(), self.rect(handles.field))
         else {
             return false;
         };
@@ -225,7 +228,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let Some(Kind::TextField(field)) = self.kind(handles.field).copied() else {
             return;
         };
-        self.handles = Some(Handles { rest: None, ..handles });
+        self.handles = Some(Handles {
+            rest: None,
+            ..handles
+        });
         if field.masked {
             return;
         }
@@ -279,7 +285,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 canvas.fill(Rect::new(x - half, bottom + row, 2 * half, 1), accent);
             }
             canvas.fill(
-                Rect::new(x - HANDLE_WIDTH / 2, bottom + HANDLE_POINT_ROWS, HANDLE_WIDTH, HANDLE_HEIGHT - HANDLE_POINT_ROWS),
+                Rect::new(
+                    x - HANDLE_WIDTH / 2,
+                    bottom + HANDLE_POINT_ROWS,
+                    HANDLE_WIDTH,
+                    HANDLE_HEIGHT - HANDLE_POINT_ROWS,
+                ),
                 accent,
             );
             canvas.restore(previous);

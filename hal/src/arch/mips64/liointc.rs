@@ -15,11 +15,9 @@ const ENABLE_CLEAR: u64 = 0x2c;
 const CORE_PENDING: u64 = 0x40;
 const CORE_PENDING_STRIDE: u64 = 0x08;
 const INPUTS: u32 = 32;
-/// The CPU pin the inputs raise: `IP2`, the first of the route byte's high nibble.
 const PIN_IP2: u8 = 1 << 4;
 /// `Cause.IP2`.
 pub(super) const PENDING: u64 = 1 << 10;
-/// The UART's input.
 const UART_INPUT: u32 = 0;
 
 static DEVICE_LINES: SourceLines = SourceLines::new();
@@ -73,14 +71,17 @@ pub(super) fn route_device(cells: &[u32]) -> Result<DeviceLine, &'static str> {
 pub(super) fn handle() {
     let core = u64::from(BOOT_CORE.load(Ordering::Relaxed));
     // SAFETY: the core's pending register, read only.
-    let mut pending = unsafe { register(CORE_PENDING + core * CORE_PENDING_STRIDE).read_volatile() };
+    let mut pending =
+        unsafe { register(CORE_PENDING + core * CORE_PENDING_STRIDE).read_volatile() };
     while pending != 0 {
         let input = pending.trailing_zeros();
         pending &= pending - 1;
         let delivered = if input == UART_INPUT && CONSOLE_ENABLED.load(Ordering::Relaxed) != 0 {
             Some(crate::Interrupt::ConsoleInput)
         } else {
-            DEVICE_LINES.line_of(input + 1).map(crate::Interrupt::Device)
+            DEVICE_LINES
+                .line_of(input + 1)
+                .map(crate::Interrupt::Device)
         };
         match delivered {
             Some(interrupt) => crate::interrupt::deliver(interrupt),

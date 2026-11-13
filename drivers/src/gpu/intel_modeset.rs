@@ -14,7 +14,9 @@ pub const TRANSFER_UNIT: u32 = 64;
 /// high and low: `HTOTAL`, `HBLANK`, `HSYNC`, `VTOTAL`, `VBLANK`, `VSYNC`, then the pipe's
 /// `PIPESRC`.
 pub fn timing_registers(timing: &Timing) -> [u32; 7] {
-    let pair = |high: u32, low: u32| (high.saturating_sub(1) & 0x1fff) << 16 | (low.saturating_sub(1) & 0x1fff);
+    let pair = |high: u32, low: u32| {
+        (high.saturating_sub(1) & 0x1fff) << 16 | (low.saturating_sub(1) & 0x1fff)
+    };
     let h_total = timing.width + timing.horizontal_blank;
     let v_total = timing.height + timing.vertical_blank;
     let h_sync_start = timing.width + timing.horizontal_sync_offset;
@@ -41,7 +43,12 @@ fn reduced(mut m: u64, mut n: u64) -> (u32, u32) {
 /// The data and link M/N for `pixel_khz` pixels at `bits_per_pixel` over `lanes` lanes whose
 /// symbol clock is `link_khz` (a 2.7 Gbps lane's is 270,000 kHz): data M/N is the payload's
 /// share of the link, link M/N the pixel clock over the symbol clock.
-pub fn m_n(pixel_khz: u32, bits_per_pixel: u32, link_khz: u32, lanes: u32) -> ((u32, u32), (u32, u32)) {
+pub fn m_n(
+    pixel_khz: u32,
+    bits_per_pixel: u32,
+    link_khz: u32,
+    lanes: u32,
+) -> ((u32, u32), (u32, u32)) {
     let data = reduced(
         u64::from(pixel_khz) * u64::from(bits_per_pixel),
         u64::from(link_khz) * u64::from(lanes.max(1)) * 8,

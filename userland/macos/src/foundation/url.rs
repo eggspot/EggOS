@@ -52,7 +52,11 @@ fn hex(value: u8) -> Option<u8> {
 fn unescaped(text: &[u8], out: &mut Buffer<u8>) {
     let mut at = 0;
     while at < text.len() {
-        let byte = match (text[at], text.get(at + 1).and_then(|&b| hex(b)), text.get(at + 2).and_then(|&b| hex(b))) {
+        let byte = match (
+            text[at],
+            text.get(at + 1).and_then(|&b| hex(b)),
+            text.get(at + 2).and_then(|&b| hex(b)),
+        ) {
             (b'%', Some(high), Some(low)) => {
                 at += 2;
                 high << 4 | low
@@ -142,7 +146,10 @@ extern "C" fn is_file_url(this: Id, _: Sel) -> u8 {
 
 fn last_component(path: &[u8]) -> &[u8] {
     let trimmed = path.strip_suffix(b"/").unwrap_or(path);
-    trimmed.rsplit(|&byte| byte == b'/').next().unwrap_or(trimmed)
+    trimmed
+        .rsplit(|&byte| byte == b'/')
+        .next()
+        .unwrap_or(trimmed)
 }
 
 extern "C" fn last_path_component(this: Id, _: Sel) -> Id {
@@ -196,7 +203,10 @@ extern "C" fn is_equal(this: Id, _: Sel, other: Id) -> u8 {
     if other.is_null() || !crate::objc::root::is_kind_of(other, &NSURL) {
         return 0;
     }
-    u8::from(fields(this).text.as_slice() == fields(other).text.as_slice() && fields(this).is_file == fields(other).is_file)
+    u8::from(
+        fields(this).text.as_slice() == fields(other).text.as_slice()
+            && fields(this).is_file == fields(other).is_file,
+    )
 }
 
 extern "C" fn copy_with_zone(this: Id, _: Sel, _: usize) -> Id {

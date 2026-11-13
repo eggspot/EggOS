@@ -7,7 +7,7 @@ use crate::foundation::{class_pointer, new_instance};
 use crate::libsystem::Exclusive;
 use crate::objc::abi::{Id, Sel};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, methods, send2, sel};
+use crate::objc::{Runtime, methods, sel, send2};
 use eggos_macos_gui::geometry::Frame;
 
 #[repr(C)]

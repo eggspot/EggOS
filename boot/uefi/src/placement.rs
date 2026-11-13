@@ -61,7 +61,8 @@ mod tests {
             start: 0x8000_0000,
             end: 0x1_0000_0000,
         };
-        let found: Vec<_> = candidates_in_gigabytes(0x4020_0000, 0x40_0000, free, u64::MAX).collect();
+        let found: Vec<_> =
+            candidates_in_gigabytes(0x4020_0000, 0x40_0000, free, u64::MAX).collect();
         assert_eq!(found, vec![0x8020_0000, 0xc020_0000]);
     }
 

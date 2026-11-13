@@ -106,7 +106,9 @@ impl ArgumentType {
                 let fraction = parts.next();
                 !whole.is_empty()
                     && whole.iter().all(u8::is_ascii_digit)
-                    && fraction.is_none_or(|fraction| !fraction.is_empty() && fraction.iter().all(u8::is_ascii_digit))
+                    && fraction.is_none_or(|fraction| {
+                        !fraction.is_empty() && fraction.iter().all(u8::is_ascii_digit)
+                    })
             }
         }
     }
@@ -150,7 +152,12 @@ impl<'a> Action<'a> {
     }
 
     fn is_valid(&self) -> bool {
-        is_name(self.name) && !self.run.is_empty() && self.run.split(|&byte| byte == b' ').any(|word| !word.is_empty())
+        is_name(self.name)
+            && !self.run.is_empty()
+            && self
+                .run
+                .split(|&byte| byte == b' ')
+                .any(|word| !word.is_empty())
     }
 }
 
@@ -159,13 +166,20 @@ impl<'a> Action<'a> {
 pub fn is_name(name: &[u8]) -> bool {
     (1..=NAME_CAPACITY).contains(&name.len())
         && name[0].is_ascii_lowercase()
-        && name.iter().all(|&byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && name
+            .iter()
+            .all(|&byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// The actions `file` offers, in its order; nothing when it is not an actions file.
 pub fn actions(file: &[u8]) -> impl Iterator<Item = Action<'_>> {
-    let valid = file.len() <= LARGEST && file.split(|&byte| byte == b'\n').next().map(trim) == Some(HEADER);
-    let mut lines = file.split(|&byte| byte == b'\n').skip(1).map(trim).peekable();
+    let valid =
+        file.len() <= LARGEST && file.split(|&byte| byte == b'\n').next().map(trim) == Some(HEADER);
+    let mut lines = file
+        .split(|&byte| byte == b'\n')
+        .skip(1)
+        .map(trim)
+        .peekable();
     let mut offered = 0;
     core::iter::from_fn(move || {
         if !valid {
@@ -208,7 +222,6 @@ pub fn actions(file: &[u8]) -> impl Iterator<Item = Action<'_>> {
     })
 }
 
-/// A word's `{name}`: the text before it, the name and the text after it.
 fn placeholder(word: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
     let open = word.iter().position(|&byte| byte == b'{')?;
     let close = open + word[open..].iter().position(|&byte| byte == b'}')?;
@@ -261,7 +274,10 @@ pub fn expand(
     out: &mut [u8],
 ) -> Result<usize, ExpandError> {
     for (name, value) in values {
-        let argument = action.arguments().find(|argument| argument.name == *name).ok_or(ExpandError::Unknown)?;
+        let argument = action
+            .arguments()
+            .find(|argument| argument.name == *name)
+            .ok_or(ExpandError::Unknown)?;
         if !argument.kind.accepts(value) {
             return Err(ExpandError::WrongType);
         }
@@ -274,7 +290,11 @@ pub fn expand(
     }
     let mut length = 0;
     let mut words = 0;
-    for word in action.run.split(|&byte| byte == b' ').filter(|word| !word.is_empty()) {
+    for word in action
+        .run
+        .split(|&byte| byte == b' ')
+        .filter(|word| !word.is_empty())
+    {
         let (prefix, value, suffix) = match placeholder(word) {
             Some((prefix, name, suffix)) => {
                 if !action.arguments().any(|argument| argument.name == name) {
@@ -339,10 +359,19 @@ mod tests {
         assert_eq!(words, 3);
         assert_eq!(&out[..33], b"bin/paint\0--export\0/home/a b.png\0");
         let words = expand(&export, &[(b"file", b"x"), (b"scale", b"2")], &mut out).unwrap();
-        assert_eq!((words, &out[..30]), (4, &b"bin/paint\0--export\0x\0--scale=2\0"[..]));
+        assert_eq!(
+            (words, &out[..31]),
+            (4, &b"bin/paint\0--export\0x\0--scale=2\0"[..])
+        );
         assert_eq!(expand(&export, &[], &mut out), Err(ExpandError::Missing));
-        assert_eq!(expand(&export, &[(b"file", b"x"), (b"scale", b"two")], &mut out), Err(ExpandError::WrongType));
-        assert_eq!(expand(&export, &[(b"file", b"x"), (b"other", b"1")], &mut out), Err(ExpandError::Unknown));
+        assert_eq!(
+            expand(&export, &[(b"file", b"x"), (b"scale", b"two")], &mut out),
+            Err(ExpandError::WrongType)
+        );
+        assert_eq!(
+            expand(&export, &[(b"file", b"x"), (b"other", b"1")], &mut out),
+            Err(ExpandError::Unknown)
+        );
         assert!(ArgumentType::Number.accepts(b"-2.5"));
         assert!(!ArgumentType::Number.accepts(b"2."));
     }

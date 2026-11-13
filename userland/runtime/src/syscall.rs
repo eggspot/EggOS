@@ -88,7 +88,11 @@ pub mod number {
 }
 
 /// Linux's system-call numbers: the generic table AArch64, RISC-V and LoongArch share.
-#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64", target_arch = "riscv64"))]
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "riscv64"
+))]
 pub mod number {
     pub const IOCTL: usize = 29;
     pub const OPENAT: usize = 56;
@@ -510,7 +514,11 @@ pub mod number {
 /// Linux's terminal `ioctl` numbers: the generic ones, or PowerPC's (D304), MIPS's (D315) or
 /// SPARC's (D327) own.
 pub mod tty {
-    #[cfg(not(any(target_arch = "powerpc64", target_arch = "mips64", target_arch = "sparc64")))]
+    #[cfg(not(any(
+        target_arch = "powerpc64",
+        target_arch = "mips64",
+        target_arch = "sparc64"
+    )))]
     mod values {
         pub const TCGETS: usize = 0x5401;
         pub const TCSETS: usize = 0x5402;

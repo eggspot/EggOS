@@ -34,12 +34,6 @@ mod keyed_archiver;
 #[cfg(eggos_user)]
 mod keyed_unarchiver;
 #[cfg(eggos_user)]
-mod property_list;
-#[cfg(eggos_user)]
-mod url;
-#[cfg(eggos_user)]
-mod user_defaults;
-#[cfg(eggos_user)]
 mod log;
 #[cfg(eggos_user)]
 mod notification;
@@ -48,14 +42,21 @@ mod number;
 #[cfg(eggos_user)]
 mod process_info;
 #[cfg(eggos_user)]
+mod property_list;
+#[cfg(eggos_user)]
 mod set;
 #[cfg(eggos_user)]
 mod string;
 #[cfg(eggos_user)]
 mod timer;
+#[cfg(eggos_user)]
+mod url;
+#[cfg(eggos_user)]
+mod user_defaults;
 
 #[cfg(eggos_user)]
 pub use property_list::object_of_file as property_list_of_file;
+#[cfg(eggos_user)]
 pub use runtime::*;
 
 #[cfg(eggos_user)]
@@ -210,8 +211,8 @@ mod runtime {
                 && notification::define(runtime)
                 && super::uuid::define(runtime)
                 && super::file_manager::define(runtime)
-                && keyed_unarchiver::define(runtime)
-                && keyed_archiver::define(runtime)
+                && super::keyed_unarchiver::define(runtime)
+                && super::keyed_archiver::define(runtime)
                 && super::user_defaults::define(runtime)
                 && super::url::define(runtime)
                 && super::description::extend_object(runtime)

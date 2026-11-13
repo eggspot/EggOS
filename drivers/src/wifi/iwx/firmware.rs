@@ -110,12 +110,17 @@ fn word(bytes: &[u8], at: usize) -> Option<u32> {
 impl Firmware {
     /// Reads the firmware file `bytes`.
     pub fn parse(bytes: &[u8]) -> Result<Self, FirmwareError> {
-        if bytes.len() < HEADER_BYTES || word(bytes, 0) != Some(0) || word(bytes, 4) != Some(MAGIC) {
+        if bytes.len() < HEADER_BYTES || word(bytes, 0) != Some(0) || word(bytes, 4) != Some(MAGIC)
+        {
             return Err(FirmwareError::NotFirmware);
         }
         let version = word(bytes, VERSION_AT).ok_or(FirmwareError::NotFirmware)?;
         let mut firmware = Firmware {
-            version: ((version >> 24) as u8, (version >> 16) as u8, (version >> 8) as u8),
+            version: (
+                (version >> 24) as u8,
+                (version >> 16) as u8,
+                (version >> 8) as u8,
+            ),
             images: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             image_loader: None,
             pnvm: None,
@@ -132,7 +137,10 @@ impl Firmware {
             let kind = word(bytes, at).ok_or(FirmwareError::Truncated)?;
             let length = word(bytes, at + 4).ok_or(FirmwareError::Truncated)? as usize;
             let start = at + RECORD_HEADER_BYTES;
-            let end = start.checked_add(length).filter(|&end| end <= bytes.len()).ok_or(FirmwareError::Truncated)?;
+            let end = start
+                .checked_add(length)
+                .filter(|&end| end <= bytes.len())
+                .ok_or(FirmwareError::Truncated)?;
             firmware.record(kind, start..end, bytes)?;
             let padded = length.next_multiple_of(4);
             if start + padded > bytes.len() {
@@ -143,7 +151,12 @@ impl Firmware {
         Ok(firmware)
     }
 
-    fn record(&mut self, kind: u32, range: Range<usize>, bytes: &[u8]) -> Result<(), FirmwareError> {
+    fn record(
+        &mut self,
+        kind: u32,
+        range: Range<usize>,
+        bytes: &[u8],
+    ) -> Result<(), FirmwareError> {
         let data = &bytes[range.clone()];
         let bad = || FirmwareError::BadRecord(kind);
         let first = || word(data, 0).ok_or(FirmwareError::BadRecord(kind));
@@ -186,7 +199,9 @@ impl Firmware {
                     return Err(bad());
                 }
                 self.command_versions = data
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|entry| CommandVersion {
                         command: entry[0],
                         group: entry[1],
@@ -196,17 +211,21 @@ impl Firmware {
                     .collect();
             }
             IMAGE_LOADER => self.image_loader = Some(range),
-            PNVM_DATA => {
-                if self.pnvm.is_none() {
-                    self.pnvm = Some(range);
-                }
+            PNVM_DATA if self.pnvm.is_none() => {
+                self.pnvm = Some(range);
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn section(&mut self, image: Image, range: Range<usize>, data: &[u8], kind: u32) -> Result<(), FirmwareError> {
+    fn section(
+        &mut self,
+        image: Image,
+        range: Range<usize>,
+        data: &[u8],
+        kind: u32,
+    ) -> Result<(), FirmwareError> {
         let sections = &mut self.images[image as usize];
         if data.len() < 4 || sections.len() >= MAX_SECTIONS {
             return Err(FirmwareError::BadRecord(kind));
@@ -220,12 +239,16 @@ impl Firmware {
 
     /// Whether API flag `bit` is set.
     pub fn has_api(&self, bit: usize) -> bool {
-        self.api.get(bit / 32).is_some_and(|word| word & (1 << (bit % 32)) != 0)
+        self.api
+            .get(bit / 32)
+            .is_some_and(|word| word & (1 << (bit % 32)) != 0)
     }
 
     /// Whether capability `bit` is set.
     pub fn has_capability(&self, bit: usize) -> bool {
-        self.capabilities.get(bit / 32).is_some_and(|word| word & (1 << (bit % 32)) != 0)
+        self.capabilities
+            .get(bit / 32)
+            .is_some_and(|word| word & (1 << (bit % 32)) != 0)
     }
 
     /// The version the firmware implements of command `command` in group `group`, if it says.
@@ -241,11 +264,15 @@ impl Firmware {
     pub fn split(&self, image: Image) -> [&[Section]; 3] {
         let sections = &self.images[image as usize][..];
         let is_separator = |section: &Section| {
-            section.device_offset == CPU1_CPU2_SEPARATOR || section.device_offset == PAGING_SEPARATOR
+            section.device_offset == CPU1_CPU2_SEPARATOR
+                || section.device_offset == PAGING_SEPARATOR
         };
         let run = |from: usize| {
             let from = from.min(sections.len());
-            let length = sections[from..].iter().take_while(|section| !is_separator(section)).count();
+            let length = sections[from..]
+                .iter()
+                .take_while(|section| !is_separator(section))
+                .count();
             &sections[from..from + length]
         };
         let lmac = run(0);
@@ -332,7 +359,10 @@ mod tests {
         bytes[4] ^= 1;
         assert_eq!(Firmware::parse(&bytes), Err(FirmwareError::NotFirmware));
         let mut bytes = file(&[(SCAN_CHANNELS, 68u32.to_le_bytes().to_vec())]);
-        assert_eq!(Firmware::parse(&bytes), Err(FirmwareError::BadRecord(SCAN_CHANNELS)));
+        assert_eq!(
+            Firmware::parse(&bytes),
+            Err(FirmwareError::BadRecord(SCAN_CHANNELS))
+        );
         bytes = file(&[(SECTION_REGULAR, section(1, b"x"))]);
         let length_at = HEADER_BYTES + 4;
         bytes[length_at..length_at + 4].copy_from_slice(&1000u32.to_le_bytes());

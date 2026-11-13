@@ -53,7 +53,11 @@ fn listed_titles(console: &str, step: &str) -> Vec<String> {
         .collect()
 }
 
-fn wait_for_window(boot: &mut Boot<'_>, screen: &mut Screen, before: &Picture) -> Result<Rect, String> {
+fn wait_for_window(
+    boot: &mut Boot<'_>,
+    screen: &mut Screen,
+    before: &Picture,
+) -> Result<Rect, String> {
     let arch = boot.arch;
     let started = Instant::now();
     loop {
@@ -102,15 +106,25 @@ fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
             return Err(format!("{arch}: the console has no `{wanted}` line"));
         }
     }
-    if !listed_titles(console, "listed").iter().any(|title| title == APP) {
+    if !listed_titles(console, "listed")
+        .iter()
+        .any(|title| title == APP)
+    {
         return Err(format!("{arch}: `wm list` does not list {APP}'s window"));
     }
-    if listed_titles(console, "after").iter().any(|title| title == APP) {
-        return Err(format!("{arch}: {APP}'s window is still listed after Cmd+Q"));
+    if listed_titles(console, "after")
+        .iter()
+        .any(|title| title == APP)
+    {
+        return Err(format!(
+            "{arch}: {APP}'s window is still listed after Cmd+Q"
+        ));
     }
     match clean_exit {
         true => Ok(()),
-        false => Err(format!("{arch}: QEMU did not exit cleanly after the Swift app test")),
+        false => Err(format!(
+            "{arch}: QEMU did not exit cleanly after the Swift app test"
+        )),
     }
 }
 

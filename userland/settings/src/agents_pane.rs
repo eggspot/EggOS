@@ -405,16 +405,27 @@ impl AgentsPane {
     /// height.
     pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
         let w = self.widgets;
-        let line_place = |x: i32, y: i32, width: i32| Place::at(x, y, Length::Px(width), Length::Content);
+        let line_place =
+            |x: i32, y: i32, width: i32| Place::at(x, y, Length::Px(width), Length::Content);
         let Some(c) = content else {
-            tree.set_place(w.list, at(AGENT_LIST.0, AGENT_LIST.1, AGENT_LIST.2, AGENT_LIST.3));
+            tree.set_place(
+                w.list,
+                at(AGENT_LIST.0, AGENT_LIST.1, AGENT_LIST.2, AGENT_LIST.3),
+            );
             tree.set_row_height(w.list, AGENT_ROW);
             for (row, id) in w.rows.iter().enumerate() {
                 let y = ROW_LABEL_TOP + row as i32 * AGENT_ROW;
                 tree.set_place(*id, line_place(ROW_LABEL_X, y, ROW_LABEL_WIDTH));
             }
-            tree.set_place(w.id_field, at(ID_FIELD.0, ID_FIELD.1, ID_FIELD.2, ID_FIELD.3));
-            for (id, (x, y)) in [(w.add, ADD_AT), (w.revoke_all, REVOKE_ALL_AT), (w.forget, FORGET_AT)] {
+            tree.set_place(
+                w.id_field,
+                at(ID_FIELD.0, ID_FIELD.1, ID_FIELD.2, ID_FIELD.3),
+            );
+            for (id, (x, y)) in [
+                (w.add, ADD_AT),
+                (w.revoke_all, REVOKE_ALL_AT),
+                (w.forget, FORGET_AT),
+            ] {
                 tree.set_place(id, at(x, y, BUTTON_SIZE.0, BUTTON_SIZE.1));
             }
             for index in 0..4 {
@@ -425,13 +436,26 @@ impl AgentsPane {
                 );
                 tree.set_place(
                     w.class_radios[index],
-                    at(CLASS_RADIOS.0, CLASS_RADIOS_TOP + offset, CLASS_RADIOS.1, CONTROL_HEIGHT),
+                    at(
+                        CLASS_RADIOS.0,
+                        CLASS_RADIOS_TOP + offset,
+                        CLASS_RADIOS.1,
+                        CONTROL_HEIGHT,
+                    ),
                 );
             }
-            tree.set_place(w.lasts_line, line_place(PADDING, LASTS_LINE_TOP, CLASS_LINE_WIDTH));
+            tree.set_place(
+                w.lasts_line,
+                line_place(PADDING, LASTS_LINE_TOP, CLASS_LINE_WIDTH),
+            );
             tree.set_place(
                 w.lasts,
-                at(LASTS_RADIOS.0, LASTS_RADIOS.1, LASTS_RADIOS.2, CONTROL_HEIGHT),
+                at(
+                    LASTS_RADIOS.0,
+                    LASTS_RADIOS.1,
+                    LASTS_RADIOS.2,
+                    CONTROL_HEIGHT,
+                ),
             );
             tree.set_place(w.status, line_place(PADDING, STATUS_LINE, LINE_WIDTH));
             tree.set_sheet(w.panel, None);
@@ -439,8 +463,14 @@ impl AgentsPane {
             for (id, y) in [w.question, w.meaning].into_iter().zip(PANEL_LINES) {
                 tree.set_place(id, line_place(PADDING, y, PANEL_LINE_WIDTH));
             }
-            tree.set_place(w.cancel, at(CANCEL_AT.0, CANCEL_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1));
-            tree.set_place(w.grant, at(GRANT_AT.0, GRANT_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1));
+            tree.set_place(
+                w.cancel,
+                at(CANCEL_AT.0, CANCEL_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1),
+            );
+            tree.set_place(
+                w.grant,
+                at(GRANT_AT.0, GRANT_AT.1, BUTTON_SIZE.0, BUTTON_SIZE.1),
+            );
             return 0;
         };
         let row = TOUCH_CONTROL;
@@ -448,7 +478,10 @@ impl AgentsPane {
         tree.set_row_height(w.list, row);
         for (index, id) in w.rows.iter().enumerate() {
             let y = 64 + (row - 16) / 2 + index as i32 * row;
-            tree.set_place(*id, line_place(ROW_LABEL_X, y, c - (ROW_LABEL_X - PADDING) - 8));
+            tree.set_place(
+                *id,
+                line_place(ROW_LABEL_X, y, c - (ROW_LABEL_X - PADDING) - 8),
+            );
         }
         tree.set_place(w.id_field, at(PADDING, 224, c, row));
         tree.set_place(w.add, at(PADDING, 280, c, row));
@@ -458,7 +491,10 @@ impl AgentsPane {
         for index in 0..4 {
             let y = 400 + 80 * index as i32;
             tree.set_place(w.class_lines[index], line_place(PADDING, y, c));
-            tree.set_place(w.class_radios[index], at(PADDING, y + 24, CLASS_RADIOS.1, row));
+            tree.set_place(
+                w.class_radios[index],
+                at(PADDING, y + 24, CLASS_RADIOS.1, row),
+            );
         }
         tree.set_place(w.lasts_line, line_place(PADDING, 720, c));
         tree.set_place(w.lasts, at(PADDING, 744, LASTS_RADIOS.2, row));

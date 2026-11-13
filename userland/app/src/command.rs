@@ -24,6 +24,7 @@ use eggos_runtime::errno::Errno;
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command<'a> {
     Install {
         path: &'a [u8],

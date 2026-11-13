@@ -34,12 +34,14 @@ const POWER_HEIGHT: u32 = 44;
 const NOTICE_ROW: (u32, u32) = (44, 48);
 const CLEAR_WIDTH: u32 = 80;
 const SHEET_END: u32 = 16;
-const POWER_ROWS: [(&str, Action); 2] = [("Power off", Action::PowerOff), ("Restart", Action::Restart)];
+const POWER_ROWS: [(&str, Action); 2] = [
+    ("Power off", Action::PowerOff),
+    ("Restart", Action::Restart),
+];
 const POWER_ROW_HEIGHT: u32 = 48;
 const NOTICE_GLYPHS: usize = 40;
 const SHADE_WIDTH: u32 = 390;
 
-/// A shade tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tile {
     Network,
@@ -48,7 +50,12 @@ enum Tile {
     Rotation,
 }
 
-const TILES: [Tile; 4] = [Tile::Network, Tile::DarkTheme, Tile::HighContrast, Tile::Rotation];
+const TILES: [Tile; 4] = [
+    Tile::Network,
+    Tile::DarkTheme,
+    Tile::HighContrast,
+    Tile::Rotation,
+];
 
 impl Desktop {
     /// Keeps `text` among the shade's notices, newest first.
@@ -80,34 +87,48 @@ impl Desktop {
         }
     }
 
-    fn switcher_entries(&self) -> Vec<usize> {
+    fn phone_switcher_entries(&self) -> Vec<usize> {
         let mut order = [0u8; MAX_WINDOWS];
         let count = self.switcher_order(&mut order);
-        order[..count].iter().map(|&slot| usize::from(slot)).collect()
+        order[..count]
+            .iter()
+            .map(|&slot| usize::from(slot))
+            .collect()
     }
 
     fn card(&self, index: usize) -> Rect {
         let work = self.layout.work_area;
         Rect::new(
             SIDE,
-            (work.y + CARD_GAP + (CARD.1 + CARD_GAP) * index as u32).saturating_sub(self.phone.switcher_scroll),
+            (work.y + CARD_GAP + (CARD.1 + CARD_GAP) * index as u32)
+                .saturating_sub(self.phone.switcher_scroll),
             CARD.0.min(work.width.saturating_sub(2 * SIDE)),
             CARD.1,
         )
     }
 
     fn card_close(card: Rect) -> Rect {
-        Rect::new(card.right() - CLOSE_TARGET, card.y, CLOSE_TARGET, CLOSE_TARGET)
+        Rect::new(
+            card.right() - CLOSE_TARGET,
+            card.y,
+            CLOSE_TARGET,
+            CLOSE_TARGET,
+        )
     }
 
     fn close_all_button(&self, count: usize) -> Rect {
         let below = self.card(count.saturating_sub(1));
-        Rect::new(SIDE, below.bottom() + CARD_GAP, below.width, CLOSE_ALL_HEIGHT)
+        Rect::new(
+            SIDE,
+            below.bottom() + CARD_GAP,
+            below.width,
+            CLOSE_ALL_HEIGHT,
+        )
     }
 
     /// A press in the switcher: a card's `Close` asks its window to close, the card shows it,
     /// `Close all` asks every window, anywhere else closes the switcher.
-    pub(super) fn switcher_press(
+    pub(super) fn phone_switcher_press(
         &mut self,
         x: u32,
         y: u32,
@@ -115,7 +136,7 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         damage.add(self.screen());
-        let entries = self.switcher_entries();
+        let entries = self.phone_switcher_entries();
         if !entries.is_empty() && contains(self.close_all_button(entries.len()), x, y) {
             for slot in entries {
                 if self.window_at(slot).closable {
@@ -148,7 +169,7 @@ impl Desktop {
         if !self.phone.switcher {
             return false;
         }
-        let count = self.switcher_entries().len() as u32;
+        let count = self.phone_switcher_entries().len() as u32;
         let content = count * (CARD.1 + CARD_GAP) + CLOSE_ALL_HEIGHT + 2 * CARD_GAP;
         let most = content.saturating_sub(self.layout.work_area.height);
         let step = notches.unsigned_abs() * WHEEL_STEP;
@@ -185,7 +206,12 @@ impl Desktop {
 
     fn power_button_rect(&self) -> Rect {
         let above = self.settings_button();
-        Rect::new(above.x, above.bottom() + TILE_GAP, above.width, POWER_HEIGHT)
+        Rect::new(
+            above.x,
+            above.bottom() + TILE_GAP,
+            above.width,
+            POWER_HEIGHT,
+        )
     }
 
     fn notices_top(&self) -> u32 {
@@ -194,12 +220,22 @@ impl Desktop {
 
     fn clear_button(&self) -> Rect {
         let power = self.power_button_rect();
-        Rect::new(power.right() - CLEAR_WIDTH, self.notices_top() - 14, CLEAR_WIDTH, NOTICE_ROW.0)
+        Rect::new(
+            power.right() - CLEAR_WIDTH,
+            self.notices_top() - 14,
+            CLEAR_WIDTH,
+            NOTICE_ROW.0,
+        )
     }
 
     fn notice_row(&self, index: usize) -> Rect {
         let power = self.power_button_rect();
-        Rect::new(power.x, self.notices_top() + 36 + NOTICE_ROW.1 * index as u32, power.width, NOTICE_ROW.0)
+        Rect::new(
+            power.x,
+            self.notices_top() + 36 + NOTICE_ROW.1 * index as u32,
+            power.width,
+            NOTICE_ROW.0,
+        )
     }
 
     fn shade_rect(&self) -> Rect {
@@ -209,7 +245,12 @@ impl Desktop {
             count => self.notice_row(count - 1).bottom(),
         };
         let width = self.width - self.sheet_left();
-        Rect::new(self.sheet_left(), work.y, width, (last + SHEET_END).saturating_sub(work.y).min(work.height))
+        Rect::new(
+            self.sheet_left(),
+            work.y,
+            width,
+            (last + SHEET_END).saturating_sub(work.y).min(work.height),
+        )
     }
 
     fn power_sheet_rect(&self) -> Rect {
@@ -220,9 +261,13 @@ impl Desktop {
 
     fn tile_state(&self, tile: Tile) -> (&'static str, &str, bool) {
         match tile {
-            Tile::Network => ("Network", self.network_indicator_name().unwrap_or("No network"), false),
+            Tile::Network => (
+                "Network",
+                self.network_indicator_name().unwrap_or("No network"),
+                false,
+            ),
             Tile::DarkTheme => {
-                let dark = self.palette % 2 == 0;
+                let dark = self.palette.is_multiple_of(2);
                 ("Dark theme", if dark { "On" } else { "Off" }, dark)
             }
             Tile::HighContrast => {
@@ -252,7 +297,9 @@ impl Desktop {
             if contains(sheet, x, y) {
                 let row = ((y - sheet.y) / POWER_ROW_HEIGHT) as usize;
                 self.phone.shade = false;
-                return POWER_ROWS.get(row).map_or(Action::None, |(_, action)| *action);
+                return POWER_ROWS
+                    .get(row)
+                    .map_or(Action::None, |(_, action)| *action);
             }
             return Action::None;
         }
@@ -271,7 +318,11 @@ impl Desktop {
                 }
                 Tile::DarkTheme => Action::SetSetting {
                     key: "appearance.theme",
-                    value: if self.palette % 2 == 0 { "light" } else { "dark" },
+                    value: if self.palette.is_multiple_of(2) {
+                        "light"
+                    } else {
+                        "dark"
+                    },
                 },
                 Tile::HighContrast => Action::SetSetting {
                     key: "accessibility.high_contrast",
@@ -322,9 +373,17 @@ impl Desktop {
         }
         if self.phone.power_sheet {
             let sheet = self.power_sheet_rect();
-            canvas.dim(Rect::new(0, self.layout.work_area.y, self.width, sheet.y - self.layout.work_area.y));
+            canvas.dim(Rect::new(
+                0,
+                self.layout.work_area.y,
+                self.width,
+                sheet.y - self.layout.work_area.y,
+            ));
             canvas.fill(sheet, colour::MENU);
-            canvas.fill(Rect::new(sheet.x, sheet.y, sheet.width, 1), colour::MENU_BORDER);
+            canvas.fill(
+                Rect::new(sheet.x, sheet.y, sheet.width, 1),
+                colour::MENU_BORDER,
+            );
             for (index, (label, _)) in POWER_ROWS.iter().enumerate() {
                 let top = sheet.y + 1 + POWER_ROW_HEIGHT * index as u32;
                 canvas.text(SIDE, top + 16, label, colour::TEXT);
@@ -336,7 +395,11 @@ impl Desktop {
         let Some(zone) = self.navigation_zone(2) else {
             return;
         };
-        let (side, x, y) = (14, zone.x + (zone.width - 14) / 2, zone.y + (zone.height - 14) / 2);
+        let (side, x, y) = (
+            14,
+            zone.x + (zone.width - 14) / 2,
+            zone.y + (zone.height - 14) / 2,
+        );
         let ink = colour::TEXT;
         canvas.fill(Rect::new(x, y, side, 1), ink);
         canvas.fill(Rect::new(x, y + side - 1, side, 1), ink);
@@ -347,7 +410,7 @@ impl Desktop {
     fn draw_switcher_cards(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents) {
         let work = self.layout.work_area;
         canvas.fill(work, colour::WINDOW_BACKGROUND);
-        let entries = self.switcher_entries();
+        let entries = self.phone_switcher_entries();
         if entries.is_empty() {
             let text = "No open apps.";
             let x = (self.width - text.len() as u32 * GLYPH_WIDTH as u32) / 2;
@@ -363,10 +426,21 @@ impl Desktop {
             let window = self.window_at(slot);
             let room = ((card.width - CARD_TITLE.0 - CLOSE_TARGET) / GLYPH_WIDTH as u32) as usize;
             let (title, cut) = windows::cut_title(window.title(), room.saturating_sub(3));
-            canvas.text(card.x + CARD_TITLE.0, card.y + CARD_TITLE.1, title, colour::TEXT);
+            canvas.text(
+                card.x + CARD_TITLE.0,
+                card.y + CARD_TITLE.1,
+                title,
+                colour::TEXT,
+            );
             if cut {
-                let after = card.x + CARD_TITLE.0 + title.chars().count() as u32 * GLYPH_WIDTH as u32;
-                canvas.text(after, card.y + CARD_TITLE.1, windows::ellipsis(), colour::TEXT);
+                let after =
+                    card.x + CARD_TITLE.0 + title.chars().count() as u32 * GLYPH_WIDTH as u32;
+                canvas.text(
+                    after,
+                    card.y + CARD_TITLE.1,
+                    windows::ellipsis(),
+                    colour::TEXT,
+                );
             }
             let close = Self::card_close(card);
             canvas.rounded(
@@ -390,10 +464,21 @@ impl Desktop {
         }
     }
 
-    fn draw_thumbnail(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents, slot: usize, card: Rect) {
+    fn draw_thumbnail(
+        &self,
+        canvas: &mut Canvas<'_>,
+        contents: &dyn Contents,
+        slot: usize,
+        card: Rect,
+    ) {
         let window = self.window_at(slot);
         let (width, height) = (window.content_width.max(1), window.content_height.max(1));
-        let area = Rect::new(card.x + (card.width - THUMBNAIL.1) / 2, card.y + THUMBNAIL.0, THUMBNAIL.1, THUMBNAIL.2);
+        let area = Rect::new(
+            card.x + (card.width - THUMBNAIL.1) / 2,
+            card.y + THUMBNAIL.0,
+            THUMBNAIL.1,
+            THUMBNAIL.2,
+        );
         let clip = canvas.clip();
         if !area.overlaps(&clip) {
             return;
@@ -411,31 +496,67 @@ impl Desktop {
 
     fn draw_shade(&self, canvas: &mut Canvas<'_>) {
         let sheet = self.shade_rect();
-        canvas.dim(Rect::new(0, sheet.bottom(), self.width, self.height.saturating_sub(sheet.bottom())));
+        canvas.dim(Rect::new(
+            0,
+            sheet.bottom(),
+            self.width,
+            self.height.saturating_sub(sheet.bottom()),
+        ));
         canvas.fill(sheet, colour::MENU);
-        canvas.fill(Rect::new(0, sheet.bottom().saturating_sub(1), self.width, 1), colour::MENU_BORDER);
+        canvas.fill(
+            Rect::new(0, sheet.bottom().saturating_sub(1), self.width, 1),
+            colour::MENU_BORDER,
+        );
         for (index, tile) in TILES.into_iter().enumerate() {
             let rect = self.tile_rect(index);
             let (title, state, on) = self.tile_state(tile);
-            let fill = if on { colour::SELECTION } else { colour::BUTTON_INACTIVE };
+            let fill = if on {
+                colour::SELECTION
+            } else {
+                colour::BUTTON_INACTIVE
+            };
             canvas.rounded(rect, &paint::INSET_R4, true, true, fill);
             if on {
-                canvas.fill(Rect::new(rect.x, rect.y + 8, MARK.0, MARK.1), colour::ACCENT);
+                canvas.fill(
+                    Rect::new(rect.x, rect.y + 8, MARK.0, MARK.1),
+                    colour::ACCENT,
+                );
             }
-            canvas.text(rect.x + TILE_LINES.0, rect.y + TILE_LINES.1, title, colour::TEXT);
+            canvas.text(
+                rect.x + TILE_LINES.0,
+                rect.y + TILE_LINES.1,
+                title,
+                colour::TEXT,
+            );
             let ink = if on { colour::TEXT } else { colour::TEXT_DIM };
             canvas.text(rect.x + TILE_LINES.0, rect.y + TILE_LINES.2, state, ink);
         }
         let settings = self.settings_button();
-        canvas.rounded(settings, &paint::INSET_R4, true, true, colour::BUTTON_INACTIVE);
-        canvas.text(settings.x + TILE_LINES.0, settings.y + 20, "Settings", colour::TEXT);
+        canvas.rounded(
+            settings,
+            &paint::INSET_R4,
+            true,
+            true,
+            colour::BUTTON_INACTIVE,
+        );
+        canvas.text(
+            settings.x + TILE_LINES.0,
+            settings.y + 20,
+            "Settings",
+            colour::TEXT,
+        );
         let power = self.power_button_rect();
         canvas.rounded(power, &paint::INSET_R4, true, true, colour::BUTTON_INACTIVE);
         canvas.text(power.x + TILE_LINES.0, power.y + 14, "Power", colour::TEXT);
         let left = self.sheet_left() + SIDE;
         canvas.text(left, self.notices_top(), "Notices", colour::TEXT_DIM);
         if self.phone.notice_count == 0 {
-            canvas.text(left, self.notices_top() + 50, "No notices.", colour::TEXT_DIM);
+            canvas.text(
+                left,
+                self.notices_top() + 50,
+                "No notices.",
+                colour::TEXT_DIM,
+            );
             return;
         }
         let clear = self.clear_button();

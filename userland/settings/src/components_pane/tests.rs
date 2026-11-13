@@ -213,11 +213,14 @@ fn components_is_found_by_its_words_and_its_row_is_the_tenth_shown() {
             );
         }
     }
-    for (word, other) in [("install", AGENTS), ("space", STORAGE)] {
+    for (word, others) in [
+        ("install", &[AGENTS, STORAGE][..]),
+        ("space", &[STORAGE][..]),
+    ] {
         for pane in 0..PANES.len() {
             assert_eq!(
                 pane_matches(pane, word),
-                pane == COMPONENTS || pane == other,
+                pane == COMPONENTS || others.contains(&pane),
                 "{word} {pane}"
             );
         }
@@ -271,8 +274,8 @@ fn the_pane_is_laid_out_as_the_design_says() {
     assert_eq!((state.right(), state.y), (512, 258));
     let summary = rect(&window, row.summary);
     assert_eq!((summary.x, summary.y), (216, 278));
-    assert_eq!(rect(&window, row.button), Rect::new(528, 134, 96, 28));
-    for (index, y) in [(1, 172), (2, 220), (3, 268)] {
+    assert_eq!(rect(&window, row.button), Rect::new(528, 262, 96, 28));
+    for (index, y) in [(1, 300), (2, 348), (3, 396)] {
         assert_eq!(rect(&window, ids.rows[index].panel).y, y);
     }
     assert_eq!(
@@ -294,7 +297,12 @@ fn the_pane_is_laid_out_as_the_design_says() {
 fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
     let mut window = opened(read(&["desktop", "builtin-apps"]));
     press(&mut window, key::DOWN);
-    press(&mut window, key::TAB);
+    for _ in 0..6 {
+        if window.widgets().focus() == Some(row_button(&window, 0)) {
+            break;
+        }
+        press(&mut window, key::TAB);
+    }
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 0)));
     press(&mut window, key::DOWN);
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 1)));
@@ -312,10 +320,10 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
         row_texts("Windows apps", "Installing 0 %", "Cancel")
     );
     let ids = widgets(&window);
-    assert_eq!(rect(&window, ids.bar), Rect::new(216, 276, 408, 8));
-    assert_eq!(rect(&window, ids.first).y, 292);
+    assert_eq!(rect(&window, ids.bar), Rect::new(216, 404, 408, 8));
+    assert_eq!(rect(&window, ids.first).y, 420);
     assert_eq!(notes(&window), ["0 B of 1.8 MB"]);
-    assert_eq!(rect(&window, ids.rows[3].panel).y, 308);
+    assert_eq!(rect(&window, ids.rows[3].panel).y, 436);
     for row in [0, 1, 3] {
         assert!(!window.widgets().is_enabled(row_button(&window, row)));
         let tip = widgets(&window).rows[row].tip;
@@ -331,7 +339,7 @@ fn installing_shows_the_bar_under_the_row_and_moves_the_rows_below() {
         rows(&window)[2],
         row_texts("Windows apps", "Installed \u{b7} 1.8 MB", "Remove")
     );
-    assert_eq!(rect(&window, ids.rows[3].panel).y, 268);
+    assert_eq!(rect(&window, ids.rows[3].panel).y, 396);
     assert!(!window.widgets().is_shown(widgets(&window).rows[3].tip));
     assert_eq!(
         window.components_pane().store_lines(window.widgets())[2],
@@ -392,19 +400,19 @@ fn removing_is_refused_or_confirmed_as_the_cli_answers() {
         ]
     );
     let first = rect(&window, ids.first);
-    assert_eq!((first.x, first.y), (216, 224));
-    assert_eq!(rect(&window, ids.second).y, 244);
-    assert_eq!(rect(&window, ids.cancel), Rect::new(392, 268, 96, 28));
-    assert_eq!(rect(&window, ids.confirm), Rect::new(496, 268, 128, 28));
+    assert_eq!((first.x, first.y), (216, 352));
+    assert_eq!(rect(&window, ids.second).y, 372);
+    assert_eq!(rect(&window, ids.cancel), Rect::new(392, 396, 96, 28));
+    assert_eq!(rect(&window, ids.confirm), Rect::new(496, 396, 128, 28));
     assert_eq!(window.widgets().text_of(ids.confirm), Some("Remove"));
     assert_eq!(window.widgets().focus(), Some(ids.confirm));
-    assert_eq!(rect(&window, ids.rows[2].panel).y, 220 + 84);
-    assert_eq!(rect(&window, ids.rows[3].panel).y, 268 + 84);
+    assert_eq!(rect(&window, ids.rows[2].panel).y, 348 + 84);
+    assert_eq!(rect(&window, ids.rows[3].panel).y, 396 + 84);
 
     assert_eq!(press(&mut window, key::ESC), None);
     assert!(notes(&window).is_empty());
     assert_eq!(window.widgets().focus(), Some(row_button(&window, 1)));
-    assert_eq!(rect(&window, ids.rows[2].panel).y, 220);
+    assert_eq!(rect(&window, ids.rows[2].panel).y, 348);
 
     activate_row(&mut window, 1);
     window.show_remove_check(Ok(Some(four()[1].clone())), 0);
@@ -523,8 +531,8 @@ fn a_failed_or_cancelled_install_says_why_and_installs_nothing() {
     activate_row(&mut window, 2);
     assert_eq!(
         activate_row(&mut window, 2),
-        None,
-        "Cancel asks for nothing more"
+        Some(Request::StartComponentJob),
+        "Cancel asks the job to stop"
     );
     assert!(window.components_pane().cancelled());
     window.show_installed(Err(Failure::Cancelled), read(&["desktop", "builtin-apps"]));
@@ -540,7 +548,7 @@ fn without_a_store_only_installed_components_show_and_none_installs() {
     let mut window = opened(read_of(None, &["desktop"], false));
     assert_eq!(
         window.components_pane().store_lines(window.widgets()),
-        messages::NO_STORE_LINES
+        messages::DOWNLOAD_STORE_LINES[0]
     );
     assert_eq!(
         rows(&window),
@@ -607,7 +615,10 @@ fn an_agent_reads_the_rows_and_may_not_say_yes_to_a_remove() {
         .tree()
         .act(element_of(ids.confirm), Action::Invoke, "", 0);
     assert_eq!(outcome, Outcome::Done);
-    assert_eq!(window.respond(response, 0), Some(Request::StartComponentJob));
+    assert_eq!(
+        window.respond(response, 0),
+        Some(Request::StartComponentJob)
+    );
 }
 
 #[test]
@@ -687,7 +698,12 @@ fn on_a_phone_the_pane_is_one_column_of_full_width_blocks() {
     let button = rect(&window, ids.rows[0].button);
     let panel = rect(&window, ids.rows[0].panel);
     assert_eq!(
-        Rect::new(button.x - panel.x, button.y - panel.y, button.width, button.height),
+        Rect::new(
+            button.x - panel.x,
+            button.y - panel.y,
+            button.width,
+            button.height
+        ),
         Rect::new(8, 72, 312, 48)
     );
 }

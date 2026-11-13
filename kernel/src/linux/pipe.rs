@@ -13,7 +13,6 @@
 //! `epoll`, are on the pipe's wake list ([`WakeList`]), which every transfer and the last
 //! close of an end wakes; nobody else is woken.
 
-use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::poll::{self, WakeList};
 use super::signals::{self, Interrupted};
@@ -27,6 +26,7 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::user::UserContext;
 
 /// How many bytes a pipe holds: Linux's default, sixteen pages.

@@ -155,7 +155,14 @@ impl Path {
 
     /// An arc of the circle at `centre` with `radius` from angle `start` to `end` (radians),
     /// clockwise or not, joined to the current point by a line, all under `transform`.
-    pub fn arc(&mut self, transform: &Transform, centre: Point, radius: f64, (start, end): (f64, f64), clockwise: bool) {
+    pub fn arc(
+        &mut self,
+        transform: &Transform,
+        centre: Point,
+        radius: f64,
+        (start, end): (f64, f64),
+        clockwise: bool,
+    ) {
         let mut sweep = end - start;
         if clockwise && sweep > 0.0 {
             sweep -= TAU * ((sweep / TAU) as i64 + 1) as f64;
@@ -165,7 +172,10 @@ impl Path {
         let segments = ((fabs(sweep) / TAU * ARC_SEGMENTS_PER_TURN) as usize).max(1);
         for step in 0..=segments {
             let angle = start + sweep * step as f64 / segments as f64;
-            let point = transform.apply(Point::new(centre.x + radius * cos(angle), centre.y + radius * sin(angle)));
+            let point = transform.apply(Point::new(
+                centre.x + radius * cos(angle),
+                centre.y + radius * sin(angle),
+            ));
             match step == 0 && self.current.is_none() {
                 true => self.move_to(point),
                 false => self.line_to(point),
@@ -176,7 +186,14 @@ impl Path {
     /// The arc `CGContextAddArcToPoint` draws: tangent to the lines from `untransformed` (the
     /// current point before the transform) to `corner` and from `corner` to `towards`, with
     /// `radius`, under `transform`.
-    pub fn arc_to(&mut self, transform: &Transform, untransformed: Point, corner: Point, towards: Point, radius: f64) {
+    pub fn arc_to(
+        &mut self,
+        transform: &Transform,
+        untransformed: Point,
+        corner: Point,
+        towards: Point,
+        radius: f64,
+    ) {
         let (ax, ay) = (untransformed.x - corner.x, untransformed.y - corner.y);
         let (bx, by) = (towards.x - corner.x, towards.y - corner.y);
         let (la, lb) = (sqrt(ax * ax + ay * ay), sqrt(bx * bx + by * by));
@@ -226,7 +243,11 @@ impl Path {
 
     fn subpaths(&self) -> impl Iterator<Item = (&[Point], bool)> {
         self.starts.iter().enumerate().map(|(index, &start)| {
-            let end = self.starts.get(index + 1).copied().unwrap_or(self.points.len());
+            let end = self
+                .starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(self.points.len());
             (&self.points[start.min(end)..end], self.closed[index])
         })
     }
@@ -250,7 +271,11 @@ impl Path {
                     continue;
                 }
                 let direction = if y0 < y1 { 1 } else { -1 };
-                let (upper, lower) = if y0 < y1 { ((from.x, y0), (to.x, y1)) } else { ((to.x, y1), (from.x, y0)) };
+                let (upper, lower) = if y0 < y1 {
+                    ((from.x, y0), (to.x, y1))
+                } else {
+                    ((to.x, y1), (from.x, y0))
+                };
                 edges.push((upper.0, upper.1, lower.0, lower.1, direction));
                 top = top.min(upper.1);
                 bottom = bottom.max(lower.1);
@@ -373,7 +398,13 @@ mod tests {
     #[test]
     fn a_full_clockwise_arc_comes_back_to_its_start() {
         let mut path = Path::new();
-        path.arc(&Transform::IDENTITY, Point::new(0.0, 0.0), 10.0, (0.0, TAU), false);
+        path.arc(
+            &Transform::IDENTITY,
+            Point::new(0.0, 0.0),
+            10.0,
+            (0.0, TAU),
+            false,
+        );
         let last = path.current().unwrap();
         assert!((last.x - 10.0).abs() < 1e-9 && last.y.abs() < 1e-9);
     }

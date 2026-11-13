@@ -171,8 +171,6 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     refused_streams: u64,
 }
 
-/// A 3D command [`VirtioGpu::start_three_d`] posted: its chain's head, the answer type it
-/// succeeds with, the answer's length, and whether the device answered it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PostedThreeD {
     head: u16,
@@ -181,15 +179,12 @@ struct PostedThreeD {
     answered: bool,
 }
 
-/// A command stream [`VirtioGpu::start_stream`] posted and not yet answered: its chain's head
-/// and its fence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PostedStream {
     head: u16,
     fence: u64,
 }
 
-/// A flush posted by [`VirtioGpu::start_flush`] and not yet answered (D414).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StartedFlush {
     commands: usize,
@@ -214,9 +209,8 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         if transport.device_type() != device_type::GPU {
             return Err((Error::WrongDeviceType, transport, Some(control)));
         }
-        let wanted = three_d::FEATURE_VIRGL
-            | three_d::FEATURE_CONTEXT_INIT
-            | three_d::FEATURE_RESOURCE_BLOB;
+        let wanted =
+            three_d::FEATURE_VIRGL | three_d::FEATURE_CONTEXT_INIT | three_d::FEATURE_RESOURCE_BLOB;
         let features = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(features) => features,
             Err(error) => return Err((error, transport, Some(control))),
@@ -420,21 +414,25 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         let Some(old) = replaced else {
             return Err((Error::NoScanout, None));
         };
-        self.run(1, ATTACH_BACKING_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        self.run(1, ATTACH_BACKING_BYTES, keep_waiting)
+            .map_err(|error| (error, None))?;
         let request = self.header(0, command::SET_SCANOUT);
         self.put_rect(request + 24, mode.rect());
         self.put32(request + 40, SCANOUT_ID);
         self.put32(request + 44, resource);
-        self.run(1, SET_SCANOUT_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        self.run(1, SET_SCANOUT_BYTES, keep_waiting)
+            .map_err(|error| (error, None))?;
         if let Some(scanout) = self.scanout.as_mut() {
             scanout.shown = true;
         }
         let request = self.header(0, command::RESOURCE_DETACH_BACKING);
         self.put32(request + 24, old.resource);
-        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting)
+            .map_err(|error| (error, None))?;
         let request = self.header(0, command::RESOURCE_UNREF);
         self.put32(request + 24, old.resource);
-        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting).map_err(|error| (error, None))?;
+        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting)
+            .map_err(|error| (error, None))?;
         Ok(old.framebuffer)
     }
 
@@ -446,11 +444,15 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
 
     /// Clears the display-changed event.
     pub fn clear_display_event(&self) {
-        self.transport.write_config8(CONFIG_EVENTS_CLEAR_OFFSET, EVENT_DISPLAY as u8);
+        self.transport
+            .write_config8(CONFIG_EVENTS_CLEAR_OFFSET, EVENT_DISPLAY as u8);
     }
 
     /// Asks the device for scanout 0's preferred mode again, as [`Self::new`] did.
-    pub fn preferred_mode(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Mode, Error> {
+    pub fn preferred_mode(
+        &mut self,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Mode, Error> {
         if self.unanswered {
             return Err(Error::TimedOut);
         }
@@ -705,7 +707,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         }
         let mode = self.mode().ok_or(Error::NoScanout)?;
         let resource = self.shown().map_or(RESOURCE_ID, |scanout| scanout.resource);
-        let room = (MAX_BATCH / 2).min(usize::from(self.queue.size() / 4)).max(1);
+        let room = (MAX_BATCH / 2)
+            .min(usize::from(self.queue.size() / 4))
+            .max(1);
         let mut chunk = [Rect::default(); MAX_BATCH];
         let mut count = 0;
         for rect in rects
@@ -902,8 +906,11 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         self.fence_id = self.fence_id.wrapping_add(1);
         let fence = self.fence_id;
         let mut request = [0u8; three_d::LONGEST_REQUEST];
-        let request_bytes =
-            three_d::encode(&ThreeDCommand::Submit { context, length }, fence, &mut request);
+        let request_bytes = three_d::encode(
+            &ThreeDCommand::Submit { context, length },
+            fence,
+            &mut request,
+        );
         let header = STREAM_HEADERS + slot * STREAM_HEADER;
         // SAFETY: the slot's header lies inside the memory, which holds at least
         // `THREE_D_BYTES`, owned by this driver; the device does not own it now, as no stream
@@ -914,12 +921,15 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 request.as_ptr(),
                 pointer.wrapping_add(header),
                 request_bytes,
-            );
+            )
+        };
+        // SAFETY: as above: the answer's first word lies inside the same memory.
+        unsafe {
             pointer
                 .wrapping_add(header + STREAM_ANSWER)
                 .cast::<u32>()
-                .write_volatile(0);
-        }
+                .write_volatile(0)
+        };
         let at = |offset: usize| base.checked_add(offset as u64).ok_or(Error::MemoryTooSmall);
         let head = self.queue.submit(&[
             Buffer {
@@ -949,7 +959,11 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     /// in flight: every stream with an older fence is finished; `None` when none is in flight.
     pub fn oldest_stream(&mut self) -> Option<u64> {
         self.collect();
-        self.posted_streams.iter().flatten().map(|posted| posted.fence).min()
+        self.posted_streams
+            .iter()
+            .flatten()
+            .map(|posted| posted.fence)
+            .min()
     }
 
     /// How many command streams the device answered with an error: their slots are freed and
@@ -1033,12 +1047,15 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 request.as_ptr(),
                 pointer.wrapping_add(THREE_D_REQUEST),
                 request_bytes,
-            );
+            )
+        };
+        // SAFETY: as above: the answer's first word lies inside the same memory.
+        unsafe {
             pointer
                 .wrapping_add(THREE_D_ANSWER)
                 .cast::<u32>()
-                .write_volatile(0);
-        }
+                .write_volatile(0)
+        };
         let at = |offset: usize| base.checked_add(offset as u64).ok_or(Error::MemoryTooSmall);
         let request = Buffer {
             addr: at(THREE_D_REQUEST)?,
@@ -1111,7 +1128,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         // borrow of `self` keeps the next command from overwriting it.
         unsafe {
             core::slice::from_raw_parts(
-                memory.as_mut_ptr().wrapping_add(THREE_D_ANSWER + three_d::HEADER_BYTES),
+                memory
+                    .as_mut_ptr()
+                    .wrapping_add(THREE_D_ANSWER + three_d::HEADER_BYTES),
                 length,
             )
         }

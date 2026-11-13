@@ -146,7 +146,12 @@ pub struct NotFitting {
 /// The form on screen for `setting` on a `width` by `height` logical screen with `inputs`: the
 /// automatic one, or the forced one when it fits (section 1.3), else the one used instead and
 /// why.
-pub fn in_use(setting: FormSetting, width: u32, height: u32, inputs: InputKinds) -> (Form, Option<NotFitting>) {
+pub fn in_use(
+    setting: FormSetting,
+    width: u32,
+    height: u32,
+    inputs: InputKinds,
+) -> (Form, Option<NotFitting>) {
     let automatic = automatic(width, height, inputs);
     let Some(forced) = (match setting {
         FormSetting::Auto => None,
@@ -157,7 +162,9 @@ pub fn in_use(setting: FormSetting, width: u32, height: u32, inputs: InputKinds)
     let short = width.min(height);
     let refused = |shown: Form, needs: (u32, u32)| (shown, Some(NotFitting { shown, needs }));
     match forced {
-        Form::Tablet if short < PHONE_SHORT_SIDE => refused(Form::Phone, (PHONE_SHORT_SIDE, PHONE_SHORT_SIDE)),
+        Form::Tablet if short < PHONE_SHORT_SIDE => {
+            refused(Form::Phone, (PHONE_SHORT_SIDE, PHONE_SHORT_SIDE))
+        }
         Form::Tv if width < TV_SIZE.0 || height < TV_SIZE.1 => refused(Form::Desktop, TV_SIZE),
         Form::Phone if short < PHONE_SIZE.0 || width.max(height) < PHONE_SIZE.1 => {
             refused(automatic, PHONE_SIZE)
@@ -189,9 +196,27 @@ mod tests {
         assert_eq!(automatic(844, 390, TOUCH), Form::Phone);
         assert_eq!(automatic(1024, 768, TOUCH), Form::Tablet);
         assert_eq!(automatic(768, 1024, TOUCH), Form::Tablet);
-        assert_eq!(automatic(1024, 768, InputKinds { keyboard: true, ..TOUCH }), Form::Tablet);
         assert_eq!(
-            automatic(1024, 768, InputKinds { keyboard: true, pointer: true, ..TOUCH }),
+            automatic(
+                1024,
+                768,
+                InputKinds {
+                    keyboard: true,
+                    ..TOUCH
+                }
+            ),
+            Form::Tablet
+        );
+        assert_eq!(
+            automatic(
+                1024,
+                768,
+                InputKinds {
+                    keyboard: true,
+                    pointer: true,
+                    ..TOUCH
+                }
+            ),
             Form::Desktop
         );
         assert_eq!(automatic(960, 540, with(false, false, true)), Form::Tv);
@@ -207,10 +232,23 @@ mod tests {
         let tablet = FormSetting::Forced(Form::Tablet);
         assert_eq!(in_use(tablet, 390, 844, TOUCH).0, Form::Phone);
         assert!(in_use(tablet, 390, 844, TOUCH).1.is_some());
-        assert_eq!(in_use(FormSetting::Forced(Form::Phone), 390, 844, InputKinds::default()), (Form::Phone, None));
+        assert_eq!(
+            in_use(
+                FormSetting::Forced(Form::Phone),
+                390,
+                844,
+                InputKinds::default()
+            ),
+            (Form::Phone, None)
+        );
         assert_eq!(FormSetting::named(b"watch"), None);
         let mut text = [0u8; 32];
-        let length = InputKinds { keyboard: true, pointer: true, ..InputKinds::default() }.text(&mut text);
+        let length = InputKinds {
+            keyboard: true,
+            pointer: true,
+            ..InputKinds::default()
+        }
+        .text(&mut text);
         assert_eq!(&text[..length], b"keyboard,pointer");
     }
 }

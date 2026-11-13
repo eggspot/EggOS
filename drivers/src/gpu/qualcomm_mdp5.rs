@@ -28,8 +28,11 @@ const CONTROL_FLUSH: usize = 0x18;
 const FLUSH_MIXER_0: u32 = 1 << 6;
 const FLUSH_CONTROL: u32 = 1 << 17;
 
-/// The pipes the bootloader may have lit, with their flush bits.
-const PIPES: [(Pipe, u32); 3] = [(Pipe::Vig0, 1 << 0), (Pipe::Rgb0, 1 << 3), (Pipe::Dma0, 1 << 11)];
+const PIPES: [(Pipe, u32); 3] = [
+    (Pipe::Vig0, 1 << 0),
+    (Pipe::Rgb0, 1 << 3),
+    (Pipe::Dma0, 1 << 11),
+];
 
 /// A source pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +42,6 @@ pub enum Pipe {
     Dma0,
 }
 
-/// Where the blocks lie from the node's base: up to revision 1.4, or from 1.5 on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Layout {
     control: usize,

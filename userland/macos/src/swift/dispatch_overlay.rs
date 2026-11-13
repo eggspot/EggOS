@@ -17,7 +17,7 @@ use super::metadata::{self, Metadata, address_of, word};
 use super::protocols::{ConformanceDescriptor, ProtocolDescriptor, requirement};
 use super::standard_protocols::{EQUATABLE, EquatableTable};
 use crate::objc::abi::Id;
-use crate::objc::{send, send1, sel};
+use crate::objc::{sel, send, send1};
 
 const QOS_UNSPECIFIED: usize = 5;
 const SET_ALGEBRA_WITNESSES: usize = 18;
@@ -509,7 +509,15 @@ extern "C" fn context_arc(
         type Arc = extern "C" fn(usize, f64, f64, f64, f64, f64, i32);
         // SAFETY: the layer's `CGContextAddArc`.
         let call: Arc = unsafe { core::mem::transmute(function) };
-        call(context, x, y, radius, start, end, i32::from(clockwise & 1 != 0));
+        call(
+            context,
+            x,
+            y,
+            radius,
+            start,
+            end,
+            i32::from(clockwise & 1 != 0),
+        );
     }
 }
 

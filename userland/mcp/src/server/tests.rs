@@ -217,6 +217,11 @@ fn the_tools_are_listed_once_initialized() {
             "wm_show",
             "wm_act",
             "wm_drag",
+            "wm_home",
+            "wm_back",
+            "wm_keyboard",
+            "wm_keyboard_show",
+            "wm_keyboard_hide",
             "settings_list",
             "settings_get",
             "settings_set",
@@ -231,6 +236,7 @@ fn the_tools_are_listed_once_initialized() {
             "disk_check",
             "disk_repair",
             "disk_format",
+            "disk_install",
             "agent_list",
             "agent_show",
             "app_icon",
@@ -247,8 +253,16 @@ fn the_tools_are_listed_once_initialized() {
             "download_cancel",
             "download_clear",
             "component_list",
+            "component_edition",
             "component_install",
-            "component_remove"
+            "component_remove",
+            "component_update",
+            "app_actions",
+            "app_do",
+            "app_do_confirmed",
+            "wifi_list",
+            "wifi_connect",
+            "wifi_forget",
         ]
     );
 }
@@ -4380,6 +4394,59 @@ fn download_list_reads_freely_and_download_clear_needs_the_write_grant() {
 }
 
 #[test]
+fn wifi_connect_names_the_network_and_keeps_its_passphrase_out_of_the_log() {
+    let mut harness = granted_only(&[crate::grants::Grant::Run]);
+    let answer = harness.call(
+        1,
+        "wifi_connect",
+        r#"{"ssid":"Home","passphrase":"secret phrase","hidden":true,"confirm":true}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/wifi",
+            "connect",
+            "--hidden",
+            "--",
+            "Home",
+            "secret phrase"
+        ]
+    );
+    let (_, outcome, shown, _) = last_record(&harness);
+    assert_eq!(outcome, "ok");
+    assert_eq!(
+        shown,
+        r#"{"ssid":"Home","hidden":true,"passphrase":true,"confirm":true}"#
+    );
+    let answer = harness.call(2, "wifi_connect", r#"{"confirm":true}"#);
+    assert_eq!(error_code(&answer), INVALID_PARAMS, "{answer}");
+}
+
+#[test]
+fn app_do_runs_the_action_with_its_values() {
+    let mut harness = granted_only(&[crate::grants::Grant::Install]);
+    let answer = harness.call(
+        1,
+        "app_do",
+        r#"{"name":"Paint","action":"export","values":"{\"scale\":2}"}"#,
+    );
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(
+        harness.system.runs.last().unwrap(),
+        &[
+            "/bin/app",
+            "do",
+            "--values",
+            "{\"scale\":2}",
+            "--",
+            "Paint",
+            "export"
+        ]
+    );
+}
+
+#[test]
 fn component_install_needs_the_install_grant_and_component_remove_asks_first() {
     let mut harness = Harness::initialized();
     let answer = harness.call(1, "component_list", "{}");
@@ -4985,6 +5052,7 @@ fn every_tool_with_an_output_schema_answers_it_from_its_twin() {
         ("wm_desktop_list", "{}"),
         ("download_list", "{}"),
         ("component_list", "{}"),
+        ("app_actions", "{}"),
         ("windows_registry_get", r#"{"key":"HKCU"}"#),
     ];
     let declaring: Vec<&str> = tools::TOOLS

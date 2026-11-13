@@ -7,10 +7,20 @@
 pub type Guid = [u8; 16];
 
 /// The EFI system partition's type.
-pub const EFI_SYSTEM_PARTITION: Guid = guid(0xc12a_7328, 0xf81f, 0x11d2, [0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b]);
+pub const EFI_SYSTEM_PARTITION: Guid = guid(
+    0xc12a_7328,
+    0xf81f,
+    0x11d2,
+    [0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b],
+);
 
 /// EggOS's data partition, holding the EggFS volume an installed system mounts (D238).
-pub const EGGOS_DATA_PARTITION: Guid = guid(0x0f3a_6e9c, 0x6b1d, 0x4f63, [0x9a, 0x2e, 0x5c, 0x8d, 0x7e, 0x4b, 0x2f, 0x10]);
+pub const EGGOS_DATA_PARTITION: Guid = guid(
+    0x0f3a_6e9c,
+    0x6b1d,
+    0x4f63,
+    [0x9a, 0x2e, 0x5c, 0x8d, 0x7e, 0x4b, 0x2f, 0x10],
+);
 
 /// Builds a GUID from its textual fields.
 pub const fn guid(first: u32, second: u16, third: u16, rest: [u8; 8]) -> Guid {
@@ -18,8 +28,8 @@ pub const fn guid(first: u32, second: u16, third: u16, rest: [u8; 8]) -> Guid {
     let b = second.to_le_bytes();
     let c = third.to_le_bytes();
     [
-        a[0], a[1], a[2], a[3], b[0], b[1], c[0], c[1], rest[0], rest[1], rest[2], rest[3], rest[4],
-        rest[5], rest[6], rest[7],
+        a[0], a[1], a[2], a[3], b[0], b[1], c[0], c[1], rest[0], rest[1], rest[2], rest[3],
+        rest[4], rest[5], rest[6], rest[7],
     ]
 }
 
@@ -123,7 +133,10 @@ pub fn read_header(block: &[u8]) -> Option<Header> {
 }
 
 /// The partitions an entry array lists, checked against the header's CRC: the used entries.
-pub fn partitions<'a>(header: &Header, entries: &'a [u8]) -> Option<impl Iterator<Item = Partition> + 'a> {
+pub fn partitions<'a>(
+    header: &Header,
+    entries: &'a [u8],
+) -> Option<impl Iterator<Item = Partition> + 'a> {
     let length = header.entry_count as usize * header.entry_bytes as usize;
     let array = entries.get(..length)?;
     if crc32(array) != header.entries_crc {
@@ -191,7 +204,12 @@ impl Layout {
 /// The entry array for `partitions`.
 pub fn entry_array(partitions: &[NewPartition<'_>]) -> [u8; ENTRY_ARRAY_BYTES] {
     let mut array = [0u8; ENTRY_ARRAY_BYTES];
-    for (entry, partition) in array.chunks_exact_mut(ENTRY_BYTES).zip(partitions) {
+    for (entry, partition) in array
+        .as_chunks_mut::<ENTRY_BYTES>()
+        .0
+        .iter_mut()
+        .zip(partitions)
+    {
         entry[..16].copy_from_slice(&partition.kind);
         entry[16..32].copy_from_slice(&partition.unique);
         entry[32..40].copy_from_slice(&partition.first.to_le_bytes());
@@ -259,9 +277,11 @@ pub struct NewTable {
 impl NewTable {
     pub fn new(layout: Layout, disk: Guid, partitions: &[NewPartition<'_>]) -> Option<Self> {
         let fits = partitions.len() <= ENTRIES
-            && partitions
-                .iter()
-                .all(|partition| partition.first >= layout.first_usable && partition.last <= layout.last_usable && partition.first <= partition.last);
+            && partitions.iter().all(|partition| {
+                partition.first >= layout.first_usable
+                    && partition.last <= layout.last_usable
+                    && partition.first <= partition.last
+            });
         if !fits {
             return None;
         }

@@ -298,17 +298,23 @@ fn is_letter_key(character: char) -> bool {
     character.is_alphabetic() && character.is_lowercase() && capital(character).is_some()
 }
 
-/// The `Letters` page's three rows for layout `number`: the letter keys of codes 16 to 27, 30
-/// to 40, and 86, 44 to 53 and 43, then a number-row letter no accent composes (`ß`).
 fn letter_rows(number: usize) -> [Vec<(u16, char)>; 3] {
     let layout = layout::layout(number);
-    let plain = |code: u16| layout.plain_letter(code).filter(|&character| is_letter_key(character));
+    let plain = |code: u16| {
+        layout
+            .plain_letter(code)
+            .filter(|&character| is_letter_key(character))
+    };
     let row = |codes: &mut dyn Iterator<Item = u16>| -> Vec<(u16, char)> {
-        codes.filter_map(|code| plain(code).map(|character| (code, character))).collect()
+        codes
+            .filter_map(|code| plain(code).map(|character| (code, character)))
+            .collect()
     };
     let first = row(&mut (16..=27));
     let second = row(&mut (30..=40));
-    let mut third = row(&mut core::iter::once(86).chain(44..=53).chain(core::iter::once(43)));
+    let mut third = row(&mut core::iter::once(86)
+        .chain(44..=53)
+        .chain(core::iter::once(43)));
     for code in 2..=13 {
         if let Some(character) = layout.plain_letter(code)
             && character.is_alphabetic()
@@ -382,13 +388,20 @@ impl Rows<'_> {
                 .map(|&(code, plain)| Cap::Letter { code, plain })
                 .collect(),
             (Page::Numbers, _) => NUMBERS[index].chars().map(Cap::Sign).collect(),
-            (Page::Symbols, 2) => DEAD_ACCENTS.iter().map(|&accent| Cap::Accent(accent)).collect(),
+            (Page::Symbols, 2) => DEAD_ACCENTS
+                .iter()
+                .map(|&accent| Cap::Accent(accent))
+                .collect(),
             (Page::Symbols, _) => SYMBOLS[index].chars().map(Cap::Sign).collect(),
         }
     }
 
     fn counts(&self) -> (u32, u32, u32) {
-        (self.row(0).len() as u32, self.row(1).len() as u32, self.row(2).len() as u32)
+        (
+            self.row(0).len() as u32,
+            self.row(1).len() as u32,
+            self.row(2).len() as u32,
+        )
     }
 
     fn shift_key(&self) -> Cap {
@@ -440,7 +453,14 @@ fn phone_portrait_keys(panel: Rect, rows: &Rows<'_>, layout_key: bool) -> Vec<Ke
     ];
     for (index, cap) in caps.into_iter().enumerate() {
         let right = edges.get(index + 1).copied().unwrap_or(width);
-        push(&mut keys, panel.x + edges[index], top, right - edges[index], KEYS_ROW, cap);
+        push(
+            &mut keys,
+            panel.x + edges[index],
+            top,
+            right - edges[index],
+            KEYS_ROW,
+            cap,
+        );
     }
     let (n1, n2, n3) = rows.counts();
     let need = n1.max(n2).max(n3 + 3).max(1);
@@ -451,31 +471,106 @@ fn phone_portrait_keys(panel: Rect, rows: &Rows<'_>, layout_key: bool) -> Vec<Ke
         for (index, cap) in rows.row(row as usize).into_iter().enumerate() {
             let index = index as u32;
             let left = if index == 0 { 0 } else { start + pitch * index };
-            let right = if index + 1 == count { width } else { start + pitch * (index + 1) };
-            push(&mut keys, panel.x + left, row_y(row), right - left, PHONE_ROW, cap);
+            let right = if index + 1 == count {
+                width
+            } else {
+                start + pitch * (index + 1)
+            };
+            push(
+                &mut keys,
+                panel.x + left,
+                row_y(row),
+                right - left,
+                PHONE_ROW,
+                cap,
+            );
         }
     }
     let start = (width - n3 * pitch) / 2;
-    push(&mut keys, panel.x, row_y(2), start, PHONE_ROW, rows.shift_key());
+    push(
+        &mut keys,
+        panel.x,
+        row_y(2),
+        start,
+        PHONE_ROW,
+        rows.shift_key(),
+    );
     for (index, cap) in rows.row(2).into_iter().enumerate() {
-        push(&mut keys, panel.x + start + pitch * index as u32, row_y(2), pitch, PHONE_ROW, cap);
+        push(
+            &mut keys,
+            panel.x + start + pitch * index as u32,
+            row_y(2),
+            pitch,
+            PHONE_ROW,
+            cap,
+        );
     }
     let backspace = start + n3 * pitch;
-    push(&mut keys, panel.x + backspace, row_y(2), width - backspace, PHONE_ROW, Cap::Backspace);
-    let (page, layout, comma, dot, enter) = (scaled(58), scaled(44), scaled(39), scaled(39), scaled(78));
+    push(
+        &mut keys,
+        panel.x + backspace,
+        row_y(2),
+        width - backspace,
+        PHONE_ROW,
+        Cap::Backspace,
+    );
+    let (page, layout, comma, dot, enter) =
+        (scaled(58), scaled(44), scaled(39), scaled(39), scaled(78));
     let mut x = 0;
-    push(&mut keys, panel.x, row_y(3), page, PHONE_ROW, rows.page_key());
+    push(
+        &mut keys,
+        panel.x,
+        row_y(3),
+        page,
+        PHONE_ROW,
+        rows.page_key(),
+    );
     x += page;
     if layout_key {
-        push(&mut keys, panel.x + x, row_y(3), layout, PHONE_ROW, Cap::Layout);
+        push(
+            &mut keys,
+            panel.x + x,
+            row_y(3),
+            layout,
+            PHONE_ROW,
+            Cap::Layout,
+        );
         x += layout;
     }
-    push(&mut keys, panel.x + x, row_y(3), comma, PHONE_ROW, rows.comma());
+    push(
+        &mut keys,
+        panel.x + x,
+        row_y(3),
+        comma,
+        PHONE_ROW,
+        rows.comma(),
+    );
     x += comma;
     let dot_x = width - enter - dot;
-    push(&mut keys, panel.x + x, row_y(3), dot_x.saturating_sub(x), PHONE_ROW, Cap::Space);
-    push(&mut keys, panel.x + dot_x, row_y(3), dot, PHONE_ROW, Cap::Sign('.'));
-    push(&mut keys, panel.x + width - enter, row_y(3), enter, PHONE_ROW, Cap::Enter);
+    push(
+        &mut keys,
+        panel.x + x,
+        row_y(3),
+        dot_x.saturating_sub(x),
+        PHONE_ROW,
+        Cap::Space,
+    );
+    push(
+        &mut keys,
+        panel.x + dot_x,
+        row_y(3),
+        dot,
+        PHONE_ROW,
+        Cap::Sign('.'),
+    );
+    push(
+        &mut keys,
+        panel.x + width - enter,
+        row_y(3),
+        enter,
+        PHONE_ROW,
+        Cap::Enter,
+    );
     keys
 }
 
@@ -491,48 +586,143 @@ fn wide_keys(panel: Rect, rows: &Rows<'_>, layout_key: bool, keys_row: bool) -> 
     if keys_row {
         let caps = [Cap::Escape, Cap::Tab, Cap::Control, Cap::Alt];
         for (index, cap) in caps.into_iter().enumerate() {
-            push(&mut keys, panel.x + unit * index as u32, panel.y, unit, KEYS_ROW, cap);
+            push(
+                &mut keys,
+                panel.x + unit * index as u32,
+                panel.y,
+                unit,
+                KEYS_ROW,
+                cap,
+            );
         }
         let arrows = [key::LEFT, key::UP, key::DOWN, key::RIGHT];
         for (index, code) in arrows.into_iter().enumerate() {
             let x = unit * (units - 5 + index as u32);
-            push(&mut keys, panel.x + x, panel.y, unit, KEYS_ROW, Cap::Arrow(code));
+            push(
+                &mut keys,
+                panel.x + x,
+                panel.y,
+                unit,
+                KEYS_ROW,
+                Cap::Arrow(code),
+            );
         }
         let hide = unit * (units - 1);
-        push(&mut keys, panel.x + hide, panel.y, width - hide, KEYS_ROW, Cap::Hide);
+        push(
+            &mut keys,
+            panel.x + hide,
+            panel.y,
+            width - hide,
+            KEYS_ROW,
+            Cap::Hide,
+        );
     }
     for (index, cap) in rows.row(0).into_iter().enumerate() {
-        push(&mut keys, panel.x + unit * index as u32, row_y(0), unit, row_height, cap);
+        push(
+            &mut keys,
+            panel.x + unit * index as u32,
+            row_y(0),
+            unit,
+            row_height,
+            cap,
+        );
     }
     let backspace = unit * n1;
-    push(&mut keys, panel.x + backspace, row_y(0), width - backspace, row_height, Cap::Backspace);
+    push(
+        &mut keys,
+        panel.x + backspace,
+        row_y(0),
+        width - backspace,
+        row_height,
+        Cap::Backspace,
+    );
     let start = (units - 1 - n2.min(units - 1)) * unit / 2;
     for (index, cap) in rows.row(1).into_iter().enumerate() {
         let index = index as u32;
         let left = if index == 0 { 0 } else { start + unit * index };
-        push(&mut keys, panel.x + left, row_y(1), start + unit * (index + 1) - left, row_height, cap);
+        push(
+            &mut keys,
+            panel.x + left,
+            row_y(1),
+            start + unit * (index + 1) - left,
+            row_height,
+            cap,
+        );
     }
     let enter = start + unit * n2;
-    push(&mut keys, panel.x + enter, row_y(1), width - enter, row_height, Cap::Enter);
-    push(&mut keys, panel.x, row_y(2), unit, row_height, rows.shift_key());
+    push(
+        &mut keys,
+        panel.x + enter,
+        row_y(1),
+        width - enter,
+        row_height,
+        Cap::Enter,
+    );
+    push(
+        &mut keys,
+        panel.x,
+        row_y(2),
+        unit,
+        row_height,
+        rows.shift_key(),
+    );
     let mut x = unit;
-    for cap in rows.row(2).into_iter().chain([rows.comma(), Cap::Sign('.')]) {
+    for cap in rows
+        .row(2)
+        .into_iter()
+        .chain([rows.comma(), Cap::Sign('.')])
+    {
         push(&mut keys, panel.x + x, row_y(2), unit, row_height, cap);
         x += unit;
     }
     if width - x >= unit {
-        push(&mut keys, panel.x + x, row_y(2), width - x, row_height, rows.shift_key());
+        push(
+            &mut keys,
+            panel.x + x,
+            row_y(2),
+            width - x,
+            row_height,
+            rows.shift_key(),
+        );
     }
-    push(&mut keys, panel.x, row_y(3), unit, row_height, rows.page_key());
+    push(
+        &mut keys,
+        panel.x,
+        row_y(3),
+        unit,
+        row_height,
+        rows.page_key(),
+    );
     let mut x = unit;
     if keys_row {
         if layout_key {
-            push(&mut keys, panel.x + x, row_y(3), unit, row_height, Cap::Layout);
+            push(
+                &mut keys,
+                panel.x + x,
+                row_y(3),
+                unit,
+                row_height,
+                Cap::Layout,
+            );
             x += unit;
         }
         let second = unit * (units - 1);
-        push(&mut keys, panel.x + x, row_y(3), second.saturating_sub(x), row_height, Cap::Space);
-        push(&mut keys, panel.x + second, row_y(3), width - second, row_height, rows.page_key());
+        push(
+            &mut keys,
+            panel.x + x,
+            row_y(3),
+            second.saturating_sub(x),
+            row_height,
+            Cap::Space,
+        );
+        push(
+            &mut keys,
+            panel.x + second,
+            row_y(3),
+            width - second,
+            row_height,
+            rows.page_key(),
+        );
         return keys;
     }
     const SMALL: u32 = 48;
@@ -541,15 +731,46 @@ fn wide_keys(panel: Rect, rows: &Rows<'_>, layout_key: bool, keys_row: bool) -> 
         x += SMALL;
     }
     if layout_key {
-        push(&mut keys, panel.x + x, row_y(3), unit, row_height, Cap::Layout);
+        push(
+            &mut keys,
+            panel.x + x,
+            row_y(3),
+            unit,
+            row_height,
+            Cap::Layout,
+        );
         x += unit;
     }
     let arrows_x = width - 5 * SMALL;
-    push(&mut keys, panel.x + x, row_y(3), arrows_x.saturating_sub(x), row_height, Cap::Space);
-    for (index, code) in [key::LEFT, key::UP, key::DOWN, key::RIGHT].into_iter().enumerate() {
-        push(&mut keys, panel.x + arrows_x + SMALL * index as u32, row_y(3), SMALL, row_height, Cap::Arrow(code));
+    push(
+        &mut keys,
+        panel.x + x,
+        row_y(3),
+        arrows_x.saturating_sub(x),
+        row_height,
+        Cap::Space,
+    );
+    for (index, code) in [key::LEFT, key::UP, key::DOWN, key::RIGHT]
+        .into_iter()
+        .enumerate()
+    {
+        push(
+            &mut keys,
+            panel.x + arrows_x + SMALL * index as u32,
+            row_y(3),
+            SMALL,
+            row_height,
+            Cap::Arrow(code),
+        );
     }
-    push(&mut keys, panel.x + width - SMALL, row_y(3), SMALL, row_height, Cap::Hide);
+    push(
+        &mut keys,
+        panel.x + width - SMALL,
+        row_y(3),
+        SMALL,
+        row_height,
+        Cap::Hide,
+    );
     keys
 }
 
@@ -600,7 +821,12 @@ pub(super) fn panel_rect(form: Form, work: Rect, screen: Rect) -> Option<Rect> {
         _ => return None,
     };
     let height = height.min(work.height / 2 + work.height / 4);
-    Some(Rect::new(work.x, work.bottom() - height, work.width, height))
+    Some(Rect::new(
+        work.x,
+        work.bottom() - height,
+        work.width,
+        height,
+    ))
 }
 
 impl OskState {
@@ -615,7 +841,7 @@ impl OskState {
         if with_shift && self.shift != Shift::Off {
             bits |= Modifiers::SHIFT.bits();
         }
-        Modifiers(bits)
+        Modifiers::from_bits(bits)
     }
 
     fn after_character(&mut self) {
@@ -644,7 +870,10 @@ impl Desktop {
     /// window without taking them as the remote's presses on the panel.
     pub fn take_screen_keys(&mut self) -> Vec<ScreenKey> {
         let keys = core::mem::take(&mut self.osk.output);
-        self.osk.own_keys += keys.iter().filter(|key| matches!(key, ScreenKey::Key { .. })).count() as u32;
+        self.osk.own_keys += keys
+            .iter()
+            .filter(|key| matches!(key, ScreenKey::Key { .. }))
+            .count() as u32;
         keys
     }
 
@@ -669,7 +898,12 @@ impl Desktop {
             return false;
         }
         let panel = self.osk.panel;
-        let above = Rect::new(panel.x, panel.y.saturating_sub(TV_CELL.1.max(STRIP_CELL)), panel.width, panel.height + TV_CELL.1.max(STRIP_CELL));
+        let above = Rect::new(
+            panel.x,
+            panel.y.saturating_sub(TV_CELL.1.max(STRIP_CELL)),
+            panel.width,
+            panel.height + TV_CELL.1.max(STRIP_CELL),
+        );
         above.overlaps(&clip)
     }
 
@@ -727,7 +961,9 @@ impl Desktop {
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) {
-        let focused = self.focus.and_then(|slot| self.windows[slot].map(|window| window.id));
+        let focused = self
+            .focus
+            .and_then(|slot| self.windows[slot].map(|window| window.id));
         if kind == FieldKind::None {
             if self.osk.focus.is_some_and(|focus| focus.window == window) {
                 self.osk.focus = None;
@@ -740,8 +976,15 @@ impl Desktop {
         if focused != Some(window) {
             return;
         }
-        let changed = self.osk.focus.is_none_or(|focus| focus.kind != kind || focus.enter != enter);
-        self.osk.focus = Some(TextFocus { window, kind, enter });
+        let changed = self
+            .osk
+            .focus
+            .is_none_or(|focus| focus.kind != kind || focus.enter != enter);
+        self.osk.focus = Some(TextFocus {
+            window,
+            kind,
+            enter,
+        });
         if self.osk.shown && changed {
             self.osk.built_for = None;
             self.rebuild_keys();
@@ -759,34 +1002,48 @@ impl Desktop {
 
     /// A tap in window `slot`'s content: the console terminal, which is the server's own and
     /// sends no text focus, takes it as a field of kind `terminal` (brief 5.5).
-    pub(super) fn terminal_tapped(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
+    pub(super) fn terminal_tapped(
+        &mut self,
+        slot: usize,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         let Some(window) = self.windows[slot] else {
             return;
         };
         if window.id != self.terminal_window() {
             return;
         }
-        self.set_text_focus(window.id, FieldKind::Terminal, EnterWord::Enter, FocusCause::Tap, damage, events);
+        self.set_text_focus(
+            window.id,
+            FieldKind::Terminal,
+            EnterWord::Enter,
+            FocusCause::Tap,
+            damage,
+            events,
+        );
     }
 
-    /// Shows the keyboard for the focused window's field, as `wm keyboard show` asks; refused
-    /// in the `never` mode, or with no field or form to show it for.
+    /// Shows the keyboard for the focused window's field, as `wm keyboard show` asks; whether
+    /// it shows: not in the `never` mode, or with no field or form to show it for.
     pub fn show_on_screen_keyboard_by_request(
         &mut self,
         damage: &mut Damage,
         events: &mut dyn EventSink,
-    ) -> Result<(), ()> {
+    ) -> bool {
         let has_field = self.osk.focus.is_some_and(|focus| {
-            self.focus.and_then(|slot| self.windows[slot].map(|window| window.id)) == Some(focus.window)
+            self.focus
+                .and_then(|slot| self.windows[slot].map(|window| window.id))
+                == Some(focus.window)
         });
         let form = matches!(self.form, Form::Phone | Form::Tablet | Form::Tv);
         if self.osk.mode == OnScreenKeyboardMode::Never || !has_field || !form {
-            return Err(());
+            return false;
         }
         if !self.osk.shown {
             self.show_on_screen_keyboard(damage, events);
         }
-        Ok(())
+        true
     }
 
     fn show_on_screen_keyboard(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -806,7 +1063,9 @@ impl Desktop {
         self.osk.pressed = None;
         self.osk.built_for = None;
         self.rebuild_keys();
-        self.osk.tv_focus = self.tv_key_at(TV_FIRST_FOCUS.0, TV_FIRST_FOCUS.1).unwrap_or(0);
+        self.osk.tv_focus = self
+            .tv_key_at(TV_FIRST_FOCUS.0, TV_FIRST_FOCUS.1)
+            .unwrap_or(0);
         self.layout.work_area.height -= panel.height;
         self.refit_for_keyboard(damage, events);
         damage.add(self.layout.work_area);
@@ -842,7 +1101,9 @@ impl Desktop {
     }
 
     fn layout_number(&self) -> (usize, bool) {
-        let number = self.keyboard_layout_in_force().map_or(layout::US_LAYOUT, |choice| usize::from(choice.number));
+        let number = self
+            .keyboard_layout_in_force()
+            .map_or(layout::US_LAYOUT, |choice| usize::from(choice.number));
         let more = self.keyboard_layout_count() > 1;
         (number, more)
     }
@@ -864,14 +1125,19 @@ impl Desktop {
         let panel = self.osk.panel;
         self.osk.keys = match self.form {
             Form::Tv => tv_keys(panel, &rows, layout_key),
-            Form::Phone if self.height >= self.width => phone_portrait_keys(panel, &rows, layout_key),
+            Form::Phone if self.height >= self.width => {
+                phone_portrait_keys(panel, &rows, layout_key)
+            }
             Form::Phone => wide_keys(panel, &rows, layout_key, false),
             _ => wide_keys(panel, &rows, layout_key, true),
         };
     }
 
     fn key_at(&self, x: u32, y: u32) -> Option<usize> {
-        self.osk.keys.iter().position(|key| contains(key.zone, x, y))
+        self.osk
+            .keys
+            .iter()
+            .position(|key| contains(key.zone, x, y))
     }
 
     fn tv_key_at(&self, column: usize, row: usize) -> Option<usize> {
@@ -882,11 +1148,22 @@ impl Desktop {
     /// Whether a press at (`x`, `y`) is the keyboard's: on the panel or its alternates.
     pub(super) fn on_screen_keyboard_takes(&self, x: u32, y: u32) -> bool {
         self.osk.shown
-            && (contains(self.osk.panel, x, y) || self.osk.strip.as_ref().is_some_and(|strip| contains(strip.rect, x, y)))
+            && (contains(self.osk.panel, x, y)
+                || self
+                    .osk
+                    .strip
+                    .as_ref()
+                    .is_some_and(|strip| contains(strip.rect, x, y)))
     }
 
     /// A press on the panel or its strip.
-    pub(super) fn on_screen_keyboard_press(&mut self, x: u32, y: u32, right: bool, damage: &mut Damage) {
+    pub(super) fn on_screen_keyboard_press(
+        &mut self,
+        x: u32,
+        y: u32,
+        right: bool,
+        damage: &mut Damage,
+    ) {
         self.rebuild_keys();
         if let Some(strip) = &mut self.osk.strip {
             damage.add(strip.rect);
@@ -927,7 +1204,8 @@ impl Desktop {
     /// The finger or the pointer moved while pressed on the panel.
     pub(super) fn on_screen_keyboard_move(&mut self, x: u32, y: u32, damage: &mut Damage) {
         if let Some(strip) = &mut self.osk.strip {
-            let hover = contains(strip.rect, x, y).then(|| ((x - strip.rect.x) / STRIP_CELL) as usize);
+            let hover =
+                contains(strip.rect, x, y).then(|| ((x - strip.rect.x) / STRIP_CELL) as usize);
             if hover != strip.hover {
                 strip.hover = hover;
                 damage.add(strip.rect);
@@ -970,14 +1248,22 @@ impl Desktop {
     ) -> Action {
         if let Some(strip) = self.osk.strip.take() {
             damage.add(strip.rect);
-            let chosen = strip.hover.filter(|_| contains(strip.rect, x, y)).and_then(|cell| strip.cells.get(cell).copied());
+            let chosen = strip
+                .hover
+                .filter(|_| contains(strip.rect, x, y))
+                .and_then(|cell| strip.cells.get(cell).copied());
             match chosen {
                 Some(character) => {
                     self.osk.output.push(ScreenKey::Character(character));
                     self.osk.after_character();
                     damage.add(self.osk.panel);
                 }
-                None => self.osk.strip = Some(Strip { left_open: true, ..strip }),
+                None => {
+                    self.osk.strip = Some(Strip {
+                        left_open: true,
+                        ..strip
+                    })
+                }
             }
             if let Some(pressed) = self.osk.pressed.take() {
                 damage.add(self.osk.keys[pressed].zone);
@@ -1096,8 +1382,14 @@ impl Desktop {
         if !self.osk.shown {
             return;
         }
-        let focused = self.focus.and_then(|slot| self.windows[slot].map(|window| window.id));
-        if self.osk.focus.is_none_or(|focus| Some(focus.window) != focused) {
+        let focused = self
+            .focus
+            .and_then(|slot| self.windows[slot].map(|window| window.id));
+        if self
+            .osk
+            .focus
+            .is_none_or(|focus| Some(focus.window) != focused)
+        {
             return self.hide_on_screen_keyboard(damage, events);
         }
         if self.layout.work_area.bottom() > self.osk.panel.y
@@ -1127,7 +1419,12 @@ impl Desktop {
             self.open_keyboard_layout_menu(damage);
             return;
         }
-        if held && cap.is_character() && self.osk.strip.is_none() && !self.osk.control && !self.osk.alt {
+        if held
+            && cap.is_character()
+            && self.osk.strip.is_none()
+            && !self.osk.control
+            && !self.osk.alt
+        {
             self.open_strip(pressed, damage);
         }
     }
@@ -1173,7 +1470,12 @@ impl Desktop {
         let left = middle
             .saturating_sub(cell_height / 2)
             .clamp(panel.x, panel.right().saturating_sub(width).max(panel.x));
-        let rect = Rect::new(left, key.zone.y.saturating_sub(cell_height), width, cell_height);
+        let rect = Rect::new(
+            left,
+            key.zone.y.saturating_sub(cell_height),
+            width,
+            cell_height,
+        );
         damage.add(rect);
         damage.add(self.preview_rect(index));
         self.osk.strip = Some(Strip {
@@ -1186,7 +1488,10 @@ impl Desktop {
 
     fn preview_rect(&self, index: usize) -> Rect {
         let zone = self.osk.keys[index].zone;
-        let x = zone.x.saturating_sub(4).min(self.osk.panel.right().saturating_sub(PREVIEW.0));
+        let x = zone
+            .x
+            .saturating_sub(4)
+            .min(self.osk.panel.right().saturating_sub(PREVIEW.0));
         Rect::new(x, zone.y.saturating_sub(PREVIEW.1), PREVIEW.0, PREVIEW.1)
     }
 
@@ -1200,12 +1505,18 @@ impl Desktop {
             Cap::Sign(character) => {
                 let latched = self.osk.control || self.osk.alt;
                 let as_key = latched
-                    .then(|| u8::try_from(character).ok().and_then(crate::input::keymap::key_for_ascii))
+                    .then(|| {
+                        u8::try_from(character)
+                            .ok()
+                            .and_then(crate::input::keymap::key_for_ascii)
+                    })
                     .flatten();
                 match as_key {
                     Some((code, modifiers)) => self.osk.output.push(ScreenKey::Key {
                         code,
-                        modifiers: Modifiers(modifiers.bits() | self.osk.modifiers(false).bits()),
+                        modifiers: Modifiers::from_bits(
+                            modifiers.bits() | self.osk.modifiers(false).bits(),
+                        ),
                     }),
                     None => self.osk.output.push(ScreenKey::Character(character)),
                 }
@@ -1288,7 +1599,7 @@ impl Desktop {
             if typist.character_of(code, held) == u32::from(wanted) {
                 self.osk.output.push(ScreenKey::Key {
                     code,
-                    modifiers: Modifiers(modifiers.bits() | held.bits()),
+                    modifiers: Modifiers::from_bits(modifiers.bits() | held.bits()),
                 });
                 return;
             }
@@ -1314,11 +1625,17 @@ impl Desktop {
         let column = ((zone.x - self.osk.panel.x - TV_LEFT) / TV_CELL.0) as usize;
         let row = ((zone.y - self.osk.panel.y - TV_TOP) / TV_CELL.1) as usize;
         let moved = match code {
-            key::LEFT => (0..column).rev().find_map(|to| self.tv_key_at(to, row).filter(|&key| key != focus)),
+            key::LEFT => (0..column)
+                .rev()
+                .find_map(|to| self.tv_key_at(to, row).filter(|&key| key != focus)),
             key::RIGHT => (column + zone.width as usize / TV_CELL.0 as usize..TV_COLUMNS)
                 .find_map(|to| self.tv_key_at(to, row).filter(|&key| key != focus)),
-            key::UP if row > 0 => (0..=column).rev().find_map(|to| self.tv_key_at(to, row - 1)),
-            key::DOWN if row < 3 => (0..=column).rev().find_map(|to| self.tv_key_at(to, row + 1)),
+            key::UP if row > 0 => (0..=column)
+                .rev()
+                .find_map(|to| self.tv_key_at(to, row - 1)),
+            key::DOWN if row < 3 => (0..=column)
+                .rev()
+                .find_map(|to| self.tv_key_at(to, row + 1)),
             key::UP | key::DOWN => Some(focus),
             key::ENTER | key::SPACE => {
                 let cap = self.osk.keys[focus].cap;
@@ -1368,7 +1685,11 @@ impl Desktop {
 
     /// `Back` on a phone or tablet while the keyboard shows: closes the alternates or hides the
     /// keyboard; `false` when it does not show.
-    pub(super) fn on_screen_keyboard_back(&mut self, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
+    pub(super) fn on_screen_keyboard_back(
+        &mut self,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> bool {
         if !self.osk.shown {
             return false;
         }
@@ -1388,11 +1709,14 @@ impl Desktop {
         canvas.fill(panel, colour::BAR);
         canvas.row(panel.y, panel.x, panel.right(), colour::BAR_EDGE);
         let kind = self.osk.focus.map_or(FieldKind::Text, |focus| focus.kind);
-        let enter = self.osk.focus.map_or(EnterWord::Enter, |focus| match focus.kind {
-            FieldKind::Search => EnterWord::Search,
-            FieldKind::Multiline => EnterWord::Enter,
-            _ => focus.enter,
-        });
+        let enter = self
+            .osk
+            .focus
+            .map_or(EnterWord::Enter, |focus| match focus.kind {
+                FieldKind::Search => EnterWord::Search,
+                FieldKind::Multiline => EnterWord::Enter,
+                _ => focus.enter,
+            });
         for (index, key) in self.osk.keys.iter().enumerate() {
             let pressed = self.osk.pressed == Some(index);
             let focused = self.form == Form::Tv && self.osk.tv_focus == index;
@@ -1415,7 +1739,12 @@ impl Desktop {
             outline(canvas, strip.rect, colour::MENU_BORDER);
             let cell_width = strip.rect.width / strip.cells.len().max(1) as u32;
             for (index, &character) in strip.cells.iter().enumerate() {
-                let cell = Rect::new(strip.rect.x + cell_width * index as u32, strip.rect.y, cell_width, strip.rect.height);
+                let cell = Rect::new(
+                    strip.rect.x + cell_width * index as u32,
+                    strip.rect.y,
+                    cell_width,
+                    strip.rect.height,
+                );
                 if strip.hover == Some(index) {
                     canvas.fill(inset(cell, 1), colour::SELECTION);
                 }
@@ -1426,7 +1755,9 @@ impl Desktop {
 
     fn shown_character(&self, cap: Cap) -> Option<char> {
         match cap {
-            Cap::Letter { plain, .. } if self.osk.shift != Shift::Off => capital(plain).or(Some(plain)),
+            Cap::Letter { plain, .. } if self.osk.shift != Shift::Off => {
+                capital(plain).or(Some(plain))
+            }
             Cap::Letter { plain, .. } => Some(plain),
             Cap::Sign(sign) => Some(sign),
             Cap::Accent(accent) => Some(accent),
@@ -1434,7 +1765,14 @@ impl Desktop {
         }
     }
 
-    fn draw_key(&self, canvas: &mut Canvas<'_>, key: Key, pressed: bool, focused: bool, enter: EnterWord) {
+    fn draw_key(
+        &self,
+        canvas: &mut Canvas<'_>,
+        key: Key,
+        pressed: bool,
+        focused: bool,
+        enter: EnterWord,
+    ) {
         let cap = inset(key.zone, CAP_INSET);
         let latched = match key.cap {
             Cap::Shift => self.osk.shift != Shift::Off,
@@ -1443,11 +1781,30 @@ impl Desktop {
             Cap::Accent(accent) => self.osk.accent == Some(accent),
             _ => false,
         };
-        let function = !matches!(key.cap, Cap::Letter { .. } | Cap::Sign(_) | Cap::Accent(_) | Cap::Space | Cap::Enter);
+        let function = !matches!(
+            key.cap,
+            Cap::Letter { .. } | Cap::Sign(_) | Cap::Accent(_) | Cap::Space | Cap::Enter
+        );
         let (fill, border, label) = match key.cap {
-            Cap::Enter if pressed => (colour::BUTTON_PRIMARY_HOVER, colour::BUTTON_PRIMARY, colour::ICON_DARK),
-            Cap::Enter => (colour::BUTTON_PRIMARY, colour::BUTTON_PRIMARY, colour::ICON_DARK),
-            _ if pressed => (colour::BUTTON_PRESSED, if function { colour::MENU_BORDER } else { colour::BUTTON_BORDER }, colour::TEXT),
+            Cap::Enter if pressed => (
+                colour::BUTTON_PRIMARY_HOVER,
+                colour::BUTTON_PRIMARY,
+                colour::ICON_DARK,
+            ),
+            Cap::Enter => (
+                colour::BUTTON_PRIMARY,
+                colour::BUTTON_PRIMARY,
+                colour::ICON_DARK,
+            ),
+            _ if pressed => (
+                colour::BUTTON_PRESSED,
+                if function {
+                    colour::MENU_BORDER
+                } else {
+                    colour::BUTTON_BORDER
+                },
+                colour::TEXT,
+            ),
             _ if latched || focused => (colour::SELECTION, colour::BUTTON_BORDER, colour::TEXT),
             _ if function => (colour::MENU, colour::MENU_BORDER, colour::TEXT),
             _ => (colour::BUTTON, colour::BUTTON_BORDER, colour::TEXT),
@@ -1461,7 +1818,12 @@ impl Desktop {
         if latched {
             let line_y = cap.bottom().saturating_sub(3);
             for row in line_y..line_y + 2 {
-                canvas.row(row, cap.x + LATCH_LINE_INSET, cap.right().saturating_sub(LATCH_LINE_INSET), colour::ACCENT);
+                canvas.row(
+                    row,
+                    cap.x + LATCH_LINE_INSET,
+                    cap.right().saturating_sub(LATCH_LINE_INSET),
+                    colour::ACCENT,
+                );
             }
         }
         match key.cap {
@@ -1490,7 +1852,10 @@ impl Desktop {
                 }
             }
             Cap::Space => {
-                let (x, y) = (cap.x + cap.width.saturating_sub(24) / 2, cap.y + cap.height / 2);
+                let (x, y) = (
+                    cap.x + cap.width.saturating_sub(24) / 2,
+                    cap.y + cap.height / 2,
+                );
                 canvas.row(y + 3, x, x + 24, label);
                 for row in y..y + 3 {
                     canvas.pixel(x, row, label);
@@ -1506,7 +1871,9 @@ impl Desktop {
             Cap::Page(Page::Numbers) => draw_word(canvas, cap, "123", label),
             Cap::Page(Page::Symbols) => draw_word(canvas, cap, "#+=", label),
             Cap::Layout => {
-                let code = self.keyboard_layout_in_force().map_or("US", |choice| choice.code);
+                let code = self
+                    .keyboard_layout_in_force()
+                    .map_or("US", |choice| choice.code);
                 draw_word(canvas, cap, code, label);
             }
         }
@@ -1518,7 +1885,11 @@ impl Desktop {
             false => out.write_str("hidden"),
             true => {
                 let panel = self.osk.panel;
-                write!(out, "shown {} {} {} {}", panel.x, panel.y, panel.width, panel.height)
+                write!(
+                    out,
+                    "shown {} {} {} {}",
+                    panel.x, panel.y, panel.width, panel.height
+                )
             }
         }
     }
@@ -1536,12 +1907,22 @@ impl Desktop {
                     Some(character) => (character.encode_utf8(&mut buffer), ""),
                     None => continue,
                 },
-                Cap::Accent(accent) => (accent_name(accent), if self.osk.accent == Some(accent) { "pending" } else { "" }),
-                Cap::Shift => ("Shift", match self.osk.shift {
-                    Shift::Off => "off",
-                    Shift::Once => "once",
-                    Shift::Locked => "locked",
-                }),
+                Cap::Accent(accent) => (
+                    accent_name(accent),
+                    if self.osk.accent == Some(accent) {
+                        "pending"
+                    } else {
+                        ""
+                    },
+                ),
+                Cap::Shift => (
+                    "Shift",
+                    match self.osk.shift {
+                        Shift::Off => "off",
+                        Shift::Once => "once",
+                        Shift::Locked => "locked",
+                    },
+                ),
                 Cap::Control => ("Control", if self.osk.control { "latched" } else { "off" }),
                 Cap::Alt => ("Alt", if self.osk.alt { "latched" } else { "off" }),
                 Cap::Backspace => ("Backspace", ""),
@@ -1557,7 +1938,11 @@ impl Desktop {
                 Cap::Page(Page::Letters) => ("Letters", ""),
                 Cap::Page(Page::Numbers) => ("Numbers", ""),
                 Cap::Page(Page::Symbols) => ("Symbols", ""),
-                Cap::Layout => ("Keyboard layout", self.keyboard_layout_in_force().map_or("", |choice| choice.name)),
+                Cap::Layout => (
+                    "Keyboard layout",
+                    self.keyboard_layout_in_force()
+                        .map_or("", |choice| choice.name),
+                ),
             };
             name(label, value);
         }
@@ -1565,7 +1950,12 @@ impl Desktop {
 }
 
 fn inset(rect: Rect, by: u32) -> Rect {
-    Rect::new(rect.x + by, rect.y + by, rect.width.saturating_sub(2 * by), rect.height.saturating_sub(2 * by))
+    Rect::new(
+        rect.x + by,
+        rect.y + by,
+        rect.width.saturating_sub(2 * by),
+        rect.height.saturating_sub(2 * by),
+    )
 }
 
 fn outline(canvas: &mut Canvas<'_>, rect: Rect, colour: u32) {
@@ -1616,7 +2006,10 @@ fn draw_triangle(canvas: &mut Canvas<'_>, cell: Rect, code: u16, colour: u32) {
 }
 
 fn draw_shift(canvas: &mut Canvas<'_>, cell: Rect, state: Shift, colour: u32) {
-    let (cx, top) = (cell.x + cell.width / 2, cell.y + cell.height.saturating_sub(17) / 2);
+    let (cx, top) = (
+        cell.x + cell.width / 2,
+        cell.y + cell.height.saturating_sub(17) / 2,
+    );
     for row in 0..7u32 {
         let half = row + 1;
         match state {
@@ -1647,7 +2040,10 @@ fn draw_shift(canvas: &mut Canvas<'_>, cell: Rect, state: Shift, colour: u32) {
 }
 
 fn draw_backspace(canvas: &mut Canvas<'_>, cell: Rect, colour: u32) {
-    let (left, top) = (cell.x + cell.width.saturating_sub(20) / 2, cell.y + cell.height.saturating_sub(12) / 2);
+    let (left, top) = (
+        cell.x + cell.width.saturating_sub(20) / 2,
+        cell.y + cell.height.saturating_sub(12) / 2,
+    );
     let body = left + 6;
     canvas.row(top, body, body + 14, colour);
     canvas.row(top + 11, body, body + 14, colour);
@@ -1683,9 +2079,36 @@ mod tests {
     #[test]
     fn the_us_letters_on_a_phone_are_the_design_s() {
         let keys = rows(layout::US_LAYOUT, Page::Letters);
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 16, plain: 'q' }), Rect::new(0, 580, 39, 54));
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 30, plain: 'a' }), Rect::new(0, 634, 58, 54));
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 44, plain: 'z' }), Rect::new(58, 688, 39, 54));
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 16,
+                    plain: 'q'
+                }
+            ),
+            Rect::new(0, 580, 39, 54)
+        );
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 30,
+                    plain: 'a'
+                }
+            ),
+            Rect::new(0, 634, 58, 54)
+        );
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 44,
+                    plain: 'z'
+                }
+            ),
+            Rect::new(58, 688, 39, 54)
+        );
         assert_eq!(zone_of(&keys, Cap::Shift), Rect::new(0, 688, 58, 54));
         assert_eq!(zone_of(&keys, Cap::Backspace), Rect::new(331, 688, 59, 54));
         assert_eq!(zone_of(&keys, Cap::Space), Rect::new(97, 742, 176, 54));
@@ -1697,7 +2120,10 @@ mod tests {
     fn german_letters_take_eleven_keys_and_end_in_sharp_s() {
         let letters = letter_rows(layout::named(b"de").unwrap());
         assert_eq!(letters[0].len(), 11);
-        assert_eq!(letters[0].last().map(|&(_, character)| character), Some('ü'));
+        assert_eq!(
+            letters[0].last().map(|&(_, character)| character),
+            Some('ü')
+        );
         let third: Vec<char> = letters[2].iter().map(|&(_, character)| character).collect();
         assert_eq!(third, ['y', 'x', 'c', 'v', 'b', 'n', 'm', 'ß']);
         let keys = rows(layout::named(b"de").unwrap(), Page::Letters);
@@ -1713,7 +2139,16 @@ mod tests {
             kind: FieldKind::Text,
         };
         let keys = wide_keys(Rect::new(0, 404, 1024, 300), &rows, false, true);
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 16, plain: 'q' }), Rect::new(0, 448, 93, 64));
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 16,
+                    plain: 'q'
+                }
+            ),
+            Rect::new(0, 448, 93, 64)
+        );
         assert_eq!(zone_of(&keys, Cap::Backspace), Rect::new(930, 448, 94, 64));
         assert_eq!(zone_of(&keys, Cap::Enter), Rect::new(883, 512, 141, 64));
         assert_eq!(zone_of(&keys, Cap::Space), Rect::new(93, 640, 837, 64));
@@ -1729,7 +2164,16 @@ mod tests {
             kind: FieldKind::Text,
         };
         let keys = wide_keys(Rect::new(0, 214, 796, 176), &rows, false, false);
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 16, plain: 'q' }), Rect::new(0, 214, 72, 44));
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 16,
+                    plain: 'q'
+                }
+            ),
+            Rect::new(0, 214, 72, 44)
+        );
         assert_eq!(zone_of(&keys, Cap::Enter), Rect::new(684, 258, 112, 44));
         assert_eq!(zone_of(&keys, Cap::Escape), Rect::new(72, 346, 48, 44));
         assert_eq!(zone_of(&keys, Cap::Space), Rect::new(264, 346, 292, 44));
@@ -1745,8 +2189,26 @@ mod tests {
             kind: FieldKind::Text,
         };
         let keys = tv_keys(Rect::new(0, 336, 960, 204), &rows, false);
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 16, plain: 'q' }), Rect::new(48, 344, 72, 40));
-        assert_eq!(zone_of(&keys, Cap::Letter { code: 34, plain: 'g' }), Rect::new(336, 384, 72, 40));
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 16,
+                    plain: 'q'
+                }
+            ),
+            Rect::new(48, 344, 72, 40)
+        );
+        assert_eq!(
+            zone_of(
+                &keys,
+                Cap::Letter {
+                    code: 34,
+                    plain: 'g'
+                }
+            ),
+            Rect::new(336, 384, 72, 40)
+        );
         assert_eq!(zone_of(&keys, Cap::Space), Rect::new(264, 464, 432, 40));
     }
 

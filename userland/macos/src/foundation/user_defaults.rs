@@ -5,7 +5,7 @@
 
 use super::bundle::{app_name, info_string};
 use super::{
-    NSDATA, NSFILEMANAGER, NSMUTABLEDICTIONARY, NSUSERDEFAULTS, NSUSERDEFAULTS_META, Definition,
+    Definition, NSDATA, NSFILEMANAGER, NSMUTABLEDICTIONARY, NSUSERDEFAULTS, NSUSERDEFAULTS_META,
     class_pointer, define as define_class, is_array, is_dictionary, is_number, is_string,
     new_instance, string_from_utf8,
 };
@@ -14,7 +14,7 @@ use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::objc_retain;
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, methods, send, send1, send2, sel};
+use crate::objc::{Runtime, methods, sel, send, send1, send2};
 use eggos_plist::Document;
 
 const PREFERENCES: &[u8] = b"/Library/Preferences/";
@@ -69,7 +69,10 @@ fn with_path<R>(work: impl FnOnce(&[u8]) -> R) -> Option<R> {
 }
 
 fn new_mutable_dictionary() -> Id {
-    send(send(class_pointer(&NSMUTABLEDICTIONARY).cast(), sel!("alloc")), sel!("init"))
+    send(
+        send(class_pointer(&NSMUTABLEDICTIONARY).cast(), sel!("alloc")),
+        sel!("init"),
+    )
 }
 
 fn load() -> Id {
@@ -119,7 +122,12 @@ fn save(this: Id) {
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
             );
-            send2(data, sel!("writeToFile:atomically:"), string_from_utf8(path) as usize, 1);
+            send2(
+                data,
+                sel!("writeToFile:atomically:"),
+                string_from_utf8(path) as usize,
+                1,
+            );
         });
         if !data.is_null() {
             crate::objc::reference_count::objc_release(data);
@@ -164,8 +172,17 @@ extern "C" fn set_object_for_key(this: Id, _: Sel, value: Id, key: Id) {
         return;
     }
     match value.is_null() {
-        true => send1(fields(this).values, sel!("removeObjectForKey:"), key as usize),
-        false => send2(fields(this).values, sel!("setObject:forKey:"), value as usize, key as usize),
+        true => send1(
+            fields(this).values,
+            sel!("removeObjectForKey:"),
+            key as usize,
+        ),
+        false => send2(
+            fields(this).values,
+            sel!("setObject:forKey:"),
+            value as usize,
+            key as usize,
+        ),
     };
     save(this);
 }
@@ -256,12 +273,18 @@ extern "C" fn dictionary_for_key(this: Id, _: Sel, key: Id) -> Id {
 }
 
 extern "C" fn data_for_key(this: Id, _: Sel, key: Id) -> Id {
-    typed(this, key, |value| crate::objc::root::is_kind_of(value, &NSDATA))
+    typed(this, key, |value| {
+        crate::objc::root::is_kind_of(value, &NSDATA)
+    })
 }
 
 extern "C" fn register_defaults(this: Id, _: Sel, registered: Id) {
     if !registered.is_null() && is_dictionary(registered) {
-        send1(fields(this).registered, sel!("addEntriesFromDictionary:"), registered as usize);
+        send1(
+            fields(this).registered,
+            sel!("addEntriesFromDictionary:"),
+            registered as usize,
+        );
     }
 }
 
@@ -275,8 +298,16 @@ extern "C" fn dictionary_representation(this: Id, _: Sel) -> Id {
     if all.is_null() {
         return all;
     }
-    send1(all, sel!("addEntriesFromDictionary:"), fields(this).registered as usize);
-    send1(all, sel!("addEntriesFromDictionary:"), fields(this).values as usize);
+    send1(
+        all,
+        sel!("addEntriesFromDictionary:"),
+        fields(this).registered as usize,
+    );
+    send1(
+        all,
+        sel!("addEntriesFromDictionary:"),
+        fields(this).values as usize,
+    );
     super::autoreleased(all)
 }
 

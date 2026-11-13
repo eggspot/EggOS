@@ -494,6 +494,11 @@ impl<'a> Value<'a> {
 }
 
 impl<'a> Number<'a> {
+    /// The number's text exactly as received.
+    pub fn raw(self) -> &'a [u8] {
+        self.0
+    }
+
     /// The number as an unsigned integer, if it is one written without a fraction or
     /// exponent and fits.
     pub fn as_u64(self) -> Option<u64> {

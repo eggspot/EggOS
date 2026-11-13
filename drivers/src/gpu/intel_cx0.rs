@@ -104,32 +104,38 @@ const SERDES_RATE_MASK: u8 = 1 << 7 | 1 << 6 | 0xf << 1;
 const DISPLAY_PORT_RATE_SHIFT: u8 = 1;
 const CONTEXTS: [(u16, u16, u16); 2] = [(0xcf2a, 0xcda5, 0xcb4e), (0xcf2e, 0xcdaa, 0xcb5a)];
 
-/// A C20 configuration: its three transmit, four common and eleven MPLLB words.
 type C20Table = ([u16; 3], [u16; 4], [u16; 11]);
 
 const C20_COMMON: [u16; 4] = [0x0500, 0x0005, 0x0000, 0x0000];
 const C20_RBR: C20Table = (
     [0xbe88, 0x5800, 0x0000],
     C20_COMMON,
-    [0x50a8, 0x2120, 0xcd9a, 0xbfc1, 0x5ab8, 0x4c34, 0x2000, 0x0001, 0x6000, 0, 0],
+    [
+        0x50a8, 0x2120, 0xcd9a, 0xbfc1, 0x5ab8, 0x4c34, 0x2000, 0x0001, 0x6000, 0, 0,
+    ],
 );
 const C20_HBR: C20Table = (
     [0xbe88, 0x4800, 0x0000],
     C20_COMMON,
-    [0x308c, 0x2110, 0xcc9c, 0xbfc1, 0x4b9a, 0x3f81, 0x2000, 0x0001, 0x5000, 0, 0],
+    [
+        0x308c, 0x2110, 0xcc9c, 0xbfc1, 0x4b9a, 0x3f81, 0x2000, 0x0001, 0x5000, 0, 0,
+    ],
 );
 const C20_HBR2: C20Table = (
     [0xbe88, 0x4800, 0x0000],
     C20_COMMON,
-    [0x108c, 0x2108, 0xcc9c, 0xbfc1, 0x4b9a, 0x3f81, 0x2000, 0x0001, 0x5000, 0, 0],
+    [
+        0x108c, 0x2108, 0xcc9c, 0xbfc1, 0x4b9a, 0x3f81, 0x2000, 0x0001, 0x5000, 0, 0,
+    ],
 );
 const C20_HBR3: C20Table = (
     [0xbe88, 0x4800, 0x0000],
     C20_COMMON,
-    [0x10d2, 0x2108, 0x8d98, 0xbfc1, 0x7166, 0x5f42, 0x2000, 0x0001, 0x7800, 0, 0],
+    [
+        0x10d2, 0x2108, 0x8d98, 0xbfc1, 0x7166, 0x5f42, 0x2000, 0x0001, 0x7800, 0, 0,
+    ],
 );
 
-/// The C20's swing, pre-cursor and post-cursor of each DisplayPort drive level.
 const C20_DRIVE_TABLE: [(u8, u8, u8); 10] = [
     (20, 0, 0),
     (24, 0, 4),
@@ -155,7 +161,6 @@ pub fn c20_table(link_khz: u32) -> Option<(C20Table, u8)> {
     })
 }
 
-/// A C10 PLL configuration: its twenty PLL bytes, its common byte and its transmit byte.
 type PllTable = ([u8; 20], u8, u8);
 
 const RBR: PllTable = (
@@ -176,8 +181,8 @@ const HBR: PllTable = (
 );
 const HBR2: PllTable = (
     [
-        0xf4, 0, 0xf8, 0, 0x20, 0x0a, 0x29, 0x10, 0x1, 0x1, 0, 0, 0xa0, 0, 0, 0, 0x84, 0x4f,
-        0xe5, 0x23,
+        0xf4, 0, 0xf8, 0, 0x20, 0x0a, 0x29, 0x10, 0x1, 0x1, 0, 0, 0xa0, 0, 0, 0, 0x84, 0x4f, 0xe5,
+        0x23,
     ],
     0x21,
     0x10,
@@ -191,7 +196,6 @@ const HBR3: PllTable = (
     0x10,
 );
 
-/// The swing, pre-cursor and post-cursor of each DisplayPort drive level.
 const DRIVE_TABLE: [(u8, u8, u8); 10] = [
     (26, 0, 0),
     (33, 0, 6),
@@ -240,6 +244,16 @@ pub struct Cx0<'a, R: RegisterIo + ?Sized> {
     c20: bool,
     both_lanes: bool,
     keep_waiting: &'a mut dyn FnMut() -> bool,
+}
+
+impl<R: RegisterIo + ?Sized> core::fmt::Debug for Cx0<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Cx0")
+            .field("port", &self.port)
+            .field("c20", &self.c20)
+            .field("both_lanes", &self.both_lanes)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
@@ -295,7 +309,8 @@ impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
     }
 
     fn modify_register(&self, place: usize, mask: u32, value: u32) {
-        self.regs.write32(place, self.regs.read32(place) & !mask | value);
+        self.regs
+            .write32(place, self.regs.read32(place) & !mask | value);
     }
 
     fn clear_response(&self, lane: usize) {
@@ -338,7 +353,11 @@ impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
     ) -> Result<(), Cx0Error> {
         self.wait(self.bus(lane), TRANSACTION_PENDING, 0)?;
         self.clear_response(lane);
-        let kind = if committed { WRITE_COMMITTED } else { WRITE_UNCOMMITTED };
+        let kind = if committed {
+            WRITE_COMMITTED
+        } else {
+            WRITE_UNCOMMITTED
+        };
         let command = TRANSACTION_PENDING
             | kind
             | u32::from(data) << DATA_SHIFT
@@ -504,15 +523,19 @@ impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
             if !owned.contains(&lane) {
                 continue;
             }
-            let address =
-                TRANSMITTER_CONTROL_2 + (transmitter % 2) as u16 * TRANSMITTER_STRIDE;
-            let set = if disabled & 1 << transmitter != 0 { DISABLE_TRANSMITTER } else { 0 };
+            let address = TRANSMITTER_CONTROL_2 + (transmitter % 2) as u16 * TRANSMITTER_STRIDE;
+            let set = if disabled & 1 << transmitter != 0 {
+                DISABLE_TRANSMITTER
+            } else {
+                0
+            };
             self.modify(&[lane], address, DISABLE_TRANSMITTER, set)?;
         }
         if !self.c20 {
             self.modify(owned, VENDOR_CONTROL, 0, UPDATE_CONFIGURATION)?;
         }
-        self.regs.write32(VALID_FREQUENCY + self.port * PORT_STRIDE, link_khz);
+        self.regs
+            .write32(VALID_FREQUENCY + self.port * PORT_STRIDE, link_khz);
         let clock = self.block(CLOCK_CONTROLS);
         self.modify_register(clock, PLL_REQUESTS, PLL_REQUEST_LANE_0);
         self.wait(clock, PLL_ACKS, PLL_ACK_LANE_0).map(|_| ())
@@ -533,13 +556,12 @@ impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
 
     /// Drives the first `lanes` transmitters at drive level `level` (the Dekel order:
     /// [`super::intel_dekel::drive_level`]) for a link at `link_khz`.
-    pub fn set_drive(
-        &mut self,
-        level: usize,
-        link_khz: u32,
-        lanes: usize,
-    ) -> Result<(), Cx0Error> {
-        let table = if self.c20 { &C20_DRIVE_TABLE } else { &DRIVE_TABLE };
+    pub fn set_drive(&mut self, level: usize, link_khz: u32, lanes: usize) -> Result<(), Cx0Error> {
+        let table = if self.c20 {
+            &C20_DRIVE_TABLE
+        } else {
+            &DRIVE_TABLE
+        };
         let (swing, pre_cursor, post_cursor) = table[level.min(table.len() - 1)];
         let owned = self.owned();
         if !self.c20 {
@@ -548,7 +570,12 @@ impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
             let termination = if strong { 5 } else { 2 };
             self.modify(owned, VENDOR_CONTROL, 0, BUS_ACCESS)?;
             self.modify(owned, COMMON_BYTES + 3, VOLTAGE_BOOST_MASK, boost << 5)?;
-            self.modify(owned, TRANSMIT_BYTES + 1, TERMINATION_MASK, termination << 5)?;
+            self.modify(
+                owned,
+                TRANSMIT_BYTES + 1,
+                TERMINATION_MASK,
+                termination << 5,
+            )?;
         }
         for transmitter in 0..lanes.min(4) {
             let lane = transmitter / 2;
@@ -557,7 +584,12 @@ impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
             }
             let base = DRIVE_LEVELS + ((lane ^ (transmitter % 2)) as u16) * 0x10;
             for (control, value) in [pre_cursor, swing, post_cursor].into_iter().enumerate() {
-                self.modify(&[lane], base + control as u16, LEVEL_MASK, value & LEVEL_MASK)?;
+                self.modify(
+                    &[lane],
+                    base + control as u16,
+                    LEVEL_MASK,
+                    value & LEVEL_MASK,
+                )?;
             }
         }
         self.modify(owned, DRIVE_OVERRIDES, 0, OVERRIDE_TRANSMITTERS)?;

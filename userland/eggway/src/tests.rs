@@ -4,8 +4,7 @@ use crate::system::{Fd, GpuPicture, System};
 use eggos_wayland::protocol::{
     Interface, SERVER_ID_START, activation_token, buffer, callback, cursor_shape, data_device,
     data_offer, data_source, decoration, display, fractional_scale, keyboard, linux_dmabuf, output,
-    pointer,
-    primary_selection_device, primary_selection_offer, primary_selection_source, registry,
+    pointer, primary_selection_device, primary_selection_offer, primary_selection_source, registry,
     server_decoration, shm, surface, text_input, viewport, xdg_popup, xdg_positioner, xdg_surface,
     xdg_toplevel, xdg_wm_base,
 };
@@ -254,7 +253,7 @@ fn the_registry_announces_every_global_and_refuses_a_newer_bind() {
         .iter()
         .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
         .collect();
-    assert_eq!(globals.len(), 15);
+    assert_eq!(globals.len(), 16);
     assert_eq!(globals[0].word(0), 1);
     session.bind(1, "wl_compositor", 5, COMPOSITOR);
     session.pump();
@@ -447,7 +446,10 @@ fn a_toplevel_s_dma_buf_is_shown_without_a_copy_and_held_until_another_buffer_re
     session.pump();
     let window = &session.fake.windows[&id];
     assert_eq!(window.pictures.last(), Some(&None));
-    assert_eq!(window.pixels[5], 5, "the window's own pixels copied whole again");
+    assert_eq!(
+        window.pixels[5], 5,
+        "the window's own pixels copied whole again"
+    );
     assert_eq!(session.of(GPU_BUFFER, buffer::RELEASE.opcode).len(), 1);
     session.end();
 }

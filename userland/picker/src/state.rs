@@ -95,6 +95,7 @@ impl Notice {
 
 /// What a step of the person's left the picker doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// Nothing changed that the window must know beyond its rows.
     Nothing,
@@ -139,7 +140,10 @@ pub fn output(paths: &[Path]) -> Vec<u8> {
 }
 
 fn is_folder(files: &mut impl Files, path: &[u8]) -> Option<bool> {
-    files.status_following(path).ok().map(|status| status.kind == eggos_app::files::Kind::Directory)
+    files
+        .status_following(path)
+        .ok()
+        .map(|status| status.kind == eggos_app::files::Kind::Directory)
 }
 
 /// See the module documentation.
@@ -257,7 +261,9 @@ impl Picker {
 
     /// The name `row` shows.
     pub fn name(&self, row: usize) -> &[u8] {
-        self.rows.get(row).map_or(&[], |row| self.listing.name(row.entry))
+        self.rows
+            .get(row)
+            .map_or(&[], |row| self.listing.name(row.entry))
     }
 
     /// The text of `row`'s cell in `column`: the name, the size (none for a folder) or when it
@@ -285,7 +291,9 @@ impl Picker {
                 .map(|text| text.replace("Could not open", "Cannot read"));
         }
         let files = (0..self.listing.len()).any(|entry| {
-            self.listing.get(entry).is_some_and(|entry| !entry.kind.is_folder())
+            self.listing
+                .get(entry)
+                .is_some_and(|entry| !entry.kind.is_folder())
         });
         match (files, self.active_filter()) {
             (true, Some(filter)) => {
@@ -351,7 +359,11 @@ impl Picker {
 
     /// Reads the folder shown again (F5), keeping the selected names selected.
     pub fn reload(&mut self, files: &mut impl Files) {
-        let names: Vec<Vec<u8>> = self.selected.iter().map(|&row| self.name(row).to_vec()).collect();
+        let names: Vec<Vec<u8>> = self
+            .selected
+            .iter()
+            .map(|&row| self.name(row).to_vec())
+            .collect();
         let folder = self.folder;
         if self.show(files, folder).is_err() {
             return;
@@ -388,7 +400,11 @@ impl Picker {
             return Step::Nothing;
         };
         let step = self.enter(files, above);
-        let name = left.as_bytes().rsplit(|&byte| byte == b'/').next().unwrap_or(&[]);
+        let name = left
+            .as_bytes()
+            .rsplit(|&byte| byte == b'/')
+            .next()
+            .unwrap_or(&[]);
         if let Some(row) = self.row_named(name) {
             self.select(row, Select::Only);
         }
@@ -436,7 +452,11 @@ impl Picker {
     }
 
     fn rearrange(&mut self) {
-        let names: Vec<Vec<u8>> = self.selected.iter().map(|&row| self.name(row).to_vec()).collect();
+        let names: Vec<Vec<u8>> = self
+            .selected
+            .iter()
+            .map(|&row| self.name(row).to_vec())
+            .collect();
         let focused = self.focus.map(|row| self.name(row).to_vec());
         self.arrange();
         self.selected.clear();
@@ -479,7 +499,11 @@ impl Picker {
                 Column::Modified => one.time.cmp(&other.time).then_with(by_name),
             };
             let order = if reversed { order.reverse() } else { order };
-            other.kind.is_folder().cmp(&one.kind.is_folder()).then(order)
+            other
+                .kind
+                .is_folder()
+                .cmp(&one.kind.is_folder())
+                .then(order)
         });
         self.rows = rows;
     }
@@ -498,7 +522,11 @@ impl Picker {
         if !self.takes(row) {
             return;
         }
-        let how = if self.options.multiple { how } else { Select::Only };
+        let how = if self.options.multiple {
+            how
+        } else {
+            Select::Only
+        };
         match how {
             Select::Only => {
                 self.selected.clear();
@@ -523,7 +551,9 @@ impl Picker {
     /// Selects every row that takes it (`--multiple`, Mod+A).
     pub fn select_all(&mut self) {
         if self.options.multiple {
-            self.selected = (0..self.rows.len()).filter(|&row| self.takes(row)).collect();
+            self.selected = (0..self.rows.len())
+                .filter(|&row| self.takes(row))
+                .collect();
         }
     }
 
@@ -599,7 +629,8 @@ impl Picker {
             .selected
             .iter()
             .filter(|&&row| {
-                self.entry(row).is_some_and(|entry| entry.kind.is_folder() == folders)
+                self.entry(row)
+                    .is_some_and(|entry| entry.kind.is_folder() == folders)
                     || (self.options.mode == Mode::Open && self.options.folders)
             })
             .filter(|&&row| self.takes(row))
@@ -650,7 +681,11 @@ impl Picker {
         if is_folder(files, folder) != Some(true) {
             return Step::Notice(Notice::FolderDoesNotExist(shown(folder)));
         }
-        let name = path.as_bytes().rsplit(|&byte| byte == b'/').next().unwrap_or(&[]);
+        let name = path
+            .as_bytes()
+            .rsplit(|&byte| byte == b'/')
+            .next()
+            .unwrap_or(&[]);
         match self.options.mode {
             Mode::Save => self.save_at(files, path),
             Mode::Open => Step::Notice(Notice::DoesNotExist(shown(name))),
@@ -677,7 +712,11 @@ impl Picker {
     }
 
     fn save_at(&mut self, files: &mut impl Files, path: Path) -> Step {
-        let name = path.as_bytes().rsplit(|&byte| byte == b'/').next().unwrap_or(&[]);
+        let name = path
+            .as_bytes()
+            .rsplit(|&byte| byte == b'/')
+            .next()
+            .unwrap_or(&[]);
         if name.is_empty() || name == b"." || name == b".." {
             return Step::Notice(Notice::NotAFileName);
         }
@@ -709,5 +748,7 @@ impl Picker {
 /// Two names in the list's order: ASCII case ignored, then as bytes.
 pub fn compare_names(first: &[u8], second: &[u8]) -> Ordering {
     let lower = |name: &[u8]| name.iter().map(u8::to_ascii_lowercase).collect::<Vec<u8>>();
-    lower(first).cmp(&lower(second)).then_with(|| first.cmp(second))
+    lower(first)
+        .cmp(&lower(second))
+        .then_with(|| first.cmp(second))
 }
