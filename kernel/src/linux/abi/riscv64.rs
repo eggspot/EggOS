@@ -74,7 +74,9 @@ pub mod mmap {
 /// `uc_mcontext` is `struct sigcontext { struct user_regs_struct sc_regs; union
 /// __riscv_fp_state sc_fpregs; }`, the registers `pc` then `x1` to `x31`, the FP part 528
 /// bytes: the D extension's `f0` to `f31` and `fcsr`, and at its end the header of the
-/// extensions that follow, here none (a reserved word and an end header, all zero).
+/// extensions that follow: on RV64 with V (D568) the V extension (`RISCV_V_MAGIC`, `struct
+/// __riscv_v_ext_state` and the registers) then an end header, otherwise none (a reserved
+/// word and an end header, all zero).
 pub mod signal_frame {
     use crate::linux::abi::generic::signal_frame::{MCONTEXT, SIGMASK, UCONTEXT};
     use crate::linux::fault::Trap;
@@ -89,10 +91,26 @@ pub mod signal_frame {
     const W: usize = crate::linux::abi::WORD_BYTES;
     const REGISTERS_SIZE: usize = 32 * W;
     const FP_UNION_SIZE: usize = 528;
+    /// `RISCV_V_MAGIC`.
+    const VECTOR_MAGIC: u32 = 0x5346_5457;
+    /// `struct __riscv_v_ext_state`: `vstart`, `vl`, `vtype`, `vcsr`, `vlenb` and `datap`.
+    const VECTOR_STATE: usize = 6 * 8;
+    /// The registers' bytes at most (D568: VLEN 128 bits).
+    #[cfg(target_arch = "riscv64")]
+    const VECTOR_DATA: usize = 32 * eggos_hal::fp::MAX_VECTOR_BYTES;
+    #[cfg(not(target_arch = "riscv64"))]
+    const VECTOR_DATA: usize = 0;
+    /// The V extension after the FP union, then the end header; none on RV32.
+    const VECTOR_EXTENSION: usize = match W {
+        8 => VECTOR_STATE + VECTOR_DATA + 8,
+        _ => 0,
+    };
+    const BASE_SIZE: usize = MCONTEXT + REGISTERS_SIZE + FP_UNION_SIZE;
 
-    /// The whole frame: the `ucontext_t` is 960 bytes on RV64, 816 on RV32 (D490).
-    pub const SIZE: u64 = (MCONTEXT + REGISTERS_SIZE + FP_UNION_SIZE) as u64;
-    const _: () = assert!(W != 8 || SIZE == 1088);
+    /// The whole frame: the `ucontext_t` is 960 bytes on RV64, 816 on RV32 (D490), and on RV64
+    /// room for the V extension follows (D568).
+    pub const SIZE: u64 = (BASE_SIZE + VECTOR_EXTENSION) as u64;
+    const _: () = assert!(W != 8 || BASE_SIZE == 1088);
     const _: () = assert!(W != 4 || SIZE == 944);
     /// What the kernel writes and reads: all of it.
     pub const WRITTEN: usize = SIZE as usize;
@@ -101,10 +119,18 @@ pub mod signal_frame {
     pub const RED_ZONE: u64 = 0;
     /// The extensions' header at the end of `sc_fpregs`: a reserved word, then the first
     /// extension's magic number and size, 0 for none.
-    pub const EXTENSIONS: usize = WRITTEN - 12;
+    pub const EXTENSIONS: usize = BASE_SIZE - 12;
     const _: () = assert!(W != 8 || EXTENSIONS == 1076);
-    /// `struct __riscv_d_ext_state`: `f0` to `f31` (64 bits each), then `fcsr` (32 bits).
-    pub type FpPart = [u8; 260];
+    /// `struct __riscv_d_ext_state`: `f0` to `f31` (64 bits each), then `fcsr` (32 bits), then
+    /// on RV64 the V state (`vstart`, `vl`, `vtype`, `vcsr`, `vlenb`, 0 without V) and the V
+    /// registers.
+    pub type FpPart = [u8; FP_PART_BYTES];
+    const D_PART: usize = 260;
+    const VECTOR_AT: usize = D_PART;
+    const FP_PART_BYTES: usize = match W {
+        8 => D_PART + 5 * 8 + VECTOR_DATA,
+        _ => D_PART,
+    };
     pub const FP_PART: usize = MCONTEXT + REGISTERS_SIZE;
     pub const FCSR: usize = 256;
     const _: () = assert!(W != 8 || FP_PART == 560);
@@ -112,20 +138,42 @@ pub mod signal_frame {
     pub const HANDLER_STARTS_WITH_INITIAL_FP: bool = false;
 
     pub fn fp_part(state: &FpState) -> FpPart {
-        let mut part = [0; 260];
+        let mut part = [0; FP_PART_BYTES];
         for (index, f) in state.f().iter().enumerate() {
             part[index * 8..][..8].copy_from_slice(&f.to_ne_bytes());
         }
-        part[FCSR..].copy_from_slice(&state.fcsr().to_ne_bytes());
+        part[FCSR..D_PART].copy_from_slice(&state.fcsr().to_ne_bytes());
+        #[cfg(target_arch = "riscv64")]
+        {
+            let vector = state.vector();
+            let fields = [vector.vstart, vector.vl, vector.vtype, vector.vcsr, vector.vlenb];
+            for (index, value) in fields.iter().enumerate() {
+                part[VECTOR_AT + index * 8..][..8].copy_from_slice(&value.to_ne_bytes());
+            }
+            part[VECTOR_AT + 40..].copy_from_slice(&vector.v);
+        }
         part
     }
 
-    /// Every value as it is, as on Linux: `fcsr`'s reserved bits ignore writes.
+    /// Every value as it is, as on Linux: `fcsr`'s reserved bits ignore writes, and `vtype`
+    /// takes what `vsetvl` makes of it (an invalid one sets `vill`).
     pub fn load_fp_part(part: &FpPart, state: &mut FpState) -> Result<(), BadFrame> {
         for (index, f) in state.f_mut().iter_mut().enumerate() {
             *f = word(part, index * 8);
         }
-        state.set_fcsr(u32::from_ne_bytes(part[FCSR..].try_into().unwrap()));
+        state.set_fcsr(u32::from_ne_bytes(part[FCSR..D_PART].try_into().unwrap()));
+        #[cfg(target_arch = "riscv64")]
+        {
+            let vector = state.vector_mut();
+            let field = |index: usize| word(part, VECTOR_AT + index * 8);
+            if field(4) != 0 {
+                vector.vstart = field(0);
+                vector.vl = field(1);
+                vector.vtype = field(2);
+                vector.vcsr = field(3);
+                vector.v.copy_from_slice(&part[VECTOR_AT + 40..]);
+            }
+        }
         Ok(())
     }
 
@@ -151,7 +199,23 @@ pub mod signal_frame {
         for index in 1..32 {
             put_word(&mut frame[MCONTEXT + index * W..], saved.registers.x[index]);
         }
-        frame[FP_PART..][..saved.fp.len()].copy_from_slice(&saved.fp);
+        frame[FP_PART..][..D_PART].copy_from_slice(&saved.fp[..D_PART]);
+        let vlenb = match W {
+            8 => word(&saved.fp, VECTOR_AT + 32) as usize,
+            _ => 0,
+        };
+        if vlenb != 0 && VECTOR_EXTENSION != 0 {
+            let data = 32 * vlenb;
+            let size = (8 + VECTOR_STATE + data) as u32;
+            frame[EXTENSIONS + 4..][..4].copy_from_slice(&VECTOR_MAGIC.to_ne_bytes());
+            frame[EXTENSIONS + 8..][..4].copy_from_slice(&size.to_ne_bytes());
+            let state_at = BASE_SIZE;
+            frame[state_at..][..40].copy_from_slice(&saved.fp[VECTOR_AT..VECTOR_AT + 40]);
+            let data_at = state_at + VECTOR_STATE;
+            let address = place(top) + data_at as u64;
+            frame[state_at + 40..][..8].copy_from_slice(&address.to_ne_bytes());
+            frame[data_at..][..data].copy_from_slice(&saved.fp[VECTOR_AT + 40..][..data]);
+        }
         (place(top), frame)
     }
 
@@ -190,8 +254,20 @@ pub mod signal_frame {
 
     /// `None` unless the extensions' header says there are none, as the kernel writes it.
     pub fn parse(frame: &[u8; READ], _current: &UserRegisters) -> Option<Saved> {
-        if frame[EXTENSIONS..] != [0; 12] {
-            return None;
+        let magic = u32::from_ne_bytes(frame[EXTENSIONS + 4..][..4].try_into().ok()?);
+        let vector = match (frame[EXTENSIONS..EXTENSIONS + 4] == [0; 4], magic) {
+            (true, 0) => false,
+            (true, VECTOR_MAGIC) if VECTOR_EXTENSION != 0 => true,
+            _ => return None,
+        };
+        let mut fp = [0u8; FP_PART_BYTES];
+        fp[..D_PART].copy_from_slice(&frame[FP_PART..][..D_PART]);
+        if vector {
+            let state_at = BASE_SIZE;
+            fp[VECTOR_AT..VECTOR_AT + 40].copy_from_slice(&frame[state_at..][..40]);
+            let vlenb = (word(frame, state_at + 32) as usize).min(VECTOR_DATA / 32);
+            let data_at = state_at + VECTOR_STATE;
+            fp[VECTOR_AT + 40..][..32 * vlenb].copy_from_slice(&frame[data_at..][..32 * vlenb]);
         }
         let register = |index: usize| crate::linux::abi::word(&frame[MCONTEXT + index * W..]);
         let mut x = [0; 32];
@@ -204,7 +280,7 @@ pub mod signal_frame {
             alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE]
                 .try_into()
                 .unwrap(),
-            fp: frame[FP_PART..][..260].try_into().unwrap(),
+            fp,
         })
     }
 
@@ -222,7 +298,7 @@ pub mod signal_frame {
 
     /// The most stack a frame takes below an alternate stack's top, worked out by hand.
     #[cfg(test)]
-    pub const LARGEST_FRAME_SPACE_EXPECTED: u64 = 1088 + 15;
+    pub const LARGEST_FRAME_SPACE_EXPECTED: u64 = SIZE + 15;
 
     /// FP/SIMD registers holding values a new thread's do not.
     #[cfg(test)]

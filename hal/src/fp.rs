@@ -13,7 +13,7 @@
 //! read registers that are off speculatively (LazyFP, CVE-2018-3665).
 //!
 //! What a state holds, per architecture: `V0`-`V31`, `FPCR` and `FPSR` on AArch64 (no SVE or
-//! SME yet); `f0`-`f31` and `fcsr` on RISC-V (no V yet); on x86_64 the x87, MMX and SSE
+//! SME yet); `f0`-`f31` and `fcsr` on RISC-V, with the V registers on RV64 (D568); on x86_64 the x87, MMX and SSE
 //! registers and `MXCSR`, in `FXSAVE`'s 512-byte image (no AVX yet: each CPU clears
 //! `CR4.OSXSAVE`, so `CPUID` tells programs not to use it).
 
@@ -75,6 +75,15 @@ impl FpState {
         let arch = Riscv64State {
             f: [0; 32],
             fcsr: 0,
+            #[cfg(target_arch = "riscv64")]
+            vector: VectorState {
+                vstart: 0,
+                vl: 0,
+                vtype: 1 << 63,
+                vcsr: 0,
+                vlenb: 0,
+                v: [0; 32 * MAX_VECTOR_BYTES],
+            },
         };
         #[cfg(target_arch = "loongarch64")]
         let arch = Loongarch64State {
@@ -202,6 +211,19 @@ impl FpState {
     /// Sets `fcsr`.
     pub fn set_fcsr(&mut self, fcsr: u32) {
         self.arch.fcsr = fcsr.into();
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+impl FpState {
+    /// The V registers (D568).
+    pub fn vector(&self) -> &VectorState {
+        &self.arch.vector
+    }
+
+    /// The V registers, to change.
+    pub fn vector_mut(&mut self) -> &mut VectorState {
+        &mut self.arch.vector
     }
 }
 
@@ -370,6 +392,34 @@ pub(crate) struct Aarch64State {
 pub(crate) struct Riscv64State {
     pub(crate) f: [u64; 32],
     pub(crate) fcsr: u64,
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) vector: VectorState,
+}
+
+/// The largest vector register, in bytes, whose state EggOS keeps (D568): VLEN 128 bits, which
+/// keeps a signal frame within `MINSIGSTKSZ`. A hart with longer registers runs programs
+/// without V.
+#[cfg(target_arch = "riscv64")]
+pub const MAX_VECTOR_BYTES: usize = 16;
+
+/// RISC-V V: `vstart`, `vl`, `vtype`, `vcsr` and `vlenb`, then `v0`-`v31`, as the save routine
+/// stores them (D568).
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone)]
+#[repr(C)]
+pub struct VectorState {
+    /// `vstart`.
+    pub vstart: u64,
+    /// `vl`.
+    pub vl: u64,
+    /// `vtype`; a new thread's has `vill` set, so it must `vsetvl` first.
+    pub vtype: u64,
+    /// `vcsr`: `vxrm` and `vxsat`.
+    pub vcsr: u64,
+    /// `vlenb`, the bytes of one register; 0 while the thread never had V.
+    pub vlenb: u64,
+    /// `v0`-`v31`, `vlenb` bytes each.
+    pub v: [u8; 32 * MAX_VECTOR_BYTES],
 }
 
 /// SPARC64: `%d0`-`%d62`, then `%fsr` and `%gsr`, as the save routine stores them (D326).

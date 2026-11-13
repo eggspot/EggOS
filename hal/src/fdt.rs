@@ -1591,6 +1591,24 @@ pub fn riscv_has_extension(blob: &[u8], extension: &[u8]) -> bool {
     })
 }
 
+/// Whether the device tree's first hart names the single-letter RISC-V extension `letter`
+/// (lower case) in the base part of its `riscv,isa` (`rv64imafdcv`, D568).
+pub fn riscv_has_letter(blob: &[u8], letter: u8) -> bool {
+    let Ok(tree) = Fdt::new(blob) else {
+        return false;
+    };
+    let hart = tree
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| !node.isa.is_empty());
+    hart.is_some_and(|node| {
+        let base = node.isa.split(|&byte| byte == b'_' || byte == 0).next().unwrap_or(&[]);
+        base.len() > 4
+            && base[..2].eq_ignore_ascii_case(b"rv")
+            && base[4..].iter().any(|byte| byte.eq_ignore_ascii_case(&letter))
+    })
+}
+
 /// `/cpus`' `timebase-frequency`, in Hz.
 pub fn timebase_frequency(blob: &[u8]) -> Option<u64> {
     let tree = Fdt::new(blob).ok()?;

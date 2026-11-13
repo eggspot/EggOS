@@ -37,6 +37,9 @@ pub(super) extern "C" fn init() {
         if crate::fdt::riscv_has_extension(tree, b"svinval") {
             SVINVAL.store(true, core::sync::atomic::Ordering::Relaxed);
         }
+        if crate::fdt::riscv_has_extension(tree, b"v") || crate::fdt::riscv_has_letter(tree, b'v') {
+            super::fp::detect_vector();
+        }
         if crate::fdt::riscv_has_extension(tree, b"zicbom") {
             ZICBOM.store(true, core::sync::atomic::Ordering::Relaxed);
         }

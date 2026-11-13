@@ -718,7 +718,13 @@ impl Platform for Riscv64 {
     fn linux_hardware_capabilities() -> [u64; 2] {
         let letter = |extension: u8| 1u64 << (extension - b'A');
         [
-            letter(b'I') | letter(b'M') | letter(b'A') | letter(b'F') | letter(b'D') | letter(b'C'),
+            letter(b'I')
+                | letter(b'M')
+                | letter(b'A')
+                | letter(b'F')
+                | letter(b'D')
+                | letter(b'C')
+                | if fp::vector_bytes() != 0 { letter(b'V') } else { 0 },
             0,
         ]
     }
