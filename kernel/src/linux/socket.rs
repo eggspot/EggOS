@@ -39,6 +39,7 @@ use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
 pub mod inet;
+pub mod netlink;
 pub mod tcp;
 pub mod unix_datagram;
 
@@ -173,6 +174,14 @@ pub fn call<P: Platform>(
     }
     if number != number::SOCKET
         && number != number::SOCKETPAIR
+        && let Some(socket) = netlink_at(thread, first)
+    {
+        let result = netlink_call::<P>(process, thread, number, context.syscall_arguments(), &socket);
+        context.set_syscall_result(result.unwrap_or_else(Errno::result));
+        return ControlFlow::Continue(());
+    }
+    if number != number::SOCKET
+        && number != number::SOCKETPAIR
         && let Some((file, socket)) = inet::socket_at(thread, first)
     {
         return inet::call(process, thread, number, context, file, socket);
@@ -186,6 +195,9 @@ pub fn call<P: Platform>(
     let result = match number {
         number::SOCKET if first as u32 == inet::AF_INET => {
             inet::socket(process, thread, second, third)
+        }
+        number::SOCKET if first as u32 == netlink::AF_NETLINK => {
+            netlink_socket(process, thread, second, third)
         }
         number::SOCKET => socket::<P>(process, thread, first, second, third),
         number::SOCKETPAIR => socketpair::<P>(process, thread, first, second, third, fourth),
@@ -223,6 +235,189 @@ pub fn call<P: Platform>(
     };
     context.set_syscall_result(result.unwrap_or_else(Errno::result));
     ControlFlow::Continue(())
+}
+
+fn netlink_at(thread: &LinuxThread, fd: u64) -> Option<Arc<netlink::NetlinkSocket>> {
+    let file = thread.files().file(fd).ok()?;
+    match file.kind() {
+        FileKind::Event(super::descriptors::EventFile::Netlink(socket)) => Some(Arc::clone(socket)),
+        _ => None,
+    }
+}
+
+/// `socket(AF_NETLINK, type, protocol)` (D559): a `NETLINK_ROUTE` socket, raw or datagram, its
+/// port the caller's process id. `EPROTONOSUPPORT` for another protocol.
+fn netlink_socket<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    kind: u64,
+    protocol: u64,
+) -> Result<u64, Errno> {
+    const SOCK_DGRAM: u32 = 2;
+    const SOCK_RAW: u32 = 3;
+    let kind = kind as u32;
+    let flags = kind & SOCKET_FLAGS;
+    if !matches!(kind & !SOCKET_FLAGS, SOCK_DGRAM | SOCK_RAW) {
+        return Err(Errno::ESOCKTNOSUPPORT);
+    }
+    if protocol as u32 != netlink::NETLINK_ROUTE {
+        return Err(Errno::EPROTONOSUPPORT);
+    }
+    let socket = netlink::NetlinkSocket::new(process.id().get());
+    let file = Arc::new(OpenFile::new(
+        FileKind::Event(super::descriptors::EventFile::Netlink(socket)),
+        open_flag::RDWR | (flags & open_flag::NONBLOCK),
+    ));
+    let limit = open_file_limit(process);
+    let fd = thread
+        .files()
+        .lock()
+        .open(file, flags & open_flag::CLOEXEC != 0, limit)?;
+    Ok(u64::from(fd))
+}
+
+/// The socket calls on a netlink socket (D559).
+fn netlink_call<P: Platform>(
+    process: &Process<P>,
+    _thread: &LinuxThread,
+    number: u64,
+    [_, second, third, fourth, fifth, sixth]: [u64; 6],
+    socket: &netlink::NetlinkSocket,
+) -> Result<u64, Errno> {
+    const MSG_TRUNC: u64 = 0x20;
+    let gather = |iovecs: &Iovecs| -> Result<Vec<u8>, Errno> {
+        let mut bytes = Vec::new();
+        for entry in iovecs.entries() {
+            let (base, length) = iovec(entry);
+            let start = bytes.len();
+            let length = usize::try_from(length.min(MAX_RW_COUNT)).map_err(|_| Errno::EINVAL)?;
+            bytes.try_reserve(length).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(start + length, 0);
+            process
+                .read_user_memory(base, &mut bytes[start..])
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Ok(bytes)
+    };
+    let kernel_address = || netlink::address_of_kernel();
+    match number {
+        number::BIND | number::CONNECT | number::SETSOCKOPT | number::SHUTDOWN => Ok(0),
+        number::GETSOCKNAME | number::GETPEERNAME => {
+            let address = match number {
+                number::GETSOCKNAME => netlink::address_of(socket),
+                _ => kernel_address(),
+            };
+            write_address(process, &address, second, third)
+        }
+        number::GETSOCKOPT => {
+            let room = read_int(process, fifth)?;
+            if room < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let value: u32 = match (second as u32, third as u32) {
+                (1, 3) => 3,
+                (1, 38) => netlink::NETLINK_ROUTE,
+                (1, 39) => netlink::AF_NETLINK,
+                _ => 0,
+            };
+            process
+                .write_user_memory(fourth, &value.to_ne_bytes())
+                .and_then(|()| process.write_user_memory(fifth, &4u32.to_ne_bytes()))
+                .map(|()| 0)
+                .map_err(|_| Errno::EFAULT)
+        }
+        number::SENDTO => {
+            let length = usize::try_from(third.min(MAX_RW_COUNT)).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(length).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(length, 0);
+            process
+                .read_user_memory(second, &mut bytes)
+                .map_err(|_| Errno::EFAULT)?;
+            socket.send::<P>(&bytes).map(|sent| sent as u64)
+        }
+        number::SENDMSG => {
+            let header = read_header(process, second)?;
+            if header.buffer_count > MAX_IOVECS {
+                return Err(Errno::EMSGSIZE);
+            }
+            let iovecs = Iovecs::read(process, header.buffers, header.buffer_count)?;
+            let bytes = gather(&iovecs)?;
+            socket.send::<P>(&bytes).map(|sent| sent as u64)
+        }
+        number::RECVFROM => {
+            let mut bytes = Vec::new();
+            let room = usize::try_from(third.min(MAX_RW_COUNT)).map_err(|_| Errno::EINVAL)?;
+            bytes.try_reserve(room).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(room, 0);
+            let (copied, whole) = socket.take(&mut bytes).ok_or(Errno::EAGAIN)?;
+            process
+                .write_user_memory(second, &bytes[..copied])
+                .map_err(|_| Errno::EFAULT)?;
+            if fifth != 0 {
+                write_address(process, &kernel_address(), fifth, sixth)?;
+            }
+            Ok(if fourth & MSG_TRUNC != 0 { whole } else { copied } as u64)
+        }
+        number::RECVMSG => {
+            let header = read_header(process, second)?;
+            if header.buffer_count > MAX_IOVECS {
+                return Err(Errno::EMSGSIZE);
+            }
+            let iovecs = Iovecs::read(process, header.buffers, header.buffer_count)?;
+            let room = usize::try_from(iovecs.total().min(MAX_RW_COUNT)).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(room).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(room, 0);
+            let (copied, whole) = socket.take(&mut bytes).ok_or(Errno::EAGAIN)?;
+            let mut at = 0;
+            for entry in iovecs.entries() {
+                let (base, length) = iovec(entry);
+                let part = (copied - at).min(length as usize);
+                process
+                    .write_user_memory(base, &bytes[at..at + part])
+                    .map_err(|_| Errno::EFAULT)?;
+                at += part;
+                if at == copied {
+                    break;
+                }
+            }
+            if header.name != 0 {
+                let address = kernel_address();
+                let written = address.len().min(header.name_length as usize);
+                process
+                    .write_user_memory(header.name, &address[..written])
+                    .map_err(|_| Errno::EFAULT)?;
+                process
+                    .write_user_memory(second + HEADER_NAME_LENGTH as u64, &(address.len() as u32).to_ne_bytes())
+                    .map_err(|_| Errno::EFAULT)?;
+            }
+            let flags = if whole > copied { MSG_TRUNC as u32 } else { 0 };
+            process
+                .write_user_memory(second + (MSGHDR_SIZE - 4) as u64, &flags.to_ne_bytes())
+                .map_err(|_| Errno::EFAULT)?;
+            Ok(if third & MSG_TRUNC != 0 { whole } else { copied } as u64)
+        }
+        _ => Err(Errno::EOPNOTSUPP),
+    }
+}
+
+fn write_address<P: Platform>(
+    process: &Process<P>,
+    address: &[u8],
+    at: u64,
+    length_at: u64,
+) -> Result<u64, Errno> {
+    let room = read_int(process, length_at)?;
+    if room < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let written = address.len().min(room as usize);
+    process
+        .write_user_memory(at, &address[..written])
+        .and_then(|()| process.write_user_memory(length_at, &(address.len() as u32).to_ne_bytes()))
+        .map(|()| 0)
+        .map_err(|_| Errno::EFAULT)
 }
 
 /// `struct mmsghdr`: a `msghdr` and the `unsigned int` count of bytes, padded to a word.

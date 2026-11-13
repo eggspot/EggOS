@@ -163,6 +163,8 @@ pub enum EventFile {
     Inotify(Arc<super::inotify::Inotify>),
     /// A process named by a descriptor (`pidfd_open`, [`super::pidfd`], D557).
     PidFd(Arc<super::pidfd::PidFd>),
+    /// A `NETLINK_ROUTE` socket ([`super::socket::netlink`], D559).
+    Netlink(Arc<super::socket::netlink::NetlinkSocket>),
 }
 
 impl EventFile {
@@ -175,6 +177,7 @@ impl EventFile {
             Self::Epoll(_) => b"anon_inode:[eventpoll]",
             Self::Inotify(_) => b"anon_inode:inotify",
             Self::PidFd(_) => b"anon_inode:[pidfd]",
+            Self::Netlink(_) => b"socket:[netlink]",
         }
     }
 
@@ -187,6 +190,7 @@ impl EventFile {
             Self::Epoll(epoll) => epoll.wake_list(),
             Self::Inotify(instance) => instance.wake_list(),
             Self::PidFd(handle) => handle.wake_list(),
+            Self::Netlink(_) => super::poll::never_woken(),
         }
     }
 }
@@ -200,6 +204,7 @@ impl PartialEq for EventFile {
             (Self::Epoll(this), Self::Epoll(that)) => Arc::ptr_eq(this, that),
             (Self::Inotify(this), Self::Inotify(that)) => Arc::ptr_eq(this, that),
             (Self::PidFd(this), Self::PidFd(that)) => Arc::ptr_eq(this, that),
+            (Self::Netlink(this), Self::Netlink(that)) => Arc::ptr_eq(this, that),
             _ => false,
         }
     }

@@ -119,6 +119,33 @@ impl Default for WakeList {
     }
 }
 
+/// A wake list nothing wakes, for files whose readiness is looked at each time (D559).
+pub fn never_woken() -> &'static Arc<WakeList> {
+    static NEVER: core::sync::atomic::AtomicPtr<Arc<WakeList>> =
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+    let made = NEVER.load(core::sync::atomic::Ordering::Acquire);
+    if !made.is_null() {
+        // SAFETY: a stored pointer is a leaked box, never freed.
+        return unsafe { &*made };
+    }
+    let new = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(WakeList::shared()));
+    match NEVER.compare_exchange(
+        core::ptr::null_mut(),
+        new,
+        core::sync::atomic::Ordering::AcqRel,
+        core::sync::atomic::Ordering::Acquire,
+    ) {
+        // SAFETY: just stored, leaked for good.
+        Ok(_) => unsafe { &*new },
+        Err(existing) => {
+            // SAFETY: `new` came from `Box::into_raw` above and was never published.
+            drop(unsafe { alloc::boxed::Box::from_raw(new) });
+            // SAFETY: stored first by another thread, leaked for good.
+            unsafe { &*existing }
+        }
+    }
+}
+
 impl WakeList {
     /// A list nobody watches yet.
     pub const fn new() -> Self {
@@ -519,6 +546,13 @@ fn events_of(kind: &FileKind, requested: u16, readable: bool, pending: &dyn Fn()
         FileKind::Event(EventFile::SignalFd(signals)) => signals.events(requested, pending()),
         FileKind::Event(EventFile::Inotify(instance)) => instance.events(requested),
         FileKind::Event(EventFile::PidFd(handle)) => handle.events(requested),
+        FileKind::Event(EventFile::Netlink(socket)) => {
+            let readable = match socket.is_readable() {
+                true => requested & (event::IN | event::RDNORM),
+                false => 0,
+            };
+            readable | requested & (event::OUT | event::WRNORM)
+        }
         FileKind::Event(_) => 0,
     }
 }
@@ -1416,6 +1450,26 @@ pub(super) fn read_event<P: Platform>(
         EventFile::Inotify(instance) => {
             inotify::read(process, thread, context, file, instance, buffers)
         }
+        EventFile::Netlink(socket) => {
+            let mut bytes = alloc::vec![0u8; buffers.total().min(64 * 1024) as usize];
+            let result = match socket.take(&mut bytes) {
+                Some((copied, _)) => {
+                    let mut at = 0;
+                    for entry in buffers.entries() {
+                        let (base, length) = super::iovec(entry);
+                        let part = (copied - at).min(length as usize);
+                        if process.write_user_memory(base, &bytes[at..at + part]).is_err() {
+                            break;
+                        }
+                        at += part;
+                    }
+                    Ok(at as u64)
+                }
+                None => Err(Errno::EAGAIN),
+            };
+            context.set_syscall_result(result.unwrap_or_else(Errno::result));
+            ControlFlow::Continue(())
+        }
         EventFile::Epoll(_) | EventFile::PidFd(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
             ControlFlow::Continue(())
@@ -1442,7 +1496,8 @@ pub(super) fn write_event<P: Platform>(
         | EventFile::SignalFd(_)
         | EventFile::Epoll(_)
         | EventFile::Inotify(_)
-        | EventFile::PidFd(_) => {
+        | EventFile::PidFd(_)
+        | EventFile::Netlink(_) => {
             context.set_syscall_result(Errno::EINVAL.result());
             ControlFlow::Continue(())
         }
