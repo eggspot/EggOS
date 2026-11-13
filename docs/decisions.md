@@ -26288,3 +26288,26 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; duplicate address detection; DHCPv6 and RDNSS (DNS over
   IPv6 servers); privacy (temporary) addresses; IPv6 in `ip`, `/proc/net`, netlink and the
   network status; `IPV6_V6ONLY` on listeners; fragments and path MTU discovery.
+
+## D566 virtio-net: queue pairs per CPU, segmentation of TCP over IPv6 and UDP, joined receive segments (M8; D540's and D541's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; virtio-blk's single queue decided by research)
+
+- **Queue pairs.** virtio-net's per-pair state moved into `net::lane::Lane` (its memory, receive
+  and transmit queues and buffer bookkeeping). `VirtioNet::new` takes one more memory block per
+  further pair; with `VIRTIO_NET_F_MQ` and `VIRTIO_NET_F_CTRL_VQ` it sets up as many pairs as
+  the device offers (`max_virtqueue_pairs`), a control queue in the first pair's memory (queue
+  `2·max_pairs`, at offset 2048, the command at 3072), and after `DRIVER_OK` sends
+  `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET`; a refusal drops back to one pair. A send goes through
+  the pair of the calling CPU (`set_lane_chooser`; the kernel passes `heap::calling_cpu`), a
+  receive looks at the pairs in turn. The kernel asks for one pair per CPU, up to eight.
+- **Segmentation.** `checksum_place` and `segmentation_header` also take IPv6 frames (no
+  extension headers) and UDP datagrams: `HOST_TSO6` cuts TCP over IPv6, `HOST_USO` UDP.
+- **Joined receive segments.** With `MRG_RXBUF`, `GUEST_TSO4`/`GUEST_TSO6` and `GUEST_CSUM`
+  the device joins TCP segments and spreads a frame over several buffers; the lane reads the
+  header's buffer count and copies the further buffers after the first. The kernel's adapter
+  frame grows to `JOINED_FRAME_BYTES` (64 KiB plus a frame).
+- **Decided by research.** virtio-blk keeps one request queue: the kernel's block layer runs a
+  disk's transfers behind one lock and keeps up to 32 requests in flight on the queue, so
+  further queues would only add memory until transfers on one disk come from several CPUs at
+  once (that change would take `num_queues` with it).
+- **Not yet.** Building and running; the kernel sending large TCP segments over IPv6 or large
+  UDP datagrams (`UDP_SEGMENT`); a receive interrupt per pair.
