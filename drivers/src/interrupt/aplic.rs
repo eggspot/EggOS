@@ -52,6 +52,7 @@ pub fn source_of_specifier(cells: &[u32]) -> Result<(u32, SourceMode), &'static 
 }
 
 /// One APLIC domain, through its registers in `regs`.
+#[derive(Debug)]
 pub struct Aplic<R: RegisterIo> {
     regs: R,
 }

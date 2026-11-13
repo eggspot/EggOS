@@ -238,6 +238,7 @@ fn active(start_end: u32) -> u32 {
 }
 
 /// One DCN engine's registers, at the display block's segment bases, and the pipe it drives.
+#[derive(Debug)]
 pub struct DisplayEngine<R: RegisterIo> {
     regs: R,
     segment_base: u32,
@@ -695,13 +696,13 @@ mod tests {
         let enabled = regs.get(otg) & MASTER_ENABLE;
         regs.set(
             otg,
-            regs.get(otg) & !MASTER_ENABLED | enabled * MASTER_ENABLED,
+            (regs.get(otg) & !MASTER_ENABLED) | (enabled * MASTER_ENABLED),
         );
         let dp = at(DP_STREAM_CONTROL, STREAM_STRIDE, stream);
         let running = regs.get(dp) & STREAM_ENABLE;
         regs.set(
             dp,
-            regs.get(dp) & !STREAM_RUNNING | running * STREAM_RUNNING,
+            (regs.get(dp) & !STREAM_RUNNING) | (running * STREAM_RUNNING),
         );
     }
 

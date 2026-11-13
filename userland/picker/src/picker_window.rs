@@ -11,6 +11,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use eggos_app::files::{Files, Path};
+use eggos_toolkit::application::{View, answer_clipboard};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::damage::Damage;
 use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
@@ -553,79 +554,73 @@ impl<F: Files> PickerWindow<F> {
     }
 }
 
-#[cfg(eggos_user)]
-mod view {
-    use super::*;
-    use eggos_toolkit::application::{View, answer_clipboard};
+impl<F: Files> View for PickerWindow<F> {
+    fn resize(&mut self, width: i32, height: i32) {
+        self.tree.resize(width, height);
+    }
 
-    impl<F: Files> View for PickerWindow<F> {
-        fn resize(&mut self, width: i32, height: i32) {
-            self.tree.resize(width, height);
-        }
-
-        fn handle(&mut self, input: Input, time_ms: u32) -> bool {
-            if input == Input::CloseRequest {
-                self.ending = Some(Ending::Cancelled);
-                return false;
-            }
-            if matches!(
-                input,
-                Input::Key { pressed: true, .. } | Input::Button { pressed: true, .. }
-            ) && self.notice_until.is_some()
-            {
-                self.hide_notice();
-            }
-            let response = self.tree.handle(input, time_ms);
-            let response = answer_clipboard(&mut *self.tree, None, response, time_ms);
-            self.respond(response, time_ms);
-            self.ending.is_none()
-        }
-
-        fn take_damage(&mut self) -> Damage {
-            self.tree.take_damage()
-        }
-
-        fn paint(&mut self, canvas: &mut Canvas<'_>) {
-            self.tree.paint(canvas);
-        }
-
-        fn pointer_shape(&mut self) -> PointerShape {
-            self.tree.pointer_shape()
-        }
-
-        fn deadline(&mut self, now_ms: u32) -> Option<u32> {
-            let tree = self.tree.next_deadline(now_ms);
-            match (tree, self.notice_until) {
-                (Some(tree), Some(notice)) => Some(tree.min(notice)),
-                (tree, notice) => tree.or(notice),
-            }
-        }
-
-        fn tick(&mut self, now_ms: u32) {
-            if self
-                .notice_until
-                .is_some_and(|until| now_ms.wrapping_sub(until) < u32::MAX / 2)
-            {
-                self.hide_notice();
-            }
-            let response = self.tree.tick(now_ms);
-            self.respond(response, now_ms);
-        }
-
-        fn close_requested(&mut self, _time_ms: u32) -> bool {
+    fn handle(&mut self, input: Input, time_ms: u32) -> bool {
+        if input == Input::CloseRequest {
             self.ending = Some(Ending::Cancelled);
-            true
+            return false;
         }
+        if matches!(
+            input,
+            Input::Key { pressed: true, .. } | Input::Button { pressed: true, .. }
+        ) && self.notice_until.is_some()
+        {
+            self.hide_notice();
+        }
+        let response = self.tree.handle(input, time_ms);
+        let response = answer_clipboard(&mut *self.tree, None, response, time_ms);
+        self.respond(response, time_ms);
+        self.ending.is_none()
+    }
 
-        fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
-            self.tree.describe(tree);
-            true
-        }
+    fn take_damage(&mut self) -> Damage {
+        self.tree.take_damage()
+    }
 
-        fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
-            let (outcome, response) = self.tree.act(element, action, text, time_ms);
-            self.respond(response, time_ms);
-            outcome
+    fn paint(&mut self, canvas: &mut Canvas<'_>) {
+        self.tree.paint(canvas);
+    }
+
+    fn pointer_shape(&mut self) -> PointerShape {
+        self.tree.pointer_shape()
+    }
+
+    fn deadline(&mut self, now_ms: u32) -> Option<u32> {
+        let tree = self.tree.next_deadline(now_ms);
+        match (tree, self.notice_until) {
+            (Some(tree), Some(notice)) => Some(tree.min(notice)),
+            (tree, notice) => tree.or(notice),
         }
+    }
+
+    fn tick(&mut self, now_ms: u32) {
+        if self
+            .notice_until
+            .is_some_and(|until| now_ms.wrapping_sub(until) < u32::MAX / 2)
+        {
+            self.hide_notice();
+        }
+        let response = self.tree.tick(now_ms);
+        self.respond(response, now_ms);
+    }
+
+    fn close_requested(&mut self, _time_ms: u32) -> bool {
+        self.ending = Some(Ending::Cancelled);
+        true
+    }
+
+    fn describe(&mut self, tree: &mut TreeWriter<'_>) -> bool {
+        self.tree.describe(tree);
+        true
+    }
+
+    fn act(&mut self, element: u32, action: Action, text: &str, time_ms: u32) -> Outcome {
+        let (outcome, response) = self.tree.act(element, action, text, time_ms);
+        self.respond(response, time_ms);
+        outcome
     }
 }

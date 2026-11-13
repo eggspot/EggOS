@@ -49,7 +49,6 @@ pub(super) fn discover(
         table.add(node);
     }
     if abandoned {
-        core::mem::forget(buffer);
         return Ok(());
     }
     // SAFETY: every channel program run with the buffer ended (`run` waited for its final status

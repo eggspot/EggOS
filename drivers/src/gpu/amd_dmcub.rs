@@ -127,6 +127,7 @@ impl DmcubError {
 }
 
 /// One DCN engine's DMCUB, behind `regs` at the display block's segment 2 base.
+#[derive(Debug)]
 pub struct Dmcub<R: RegisterIo> {
     regs: R,
     segment_base: u32,

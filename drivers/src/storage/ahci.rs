@@ -282,8 +282,8 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         let mut bytes = [0u8; SECTOR_SIZE];
         copy_out(&self.memory, IDENTIFY, &mut bytes);
         let mut words = [0u16; 256];
-        for (word, pair) in words.iter_mut().zip(bytes.chunks_exact(2)) {
-            *word = u16::from_le_bytes([pair[0], pair[1]]);
+        for (word, pair) in words.iter_mut().zip(bytes.as_chunks::<2>().0) {
+            *word = u16::from_le_bytes(*pair);
         }
         let (blocks, block_bytes) = identified_size(&words)
             .ok_or(Error::Unsupported("the disk has no 48-bit addressing"))?;
@@ -384,10 +384,7 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
 
     fn chunk_sectors(&self) -> u64 {
         let per_block = (self.block_bytes / SECTOR_SIZE) as u64;
-        let blocks = (DATA_BYTES / self.block_bytes)
-            .min(MAX_SECTORS_PER_COMMAND)
-            .max(2) as u64
-            - 1;
+        let blocks = (DATA_BYTES / self.block_bytes).clamp(2, MAX_SECTORS_PER_COMMAND) as u64 - 1;
         blocks * per_block
     }
 

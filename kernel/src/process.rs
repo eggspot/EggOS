@@ -1812,10 +1812,11 @@ impl<P: Platform> Process<P> {
         // SAFETY: both old frames are mapped by this address space, which the regions' lock
         // keeps mapped, and the block was just allocated, so nothing else uses it; all three
         // are reached through the frame allocator's offset.
+        unsafe { ptr::copy_nonoverlapping(at(first), at(block), FRAME_SIZE as usize) };
+        // SAFETY: as above, for the second frame and the block's second half.
         unsafe {
-            ptr::copy_nonoverlapping(at(first), at(block), FRAME_SIZE as usize);
-            ptr::copy_nonoverlapping(at(second), at(block + FRAME_SIZE), FRAME_SIZE as usize);
-        }
+            ptr::copy_nonoverlapping(at(second), at(block + FRAME_SIZE), FRAME_SIZE as usize)
+        };
         if attributes.executable {
             P::make_instructions_visible(at(block) as usize, PAIR_BYTES as usize);
         }

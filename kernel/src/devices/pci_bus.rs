@@ -8,7 +8,6 @@ const ECAM_HOST: &[u8] = b"pci-host-ecam-generic";
 const SPACE_MEMORY32: u32 = 2 << 24;
 const SPACE_MEMORY64: u32 = 3 << 24;
 const SPACE_MASK: u32 = 3 << 24;
-const PREFETCHABLE: u32 = 1 << 30;
 const MAX_WINDOWS: usize = 4;
 const FIRMWARE_HOSTS: [&[u8]; 2] = [b"ibm,ioda3-phb", b"ibm,ioda2-phb"];
 
@@ -19,7 +18,6 @@ struct BarWindow {
     size: u64,
     used: u64,
     wide: bool,
-    prefetchable: bool,
 }
 
 impl BarWindow {
@@ -114,7 +112,6 @@ fn add_host_functions<C: ConfigSpace + ?Sized>(
             size,
             used: 0,
             wide: space == SPACE_MEMORY64,
-            prefetchable: words[0] & PREFETCHABLE != 0,
         };
         count += 1;
     }

@@ -4,7 +4,7 @@
 //! `wifi connect` and `wifi forget` do. A WPA2 network's passphrase is typed in a masked field in
 //! a note under its row.
 
-use crate::settings_window::{CAPACITY, Request};
+use crate::settings_window::{CAPACITY, Request, WifiJoin};
 use crate::storage_pane::shortened;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -1115,11 +1115,11 @@ impl WifiSection {
             .networks
             .iter()
             .any(|network| network.name == name);
-        Some(Request::WifiJoin {
+        Some(Request::WifiJoin(alloc::boxed::Box::new(WifiJoin {
             name: Text::from(name.as_str()),
             passphrase: Text::from(passphrase.as_str()),
             hidden: !heard,
-        })
+        })))
     }
 
     fn place_note(&self, tree: &mut WidgetTree<CAPACITY>, top: i32) {
@@ -1167,11 +1167,11 @@ impl WifiSection {
             ink(tree, self.widgets.message, LENGTH_RULE, Token::Text);
             return None;
         }
-        Some(Request::WifiJoin {
+        Some(Request::WifiJoin(alloc::boxed::Box::new(WifiJoin {
             name: Text::from(name.as_str()),
             passphrase: Text::from(passphrase.as_str()),
             hidden: false,
-        })
+        })))
     }
 
     /// The program saved the join (`Ok`) or could not (`Err` with the error's words).
@@ -1301,11 +1301,11 @@ impl WifiSection {
                         self.open_note(tree, row, now_ms);
                         None
                     }
-                    Button::Join => Some(Request::WifiJoin {
+                    Button::Join => Some(Request::WifiJoin(alloc::boxed::Box::new(WifiJoin {
                         name: Text::from(chosen.name.as_str()),
                         passphrase: Text::new(),
                         hidden: false,
-                    }),
+                    }))),
                     _ => None,
                 }
             }

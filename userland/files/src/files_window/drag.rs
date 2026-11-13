@@ -45,7 +45,6 @@ pub(super) struct Picked {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Arriving {
     serial: u32,
-    path: Option<Path>,
     count: usize,
     spot: Option<Spot>,
     spot_since: u32,
@@ -76,9 +75,7 @@ pub fn drop_action(modifiers: Modifiers, same_file_system: bool, onto_trash: boo
         DropAction::Link
     } else if ctrl || alt {
         DropAction::Copy
-    } else if shift || super_key {
-        DropAction::Move
-    } else if same_file_system {
+    } else if shift || super_key || same_file_system {
         DropAction::Move
     } else {
         DropAction::Copy
@@ -321,7 +318,6 @@ impl FilesWindow {
         };
         self.arriving = Some(Arriving {
             serial,
-            path: first,
             count: paths.len(),
             spot,
             spot_since: since,

@@ -680,8 +680,7 @@ impl Desktop {
             return Ok(());
         }
         let mut length = 0;
-        let mut glyphs = 0;
-        for character in text.chars() {
+        for (glyphs, character) in text.chars().enumerate() {
             if glyphs == BALLOON_GLYPHS {
                 for _ in 0..3 {
                     self.tray.balloon[length] = b'.';
@@ -694,7 +693,6 @@ impl Desktop {
             let encoded = shown.encode_utf8(&mut bytes).as_bytes();
             self.tray.balloon[length..length + encoded.len()].copy_from_slice(encoded);
             length += encoded.len();
-            glyphs += 1;
         }
         self.tray.balloon_length = length;
         self.tray.balloon_owner = Some((slot, key));

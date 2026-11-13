@@ -147,19 +147,14 @@ impl Scanout for AmdDisplay {
         let block = self.dmcub_block.pixels as *mut u8;
         // SAFETY: the block maps `DMCUB_BYTES` of video memory write-combining for good, kept
         // for the microcontroller, which is stopped while this writes; the layout fits it.
-        unsafe {
-            core::ptr::write_bytes(block, 0, layout.total as usize);
-            core::ptr::copy_nonoverlapping(
-                bytes[code_start..].as_ptr(),
-                block.add(layout.instructions.0 as usize),
-                code_bytes,
-            );
-            core::ptr::copy_nonoverlapping(
-                bytes[data_start..].as_ptr(),
-                block.add(layout.data.0 as usize),
-                data_bytes,
-            );
-        }
+        let memory = unsafe { core::slice::from_raw_parts_mut(block, layout.total as usize) };
+        memory.fill(0);
+        let code_at = layout.instructions.0 as usize;
+        memory[code_at..code_at + code_bytes]
+            .copy_from_slice(&bytes[code_start..code_start + code_bytes]);
+        let data_at = layout.data.0 as usize;
+        memory[data_at..data_at + data_bytes]
+            .copy_from_slice(&bytes[data_start..data_start + data_bytes]);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         let mut left = DMCUB_POLLS;
         self.dmcub

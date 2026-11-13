@@ -67,7 +67,6 @@ const KEY_ID_SHIFT: u32 = 6;
 const LEAVING: u16 = 3;
 const SETTINGS_CHECK_MS: u64 = 1000;
 const CONNECTED_PUMP_MS: u64 = 2;
-const RETRY_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Failure {
@@ -688,7 +687,8 @@ pub fn status() -> alloc::string::String {
             }
         }
     }
-    if let Some(failure) = *FAILURE.lock() {
+    let failure = *FAILURE.lock();
+    if let Some(failure) = failure {
         text.push_str(&alloc::format!(
             "; failed {}: {}",
             failure.code,

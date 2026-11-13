@@ -921,12 +921,15 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 request.as_ptr(),
                 pointer.wrapping_add(header),
                 request_bytes,
-            );
+            )
+        };
+        // SAFETY: as above: the answer's first word lies inside the same memory.
+        unsafe {
             pointer
                 .wrapping_add(header + STREAM_ANSWER)
                 .cast::<u32>()
-                .write_volatile(0);
-        }
+                .write_volatile(0)
+        };
         let at = |offset: usize| base.checked_add(offset as u64).ok_or(Error::MemoryTooSmall);
         let head = self.queue.submit(&[
             Buffer {
@@ -1044,12 +1047,15 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 request.as_ptr(),
                 pointer.wrapping_add(THREE_D_REQUEST),
                 request_bytes,
-            );
+            )
+        };
+        // SAFETY: as above: the answer's first word lies inside the same memory.
+        unsafe {
             pointer
                 .wrapping_add(THREE_D_ANSWER)
                 .cast::<u32>()
-                .write_volatile(0);
-        }
+                .write_volatile(0)
+        };
         let at = |offset: usize| base.checked_add(offset as u64).ok_or(Error::MemoryTooSmall);
         let request = Buffer {
             addr: at(THREE_D_REQUEST)?,

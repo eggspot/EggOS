@@ -150,6 +150,7 @@ pub struct Program<'a> {
 }
 
 /// One Falcon engine at `base` in BAR 0, whose registers `regs` reaches.
+#[derive(Debug)]
 pub struct Falcon<R: RegisterIo> {
     regs: R,
     base: usize,

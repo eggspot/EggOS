@@ -156,7 +156,9 @@ pub fn write<P: Platform>(bytes: &[u8]) {
     write_mirror(bytes);
 }
 
-static MIRROR: LeafSpinLock<Option<fn(&[u8])>> = LeafSpinLock::new_leaf(None);
+type Mirror = fn(&[u8]);
+
+static MIRROR: LeafSpinLock<Option<Mirror>> = LeafSpinLock::new_leaf(None);
 
 /// Writes the console's session to `mirror` as well, from now on.
 pub fn mirror_output(mirror: fn(&[u8])) {

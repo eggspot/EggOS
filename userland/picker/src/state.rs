@@ -95,6 +95,7 @@ impl Notice {
 
 /// What a step of the person's left the picker doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// Nothing changed that the window must know beyond its rows.
     Nothing,

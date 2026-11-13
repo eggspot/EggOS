@@ -242,8 +242,6 @@ fn probe_ccw(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
             if error != virtio::Error::Channel(channel::ChannelError::TimedOut) {
                 // SAFETY: every channel program run with the region ended, or none started.
                 unsafe { memory.free() };
-            } else {
-                core::mem::forget(memory);
             }
             Err(ProbeError::Refused(error.description()))
         }

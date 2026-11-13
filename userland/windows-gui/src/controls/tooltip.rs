@@ -209,8 +209,7 @@ fn colours(palette: &Palette) -> (u32, u32, u32) {
 }
 
 fn draw_units(surface: &mut Surface<'_>, (x, y): (i32, i32), units: &[u16], colour: u32) {
-    let mut column = 0;
-    for character in char::decode_utf16(units.iter().copied()) {
+    for (column, character) in (0..).zip(char::decode_utf16(units.iter().copied())) {
         let id = match character {
             Ok(character) if is_break(character as u16) && (character as u32) < 0x80 => {
                 font::glyph_id(u32::from(' '))
@@ -219,7 +218,6 @@ fn draw_units(surface: &mut Surface<'_>, (x, y): (i32, i32), units: &[u16], colo
             Err(_) => font::REPLACEMENT,
         };
         text::glyph(surface, x + column * CELL_WIDTH, y, id, false, colour, None);
-        column += 1;
     }
 }
 

@@ -146,6 +146,7 @@ pub struct Message {
 }
 
 /// The queues in the shared memory behind `memory` (its CPU mapping), laid out as `layout`.
+#[derive(Debug)]
 pub struct Queues<R: RegisterIo> {
     memory: R,
     layout: SharedMemory,
@@ -426,9 +427,11 @@ mod tests {
     fn an_element_folds_to_zero_and_names_its_call() {
         let element = element(function::SET_REGISTRY, &[1, 2, 3], 7);
         assert_eq!(element.len(), PAGE);
-        let folded = element.chunks_exact(8).fold(0u64, |folded, chunk| {
-            folded ^ u64::from_le_bytes(chunk.try_into().unwrap())
-        });
+        let folded = element
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .fold(0u64, |folded, chunk| folded ^ u64::from_le_bytes(*chunk));
         assert_eq!((folded >> 32) as u32 ^ folded as u32, 0);
         assert_eq!(
             word(&element, ELEMENT_HEADER_BYTES + 4),
@@ -452,8 +455,8 @@ mod tests {
         );
         let status = layout.status_queue as usize;
         let reply = element(event::INIT_DONE, &[5, 6], 0);
-        for (index, chunk) in reply.chunks_exact(4).enumerate() {
-            let value = u32::from_le_bytes(chunk.try_into().unwrap());
+        for (index, chunk) in reply.as_chunks::<4>().0.iter().enumerate() {
+            let value = u32::from_le_bytes(*chunk);
             (&memory).write32(status + PAGE + 4 * index, value);
         }
         assert_eq!(queues.receive(), Ok(None));

@@ -92,7 +92,7 @@ mod tests {
         let address = Address::new(0, 3, 0).unwrap();
         config.function(address, (0x8086, 0x10d3), (0x02, 0x00), 0);
         config.set(address, 4, u32::from(STATUS_CAPABILITY_LIST) << 16);
-        config.set(address, u16::from(CAPABILITIES_POINTER) & !3, 0x50);
+        config.set(address, CAPABILITIES_POINTER & !3, 0x50);
         config.register(
             address,
             0x50,

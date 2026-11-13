@@ -679,10 +679,13 @@ impl Server {
                         let mut present: [(&'static str, bool); 8] = [("", false); 8];
                         let mut known = 0;
                         for file in tools::TOOLS.iter().filter_map(|tool| tool.needs) {
-                            if known < present.len()
-                                && !present[..known].iter().any(|(seen, _)| *seen == file)
-                            {
-                                present[known] = (file, system.reaches_file(file));
+                            let seen_before = present
+                                .get(..known)
+                                .unwrap_or_default()
+                                .iter()
+                                .any(|(seen, _)| *seen == file);
+                            if !seen_before && let Some(slot) = present.get_mut(known) {
+                                *slot = (file, system.reaches_file(file));
                                 known += 1;
                             }
                         }
@@ -691,7 +694,9 @@ impl Server {
                             tools::write_list(
                                 out,
                                 &mut |file| {
-                                    present[..known]
+                                    present
+                                        .get(..known)
+                                        .unwrap_or_default()
                                         .iter()
                                         .any(|(seen, here)| *seen == file && *here)
                                 },
@@ -1147,7 +1152,8 @@ impl Server {
                         .map(|object| object.text());
                     let mut redirected = [0u8; 8192];
                     let length = crate::app_actions::redirected(&found, arguments, &mut redirected);
-                    if let Ok(parsed) = crate::json::parse(&redirected[..length])
+                    if let Ok(parsed) =
+                        crate::json::parse(redirected.get(..length).unwrap_or_default())
                         && let Value::Object(object) = parsed.value
                     {
                         self.call(id, Some(object), nested_duplicate, system, scratch, out);

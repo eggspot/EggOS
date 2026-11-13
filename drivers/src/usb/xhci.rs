@@ -207,6 +207,7 @@ impl DiskBuffer<'_> {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::large_enum_variant)]
 enum Handler {
     Keyboard(BootKeyboard),
     Mouse(BootMouse),

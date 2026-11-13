@@ -28,8 +28,10 @@ pub(crate) struct FakeDevice {
     pub enabled: bool,
     pub pending: Option<Irb>,
     pub commands: Vec<(u8, u16)>,
-    pub answer: Box<dyn FnMut(u8, &mut [u8]) -> u8 + Send>,
+    pub answer: Answer,
 }
+
+pub(crate) type Answer = Box<dyn FnMut(u8, &mut [u8]) -> u8 + Send>;
 
 pub(crate) struct FakeChannels(pub Mutex<RefCell<FakeDevice>>);
 
@@ -109,7 +111,7 @@ impl ChannelSubsystem for FakeChannels {
     }
 }
 
-pub(crate) fn fake(answer: Box<dyn FnMut(u8, &mut [u8]) -> u8 + Send>) -> (FakeChannels, LowDma) {
+pub(crate) fn fake(answer: Answer) -> (FakeChannels, LowDma) {
     let memory = LowDma(HostDma::zeroed(1));
     let channels = FakeChannels(Mutex::new(RefCell::new(FakeDevice {
         cpu_base: memory.as_mut_ptr() as usize,

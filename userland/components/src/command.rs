@@ -40,8 +40,11 @@ pub trait Console {
     fn read_answer(&mut self, buffer: &mut [u8]) -> usize;
 }
 
+/// Downloads bytes `first` to `last` (both included) of `url` into the file `path`.
+pub type RangeDownload = fn(&str, &str, u64, u64) -> bool;
+
 /// What the command runs as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     /// The machine's architecture word, `x86_64`.
     pub arch: &'a str,
@@ -54,7 +57,7 @@ pub struct Context<'a> {
     pub download: Option<fn(&str, &str) -> bool>,
     /// Downloads bytes `first` to `last` (both included) of `url` into the file `path`, when the
     /// system can: the store's index and the files of the component asked for (D271).
-    pub download_range: Option<fn(&str, &str, u64, u64) -> bool>,
+    pub download_range: Option<RangeDownload>,
     /// The wall clock's seconds, for the stored update check (D299).
     pub now_s: u64,
 }

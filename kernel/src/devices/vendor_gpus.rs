@@ -838,13 +838,14 @@ fn run_fwsec(
     let imem_bytes = fwsec.imem_bytes as usize;
     let image = super::dma::DmaRegion::allocate(imem_bytes + dmem.len())
         .map_err(|_| "no memory for FWSEC")?;
+    let target = eggos_drivers::dma::DmaMemory::as_mut_ptr(&image);
     // SAFETY: the region holds at least `imem_bytes + dmem.len()` bytes, mapped for the CPU
     // and owned by this probe until FWSEC has run.
+    unsafe { core::ptr::copy_nonoverlapping(fwsec.ucode.as_ptr(), target, imem_bytes) };
+    // SAFETY: as above, for the bytes after the instructions.
     unsafe {
-        let target = eggos_drivers::dma::DmaMemory::as_mut_ptr(&image);
-        core::ptr::copy_nonoverlapping(fwsec.ucode.as_ptr(), target, imem_bytes);
-        core::ptr::copy_nonoverlapping(dmem.as_ptr(), target.add(imem_bytes), dmem.len());
-    }
+        core::ptr::copy_nonoverlapping(dmem.as_ptr(), target.wrapping_add(imem_bytes), dmem.len())
+    };
     // SAFETY: as above, for the Falcon's own use of the same registers.
     let falcon_regs = unsafe { eggos_drivers::io::Mmio::new(base, length) };
     let falcon = nvidia_falcon::Falcon::new(falcon_regs, nvidia_falcon::GSP_BASE);

@@ -155,7 +155,6 @@ pub fn premultiplied(pixel: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     const FRAME: Rect = Rect::new(0, 0, 96, 96);
 

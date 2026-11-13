@@ -1024,13 +1024,13 @@ impl Desktop {
         );
     }
 
-    /// Shows the keyboard for the focused window's field, as `wm keyboard show` asks; refused
-    /// in the `never` mode, or with no field or form to show it for.
+    /// Shows the keyboard for the focused window's field, as `wm keyboard show` asks; whether
+    /// it shows: not in the `never` mode, or with no field or form to show it for.
     pub fn show_on_screen_keyboard_by_request(
         &mut self,
         damage: &mut Damage,
         events: &mut dyn EventSink,
-    ) -> Result<(), ()> {
+    ) -> bool {
         let has_field = self.osk.focus.is_some_and(|focus| {
             self.focus
                 .and_then(|slot| self.windows[slot].map(|window| window.id))
@@ -1038,12 +1038,12 @@ impl Desktop {
         });
         let form = matches!(self.form, Form::Phone | Form::Tablet | Form::Tv);
         if self.osk.mode == OnScreenKeyboardMode::Never || !has_field || !form {
-            return Err(());
+            return false;
         }
         if !self.osk.shown {
             self.show_on_screen_keyboard(damage, events);
         }
-        Ok(())
+        true
     }
 
     fn show_on_screen_keyboard(&mut self, damage: &mut Damage, events: &mut dyn EventSink) {

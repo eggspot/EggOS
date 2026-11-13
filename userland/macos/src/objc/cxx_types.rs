@@ -393,13 +393,13 @@ pub fn dynamic_cast(sub: u64, wanted: u64) -> u64 {
         return 0;
     }
     // SAFETY: `sub` points at a live polymorphic object, whose first word is its vtable's
-    // address point, the offset to the top and the type record in the two words before it.
-    let (whole, dynamic) = unsafe {
-        let vtable = (sub as *const u64).read_unaligned();
-        let to_top = ((vtable - 16) as *const i64).read_unaligned();
-        let dynamic = ((vtable - 8) as *const u64).read_unaligned();
-        (sub.wrapping_add(to_top as u64), dynamic)
-    };
+    // address point.
+    let vtable = unsafe { (sub as *const u64).read_unaligned() };
+    // SAFETY: the offset to the top is the word two before the vtable's address point.
+    let to_top = unsafe { ((vtable - 16) as *const i64).read_unaligned() };
+    // SAFETY: the type record is the word just before the vtable's address point.
+    let dynamic = unsafe { ((vtable - 8) as *const u64).read_unaligned() };
+    let whole = sub.wrapping_add(to_top as u64);
     if same_type(wanted, dynamic) {
         return whole;
     }

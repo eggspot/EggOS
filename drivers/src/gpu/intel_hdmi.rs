@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(pll.dco_khz % 742_500, 0);
         let divider = pll.dco_khz / 742_500;
         assert_eq!(divider as u32, pll.pdiv * pll.qdiv * pll.kdiv);
-        assert!(divider % 2 == 0);
+        assert!(divider.is_multiple_of(2));
         assert!(deviation(pll.dco_khz, pll.central_khz).is_some());
     }
 

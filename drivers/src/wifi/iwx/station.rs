@@ -121,6 +121,7 @@ pub struct Target {
 }
 
 /// A joined network's transmit queue and what the MAC context needs again.
+#[derive(Debug)]
 pub struct Link<M: DmaMemory> {
     queue: M,
     next: usize,
@@ -536,7 +537,7 @@ impl<M: DmaMemory> Link<M> {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
-                self.queue.as_mut_ptr().add(at),
+                self.queue.as_mut_ptr().wrapping_add(at),
                 bytes.len(),
             )
         };

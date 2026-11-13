@@ -809,7 +809,7 @@ fn reconstruct(
             luma.add_residue(x0 + bx, y0 + by, predicted, block);
         }
     }
-    for (plane, plane_blocks) in chroma.iter_mut().zip(blocks[16..24].chunks_exact(4)) {
+    for (plane, plane_blocks) in chroma.iter_mut().zip(blocks[16..24].as_chunks::<4>().0) {
         let (cx, cy) = (mb_x * 8, mb_y * 8);
         let prediction = predict_block(plane, cx, cy, 8, modes.chroma);
         for (index, block) in plane_blocks.iter().enumerate() {

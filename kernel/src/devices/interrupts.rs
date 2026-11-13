@@ -128,8 +128,8 @@ pub fn spread<P: Platform>() {
     if SPREADING.swap(true, Ordering::AcqRel) {
         return;
     }
-    for index in 0..DeviceLine::COUNT {
-        let connected = !HANDLERS[index].load(Ordering::Acquire).is_null();
+    for (index, handler) in HANDLERS.iter().enumerate() {
+        let connected = !handler.load(Ordering::Acquire).is_null();
         if connected && let Some(line) = DeviceLine::from_index(index) {
             steer_to_next_cpu::<P>(line);
         }

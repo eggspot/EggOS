@@ -188,8 +188,10 @@ mod tests {
 
     #[test]
     fn a_controller_that_never_takes_input_times_out() {
-        let mut fake = FakeController::default();
-        fake.busy_polls = u32::MAX;
+        let fake = FakeController {
+            busy_polls: u32::MAX,
+            ..FakeController::default()
+        };
         let mut controller = EmbeddedController::new(fake, 10);
         assert_eq!(controller.read(0), Err(Timeout));
     }

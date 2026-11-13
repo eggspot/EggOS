@@ -122,7 +122,7 @@ fn take_over<E: FlipEngine + 'static>(
         ));
     }
     let own = probe.map_write_combining(PhysicalRange::from_start_length(physical, bytes))?;
-    core::mem::forget(second);
+    let _ = second;
     let buffers = [
         Buffer {
             address,

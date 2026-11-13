@@ -30,14 +30,12 @@ const CORE_UPDATE: u32 = 0x0200;
 const SOR_CONTROL: u32 = 0x0300;
 const SOR_STRIDE: u32 = 0x20;
 const WINDOW_CONTROL: u32 = 0x1000;
-const WINDOW_FORMAT_BOUNDS: u32 = 0x1004;
 const WINDOW_USAGE_BOUNDS: u32 = 0x1010;
 const HEAD_OUTPUT_RESOURCE: u32 = 0x2004;
 const HEAD_PIXEL_CLOCK: u32 = 0x200c;
 const HEAD_PIXEL_CLOCK_MAX: u32 = 0x2028;
 const HEAD_USAGE_BOUNDS: u32 = 0x2030;
 const HEAD_VIEWPORT_POINT_IN: u32 = 0x2048;
-const HEAD_VIEWPORT_SIZE_IN: u32 = 0x204c;
 const HEAD_VIEWPORT_SIZE_OUT: u32 = 0x2058;
 const HEAD_RASTER: u32 = 0x2064;
 const WINDOW_UPDATE: u32 = 0x0200;
@@ -297,7 +295,7 @@ mod tests {
 
     #[test]
     fn hash_entries_name_the_channel_offset_and_client() {
-        assert_eq!(hash_slot(0x0000_0401, 1), 0x1 ^ 0x1 ^ 0x40);
+        assert_eq!(hash_slot(0x0000_0401, 1), 0x40);
         assert_eq!(hash_context(1, 0x2000, 0xc1d0_0000), 1 << 25 | 0x2000 << 9);
         assert_eq!(context_dma(0x100, 0x200), [0x5, 0x1, 0, 0x2, 0]);
     }

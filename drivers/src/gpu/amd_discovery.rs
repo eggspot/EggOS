@@ -151,11 +151,11 @@ pub fn dmcub_firmware(file: &[u8]) -> Option<DmcubFirmware> {
 mod tests {
     use super::*;
 
-    fn put16(bytes: &mut Vec<u8>, at: usize, value: u16) {
+    fn put16(bytes: &mut [u8], at: usize, value: u16) {
         bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn put32(bytes: &mut Vec<u8>, at: usize, value: u32) {
+    fn put32(bytes: &mut [u8], at: usize, value: u32) {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
 

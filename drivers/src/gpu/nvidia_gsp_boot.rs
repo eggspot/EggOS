@@ -283,7 +283,7 @@ pub fn libos_arguments(regions: &[(u64, u64); 4]) -> [u8; PAGE_BYTES as usize] {
 /// reads after its first word.
 pub fn write_log_pages(log: &mut [u8], address: u64) {
     let pages = log.len() as u64 / PAGE_BYTES;
-    for (page, slot) in (0..pages).zip(log[8..].chunks_exact_mut(8)) {
+    for (page, slot) in (0..pages).zip(log[8..].as_chunks_mut::<8>().0.iter_mut()) {
         slot.copy_from_slice(&(address + page * PAGE_BYTES).to_le_bytes());
     }
 }

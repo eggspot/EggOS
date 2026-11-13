@@ -1038,7 +1038,7 @@ impl<'a> EditorWindow<'a> {
     pub fn take_pick(&mut self) -> Option<PickRequest> {
         let bar = self.wanted_pick.take()?;
         let save = bar == Bar::SaveAs;
-        let folder = Path::from(self.path().map_or(HOME, folder_of)).unwrap_or_else(Path::new);
+        let folder = Path::from(self.path().map_or(HOME, folder_of)).unwrap_or_default();
         let name = match self.path() {
             Some(path) => Path::from(shown_name(path).as_bytes()),
             None => Path::from(
@@ -1049,7 +1049,7 @@ impl<'a> EditorWindow<'a> {
                     .as_bytes(),
             ),
         }
-        .unwrap_or_else(Path::new);
+        .unwrap_or_default();
         Some(PickRequest { save, folder, name })
     }
 

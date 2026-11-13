@@ -117,6 +117,9 @@ struct Folder<'a> {
     parent: u32,
 }
 
+/// Where [`write_volume`] puts the volume's bytes: at an offset from the volume's start.
+pub type Writer<'a, E> = dyn FnMut(u64, &[u8]) -> Result<(), E> + 'a;
+
 /// Writes a FAT32 volume of `total_sectors` holding `files` through `write(offset, bytes)`,
 /// offsets in bytes from the volume's start, `hidden_sectors` before it on its disk.
 pub fn write_volume<E>(
@@ -124,7 +127,7 @@ pub fn write_volume<E>(
     hidden_sectors: u32,
     volume_id: u32,
     files: &[File<'_>],
-    write: &mut dyn FnMut(u64, &[u8]) -> Result<(), E>,
+    write: &mut Writer<'_, E>,
 ) -> Result<(), Error<E>> {
     let geometry = Geometry::new(total_sectors).ok_or(Error::TooSmall)?;
     if files.len() > MAX_FILES {

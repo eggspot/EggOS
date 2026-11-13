@@ -70,17 +70,13 @@ impl Buffer {
             let chunk = &self.chunks[offset / CHUNK_BYTES];
             let within = offset % CHUNK_BYTES;
             let length = bytes.len().min(CHUNK_BYTES - within);
+            let target = chunk.as_mut_ptr().wrapping_add(within);
             // SAFETY: the chunk is this buffer's own DMA memory, at least `within + length` bytes
             // long since every chunk but the last is `CHUNK_BYTES` and offsets stay inside the
             // frame; the display engine only reads it.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    chunk.as_mut_ptr().add(within),
-                    length,
-                );
-                eggos_hal::cache::write_back_for_device(chunk.as_mut_ptr().add(within), length);
-            }
+            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), target, length) };
+            // SAFETY: the same bytes, mapped as above.
+            unsafe { eggos_hal::cache::write_back_for_device(target, length) };
             offset += length;
             bytes = &bytes[length..];
         }

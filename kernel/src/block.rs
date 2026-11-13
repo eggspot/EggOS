@@ -367,6 +367,15 @@ pub struct Partition {
     sectors: u64,
 }
 
+impl core::fmt::Debug for Partition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Partition")
+            .field("first", &self.first)
+            .field("sectors", &self.sectors)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Partition {
     pub fn new(disk: Box<dyn BlockDevice>, first: u64, sectors: u64) -> Self {
         Self {

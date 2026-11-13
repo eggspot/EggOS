@@ -15,6 +15,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// How the driver calls GSP-RM: a function number and its parameters, the answer's bytes.
+pub type RpcCall<'a> = dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str> + 'a;
+
 /// The remote call making an object.
 pub const ALLOC: u32 = 103;
 /// The remote call asking an object.
@@ -127,11 +130,7 @@ pub struct DisplayEngineInfo {
     pub windows: u32,
 }
 
-fn ask(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
-    command: u32,
-    parameters: &[u8],
-) -> Result<Vec<u8>, DisplayError> {
+fn ask(call: &mut RpcCall<'_>, command: u32, parameters: &[u8]) -> Result<Vec<u8>, DisplayError> {
     let answer = call(CONTROL, &control_call(CLIENT, DISPLAY, command, parameters))
         .map_err(DisplayError::Call)?;
     let returned = answered(&answer, CONTROL_STATUS, CONTROL_HEADER_BYTES)?;
@@ -142,10 +141,7 @@ fn ask(
 }
 
 /// Has GSP-RM give display `display` (an index into the display masks) a SOR (D530); its index.
-pub fn assign_sor(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
-    display: u32,
-) -> Result<u32, DisplayError> {
+pub fn assign_sor(call: &mut RpcCall<'_>, display: u32) -> Result<u32, DisplayError> {
     let mut question = [0u8; ASSIGN_SOR_BYTES];
     put(&mut question, 4, 1 << display);
     let answer = ask(call, ASSIGN_SOR, &question)?;
@@ -160,7 +156,7 @@ pub fn assign_sor(
 /// Reads `length` (at most 16) bytes of display `display`'s DPCD from `address` over GSP-RM's
 /// AUX channel (D530).
 pub fn read_dpcd(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     display: u32,
     address: u32,
     length: usize,
@@ -178,7 +174,7 @@ pub fn read_dpcd(
 /// Has GSP-RM train display `display`'s link at `lanes` lanes and DPCD link rate code `rate`
 /// (D530), with enhanced framing when the sink has it, repeaters included.
 pub fn train_link(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     display: u32,
     (lanes, rate): (u32, u32),
     enhanced: bool,
@@ -202,7 +198,7 @@ pub fn train_link(
 /// Configures head `head`'s single DisplayPort stream on SOR `sor` (D530): enhanced framing,
 /// the 64-symbol transfer unit, `watermark` and the horizontal and vertical blank symbols.
 pub fn configure_stream(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     (head, sor): (u32, u32),
     enhanced: bool,
     (watermark, horizontal, vertical): (u32, u32, u32),
@@ -222,7 +218,7 @@ pub fn configure_stream(
 /// Registers window 0's push buffer (device address and bytes in system memory) with GSP-RM's
 /// internal subdevice and makes window 0's channel under the display object (D530).
 pub fn bring_up_window(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     setup: &CoreSetup,
     push_buffer: (u64, u64),
 ) -> Result<(), DisplayError> {
@@ -252,7 +248,7 @@ pub fn bring_up_window(
 /// object, registers the core channel's push buffer and makes the core channel (D529), through
 /// `call`; the [`find_sinks`] objects must exist.
 pub fn bring_up_core(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
+    call: &mut RpcCall<'_>,
     setup: &CoreSetup,
 ) -> Result<DisplayEngineInfo, DisplayError> {
     let mut internal = |command: u32, parameters: &[u8]| -> Result<Vec<u8>, DisplayError> {
@@ -370,9 +366,7 @@ pub struct Sink {
 /// Makes the client, the device and the display common object through `call` (a remote call:
 /// its function and payload in, the answer's payload out), then asks which displays have a
 /// screen and each screen's EDID.
-pub fn find_sinks(
-    call: &mut dyn FnMut(u32, &[u8]) -> Result<Vec<u8>, &'static str>,
-) -> Result<Vec<Sink>, DisplayError> {
+pub fn find_sinks(call: &mut RpcCall<'_>) -> Result<Vec<Sink>, DisplayError> {
     let mut alloc = |parent: u32, object: u32, class: u32, parameters: &[u8]| {
         let answer = call(
             ALLOC,

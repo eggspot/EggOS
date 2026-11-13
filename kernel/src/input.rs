@@ -1986,6 +1986,7 @@ pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnErro
 mod tests;
 
 /// The PC's PS/2 keyboard and mouse behind the 8042 (D239), polled through the HAL.
+#[derive(Debug)]
 pub struct LegacyInput<P: Platform> {
     capabilities: Capabilities,
     platform: core::marker::PhantomData<fn() -> P>,

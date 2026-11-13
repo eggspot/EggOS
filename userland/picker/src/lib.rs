@@ -10,6 +10,7 @@ extern crate alloc;
 
 pub mod filter;
 pub mod options;
+#[cfg(eggos_user)]
 pub mod picker_window;
 #[cfg(eggos_user)]
 pub mod program;

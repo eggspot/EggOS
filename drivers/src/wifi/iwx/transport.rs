@@ -248,7 +248,11 @@ fn put_bytes<M: DmaMemory>(memory: &M, at: usize, bytes: &[u8]) {
     // SAFETY: the range lies inside the block (checked), which the driver owns; the device does
     // not write these bytes while the host does.
     unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.as_mut_ptr().add(at), bytes.len())
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            memory.as_mut_ptr().wrapping_add(at),
+            bytes.len(),
+        )
     };
 }
 
@@ -258,7 +262,11 @@ fn get_bytes<M: DmaMemory>(memory: &M, at: usize, bytes: &mut [u8]) {
     // SAFETY: the range lies inside the block (checked); a volatile copy is not needed, as the
     // fence above orders the device's completed writes before the read.
     unsafe {
-        core::ptr::copy_nonoverlapping(memory.as_mut_ptr().add(at), bytes.as_mut_ptr(), bytes.len())
+        core::ptr::copy_nonoverlapping(
+            memory.as_mut_ptr().wrapping_add(at),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        )
     };
 }
 
@@ -285,6 +293,7 @@ pub fn older_hw_rev(raw: u32) -> u32 {
 }
 
 /// The adapter's host interface, its rings and the firmware's sections while it loads them.
+#[derive(Debug)]
 pub struct Transport<R: RegisterIo, M: DmaMemory> {
     regs: R,
     adapter: Adapter,

@@ -164,7 +164,7 @@ impl Layout {
                         } else {
                             1
                         };
-                        for piece in 0..pieces {
+                        for (piece, &usage) in usages.iter().enumerate().take(pieces) {
                             if layout.count == MAX_FIELDS {
                                 break;
                             }
@@ -172,7 +172,7 @@ impl Layout {
                             if split {
                                 field.bit = start + piece as u32 * globals.size;
                                 field.count = 1;
-                                field.usage = usages[piece];
+                                field.usage = usage;
                                 field.usage_minimum = 0;
                                 field.usage_maximum = 0;
                             }

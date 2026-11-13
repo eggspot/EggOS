@@ -382,12 +382,11 @@ impl Drop for Buffer {
         };
         // SAFETY: taken once, here, as the buffer goes.
         let memory = unsafe { ManuallyDrop::take(memory) };
-        match released {
+        if released {
             // SAFETY: the device detached the backing and destroyed the resource (or never had
             // the memory), so it no longer reaches it; no process maps it, as each mapping
             // holds the buffer.
-            true => unsafe { memory.free() },
-            false => core::mem::forget(memory),
+            unsafe { memory.free() }
         }
     }
 }

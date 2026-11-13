@@ -18,7 +18,8 @@ static SENSED: AtomicU32 = AtomicU32::new(0);
 /// Takes an accelerometer reading.
 pub fn note(x: i32, y: i32, z: i32) {
     SENSED.store(1, Ordering::Relaxed);
-    if let Some(facing) = TRACKER.lock().note(x, y, z) {
+    let facing = TRACKER.lock().note(x, y, z);
+    if let Some(facing) = facing {
         NEW_DEGREES.store(facing.degrees(), Ordering::Release);
     }
 }

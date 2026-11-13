@@ -512,16 +512,23 @@ const PANE_WORDS: [&[&str]; 12] = [
 /// The profile cards' labels, in the settings file's `PROFILES` order.
 pub const PROFILE_LABELS: [&str; 3] = ["Windows", "macOS", "Linux"];
 
+/// The network [`Request::WifiJoin`] names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiJoin {
+    /// The network's name.
+    pub name: Text<{ wifi_section::MAX_NAME_BYTES }>,
+    /// Its passphrase, empty for an open network.
+    pub passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
+    /// Whether it hides its name.
+    pub hidden: bool,
+}
+
 /// What the program must do for the user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     /// Write `/var/lib/eggos/wifi.conf` naming this network and passphrase, as `wifi connect`
     /// does, then say how it went ([`SettingsWindow::wifi_join_saved`]) (D283).
-    WifiJoin {
-        name: Text<{ wifi_section::MAX_NAME_BYTES }>,
-        passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
-        hidden: bool,
-    },
+    WifiJoin(alloc::boxed::Box<WifiJoin>),
     /// Remove `/var/lib/eggos/wifi.conf`, as `wifi forget` does (D283).
     WifiForget,
     /// Show the Components pane (D283: the Wi-Fi firmware is installed there).

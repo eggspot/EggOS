@@ -141,6 +141,7 @@ pub fn drive_level(swing: u8, pre_emphasis: u8) -> usize {
 }
 
 /// The Dekel PHY of Type-C port `index` (0 for port D) behind `regs`.
+#[derive(Debug)]
 pub struct Dekel<'a, R: RegisterIo + ?Sized> {
     regs: &'a R,
     index: usize,

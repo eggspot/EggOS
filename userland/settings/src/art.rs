@@ -136,58 +136,6 @@ pub fn egg(canvas: &mut Canvas<'_>, rect: Rect, _: u32) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn draw(index: usize) -> Vec<u32> {
-        let mut pixels = vec![0u32; 128 * 112];
-        let mut canvas = Canvas::new(&mut pixels, 128, 112, 1).unwrap();
-        profile_miniature(&mut canvas, index, Rect::new(0, 0, 128, 112));
-        pixels
-    }
-
-    #[test]
-    fn each_miniature_puts_the_panels_and_the_controls_where_its_profile_does() {
-        let at = |pixels: &[u32], x: i32, y: i32| pixels[(y * 128 + x) as usize];
-        let windows = draw(0);
-        let macos = draw(1);
-        let linux = draw(2);
-        assert_eq!(at(&windows, 50, 8 + 54), colour::BAR);
-        assert_eq!(at(&windows, 50, 9), colour::WALLPAPER_TOP);
-        assert_eq!(at(&macos, 50, 9), colour::BAR);
-        assert_eq!(at(&macos, 64, 8 + 56 - 1 - 2 - 4), colour::DOCK);
-        assert_eq!(at(&linux, 50, 9), colour::BAR);
-        assert_eq!(at(&linux, 64, 8 + 56 - 1 - 2 - 4), colour::WALLPAPER_TOP);
-        let close_at = |pixels: &[u32]| {
-            (0..128)
-                .find(|&x| (0..112).any(|y| at(pixels, x, y) == colour::BUTTON_CLOSE))
-                .unwrap()
-        };
-        assert!(close_at(&macos) < 64);
-        assert!(close_at(&windows) > 64);
-        assert!(close_at(&linux) > 64);
-        assert_ne!(windows, linux);
-    }
-
-    #[test]
-    fn the_egg_is_taller_above_its_equator_with_the_yolk_inside() {
-        let mut pixels = vec![0u32; 48 * 48];
-        let mut canvas = Canvas::new(&mut pixels, 48, 48, 1).unwrap();
-        egg(&mut canvas, Rect::new(0, 0, 48, 48), 0);
-        let row_width = |y: usize| {
-            pixels[y * 48..y * 48 + 48]
-                .iter()
-                .filter(|&&p| p != 0)
-                .count()
-        };
-        assert!(row_width(28) > row_width(5));
-        assert!(row_width(28) <= 36);
-        assert_eq!(pixels[30 * 48 + 17], colour::ACCENT);
-        assert_eq!(pixels[10 * 48 + 17], colour::SHELL);
-    }
-}
-
 const PANE_ROW: i32 = 56;
 const STROKE: i32 = 2;
 
@@ -277,11 +225,61 @@ pub fn pane_icon(canvas: &mut Canvas<'_>, pane: usize, at: (i32, i32), ink: u32)
 /// 56 px row each from `rect`'s top.
 pub fn pane_list_marks(canvas: &mut Canvas<'_>, rect: Rect, shown: u32) {
     let palette = canvas.palette();
-    let mut row = 0;
-    for pane in (0..32).filter(|pane| shown & 1 << pane != 0) {
+    for (row, pane) in (0..).zip((0..32).filter(|pane| shown & 1 << pane != 0)) {
         let top = rect.y + row * PANE_ROW;
         pane_icon(canvas, pane, (rect.x + 16, top + 16), palette.text);
         canvas.text(rect.right() - 32, top + 20, ">", palette.text_dim, 1);
-        row += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draw(index: usize) -> Vec<u32> {
+        let mut pixels = vec![0u32; 128 * 112];
+        let mut canvas = Canvas::new(&mut pixels, 128, 112, 1).unwrap();
+        profile_miniature(&mut canvas, index, Rect::new(0, 0, 128, 112));
+        pixels
+    }
+
+    #[test]
+    fn each_miniature_puts_the_panels_and_the_controls_where_its_profile_does() {
+        let at = |pixels: &[u32], x: i32, y: i32| pixels[(y * 128 + x) as usize];
+        let windows = draw(0);
+        let macos = draw(1);
+        let linux = draw(2);
+        assert_eq!(at(&windows, 50, 8 + 54), colour::BAR);
+        assert_eq!(at(&windows, 50, 9), colour::WALLPAPER_TOP);
+        assert_eq!(at(&macos, 50, 9), colour::BAR);
+        assert_eq!(at(&macos, 64, 8 + 56 - 1 - 2 - 4), colour::DOCK);
+        assert_eq!(at(&linux, 50, 9), colour::BAR);
+        assert_eq!(at(&linux, 64, 8 + 56 - 1 - 2 - 4), colour::WALLPAPER_TOP);
+        let close_at = |pixels: &[u32]| {
+            (0..128)
+                .find(|&x| (0..112).any(|y| at(pixels, x, y) == colour::BUTTON_CLOSE))
+                .unwrap()
+        };
+        assert!(close_at(&macos) < 64);
+        assert!(close_at(&windows) > 64);
+        assert!(close_at(&linux) > 64);
+        assert_ne!(windows, linux);
+    }
+
+    #[test]
+    fn the_egg_is_taller_above_its_equator_with_the_yolk_inside() {
+        let mut pixels = vec![0u32; 48 * 48];
+        let mut canvas = Canvas::new(&mut pixels, 48, 48, 1).unwrap();
+        egg(&mut canvas, Rect::new(0, 0, 48, 48), 0);
+        let row_width = |y: usize| {
+            pixels[y * 48..y * 48 + 48]
+                .iter()
+                .filter(|&&p| p != 0)
+                .count()
+        };
+        assert!(row_width(28) > row_width(5));
+        assert!(row_width(28) <= 36);
+        assert_eq!(pixels[30 * 48 + 17], colour::ACCENT);
+        assert_eq!(pixels[10 * 48 + 17], colour::SHELL);
     }
 }

@@ -1522,11 +1522,12 @@ impl Application<CAPACITY> for Settings {
             Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
             Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
             Some(Request::StartComponentJob) => self.start_component_job(),
-            Some(Request::WifiJoin {
-                name,
-                passphrase,
-                hidden,
-            }) => {
+            Some(Request::WifiJoin(join)) => {
+                let crate::settings_window::WifiJoin {
+                    name,
+                    passphrase,
+                    hidden,
+                } = *join;
                 let marked = if hidden { "hidden=yes\n" } else { "" };
                 let text = alloc::format!(
                     "ssid={}\npassphrase={}\n{marked}",

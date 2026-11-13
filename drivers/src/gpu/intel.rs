@@ -297,6 +297,7 @@ pub fn gtt_entry(page: u64) -> u64 {
 
 /// The display engine, through its registers in `regs` (BAR 0), whose second half is the global
 /// GTT.
+#[derive(Debug)]
 pub struct DisplayEngine<R: RegisterIo> {
     regs: R,
     gtt_offset: usize,
@@ -341,10 +342,6 @@ impl<R: RegisterIo> DisplayEngine<R> {
 
     fn plane(&self, register: usize, pipe: usize) -> u32 {
         self.regs.read32(register + pipe * PIPE_STRIDE)
-    }
-
-    fn set_plane(&self, register: usize, value: u32) {
-        self.regs.write32(register + self.pipe * PIPE_STRIDE, value);
     }
 
     /// Maps the device pages `pages` at global-GTT address `at` on, one entry each.

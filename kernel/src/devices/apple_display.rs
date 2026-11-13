@@ -326,9 +326,7 @@ fn probe(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         pixels: pixels as *mut u32,
         mode,
     };
-    core::mem::forget(framebuffer);
-    core::mem::forget(memory);
-    core::mem::forget(display_dart);
+    let _ = (framebuffer, memory, display_dart);
     if crate::display::install(scanout).is_err() {
         return Err(ProbeError::Refused("a display is already in use"));
     }

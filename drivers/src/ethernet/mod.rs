@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn the_rings_and_buffers_fit_their_memory() {
-        assert!(RING_ENTRIES * 16 <= TRANSMIT_RING - RECEIVE_RING);
+        const { assert!(RING_ENTRIES * 16 <= TRANSMIT_RING - RECEIVE_RING) };
         assert_eq!(MEMORY_BYTES, 0x2000 + 2 * RING_ENTRIES * BUFFER_BYTES);
     }
 }

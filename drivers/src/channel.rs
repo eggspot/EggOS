@@ -423,7 +423,10 @@ impl<M: DmaMemory> ChannelBuffer<M> {
         // SAFETY: `DATA_OFFSET..BUFFER_BYTES` lies inside the memory (`new` checked), which the
         // buffer owns; a channel program writes it only while `run` waits for its end.
         unsafe {
-            core::slice::from_raw_parts(self.memory.as_mut_ptr().add(DATA_OFFSET), DATA_BYTES)
+            core::slice::from_raw_parts(
+                self.memory.as_mut_ptr().wrapping_add(DATA_OFFSET),
+                DATA_BYTES,
+            )
         }
     }
 
@@ -431,7 +434,10 @@ impl<M: DmaMemory> ChannelBuffer<M> {
     pub fn data_mut(&mut self) -> &mut [u8] {
         // SAFETY: as in `data`; `&mut self` makes the slice the only one.
         unsafe {
-            core::slice::from_raw_parts_mut(self.memory.as_mut_ptr().add(DATA_OFFSET), DATA_BYTES)
+            core::slice::from_raw_parts_mut(
+                self.memory.as_mut_ptr().wrapping_add(DATA_OFFSET),
+                DATA_BYTES,
+            )
         }
     }
 
@@ -456,7 +462,7 @@ impl<M: DmaMemory> ChannelBuffer<M> {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 word.as_ptr(),
-                self.memory.as_mut_ptr().add(CCW_OFFSET),
+                self.memory.as_mut_ptr().wrapping_add(CCW_OFFSET),
                 CCW_BYTES,
             )
         };

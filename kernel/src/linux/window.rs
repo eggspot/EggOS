@@ -516,8 +516,8 @@ pub fn ioctl<P: Platform>(
                     process
                         .read_user_memory(address, &mut bytes)
                         .map_err(|_| Errno::EFAULT)?;
-                    for (pixel, word) in image.iter_mut().zip(bytes.chunks_exact(4)) {
-                        *pixel = u32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
+                    for (pixel, word) in image.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                        *pixel = u32::from_ne_bytes(*word);
                     }
                     Some(&image)
                 }
@@ -632,7 +632,8 @@ pub fn ioctl<P: Platform>(
                 match action {
                     on_screen_keyboard::SHOW => desktop
                         .show_on_screen_keyboard_by_request(damage, events)
-                        .map_err(|()| WindowError::Unsupported)?,
+                        .then_some(())
+                        .ok_or(WindowError::Unsupported)?,
                     on_screen_keyboard::HIDE => desktop.hide_on_screen_keyboard(damage, events),
                     _ => {}
                 }

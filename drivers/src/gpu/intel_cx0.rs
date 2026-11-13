@@ -246,6 +246,16 @@ pub struct Cx0<'a, R: RegisterIo + ?Sized> {
     keep_waiting: &'a mut dyn FnMut() -> bool,
 }
 
+impl<R: RegisterIo + ?Sized> core::fmt::Debug for Cx0<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Cx0")
+            .field("port", &self.port)
+            .field("c20", &self.c20)
+            .field("both_lanes", &self.both_lanes)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, R: RegisterIo + ?Sized> Cx0<'a, R> {
     pub fn new(
         regs: &'a R,

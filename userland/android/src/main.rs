@@ -11,6 +11,7 @@
 extern crate alloc;
 
 #[cfg(any(test, eggos_user))]
+#[cfg_attr(not(all(eggos_user, target_arch = "x86_64")), allow(dead_code))]
 mod framework;
 #[cfg(all(eggos_user, target_arch = "x86_64"))]
 mod layer;
