@@ -447,6 +447,16 @@ pub(crate) fn serve_shootdowns_asked<P: Platform>(here: &Cpu, requested: u64) {
     here.shootdowns_served.store(requested, Ordering::Release);
 }
 
+/// Drops every CPU's translations of kernel addresses `start..start + length`, whose entries
+/// were just cleared (a device window given back, D554): broadcast where the architecture can,
+/// else this CPU's only, since the kernel never maps those addresses again and a translation
+/// another CPU keeps of them is never used.
+pub fn drop_kernel_translations<P: Platform>(start: u64, length: u64) {
+    if !P::drop_kernel_translations_everywhere(start, length) {
+        P::drop_kernel_translations(start, length);
+    }
+}
+
 /// Why [`start_secondaries`] stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartError {

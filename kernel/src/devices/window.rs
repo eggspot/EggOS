@@ -1,9 +1,10 @@
 //! Device windows (D110): device registers mapped as device memory at addresses of their own in
-//! the kernel's device window ([`crate::paging::device_window`]), handed out from its start,
-//! and mapped for good. A window is aligned to a large leaf's size where its physical address
-//! allows, so a large one (PCI Express configuration space is 256 MiB) costs a few entries, and
-//! a register block inside pages already mapped (QEMU's 32 virtio-mmio slots share 4 pages)
-//! reuses their window.
+//! the kernel's device window ([`crate::paging::device_window`]), handed out from its start. A
+//! window is aligned to a large leaf's size where its physical address allows, so a large one
+//! (PCI Express configuration space is 256 MiB) costs a few entries, and a register block inside
+//! pages already mapped (QEMU's 32 virtio-mmio slots share 4 pages) reuses their window. Each
+//! remembered window counts its users; [`release`] unmaps one when its last user gives it back,
+//! with every CPU's translations of it dropped (D554). The addresses are not handed out again.
 
 use crate::memory::{FRAMES, Memory};
 use crate::paging::{self, MapError};
@@ -18,6 +19,7 @@ struct Window {
     frames: PhysicalRange,
     virt: u64,
     memory_type: MemoryType,
+    users: u32,
 }
 
 struct Windows {
@@ -32,6 +34,7 @@ static WINDOWS: LeafSpinLock<Windows> = LeafSpinLock::new_leaf(Windows {
         frames: PhysicalRange { start: 0, end: 0 },
         virt: 0,
         memory_type: MemoryType::Device,
+        users: 0,
     }; REMEMBERED],
     count: 0,
 });
@@ -60,12 +63,14 @@ fn map_as<P: Platform>(
     }
     let frames = region.covering_frames();
     let mut windows = WINDOWS.lock();
-    let reused = windows.mapped[..windows.count].iter().find(|window| {
+    let count = windows.count;
+    let reused = windows.mapped[..count].iter_mut().find(|window| {
         window.memory_type == attributes.memory_type
             && window.frames.start <= frames.start
             && frames.end <= window.frames.end
     });
     if let Some(window) = reused {
+        window.users = window.users.saturating_add(1);
         return Ok((window.virt + (region.start - window.frames.start)) as usize);
     }
     let window = paging::device_window::<P>();
@@ -101,8 +106,43 @@ fn map_as<P: Platform>(
             frames,
             virt,
             memory_type: attributes.memory_type,
+            users: 1,
         };
         windows.count += 1;
     }
     Ok((virt + (region.start - frames.start)) as usize)
+}
+
+/// Gives back a window [`map`] or [`map_write_combining`] returned `address` in: when its last
+/// user gives it back it is unmapped and every CPU's translations of it are dropped (D554).
+/// A window the module could not remember (past [`REMEMBERED`]) stays mapped.
+pub fn release<P: Platform>(memory: &mut Memory<P>, address: usize) {
+    let address = address as u64;
+    let unmapped = {
+        let mut windows = WINDOWS.lock();
+        let count = windows.count;
+        let Some(index) = windows.mapped[..count]
+            .iter()
+            .position(|window| window.virt <= address && address < window.virt + window.frames.len())
+        else {
+            return;
+        };
+        let window = &mut windows.mapped[index];
+        window.users = window.users.saturating_sub(1);
+        if window.users > 0 {
+            return;
+        }
+        let gone = *window;
+        windows.mapped.copy_within(index + 1..count, index);
+        windows.count -= 1;
+        gone
+    };
+    let window = paging::device_window::<P>();
+    if memory
+        .page_tables
+        .unmap_device_window(&window, unmapped.virt, unmapped.frames.len())
+        .is_ok()
+    {
+        crate::cpu::drop_kernel_translations::<P>(unmapped.virt, unmapped.frames.len());
+    }
 }

@@ -600,6 +600,10 @@ impl Platform for X86_64 {
         message_interrupts::release(line);
     }
 
+    fn steer_console_input(cpu: u64) -> Result<(), &'static str> {
+        console_input::steer(cpu)
+    }
+
     fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
         message_interrupts::steer(line, cpu)
     }
@@ -744,13 +748,16 @@ impl Platform for X86_64 {
         let mut map = MemoryMap::new();
         map.add_ram(LOW_MEMORY);
         if let Some(pvh) = PvhMemoryMap::read() {
-            for (range, _) in pvh.entries() {
-                map.add_ram(range.covering_frames());
+            for (range, kind) in pvh.entries() {
+                if matches!(kind, E820_RAM | E820_ACPI_RECLAIMABLE | E820_ACPI_NVS) {
+                    map.add_ram(range.covering_frames());
+                }
             }
             for range in pvh.boot_data() {
                 map.add_ram(range.covering_frames());
             }
         }
+        acpi_table_ranges(&mut |range| map.add_ram(range.covering_frames()));
         map
     }
 
@@ -984,6 +991,15 @@ impl Platform for X86_64 {
 
     fn page_fault(kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
         exception::page_fault(kind, code)
+    }
+
+    fn drop_kernel_translations(start: u64, length: u64) {
+        for page in 0..length / crate::memory::FRAME_SIZE {
+            let address = start + page * crate::memory::FRAME_SIZE;
+            // SAFETY: `invlpg` drops this CPU's translations of one page, global ones included;
+            // it changes no memory contents.
+            unsafe { core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags)) };
+        }
     }
 
     fn drop_user_translations(start: u64, length: u64) {
@@ -1369,12 +1385,86 @@ fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
 fn mapped(address: u64, length: usize) -> Option<usize> {
     let pointer = in_boot_direct_map(address, length)?;
     let end = address + length as u64;
-    X86_64::physical_memory()
-        .ranges()
-        .iter()
-        .any(|range| range.start <= address && end <= range.end)
-        .then_some(pointer)
+    let in_range = |range: PhysicalRange| range.start <= address && end <= range.end;
+    let described = in_range(LOW_MEMORY)
+        || PvhMemoryMap::read().is_some_and(|pvh| {
+            pvh.entries().any(|(range, _)| in_range(range.covering_frames()))
+                || pvh.boot_data().into_iter().any(|range| in_range(range.covering_frames()))
+        });
+    described.then_some(pointer)
 }
+
+/// The PVH memory map's entry types the direct map covers as cached memory (D554): RAM and the
+/// two ACPI kinds. Reserved ranges are left out, so a device's registers a firmware marked
+/// reserved are never mapped with the wrong memory type; the ACPI tables in one (QEMU puts them
+/// there) are added on their own by [`acpi_table_ranges`].
+const E820_RAM: u32 = 1;
+const E820_ACPI_RECLAIMABLE: u32 = 3;
+const E820_ACPI_NVS: u32 = 4;
+
+/// Calls `range` with the physical range of every ACPI table the firmware gives: the RSDP, the
+/// root table, every table it lists, and the FADT's DSDT and FACS (D554).
+fn acpi_table_ranges(range: &mut dyn FnMut(PhysicalRange)) {
+    let mut add_table = |address: u64| {
+        let Some(header_address) = mapped(address, acpi::TABLE_HEADER_LENGTH) else {
+            return;
+        };
+        // SAFETY: firmware table addresses point at ACPI memory, which nothing writes; `mapped`
+        // checked the header lies in memory the firmware described, inside the boot direct map.
+        let header = unsafe { physical_slice(header_address, acpi::TABLE_HEADER_LENGTH) };
+        let length = acpi::table_length(header).unwrap_or(acpi::TABLE_HEADER_LENGTH);
+        range(PhysicalRange::from_start_length(address, length.min(MAX_TABLE_LENGTH) as u64));
+    };
+    let start_info = PVH_START_INFO.load(Ordering::Relaxed);
+    let root = match pvh_rsdp() {
+        Some(rsdp) => {
+            if let Some(info) = mapped(start_info.into(), PVH_START_INFO_READ_LENGTH) {
+                // SAFETY: as in `pvh_rsdp`.
+                let info = unsafe { physical_slice(info, PVH_START_INFO_READ_LENGTH) };
+                if let Ok(bytes) = info[PVH_RSDP_PADDR..].try_into() {
+                    range(PhysicalRange::from_start_length(u64::from_le_bytes(bytes), 36));
+                }
+            }
+            acpi::parse_rsdp(rsdp)
+        }
+        None => bios_area_rsdp(),
+    };
+    let Some(root) = root else {
+        return;
+    };
+    let (RootTable::Rsdt(root_address) | RootTable::Xsdt(root_address)) = root;
+    add_table(root_address);
+    let Some(root_table) = table(root_address, signature_of(root)) else {
+        return;
+    };
+    for address in acpi::root_table_entries(root_table, root) {
+        add_table(address);
+    }
+    if let Some(fadt) = acpi_table(b"FACP") {
+        if let Some(parsed) = acpi::parse_fadt(fadt) {
+            add_table(parsed.dsdt);
+        }
+        let firmware_control = fadt
+            .get(FADT_X_FIRMWARE_CTRL..FADT_X_FIRMWARE_CTRL + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_le_bytes)
+            .filter(|&address| address != 0)
+            .or_else(|| {
+                fadt.get(FADT_FIRMWARE_CTRL..FADT_FIRMWARE_CTRL + 4)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map(|bytes| u64::from(u32::from_le_bytes(bytes)))
+            });
+        if let Some(facs) = firmware_control.filter(|&address| address != 0) {
+            range(PhysicalRange::from_start_length(facs, FACS_LENGTH));
+        }
+    }
+}
+
+/// The FADT's `FIRMWARE_CTRL` and `X_FIRMWARE_CTRL` fields: the FACS's address (ACPI 6.5, 5.2.9).
+const FADT_FIRMWARE_CTRL: usize = 36;
+const FADT_X_FIRMWARE_CTRL: usize = 132;
+/// The FACS is 64 bytes.
+const FACS_LENGTH: u64 = 64;
 
 fn in_boot_direct_map(address: u64, length: usize) -> Option<usize> {
     let end = address.checked_add(u64::try_from(length).ok()?)?;

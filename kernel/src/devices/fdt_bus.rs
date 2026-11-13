@@ -81,7 +81,23 @@ fn device(
     } else {
         DmaCoherence::NonCoherent
     };
+    device.dma_offset = node.dma_offset;
     device
+}
+
+/// Sets the DMA offset every DMA buffer is given at (`dma::set_device_offset`) from the
+/// devices' `dma-ranges` (D554), when the devices that have one agree on it; a machine whose
+/// buses translate DMA differently keeps the identity, which suits the devices without.
+pub fn apply_dma_offsets(table: &DeviceTable) {
+    let mut offsets = table
+        .iter()
+        .map(|(_, node)| node.dma_offset)
+        .filter(|&offset| offset != 0);
+    if let Some(first) = offsets.next()
+        && offsets.all(|offset| offset == first)
+    {
+        super::dma::set_device_offset(first);
+    }
 }
 
 #[cfg(test)]

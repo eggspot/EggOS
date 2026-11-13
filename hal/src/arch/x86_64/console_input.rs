@@ -62,6 +62,24 @@ pub(super) fn enable() -> Result<(), &'static str> {
 
 /// Handles COM1's interrupt: the kernel reads the UART, then the local APIC's end of interrupt
 /// lets the next one in.
+/// Moves COM1's interrupt to the CPU whose local APIC id is `cpu` (D554): its I/O APIC entry's
+/// destination is rewritten, its vector kept (the IDT is shared).
+pub(super) fn steer(cpu: u64) -> Result<(), &'static str> {
+    let madt = acpi_table(b"APIC").ok_or("the firmware gives no ACPI MADT")?;
+    let line = acpi::madt_isa_interrupt(madt, COM1_ISA_LINE);
+    let (apic, controller) = acpi::madt_io_apics(madt)
+        .map(|apic| (apic, io_apic(apic)))
+        .find(|(apic, controller)| {
+            line.global_interrupt
+                .checked_sub(apic.first_interrupt)
+                .is_some_and(|input| input < controller.lines())
+        })
+        .ok_or("no I/O APIC receives COM1's interrupt")?;
+    let id = u8::try_from(cpu).map_err(|_| "an APIC id past 255 needs interrupt remapping")?;
+    controller.set_destination(line.global_interrupt - apic.first_interrupt, id);
+    Ok(())
+}
+
 pub(super) fn interrupt() {
     crate::interrupt::deliver(crate::Interrupt::ConsoleInput);
     timer::end_of_interrupt();

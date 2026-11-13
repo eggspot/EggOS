@@ -217,6 +217,12 @@ pub trait Probe {
     /// Disconnects and gives back `line` ([`crate::devices::interrupts::disconnect`], D413).
     /// Nothing by default.
     fn release_interrupt(&mut self, _line: DeviceLine) {}
+    /// A driver starts probing a device: what it maps from here on is the probe's (D554).
+    /// Nothing by default.
+    fn probe_started(&mut self) {}
+    /// The probe that [`Self::probe_started`] began refused the device or found it absent: the
+    /// windows it mapped are given back ([`window::release`], D554). Nothing by default.
+    fn probe_failed(&mut self) {}
     /// Says `line` was just connected, so it can join the CPUs' turns
     /// ([`crate::devices::interrupts::follow`], D536). Nothing by default.
     fn interrupt_connected(&mut self, _line: DeviceLine) {}
@@ -440,6 +446,9 @@ pub struct DeviceNode {
     pub binding: Binding,
     /// How its driver hears from it, once bound.
     pub delivery: Delivery,
+    /// What it adds to a CPU physical address to use it as a DMA address (device-tree
+    /// `dma-ranges`, D554), wrapping; 0 for most.
+    pub dma_offset: u64,
 }
 
 impl DeviceNode {
@@ -453,6 +462,7 @@ impl DeviceNode {
             dma: DmaCoherence::Coherent,
             binding: Binding::Unbound,
             delivery: Delivery::Polled,
+            dma_offset: 0,
         }
     }
 
@@ -603,6 +613,8 @@ struct BootProbe<'a, P: Platform> {
     memory: &'a mut Memory<P>,
     ecam: Option<pci::ecam::Ecam>,
     firmware: Option<&'static dyn ConfigSpace>,
+    /// The windows the probe under way mapped, given back if it fails (D554).
+    mapped: Vec<usize>,
 }
 
 impl<P: Platform> Probe for BootProbe<'_, P> {
@@ -611,8 +623,20 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     }
 
     fn map_window(&mut self, region: PhysicalRange) -> Result<usize, ProbeError> {
-        window::map::<P>(self.memory, region)
-            .map_err(|error| ProbeError::Refused(error.description()))
+        let address = window::map::<P>(self.memory, region)
+            .map_err(|error| ProbeError::Refused(error.description()))?;
+        let _ = self.mapped.try_reserve(1).map(|()| self.mapped.push(address));
+        Ok(address)
+    }
+
+    fn probe_started(&mut self) {
+        self.mapped.clear();
+    }
+
+    fn probe_failed(&mut self) {
+        for address in core::mem::take(&mut self.mapped) {
+            window::release::<P>(self.memory, address);
+        }
     }
 
     fn map_write_combining(&mut self, region: PhysicalRange) -> Result<usize, ProbeError> {
@@ -681,11 +705,13 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
     {
         report.discovery_error = Some(error);
     }
+    fdt_bus::apply_dma_offsets(table);
     let mut probe = BootProbe {
         table,
         memory,
         ecam: None,
         firmware: None,
+        mapped: Vec::new(),
     };
     if let Some(mcfg) = P::acpi_table(b"MCFG")
         && let Err(error) = pci_bus::discover(&mut probe, mcfg)
@@ -752,7 +778,12 @@ pub fn probe_all(probe: &mut dyn Probe, drivers: &[&'static DriverDescriptor]) {
             let Some(driver) = best_driver(drivers, pass, &node.identity) else {
                 continue;
             };
-            let binding = match (driver.probe)(probe, id) {
+            probe.probe_started();
+            let result = (driver.probe)(probe, id);
+            if result.is_err() {
+                probe.probe_failed();
+            }
+            let binding = match result {
                 Ok(()) => Binding::Bound(driver.name),
                 Err(ProbeError::Absent) => Binding::Unbound,
                 Err(ProbeError::Refused(reason)) => Binding::Refused(driver.name, reason),

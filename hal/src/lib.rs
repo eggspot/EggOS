@@ -410,6 +410,30 @@ pub trait Platform: 'static {
     /// before.
     fn make_kernel_mappings_visible(_start: usize, _length: usize) {}
 
+    /// Moves the console's input interrupt to the CPU with hardware id `cpu`, so a busy boot CPU
+    /// does not hold up typing (D554). Refused by default: the console's input then stays where
+    /// the boot CPU routed it.
+    fn steer_console_input(cpu: u64) -> Result<(), &'static str> {
+        let _ = cpu;
+        Err("the console's input stays on the boot CPU")
+    }
+
+    /// Drops what this CPU's TLB cached of kernel addresses `start..start + length` after their
+    /// entries were cleared (an unmapped device window, D554), global translations included.
+    /// Nothing by default: the kernel never maps those addresses again, so a translation left
+    /// behind is never used.
+    fn drop_kernel_translations(start: u64, length: u64) {
+        let _ = (start, length);
+    }
+
+    /// Drops every CPU's translations of kernel addresses `start..start + length` without
+    /// interrupting them, where the architecture broadcasts invalidation: true once they are
+    /// gone, false where the kernel must ask each CPU itself. False by default.
+    fn drop_kernel_translations_everywhere(start: u64, length: u64) -> bool {
+        let _ = (start, length);
+        false
+    }
+
     /// Switches this CPU from the boot page tables to the page tables at physical addresses
     /// `roots` (one per [`paging::Format::ROOTS`]). The boot tables' identity map of the kernel
     /// is gone from then on: nothing is mapped in the low half.

@@ -121,6 +121,13 @@ pub struct Node<'a> {
     pub mboxes: &'a [u8],
     /// The raw `iommus` property: (IOMMU phandle, cells...) entries (D547).
     pub iommus: &'a [u8],
+    /// The node's own raw `dma-ranges` (D554): how its children's DMA addresses map to its
+    /// parent's.
+    pub own_dma_ranges: &'a [u8],
+    /// What a device adds to a CPU physical address to give it as a DMA address, from the
+    /// `dma-ranges` of its ancestors (first range of each, wrapping): 0 where they are absent
+    /// or empty (D554).
+    pub dma_offset: u64,
 }
 
 impl<'a> Node<'a> {
@@ -144,6 +151,8 @@ impl<'a> Node<'a> {
             interrupt_cells: None,
             enabled: true,
             own_ranges: &[],
+            own_dma_ranges: &[],
+            dma_offset: parent.dma_offset,
             bus_range: &[],
             dma_coherent: false,
             dma_noncoherent: false,
@@ -293,6 +302,7 @@ struct Level<'a> {
     interrupt_parent: Option<u32>,
     children_addressable: bool,
     translations: [Option<Ranges<'a>>; MAX_TRANSLATIONS],
+    dma_offset: u64,
 }
 
 const ROOT_CONTEXT: Level<'static> = Level {
@@ -301,11 +311,39 @@ const ROOT_CONTEXT: Level<'static> = Level {
     interrupt_parent: None,
     children_addressable: true,
     translations: [None; MAX_TRANSLATIONS],
+    dma_offset: 0,
 };
+
+/// The DMA offset a bus with `dma-ranges` `raw` gives its children, added to its own: child
+/// address minus parent address of the first range (D554). An empty property is an identity
+/// mapping.
+fn dma_offset_through(raw: &[u8], inherited: u64, child_cells: u32, parent_cells: u32, size_cells: u32) -> u64 {
+    let (child, parent, size) = (child_cells as usize, parent_cells as usize, size_cells as usize);
+    let entry = (child + parent + size) * 4;
+    if raw.is_empty() || entry == 0 || child > 3 || parent > 2 || size > 2 {
+        return inherited;
+    }
+    let Some(first) = raw.chunks_exact(entry).next() else {
+        return inherited;
+    };
+    let child_address = if child == 3 { &first[4..12] } else { &first[..child * 4] };
+    let parent_address = &first[child * 4..(child + parent) * 4];
+    match (cells_value(child_address), cells_value(parent_address)) {
+        (Some(bus), Some(cpu)) => inherited.wrapping_add(bus.wrapping_sub(cpu)),
+        _ => inherited,
+    }
+}
 
 fn children_context<'a>(node: &Node<'a>, own: &mut Level<'a>, ranges: Option<&'a [u8]>) {
     own.interrupt_parent = node.interrupt_parent;
     own.translations = node.translations;
+    own.dma_offset = dma_offset_through(
+        node.own_dma_ranges,
+        node.dma_offset,
+        own.address_cells,
+        node.address_cells,
+        own.size_cells,
+    );
     own.children_addressable = match ranges {
         _ if node.depth == 0 => true,
         None => false,
@@ -428,6 +466,7 @@ enum Property {
     IsaExtensions,
     TimebaseFrequency,
     Ranges,
+    DmaRanges,
     BusRange,
     OpalPhbId,
     OpalMsiRanges,
@@ -460,6 +499,7 @@ fn property(name: &[u8]) -> Option<Property> {
         b"riscv,isa-extensions" => IsaExtensions,
         b"timebase-frequency" => TimebaseFrequency,
         b"ranges" => Ranges,
+        b"dma-ranges" => DmaRanges,
         b"bus-range" => BusRange,
         b"ibm,opal-phbid" => OpalPhbId,
         b"ibm,opal-msi-ranges" => OpalMsiRanges,
@@ -497,6 +537,7 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::DmaCoherent => node.dma_coherent = true,
         Property::DmaNoncoherent => node.dma_noncoherent = true,
         Property::Ranges => node.own_ranges = value,
+        Property::DmaRanges => node.own_dma_ranges = value,
         Property::BusRange => node.bus_range = value,
         Property::OpalPhbId => node.opal_phb_id = value,
         Property::OpalMsiRanges => node.opal_msi_ranges = value,

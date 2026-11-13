@@ -867,6 +867,27 @@ impl Platform for Aarch64 {
         exception::page_fault(code)
     }
 
+    fn drop_kernel_translations(start: u64, length: u64) {
+        let _ = Self::drop_kernel_translations_everywhere(start, length);
+    }
+
+    fn drop_kernel_translations_everywhere(start: u64, length: u64) -> bool {
+        // SAFETY: as in `drop_user_translations_everywhere`: `VAAE1IS` drops each page's
+        // translations, global ones included, on every CPU of the inner shareable domain; the
+        // operand's top bits are ignored (the address's bits 55:12 only).
+        unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
+        for page in 0..length / crate::memory::FRAME_SIZE {
+            let operand = ((start + page * crate::memory::FRAME_SIZE) >> 12) & ((1 << 44) - 1);
+            // SAFETY: as above.
+            unsafe {
+                core::arch::asm!("tlbi vaae1is, {}", in(reg) operand, options(nostack, preserves_flags))
+            };
+        }
+        // SAFETY: as above.
+        unsafe { core::arch::asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+        true
+    }
+
     fn drop_user_translations_everywhere(start: u64, length: u64) -> bool {
         let pages = length / crate::memory::FRAME_SIZE;
         if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {

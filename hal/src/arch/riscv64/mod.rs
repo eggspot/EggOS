@@ -682,6 +682,19 @@ impl Platform for Riscv64 {
         })
     }
 
+    fn drop_kernel_translations(start: u64, length: u64) {
+        for page in 0..length / crate::memory::FRAME_SIZE {
+            let address = start + page * crate::memory::FRAME_SIZE;
+            // SAFETY: as in `drop_user_translations`: one page, every address space, global
+            // translations included.
+            unsafe { core::arch::asm!("sfence.vma {}, zero", in(reg) address, options(nostack)) };
+        }
+    }
+
+    fn drop_kernel_translations_everywhere(start: u64, length: u64) -> bool {
+        Self::drop_user_translations_everywhere(start, length)
+    }
+
     fn drop_user_translations_everywhere(start: u64, length: u64) -> bool {
         // SAFETY: the SBI RFENCE extension's `sbi_remote_sfence_vma` (SBI spec v2.0, 8.2) with
         // `hart_mask_base` -1, every hart: the firmware runs `sfence.vma` over the range on each

@@ -134,6 +134,23 @@ pub fn spread<P: Platform>() {
             steer_to_next_cpu::<P>(line);
         }
     }
+    if let Some(cpu) = next_cpu() {
+        let _ = P::steer_console_input(cpu);
+    }
+}
+
+/// The hardware id of the CPU whose turn is next, when more than one is online.
+fn next_cpu() -> Option<u64> {
+    let cpus = crate::cpu::CPUS.all();
+    let online = cpus.iter().filter(|cpu| cpu.is_online()).count();
+    if online < 2 {
+        return None;
+    }
+    let turn = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % online;
+    cpus.iter()
+        .filter(|cpu| cpu.is_online())
+        .nth(turn)
+        .map(|cpu| cpu.hardware_id())
 }
 
 fn steer_to_next_cpu<P: Platform>(line: DeviceLine) {

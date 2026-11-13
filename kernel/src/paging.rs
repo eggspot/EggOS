@@ -602,6 +602,39 @@ impl<F: Format> PageTables<F> {
         Ok(())
     }
 
+    /// Unmaps `virt..virt + length` in `window`, the kernel's device window, while the tables
+    /// may be active (D554): every leaf in it is cleared; tables stay. Each leaf must lie wholly
+    /// inside the range. The caller drops every CPU's translations of the range afterwards
+    /// ([`crate::cpu::drop_kernel_translations`]) before the addresses are used again.
+    pub fn unmap_device_window(
+        &mut self,
+        window: &core::ops::Range<u64>,
+        mut virt: u64,
+        length: u64,
+    ) -> Result<(), MapError> {
+        if self.user_half_only {
+            return Err(MapError::OutsideDeviceWindow);
+        }
+        if !(virt | length).is_multiple_of(FRAME_SIZE) {
+            return Err(MapError::Unaligned);
+        }
+        let end = virt.checked_add(length).ok_or(MapError::InvalidAddress)?;
+        if virt < window.start || end > window.end {
+            return Err(MapError::OutsideDeviceWindow);
+        }
+        while virt < end {
+            let (entry, level) = self.leaf_entry(virt)?;
+            let size = F::leaf_bytes(level);
+            if !virt.is_multiple_of(size) || end - virt < size {
+                return Err(MapError::PartOfLargePage);
+            }
+            entry.write(F::empty(level));
+            virt += size;
+        }
+        fence(Ordering::Release);
+        Ok(())
+    }
+
     /// The physical address `virt` translates to and the mapping's attributes, or `None`.
     pub fn translate(&self, virt: u64) -> Option<(u64, Attributes)> {
         let mut table = self.roots[F::root(virt)?];
