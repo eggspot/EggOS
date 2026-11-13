@@ -17,16 +17,17 @@ and is not listed per item.
 - [x] 1 GiB pages on x86_64 (CPUID) for the direct map (D29) — code written, unbuilt, D552
 - [x] Svpbmt on RISC-V for device and non-cacheable mappings (D29) — code written, unbuilt, D552
 - [x] Global kernel mappings and PCID/ASIDs (D33, D45) — code written, unbuilt, D552
-- [ ] A new thread starts with its creator's FP/SIMD control state (rounding mode, exception masks), as Linux copies it (D91)
-- [ ] Launchers wait for the process, not its first thread (process-wide completion), and a test of a `CLONE_CHILD_CLEARTID` waiter (D92)
-- [ ] Robust-list walk on every way a thread ends once memory is shared between processes, with compare-and-exchange on user memory (D93)
-- [ ] TLB shootdown only to CPUs running the process, ranged, and by broadcast invalidation (AArch64 `tlbi ...is`, RISC-V SBI remote fence / Svinval) (D94)
-- [ ] Signals interrupt only the target thread's CPU (threads record their CPU) and `send_to_process` interrupts after dropping the lock (D95, D97)
-- [ ] `execve` and `fork` record the new first thread's wait slot in the signal block (D97)
-- [ ] Per-thread CPU clocks (`pthread_getcpuclockid`'s clock ids), system time apart from user time, another thread's or process's affinity (D198)
+- [x] A new thread starts with its creator's FP/SIMD control state (rounding mode, exception masks), as Linux copies it (D91) — already done (`inherit_fp` in `clone`, D91's follow-up)
+- [x] Launchers wait for the process, not its first thread (process-wide completion), and a test of a `CLONE_CHILD_CLEARTID` waiter (D92) — code written, unbuilt, D553
+- [x] Robust-list walk on every way a thread ends once memory is shared between processes, with compare-and-exchange on user memory (D93) — code written, unbuilt, D553
+- [x] TLB shootdown only to CPUs running the process, ranged, and by broadcast invalidation (AArch64 `tlbi ...is`, RISC-V SBI remote fence / Svinval) (D94) — code written, unbuilt, D553 (ranged and broadcast; CPUs that keep the space loaded are still asked, D295)
+- [x] Signals interrupt only the target thread's CPU (threads record their CPU) and `send_to_process` interrupts after dropping the lock (D95, D97) — code written, unbuilt, D295 and D553
+- [x] `execve` and `fork` record the new first thread's wait slot in the signal block (D97) — already done (`wait::record_running` in fork and exec, D105)
+- [x] Per-thread CPU clock ids for the calling thread and other processes, children's times in `getrusage`, `times` and `wait4` (D198) — code written, unbuilt, D553
+- [ ] System time apart from user time; another thread's CPU clock; another thread's or process's affinity (D198)
 - [ ] Per-CPU run-queue locks (a lock-free local run queue with per-CPU wake lists) and the invariant-TSC check (D40-D45, D198)
 - [x] RISC-V Svinval for ranged TLB invalidation where harts have it (D94, D261) — code written, unbuilt, D552
-- [ ] Random seeds from the CPU: RNDR on AArch64 and the Zkr `seed` CSR on RISC-V, reseeding on the virtio-rng schedule, and vmgenid reseeding (D56, D282)
+- [x] Random seeds from the CPU: RNDR on AArch64 and the Zkr `seed` CSR on RISC-V, reseeding on the virtio-rng schedule, and vmgenid reseeding (D56, D282) — code written, unbuilt, D553
 
 ## M5 Driver model, interrupts and ACPI
 

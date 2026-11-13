@@ -25866,3 +25866,45 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; measuring the switch cost with and without tags; PCIDs with
   KPTI (two tags per space); x86_64's `INVPCID` for dropping another tag's translations without
   switching.
+
+## D553 Processes and threads, the rest of M4's follow-ups: robust lists at every end, launchers that wait for the process, signal wake-ups after the lock, ranged and broadcast shootdowns, CPU clock ids and children's times, and seeds from the CPU and the VM generation id (M4; D56's, D92's, D93's, D94's, D97's and D198's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Robust lists at every end (D93).** Memory is shared between processes now (`MAP_SHARED`, memory
+  files), so every thread that stops because its process ended (`exit_group`, a fatal signal, the
+  last thread's `exit`) walks its robust list, as Linux does; the walk already updates each word
+  with a compare-and-exchange. The list is forgotten after one walk.
+- **Launchers wait for the process (D92).** `linux::wait_for_end` waits on a futex word of the
+  process's space below every thread's sleep word until the process has ended; `end_process` wakes
+  it. Init's start and the self-tests call it after joining the thread they started, so a main
+  thread that calls `pthread_exit` while workers go on no longer reads as "ended without ending it".
+- **Signal wake-ups after the lock (D97).** A signal sent to a process, a group stop and a signal
+  from outside take the other threads' wait slots under the signals lock and interrupt them after
+  dropping it; without memory for the list they are interrupted under the lock, as before. The wait
+  slot of the first thread is recorded anew by `fork` and `execve` (`wait::record_running`), which
+  was already the case.
+- **Ranged and broadcast shootdowns (D94).** A shootdown asks a CPU for the union of the ranges
+  requested since it last served (two atomics, widened before the request counts and emptied after
+  the server reads the count), and the CPU drops only that range. Where the architecture broadcasts
+  invalidation, no CPU is interrupted at all: AArch64 issues `TLBI VAAE1IS` per page (every ASID,
+  every CPU of the inner shareable domain) or `VMALLE1IS`, RISC-V asks the firmware's RFENCE
+  extension for a remote `sfence.vma` on every hart (`Platform::drop_user_translations_everywhere`).
+- **CPU clocks (D198).** `clock_gettime` and `clock_getres` answer Linux's CPU clock ids for a named
+  process or thread (`~pid << 3`, bit 2 for a thread): the calling thread, the calling process and
+  other processes by id; another thread of the same process stays `EINVAL`, as only the scheduler
+  that runs it keeps its time. Each process's CPU time is recorded in the process table as it ends,
+  and a reaped child's time, its children's included, is added to its parent's: `getrusage`'s
+  `RUSAGE_CHILDREN`, `times`' `tms_cutime`, and the `rusage` of `wait4` and `waitid` report it.
+  System time stays inside user time: splitting it needs a clock read on every kernel entry and exit,
+  which the hot path does not pay for yet.
+- **Seeds from the CPU (D56, D282).** `Platform::cpu_random` gives 32 bytes from the CPU's instruction:
+  x86's `RDSEED`/`RDRAND`, AArch64's `RNDR` (where `ID_AA64ISAR0_EL1.RNDR` says so; each value tried
+  ten times), RISC-V's Zkr `seed` CSR (where the device tree lists `zkr`; 16 bits per `ES16` sample).
+  AArch64 and RISC-V add it to their boot seeds. The kernel reseeds from it with virtio-rng every
+  five minutes, or on its own every five minutes where there is no entropy device, credited as a
+  CPU seed is at boot (Linux's `random.trust_cpu`, on by default).
+- **The VM generation id.** With ACPI events running, the VM generation counter (`_CID`
+  `VM_Gen_Counter`, `_HID` `QEMUVGID` on QEMU) is found and its `ADDR` method read; its 16-byte id is
+  hashed into the generator's input at once and again, with a reseed, on every `Notify(0x80)` it
+  sends, so a restored snapshot or a cloned machine never repeats the generator's output.
+- **Not yet.** Building and running; system time apart from user time; another thread's CPU clock;
+  another process's affinity; per-CPU run-queue locks (left in docs/follow-ups.md).
