@@ -3,7 +3,8 @@
 //! through IOCSR, gathers 256 vectors and raises this CPU's hardware interrupt 1 for them; the
 //! platform controller hub's interrupt controller (PCH-PIC) turns wired device lines into EIOINTC
 //! vectors; and its MSI controller (PCH-MSI) turns a device's write of a vector number to its
-//! doorbell into that vector. Every vector goes to the boot CPU.
+//! doorbell into that vector. Every vector goes to the boot CPU until the kernel spreads the
+//! device lines over the CPUs (D571).
 
 use super::{UNCACHED_WINDOW, iocsr_read32, iocsr_write32};
 use crate::interrupt::{DeviceLine, InterruptMessage, SourceLines};
@@ -86,6 +87,38 @@ pub(super) fn start() {
             options(nomem, nostack),
         )
     };
+}
+
+/// Lets this (secondary) CPU take EIOINTC's vectors steered to it (D571): its pin enabled in
+/// `ECFG`, every vector enabled in its own EIOINTC view.
+pub(super) fn prepare_cpu() {
+    for word in 0..VECTORS / 32 {
+        iocsr_write32(EIOINTC_ENABLE + word * 4, u32::MAX);
+    }
+    // SAFETY: as in `start`: the pin's bit in `ECFG.LIE`, for an installed entry.
+    unsafe {
+        core::arch::asm!(
+            "csrxchg {value}, {mask}, 0x4",
+            value = inout(reg) PIN_INTERRUPT => _,
+            mask = in(reg) PIN_INTERRUPT,
+            options(nomem, nostack),
+        )
+    };
+}
+
+/// [`crate::Platform::steer_device_interrupt`] (D571): line `line`'s vector goes to core `cpu`
+/// (0 to 3 on one node) by its EIOINTC route byte.
+pub(super) fn steer_device(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
+    let vector = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    if cpu > 3 {
+        return Err("EIOINTC routes to four cores of one node here");
+    }
+    let word = EIOINTC_ROUTE + u64::from(vector / 4) * 4;
+    let shift = (vector % 4) * 8;
+    let value = iocsr_read32(word);
+    let routed = (value & !(0xff << shift)) | (1u32 << cpu) << shift;
+    iocsr_write32(word, routed);
+    Ok(())
 }
 
 fn route_wired(line: u32) -> Result<u32, &'static str> {

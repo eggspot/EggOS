@@ -1,5 +1,6 @@
-//! XIVE, POWER9's interrupt controller, through OPAL in exploitation mode (D312): one event
-//! queue at priority 7 for the boot CPU, which every source is routed to; the hypervisor ring of
+//! XIVE, POWER9's interrupt controller, through OPAL in exploitation mode (D312): an event
+//! queue at priority 7 for the boot CPU, which every source is routed to at first, and one for
+//! each CPU started after it, which the kernel then spreads the sources over (D571); the hypervisor ring of
 //! the thread interrupt management area (TIMA) acknowledges, and each source's event state
 //! buffer (ESB) page is unmasked and EOIed by loads and stores at fixed offsets. The PHB's MSIs
 //! are XIVE sources, so a device's MSI-X entry writes the address and data OPAL gives for its
@@ -30,9 +31,15 @@ pub(super) const PREPARED_MSIS: usize = 32;
 #[repr(C, align(4096))]
 struct Queue([u32; QUEUE_ENTRIES]);
 
-static mut QUEUE: Queue = Queue([0; QUEUE_ENTRIES]);
-static QUEUE_INDEX: AtomicU32 = AtomicU32::new(0);
-static QUEUE_TOGGLE: AtomicU32 = AtomicU32::new(0);
+/// The CPUs that get an event queue, the boot CPU's first.
+const QUEUED_CPUS: usize = 8;
+const NO_PIR: u64 = u64::MAX;
+
+static mut QUEUES: [Queue; QUEUED_CPUS] = [const { Queue([0; QUEUE_ENTRIES]) }; QUEUED_CPUS];
+static QUEUE_INDEX: [AtomicU32; QUEUED_CPUS] = [const { AtomicU32::new(0) }; QUEUED_CPUS];
+static QUEUE_TOGGLE: [AtomicU32; QUEUED_CPUS] = [const { AtomicU32::new(0) }; QUEUED_CPUS];
+static QUEUE_PIRS: [AtomicU64; QUEUED_CPUS] = [const { AtomicU64::new(NO_PIR) }; QUEUED_CPUS];
+static NEXT_QUEUE: AtomicU32 = AtomicU32::new(1);
 static TIMA: AtomicU64 = AtomicU64::new(0);
 static TIMA_LENGTH: AtomicU64 = AtomicU64::new(0);
 static ESB_SIZE: AtomicU64 = AtomicU64::new(0);
@@ -79,15 +86,8 @@ fn start(blob: &[u8]) {
     };
     TIMA.store(tima, Ordering::Relaxed);
     TIMA_LENGTH.store(length, Ordering::Relaxed);
-    let queue = (&raw const QUEUE) as u64 - super::KERNEL_VIRTUAL_OFFSET;
     BOOT_PIR.store(pir(), Ordering::Relaxed);
-    opal::xive_set_queue(
-        pir(),
-        PRIORITY,
-        queue,
-        QUEUE_ORDER,
-        QUEUE_ENABLED | QUEUE_ALWAYS_NOTIFY,
-    );
+    give_queue(0, pir());
     let Some((msi_base, msi_count)) = super::pci::first_phb_msis(blob) else {
         return;
     };
@@ -100,6 +100,51 @@ fn start(blob: &[u8]) {
         MSI_SOURCES[index].store(source, Ordering::Relaxed);
         MSI_PAGES[index].store(info.eoi_page, Ordering::Relaxed);
         MSI_FLAGS[index].store(info.flags, Ordering::Relaxed);
+    }
+}
+
+fn give_queue(slot: usize, pir: u64) {
+    // SAFETY: only the address of queue `slot` is taken; XIVE writes it, its CPU reads it.
+    let queue = unsafe { (&raw const QUEUES[slot]) as u64 } - super::KERNEL_VIRTUAL_OFFSET;
+    QUEUE_PIRS[slot].store(pir, Ordering::Release);
+    opal::xive_set_queue(
+        pir,
+        PRIORITY,
+        queue,
+        QUEUE_ORDER,
+        QUEUE_ENABLED | QUEUE_ALWAYS_NOTIFY,
+    );
+}
+
+fn slot_of(pir: u64) -> Option<usize> {
+    QUEUE_PIRS
+        .iter()
+        .position(|slot| slot.load(Ordering::Acquire) == pir)
+}
+
+/// Gives the calling (secondary) CPU its own event queue and lets it take every priority
+/// (D571), so sources can be steered to it.
+pub(super) fn prepare_cpu() {
+    if TIMA.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    let slot = NEXT_QUEUE.fetch_add(1, Ordering::Relaxed) as usize;
+    if slot >= QUEUED_CPUS {
+        return;
+    }
+    give_queue(slot, pir());
+    // SAFETY: as in `accept_all`, for this CPU's own thread context.
+    unsafe { core::ptr::write_volatile(tima(CPPR_HV_PHYS) as *mut u8, ACCEPT_ALL) };
+}
+
+/// [`crate::Platform::steer_device_interrupt`] (D571): line `line`'s source goes to the queue
+/// of the CPU with PIR `cpu`, when that CPU has one.
+pub(super) fn steer_device(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
+    let source = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    slot_of(cpu).ok_or("the CPU has no event queue")?;
+    match opal::xive_set_irq(u64::from(source), cpu, PRIORITY, u64::from(source)) {
+        true => Ok(()),
+        false => Err("OPAL refused to move the source"),
     }
 }
 
@@ -155,9 +200,12 @@ pub(super) fn message() -> Result<(DeviceLine, InterruptMessage), &'static str> 
 /// Takes the pending physical interrupts: drains the queue, hands each source's line to the
 /// kernel and EOIs it, until the TIMA says nothing more is pending.
 pub(super) fn handle() {
-    if TIMA.load(Ordering::Relaxed) == 0 || pir() != BOOT_PIR.load(Ordering::Relaxed) {
+    if TIMA.load(Ordering::Relaxed) == 0 {
         return;
     }
+    let Some(slot) = slot_of(pir()) else {
+        return;
+    };
     loop {
         // SAFETY: reading the hypervisor acknowledge register acknowledges the pending
         // interrupt, which this loop then handles.
@@ -165,25 +213,26 @@ pub(super) fn handle() {
         if (ack >> 14) != PENDING_PHYSICAL {
             break;
         }
-        drain();
+        drain(slot);
         // SAFETY: as in `accept_all`.
         unsafe { core::ptr::write_volatile(tima(CPPR_HV_PHYS) as *mut u8, ACCEPT_ALL) };
     }
 }
 
-fn drain() {
+fn drain(slot: usize) {
     loop {
-        let index = QUEUE_INDEX.load(Ordering::Relaxed) as usize;
-        // SAFETY: the queue is this module's, written by XIVE and read by the boot CPU alone.
-        let entry = u32::from_be(unsafe { core::ptr::read_volatile(&raw const QUEUE.0[index]) });
-        let toggle = QUEUE_TOGGLE.load(Ordering::Relaxed);
+        let index = QUEUE_INDEX[slot].load(Ordering::Relaxed) as usize;
+        // SAFETY: queue `slot` is this module's, written by XIVE and read by its CPU alone.
+        let entry =
+            u32::from_be(unsafe { core::ptr::read_volatile(&raw const QUEUES[slot].0[index]) });
+        let toggle = QUEUE_TOGGLE[slot].load(Ordering::Relaxed);
         if entry >> 31 == toggle {
             return;
         }
         let next = (index + 1) % QUEUE_ENTRIES;
-        QUEUE_INDEX.store(next as u32, Ordering::Relaxed);
+        QUEUE_INDEX[slot].store(next as u32, Ordering::Relaxed);
         if next == 0 {
-            QUEUE_TOGGLE.store(toggle ^ 1, Ordering::Relaxed);
+            QUEUE_TOGGLE[slot].store(toggle ^ 1, Ordering::Relaxed);
         }
         let source = entry & 0x7fff_ffff;
         if let Some(line) = DEVICE_LINES.line_of(source) {

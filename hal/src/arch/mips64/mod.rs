@@ -400,6 +400,10 @@ impl Platform for Mips64 {
         liointc::route_device(specifier.cells())
     }
 
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        liointc::steer_device(line, cpu)
+    }
+
     fn message_interrupt()
     -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         Err("loongson3-virt's PCI Express has no MSI controller: its devices use INTx (D325)")

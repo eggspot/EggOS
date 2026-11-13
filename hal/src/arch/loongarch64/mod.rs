@@ -375,6 +375,7 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // is clear since the entry).
     unsafe { Loongarch64::activate_page_tables(&start.page_table_roots[..2]) };
     timer::init();
+    interrupts::prepare_cpu();
     (start.entry)(start.argument)
 }
 
@@ -438,6 +439,10 @@ impl Platform for Loongarch64 {
         specifier: &crate::fdt::InterruptSpecifier,
     ) -> Result<crate::DeviceLine, &'static str> {
         interrupts::route_device(specifier.cells())
+    }
+
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        interrupts::steer_device(line, cpu)
     }
 
     fn message_interrupt()

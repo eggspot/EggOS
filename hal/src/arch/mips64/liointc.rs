@@ -21,7 +21,6 @@ pub(super) const PENDING: u64 = 1 << 10;
 const UART_INPUT: u32 = 0;
 
 static DEVICE_LINES: SourceLines = SourceLines::new();
-static BOOT_CORE: AtomicU32 = AtomicU32::new(0);
 static CONSOLE_ENABLED: AtomicU32 = AtomicU32::new(0);
 
 fn register(offset: u64) -> *mut u32 {
@@ -33,7 +32,6 @@ fn route(input: u32) -> Result<(), &'static str> {
         return Err("no such liointc input");
     }
     let core = super::cpu_number() as u32 & 3;
-    BOOT_CORE.store(core, Ordering::Relaxed);
     // SAFETY: the controller's registers through the uncached window: one route byte per
     // input, then the enable set register, a write of ones that leaves the other inputs as
     // they were.
@@ -66,10 +64,27 @@ pub(super) fn route_device(cells: &[u32]) -> Result<DeviceLine, &'static str> {
         .ok_or("every device line is taken")
 }
 
-/// Hands the boot core's pending inputs to the kernel: the console's, or a routed device's
-/// line. An input nobody asked for is turned off.
+/// [`crate::Platform::steer_device_interrupt`] (D571): line `line`'s input goes to core
+/// `core` (0 to 3) instead, by its route byte.
+pub(super) fn steer_device(line: DeviceLine, core: u64) -> Result<(), &'static str> {
+    let source = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    let input = source - 1;
+    if core > 3 {
+        return Err("liointc routes to four cores");
+    }
+    // SAFETY: the input's route byte through the uncached window.
+    unsafe {
+        let byte = (UNCACHED_WINDOW + BASE + ROUTE + u64::from(input)) as *mut u8;
+        byte.write_volatile(PIN_IP2 | (1 << core));
+    }
+    Ok(())
+}
+
+/// Hands the calling core's pending inputs to the kernel: the console's, or a routed device's
+/// line (each core reads its own pending register, so a steered line is taken where it
+/// arrives, D571). An input nobody asked for is turned off.
 pub(super) fn handle() {
-    let core = u64::from(BOOT_CORE.load(Ordering::Relaxed));
+    let core = super::cpu_number() & 3;
     // SAFETY: the core's pending register, read only.
     let mut pending =
         unsafe { register(CORE_PENDING + core * CORE_PENDING_STRIDE).read_volatile() };

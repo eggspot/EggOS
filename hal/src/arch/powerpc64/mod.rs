@@ -451,6 +451,7 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // clear since the entry).
     unsafe { Powerpc64::activate_page_tables(&start.page_table_roots[..2]) };
     timer::init();
+    xive::prepare_cpu();
     (start.entry)(start.argument)
 }
 
@@ -503,6 +504,10 @@ impl Platform for Powerpc64 {
     fn message_interrupt()
     -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         xive::message()
+    }
+
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        xive::steer_device(line, cpu)
     }
 
     fn firmware_pci() -> Option<&'static dyn eggos_drivers::pci::ConfigSpace> {
