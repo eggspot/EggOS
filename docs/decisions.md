@@ -26337,3 +26337,62 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the slot interrupt; the attention button and power
   controller (surprise removal only); I/O BARs; bridges behind a hot-plugged card; drivers
   other than virtio input letting go of a removed card.
+
+## D568 RISC-V V for programs (M9; D54's and D261's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the RISC-V V specification and Linux's documented signal-frame layout)
+
+- **Decision.** A hart whose device tree lists `v` (in `riscv,isa-extensions`, or as a letter of
+  `riscv,isa`'s base) has `vlenb` read at its start; when the registers are at most 16 bytes
+  (VLEN 128), programs get V: `AT_HWCAP` gains `V`, and the FP state (`FpState`) carries
+  `VectorState` (`vstart`, `vl`, `vtype`, `vcsr`, `vlenb` and `v0`-`v31`). V follows FP's
+  lazy scheme (D54): `sstatus.VS` goes Clean with FS when a thread's FP state is loaded, a
+  first V instruction of a thread without FP state traps and gets both, and the switch saves V
+  only when `VS` is Dirty (`vs8r.v` four times) and restores it with `vl8re8.v` and `vsetvl`.
+  A new thread's `vtype` has `vill` set, as on Linux.
+- **Signal frames.** On RV64 the FP union's extension header names `RISCV_V_MAGIC` and the
+  frame grows by `struct __riscv_v_ext_state` (with `datap` pointing at the registers that
+  follow) and an end header; `rt_sigreturn` takes the V state back. The frame is 1656 bytes,
+  inside `MINSIGSTKSZ` (2048).
+- **Decided by research.** V only up to VLEN 128: the fixed frame and the per-thread state
+  stay small and inside `MINSIGSTKSZ`; harts with longer registers run programs without V
+  until frames are sized at run time (`AT_MINSIGSTKSZ`).
+- **Not yet.** Building and running; VLEN above 128; `ptrace`'s `NT_RISCV_VECTOR`.
+
+## D569 RV32: secondary harts, console input and device interrupts through the PLIC, Sstc (M9; D481's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `start_cpu` starts a hart through SBI HSM at `eggos_secondary_start`, which
+  turns translation on with the boot table, moves to the kernel's address, takes the stack
+  from the `CpuStart`, and calls `secondary_main` (the kernel's tables, the timer and wake-up,
+  the hart's PLIC context, its id in `sscratch` for `set_cpu_local`, which keeps it in
+  `HalCpuLocal::hart_id`). The PLIC's first megapage is mapped at its physical address by the
+  boot table and the kernel's early device regions; `riscv32::plic` enables the UART's source
+  (console input) and devices' sources as device lines in the hart's supervisor context
+  (`2·hart + 1`), claims them on `SEIE`, and steers a line by enabling it in another hart's
+  context. With `sstc` in the device tree the timer is set through `stimecmp`/`stimecmph`
+  instead of SBI.
+- **Not yet.** Building and running.
+
+## D570 32-bit Arm: secondary CPUs, console input and device interrupts, ASIDs and PAN (M9; D482's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `start_cpu` calls PSCI `CPU_ON` (through `hvc`, as `SYSTEM_OFF`) with
+  `eggos_secondary_start`, which loads `MAIR0`, `TTBCR` and the boot root, turns the MMU on,
+  takes its stack from the `CpuStart`, sets its vectors and GIC CPU interface, and calls
+  `secondary_main`. The PL011's receive interrupts (SPI 1) are the console's; devices' SPIs
+  (`gicv2::shared_interrupt_of_specifier`) become device lines, enabled with a target byte that
+  steers them; SGI 0 is the wake-up (`GICD_SGIR`). User address spaces carry an ASID in
+  `TTBR0[55:48]` (user translations are already not global) with `TLBIASID` only when the tags
+  say they are stale (D552's scheme). Where `ID_MMFR3` says the CPU has PAN, it is on and
+  `with_user_access` lifts it.
+- **Not yet.** Building and running; the 32-bit Linux ABI's own system-call table.
+
+## D571 Device interrupts spread on MIPS64, LoongArch64 and POWER (M9; D536's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Decision.** `steer_device_interrupt` on MIPS64 rewrites the input's liointc route byte to
+  the target core, and each core reads its own pending register; on LoongArch64 it rewrites
+  the vector's EIOINTC route byte, and each secondary CPU enables the vectors in its own view and
+  its pin (`interrupts::prepare_cpu`); on POWER each secondary CPU gets its own XIVE event queue
+  (up to eight) and accepts every priority, and a source moves with `OPAL_XIVE_SET_IRQ_CONFIG`
+  to the target's queue, drained by that CPU.
+- **Decided by research.** s390x and SPARC64 have nothing to spread: s390x's devices are on the
+  channel subsystem, polled (D322), whose I/O interruptions float to any enabled CPU anyway;
+  SPARC64's devices have no interrupts yet (D326).
+- **Not yet.** Building and running; more than eight queued CPUs on POWER; NUMA nodes.

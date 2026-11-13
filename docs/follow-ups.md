@@ -96,11 +96,11 @@ and is not listed per item.
 
 ## M9 More architectures
 
-- [ ] RISC-V: the vector extension (V) for programs, with its first-use trap and per-thread state, and in signal frames (D54, D261)
-- [ ] RV32: secondary harts (`start_cpu`), console input and device interrupts through the PLIC, Sstc (D481)
-- [ ] 32-bit Arm: secondary CPUs through PSCI `CPU_ON`, console input and device interrupts through the GIC, ASIDs, PAN (D482)
+- [x] RISC-V: the vector extension (V) for programs, with its first-use trap and per-thread state, and in signal frames (D54, D261) — code written, unbuilt, D568
+- [x] RV32: secondary harts (`start_cpu`), console input and device interrupts through the PLIC, Sstc (D481) — code written, unbuilt, D569
+- [x] 32-bit Arm: secondary CPUs through PSCI `CPU_ON`, console input and device interrupts through the GIC, ASIDs, PAN (D482) — code written, unbuilt, D570
 - [ ] RV32 and 32-bit Arm: RAM beyond the direct map's reach (high memory mapped on demand) (D475, D476)
-- [ ] MIPS64, SPARC64, s390x, LoongArch64 and POWER: device interrupts spread over CPUs (D536)
+- [x] MIPS64, SPARC64, s390x, LoongArch64 and POWER: device interrupts spread over CPUs (D536) — code written, unbuilt, D571 (s390x and SPARC64 have none to spread)
 
 ## M10 Userland, shell, utilities and the MCP server
 
