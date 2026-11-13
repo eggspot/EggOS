@@ -26476,3 +26476,30 @@ the license, by an explicit instruction recorded here.
   On by default, per window, not saved, as the design says.
 - **Not yet.** Building and running; JavaScript template strings and HTML tags spanning lines
   carry no state; no per-language plug-ins.
+
+## D575 A D-Bus session bus of our own: `eggos-dbus` and `session-bus` (M10; D176's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the D-Bus Specification 0.43)
+- **What.** `userland/dbus` (`eggos-dbus`) holds the wire format (both byte orders,
+  alignment, signatures, object paths), messages and their header fields, the SASL handshake
+  (`EXTERNAL` against the peer's `SO_PEERCRED` user id, `NEGOTIATE_UNIX_FD`), match rules
+  (`type`, `sender`, `interface`, `member`, `path`, `path_namespace`, `destination`, `argN`,
+  `argNpath`, `arg0namespace`) and the bus: unique names `:1.N`, well-known names with their
+  queues and the `RequestName` flags, `org.freedesktop.DBus` (`Hello`, `RequestName`,
+  `ReleaseName`, `GetNameOwner`, `NameHasOwner`, `ListNames`, `ListActivatableNames`,
+  `ListQueuedOwners`, `AddMatch`, `RemoveMatch`, `GetId`, `StartServiceByName` for running
+  names, `GetConnectionUnixUser`, `GetConnectionUnixProcessID`, `GetConnectionCredentials`),
+  `Peer` and `Introspectable`, and the signals `NameOwnerChanged`, `NameAcquired` and
+  `NameLost`. The bus sets every message's sender, delivers a reply only to the caller that
+  waits for it, answers `NoReply` when the callee leaves, and passes descriptors only to
+  connections that negotiated them, at most 16 per message.
+- **Where it runs.** `session-bus` listens on `/run/user/0/bus` and init starts it with the
+  display server, restarting it like eggway; init and the kernel's app starter give every
+  program `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`. A headless machine runs
+  neither (D18). `GETSOCKOPT` joins the runtime's system-call numbers.
+- **Decided by research.** One process, one loop, no threads, as eggway: the bus's work per
+  message is a lookup and a copy, and ordering across connections is what clients expect.
+  Broadcast signals carrying descriptors are dropped, as there is no owner to give each copy
+  to; `dbus-daemon` refuses them too in practice. Service activation (`.service` files) is
+  left out: GLib and Qt apps own their names when they start, which is what single-instance
+  apps need; `UpdateActivationEnvironment` answers `AccessDenied`.
+- **Not yet.** Building and running; activation; the system bus and its policy files;
+  `org.freedesktop.DBus.Monitoring`; the portals and AT-SPI services on top of the bus.
