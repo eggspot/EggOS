@@ -206,6 +206,18 @@ fn set_signal_action(signal: usize, handler: usize) {
 
 extern "C" fn interrupted(_: i32) {}
 
+/// The signals a `trap` caught since the shell last looked (D572), a bit each.
+static CAUGHT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Linux's `USER_HZ`: what `times` counts in.
+const CLOCK_TICKS_PER_SECOND: u64 = 100;
+
+extern "C" fn record_signal(signal: i32) {
+    if (1..=64).contains(&signal) {
+        CAUGHT.fetch_or(1 << (signal - 1), Ordering::AcqRel);
+    }
+}
+
 fn set_foreground(group: i32) {
     call(
         number::IOCTL,
@@ -908,6 +920,72 @@ impl System for Linux {
         is_terminal(descriptor)
     }
 
+    fn catch_signal(&mut self, signal: u8, how: crate::shell::Catch) {
+        let handler = match how {
+            crate::shell::Catch::Default => SIG_DFL,
+            crate::shell::Catch::Ignore => SIG_IGN,
+            crate::shell::Catch::Record => record_signal as *const () as usize,
+        };
+        set_signal_action(usize::from(signal), handler);
+    }
+
+    fn take_caught(&mut self) -> u64 {
+        CAUGHT.swap(0, Ordering::AcqRel)
+    }
+
+    fn umask(&mut self, new: Option<u32>) -> u32 {
+        match new {
+            Some(mask) => call(number::UMASK, [mask as usize, 0, 0, 0, 0, 0]) as u32,
+            None => {
+                let old = call(number::UMASK, [0, 0, 0, 0, 0, 0]) as usize;
+                call(number::UMASK, [old, 0, 0, 0, 0, 0]);
+                old as u32
+            }
+        }
+    }
+
+    fn times(&mut self) -> [u64; 4] {
+        let mut ticks = [0usize; 4];
+        call(number::TIMES, [ticks.as_mut_ptr() as usize, 0, 0, 0, 0, 0]);
+        ticks.map(|tick| tick as u64 * 1000 / CLOCK_TICKS_PER_SECOND)
+    }
+
+    fn history_length(&mut self) -> usize {
+        self.history.len()
+    }
+
+    fn history_entry(&mut self, back: usize, out: &mut [u8]) -> usize {
+        let line = self.history.get(back).unwrap_or_default();
+        let length = line.len().min(out.len());
+        out[..length].copy_from_slice(&line[..length]);
+        length
+    }
+
+    fn replace(&mut self, program: &[u8], arguments: &[&[u8]], environment: &[&[u8]]) -> Errno {
+        self.edit_lines(false);
+        reset_signals();
+        let mut argument_pointers = [ptr::null::<u8>(); MAX_ARGUMENTS + 1];
+        for (slot, argument) in argument_pointers.iter_mut().zip(arguments) {
+            *slot = argument.as_ptr();
+        }
+        let mut environment_pointers = [ptr::null::<u8>(); MAX_VARIABLES + 1];
+        for (slot, entry) in environment_pointers.iter_mut().zip(environment) {
+            *slot = entry.as_ptr();
+        }
+        let error = call(
+            number::EXECVE,
+            [
+                program.as_ptr() as usize,
+                argument_pointers.as_ptr() as usize,
+                environment_pointers.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
+        );
+        Errno(error.unsigned_abs() as u16)
+    }
+
     fn start(
         &mut self,
         program: &[u8],
@@ -1053,6 +1131,7 @@ pub fn run(startup: &Startup) -> i32 {
     } else {
         shell.run_descriptor(TERMINAL, interactive);
     }
+    shell.run_exit_trap();
     shell.system.edit_lines(false);
     shell.exit_status()
 }

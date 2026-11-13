@@ -14,6 +14,8 @@
 #[cfg(any(test, eggos_user))]
 mod arguments;
 #[cfg(any(test, eggos_user))]
+mod arithmetic;
+#[cfg(any(test, eggos_user))]
 mod editor;
 #[cfg(any(test, eggos_user))]
 mod functions;

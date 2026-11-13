@@ -1,5 +1,5 @@
 //! The builtins that come with the shell's language (D182): `break`, `continue`, `return`,
-//! `shift`, `set` (with `--`, `-e` and `+e`), `local`, `eval`, `read`, `test` and `[`.
+//! `shift`, `set` (with `--` and `-e`, `-u`, `-x`, `-f`, `-n`, `-b`, D572), `local`, `eval`, `read`, `test` and `[`.
 
 use super::script::Control;
 use super::{LINE_CAPACITY, Output, Read, Shell, Streams, System, USAGE};
@@ -292,11 +292,14 @@ impl<S: System> Shell<'_, S> {
                 b"--" => return self.set_arguments(words, index + 1),
                 [sign @ (b'-' | b'+'), options @ ..] if !options.is_empty() => {
                     for &option in options {
-                        if option != b'e' {
+                        let on = *sign == b'-';
+                        if !self.options.set(option, on) {
                             self.error(&[b"set: ", &[*sign, option], b": not supported yet"]);
                             return USAGE;
                         }
-                        self.errexit = *sign == b'-';
+                        if option == b'e' {
+                            self.errexit = on;
+                        }
                     }
                     index += 1;
                 }

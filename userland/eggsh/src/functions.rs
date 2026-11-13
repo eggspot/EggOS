@@ -87,6 +87,14 @@ impl Functions {
         Ok(())
     }
 
+    /// Calls `each` with every name and text, in the order they were defined.
+    pub fn each(&self, each: &mut dyn FnMut(&[u8], &[u8])) {
+        for entry in &self.entries[..self.count] {
+            let name = self.name(entry);
+            each(name, &self.bytes[entry.start + entry.name_length..entry.start + entry.length]);
+        }
+    }
+
     /// Removes function `name` (`unset -f`).
     pub fn remove(&mut self, name: &[u8]) {
         let Some(index) = self.find(name) else {

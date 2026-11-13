@@ -328,6 +328,34 @@ pub trait Parameters {
     ) -> Result<(), SyntaxError> {
         Ok(())
     }
+    /// Whether expanding an unset parameter is an error (`set -u`, D572).
+    fn unset_is_error(&self) -> bool {
+        false
+    }
+    /// Works out the arithmetic expression between `$((` and `))` (D572).
+    fn arithmetic(&mut self, _expression: &[u8]) -> Result<i64, SyntaxError> {
+        Err(SyntaxError::NotSupported("$(("))
+    }
+}
+
+/// Where the `))` closing an arithmetic expansion lies in `input` (after its `$((`), the inner
+/// parentheses balanced; `Incomplete` when it does not, and more input may come.
+fn arithmetic_end(input: &[u8], final_input: bool) -> Result<usize, SyntaxError> {
+    let mut depth = 0usize;
+    let mut at = 0;
+    while at < input.len() {
+        match input[at] {
+            b'(' => depth += 1,
+            b')' if depth == 0 && input.get(at + 1) == Some(&b')') => return Ok(at),
+            b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        at += 1;
+    }
+    match final_input {
+        true => Err(SyntaxError::UnexpectedEnd(b'(')),
+        false => Err(SyntaxError::Incomplete),
+    }
 }
 
 /// No parameter is set and nothing runs: for reading a command's syntax without expanding it.
@@ -500,6 +528,26 @@ impl Words {
             length += 1;
         }
         Some(&buffer[..length])
+    }
+
+    /// Removes the command's first word, so the second becomes the command (`command`,
+    /// D572).
+    pub fn drop_first_command_word(&mut self) -> Result<(), SyntaxError> {
+        let index = self.assignment_count();
+        if self.command_length() < 2 {
+            return Err(SyntaxError::TooLong);
+        }
+        let start = self.start(index);
+        let end = usize::from(self.ends[index]);
+        let removed = end - start;
+        self.bytes.copy_within(end..self.length, start);
+        self.ends.copy_within(index + 1..self.count, index);
+        self.count -= 1;
+        for later in &mut self.ends[index..self.count] {
+            *later = (usize::from(*later) - removed) as u16;
+        }
+        self.length -= removed;
+        Ok(())
     }
 
     /// Replaces word `index` with `replacements` (a pattern with the paths it matched); the
@@ -1532,7 +1580,19 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
             };
         };
         match next {
-            b'(' if self.scan.peek(2) == Some(b'(') => Err(SyntaxError::NotSupported("$((")),
+            b'(' if self.scan.peek(2) == Some(b'(') => {
+                let start = at + 3;
+                let end = start + arithmetic_end(&input[start..], self.scan.final_input)?;
+                self.scan.at = end + 2;
+                if !P::EXPANDS {
+                    self.scan.expansion_start();
+                    return Ok(());
+                }
+                let value = self.parameters.arithmetic(&input[start..end])?;
+                let mut digits = [0u8; 20];
+                let text = crate::arithmetic::decimal(value, &mut digits);
+                self.scan.append(Value::Text(text), quoted)
+            }
             b'(' => {
                 let start = at + 2;
                 let end = start + substitution_end(&input[start..], self.scan.final_input)?;
@@ -1559,7 +1619,12 @@ impl<'i, 'p, 'w, P: Parameters> Lexer<'i, 'p, 'w, P> {
                     return Err(SyntaxError::Incomplete);
                 }
                 self.scan.at = start + length;
-                let value = self.parameters.value(&input[start..start + length]);
+                let name = &input[start..start + length];
+                let value = self.parameters.value(name);
+                if P::EXPANDS && value == Value::Unset && self.parameters.unset_is_error() {
+                    self.parameters.fail(name, b"parameter not set");
+                    return Err(SyntaxError::Failed);
+                }
                 self.scan.append(value, quoted)
             }
             _ => {

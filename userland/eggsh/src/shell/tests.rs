@@ -1178,3 +1178,16 @@ fn without_a_terminal_program_the_shell_writes_no_title() {
     shell.run_descriptor(0, true);
     assert!(!errors(&shell).contains("\x1b]"));
 }
+
+#[test]
+fn arithmetic_expansion_let_and_printf_work() {
+    let shell = run("x=4\necho $((x * 2 + 1))\nlet 'y = x << 1'\necho $y\nprintf '%03d|%-3s|%x\\n' 7 ab 255\n");
+    assert_eq!(output(&shell), "9\n8\n007|ab |ff\n");
+    assert_eq!(shell.exit_status(), 0);
+}
+
+#[test]
+fn aliases_and_set_u_behave() {
+    let shell = run("alias greet='echo hello'\ngreet world\nunalias greet\nset -u\necho \"$-\"\n");
+    assert_eq!(output(&shell), "hello world\nu\n");
+}

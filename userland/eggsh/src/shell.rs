@@ -27,6 +27,7 @@ use script::{Control, Documents, Source};
 
 mod job_control;
 mod language;
+mod more;
 mod script;
 mod terminal_title;
 
@@ -181,6 +182,43 @@ pub trait System: Files {
     fn accessible(&mut self, path: &[u8], access: Access) -> bool;
     /// Whether `descriptor` is a terminal (D182).
     fn is_terminal(&mut self, descriptor: usize) -> bool;
+    /// What the shell does with signal `signal` from now on (`trap`, D572). Nothing by default.
+    fn catch_signal(&mut self, _signal: u8, _how: Catch) {}
+    /// The signals caught since the last call, a bit each (bit `n - 1` for signal `n`).
+    fn take_caught(&mut self) -> u64 {
+        0
+    }
+    /// The file mode creation mask, set to `new` when given (`umask`, D572).
+    fn umask(&mut self, _new: Option<u32>) -> u32 {
+        0o022
+    }
+    /// The shell's and its children's user and system times, in milliseconds (`times`).
+    fn times(&mut self) -> [u64; 4] {
+        [0; 4]
+    }
+    /// How many lines the prompt's history holds (`history`, D572).
+    fn history_length(&mut self) -> usize {
+        0
+    }
+    /// Copies the history line `back` lines back (0 the newest) into `out`: its length.
+    fn history_entry(&mut self, _back: usize, _out: &mut [u8]) -> usize {
+        0
+    }
+    /// Replaces the shell with `program` (`exec`, D572): returns only on failure.
+    fn replace(&mut self, _program: &[u8], _arguments: &[&[u8]], _environment: &[&[u8]]) -> Errno {
+        Errno::ENOSYS
+    }
+}
+
+/// What the shell does with a signal (`trap`, D572).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Catch {
+    /// What the system does by default.
+    Default,
+    /// Nothing: the signal is ignored.
+    Ignore,
+    /// The shell notes it and runs the trap's command at its next chance.
+    Record,
 }
 
 /// A started program's standard input, output and error.
@@ -298,6 +336,20 @@ impl Opened {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Builtin {
+    Alias,
+    Command,
+    Disown,
+    Exec,
+    GetOptions,
+    History,
+    Let,
+    PrintFormatted,
+    ReadOnly,
+    Suspend,
+    Times,
+    Trap,
+    Umask,
+    Unalias,
     Background,
     Bracket,
     Break,
@@ -327,33 +379,47 @@ enum Builtin {
     Wait,
 }
 
-const BUILTINS: [(&[u8], Builtin); 28] = [
+const BUILTINS: [(&[u8], Builtin); 42] = [
     (b".", Builtin::Source),
     (b":", Builtin::Colon),
     (b"[", Builtin::Bracket),
+    (b"alias", Builtin::Alias),
     (b"bg", Builtin::Background),
     (b"break", Builtin::Break),
     (b"cd", Builtin::Cd),
+    (b"command", Builtin::Command),
     (b"continue", Builtin::Continue),
+    (b"disown", Builtin::Disown),
     (b"echo", Builtin::Echo),
     (b"eval", Builtin::Eval),
+    (b"exec", Builtin::Exec),
     (b"exit", Builtin::Exit),
     (b"export", Builtin::Export),
     (b"false", Builtin::False),
     (b"fg", Builtin::Foreground),
+    (b"getopts", Builtin::GetOptions),
     (b"help", Builtin::Help),
+    (b"history", Builtin::History),
     (b"jobs", Builtin::Jobs),
     (b"kill", Builtin::Kill),
+    (b"let", Builtin::Let),
     (b"local", Builtin::Local),
+    (b"printf", Builtin::PrintFormatted),
     (b"pwd", Builtin::Pwd),
     (b"read", Builtin::ReadLine),
+    (b"readonly", Builtin::ReadOnly),
     (b"return", Builtin::Return),
     (b"set", Builtin::Set),
     (b"shift", Builtin::Shift),
     (b"source", Builtin::Source),
+    (b"suspend", Builtin::Suspend),
     (b"test", Builtin::Test),
+    (b"times", Builtin::Times),
+    (b"trap", Builtin::Trap),
     (b"true", Builtin::True),
     (b"type", Builtin::Type),
+    (b"umask", Builtin::Umask),
+    (b"unalias", Builtin::Unalias),
     (b"unset", Builtin::Unset),
     (b"wait", Builtin::Wait),
 ];
@@ -471,6 +537,11 @@ pub struct Shell<'a, S> {
     warned_at: Option<u64>,
     documents: Documents,
     locals: Locals,
+    options: more::Options,
+    aliases: Functions,
+    traps: Functions,
+    readonly: Functions,
+    alias_depth: u8,
 }
 
 impl<'a, S: System> Shell<'a, S> {
@@ -519,6 +590,11 @@ impl<'a, S: System> Shell<'a, S> {
             warned_at: None,
             documents: Documents::default(),
             locals: Locals::default(),
+            options: more::Options::new(interactive),
+            aliases: Functions::default(),
+            traps: Functions::default(),
+            readonly: Functions::default(),
+            alias_depth: 0,
         }
     }
 
@@ -1126,14 +1202,31 @@ impl<'a, S: System> Shell<'a, S> {
         pipeline: &mut Pipeline,
         forked: bool,
     ) -> Ran {
+        self.run_caught_traps();
+        if self.options.notify && self.interactive {
+            self.report_jobs();
+        }
         if words.command_length() == 0 {
             for assignment in words.assignments() {
+                let name = assignment.split(|&byte| byte == b'=').next().unwrap_or(assignment);
+                if self.refuses_change(name) {
+                    return Ran::Finished(1);
+                }
                 if self.variables.assign(assignment, false).is_err() {
                     self.error(&[b"too many variables"]);
                     return Ran::Finished(1);
                 }
             }
             return Ran::Finished(self.last_substitution.unwrap_or(0));
+        }
+        if self.options.noexec && !self.interactive {
+            return Ran::Finished(0);
+        }
+        if let Some(ran) = self.expand_alias(words, streams, pipeline, forked) {
+            return ran;
+        }
+        if self.options.xtrace {
+            self.trace(words);
         }
         let name = words.command(0);
         let chosen =
@@ -1157,6 +1250,20 @@ impl<'a, S: System> Shell<'a, S> {
 
     fn builtin(&mut self, builtin: Builtin, words: &mut Words) -> i32 {
         match builtin {
+            Builtin::Alias => self.alias(words),
+            Builtin::Command => self.command(words),
+            Builtin::Disown => self.disown(words),
+            Builtin::Exec => self.exec(words),
+            Builtin::GetOptions => self.getopts(words),
+            Builtin::History => self.history(words),
+            Builtin::Let => self.let_expressions(words),
+            Builtin::PrintFormatted => self.printf(words),
+            Builtin::ReadOnly => self.readonly(words),
+            Builtin::Suspend => self.suspend(words),
+            Builtin::Times => self.times(),
+            Builtin::Trap => self.trap(words),
+            Builtin::Umask => self.umask(words),
+            Builtin::Unalias => self.unalias(words),
             Builtin::Colon | Builtin::True => 0,
             Builtin::False => 1,
             Builtin::Background => self.continue_in_background(words),
@@ -1349,6 +1456,10 @@ impl<'a, S: System> Shell<'a, S> {
         }
         for index in first..words.command_length() {
             let name = words.command(index);
+            if !functions && self.refuses_change(name) {
+                status = 1;
+                continue;
+            }
             if !is_name(name) {
                 self.error(&[b"unset: `", name, b"': not a valid identifier"]);
                 status = 1;
@@ -1530,6 +1641,7 @@ impl<S: System> Parameters for Shell<'_, S> {
                 .map_or(Value::Unset, |pid| Value::Number(pid as u64)),
             b"#" => Value::Number(self.arguments.count() as u64),
             b"0" => Value::Text(self.name),
+            b"-" => Value::Text(self.options.letters()),
             [b'0'..=b'9', ..] if name.iter().all(u8::is_ascii_digit) => {
                 let number = name.iter().try_fold(0usize, |value, &digit| {
                     value
@@ -1571,6 +1683,98 @@ impl<S: System> Parameters for Shell<'_, S> {
         output: &mut dyn FnMut(&[u8]) -> Result<(), SyntaxError>,
     ) -> Result<(), SyntaxError> {
         self.run_substitution(command, backquoted, output)
+    }
+
+    fn unset_is_error(&self) -> bool {
+        self.options.nounset
+    }
+
+    fn arithmetic(&mut self, expression: &[u8]) -> Result<i64, SyntaxError> {
+        let mut expanded = [0u8; ARITHMETIC_CAPACITY];
+        let length = self.expand_arithmetic(expression, &mut expanded)?;
+        let result = {
+            let mut view = ArithmeticVariables(&mut self.variables);
+            crate::arithmetic::evaluate(&expanded[..length], &mut view)
+        };
+        result.map_err(|error| {
+            self.error(&[b"arithmetic: ", error.message()]);
+            SyntaxError::Failed
+        })
+    }
+}
+
+/// The longest arithmetic expression, its parameters expanded (D572).
+const ARITHMETIC_CAPACITY: usize = 1024;
+
+struct ArithmeticVariables<'a>(&'a mut Variables);
+
+impl crate::arithmetic::Variables for ArithmeticVariables<'_> {
+    fn get(&self, name: &[u8]) -> Option<&[u8]> {
+        self.0.get(name)
+    }
+
+    fn set(&mut self, name: &[u8], value: &[u8]) -> bool {
+        self.0.set(name, value, false).is_ok()
+    }
+}
+
+impl<S: System> Shell<'_, S> {
+    /// Copies `expression` into `out` with its `$name`, `${name}` and special parameters
+    /// replaced by their values (POSIX 2.6.4: the expression is expanded as in double quotes);
+    /// the bytes written.
+    fn expand_arithmetic(&self, expression: &[u8], out: &mut [u8]) -> Result<usize, SyntaxError> {
+        let mut written = 0;
+        let mut push = |bytes: &[u8], written: &mut usize| -> Result<(), SyntaxError> {
+            let end = *written + bytes.len();
+            out.get_mut(*written..end)
+                .ok_or(SyntaxError::TooLong)?
+                .copy_from_slice(bytes);
+            *written = end;
+            Ok(())
+        };
+        let mut at = 0;
+        while at < expression.len() {
+            if expression[at] != b'$' {
+                push(&expression[at..at + 1], &mut written)?;
+                at += 1;
+                continue;
+            }
+            let (name, after) = match expression.get(at + 1) {
+                Some(b'{') => {
+                    let close = expression[at + 2..]
+                        .iter()
+                        .position(|&byte| byte == b'}')
+                        .ok_or(SyntaxError::BadSubstitution)?;
+                    (&expression[at + 2..at + 2 + close], at + 3 + close)
+                }
+                Some(b'?' | b'$' | b'#' | b'!' | b'0'..=b'9') => {
+                    (&expression[at + 1..at + 2], at + 2)
+                }
+                Some(&first) if first.is_ascii_alphabetic() || first == b'_' => {
+                    let length = expression[at + 1..]
+                        .iter()
+                        .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+                        .count();
+                    (&expression[at + 1..at + 1 + length], at + 1 + length)
+                }
+                _ => {
+                    push(b"$", &mut written)?;
+                    at += 1;
+                    continue;
+                }
+            };
+            let mut digits = [0u8; 20];
+            let value: &[u8] = match self.value(name) {
+                crate::syntax::Value::Text(text) => text,
+                crate::syntax::Value::Number(number) => {
+                    crate::arithmetic::decimal(number as i64, &mut digits)
+                }
+                crate::syntax::Value::Unset => b"",
+            };
+            push(value, &mut written)?;
+            at = after;
+        }
+        Ok(written)
     }
 }
 

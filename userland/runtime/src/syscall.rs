@@ -19,6 +19,8 @@ pub mod number {
     pub const GETPID: usize = 39;
     pub const CLONE: usize = 56;
     pub const EXECVE: usize = 59;
+    pub const UMASK: usize = 95;
+    pub const TIMES: usize = 100;
     pub const WAIT4: usize = 61;
     pub const UNAME: usize = 63;
     pub const SETSID: usize = 112;
@@ -121,6 +123,8 @@ pub mod number {
     pub const MUNMAP: usize = 215;
     pub const CLONE: usize = 220;
     pub const EXECVE: usize = 221;
+    pub const UMASK: usize = 166;
+    pub const TIMES: usize = 153;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const WAIT4: usize = 260;
@@ -192,6 +196,8 @@ pub mod number {
     pub const GETPID: usize = 20;
     pub const CLONE: usize = 120;
     pub const EXECVE: usize = 11;
+    pub const UMASK: usize = 60;
+    pub const TIMES: usize = 43;
     pub const WAIT4: usize = 114;
     pub const UNAME: usize = 122;
     pub const SETSID: usize = 66;
@@ -276,6 +282,8 @@ pub mod number {
     pub const GETPID: usize = 20;
     pub const CLONE: usize = 120;
     pub const EXECVE: usize = 11;
+    pub const UMASK: usize = 60;
+    pub const TIMES: usize = 43;
     pub const WAIT4: usize = 114;
     pub const UNAME: usize = 122;
     pub const SETSID: usize = 66;
@@ -360,6 +368,8 @@ pub mod number {
     pub const GETPID: usize = 20;
     pub const CLONE: usize = 217;
     pub const EXECVE: usize = 59;
+    pub const UMASK: usize = 60;
+    pub const TIMES: usize = 43;
     pub const WAIT4: usize = 7;
     pub const UNAME: usize = 189;
     pub const SETSID: usize = 175;
@@ -444,6 +454,8 @@ pub mod number {
     pub const GETPID: usize = 5038;
     pub const CLONE: usize = 5055;
     pub const EXECVE: usize = 5057;
+    pub const UMASK: usize = 5093;
+    pub const TIMES: usize = 5098;
     pub const WAIT4: usize = 5059;
     pub const UNAME: usize = 5061;
     pub const SETSID: usize = 5110;

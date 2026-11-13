@@ -186,6 +186,19 @@ pub struct Editor {
     escape: Escape,
     back: Option<usize>,
     unfinished: Option<(usize, u8)>,
+    search: Option<Search>,
+}
+
+/// The most bytes a `^R` search pattern holds (D572).
+pub const SEARCH_CAPACITY: usize = 64;
+
+/// A reverse search through the history (`^R`, D572): the pattern typed so far and the entry
+/// it found.
+#[derive(Debug, Clone, Copy)]
+struct Search {
+    pattern: [u8; SEARCH_CAPACITY],
+    length: usize,
+    found: Option<usize>,
 }
 
 impl Default for Editor {
@@ -232,6 +245,7 @@ impl Editor {
             escape: Escape::None,
             back: None,
             unfinished: None,
+            search: None,
         }
     }
 
@@ -260,6 +274,11 @@ impl Editor {
             }
             return Fed::Editing;
         }
+        if self.search.is_some() {
+            if let Some(fed) = self.search_key(byte, buffer, history, echo) {
+                return fed;
+            }
+        }
         if is_continuation(byte) && self.unfinished.is_some() {
             self.insert(byte, buffer);
             self.continue_character(buffer, echo);
@@ -280,6 +299,14 @@ impl Editor {
                 return Fed::End;
             }
             0x04 => self.delete(buffer, echo),
+            0x12 => {
+                self.search = Some(Search {
+                    pattern: [0; SEARCH_CAPACITY],
+                    length: 0,
+                    found: None,
+                });
+                echo(b"(reverse-i-search): ");
+            }
             0x01 => self.home(buffer, echo),
             0x05 => self.end(buffer, echo),
             0x02 => self.left(buffer, echo),
@@ -456,6 +483,61 @@ impl Editor {
         }
     }
 
+    /// A key while `^R` searches: typed bytes grow the pattern, `^R` looks further back,
+    /// backspace shortens it, `^G` and Escape give up, and anything else takes the found line
+    /// into the editor (Enter runs it at once). `None` when the key goes on to the editor.
+    fn search_key(
+        &mut self,
+        byte: u8,
+        buffer: &mut [u8],
+        history: &History,
+        echo: &mut impl FnMut(&[u8]),
+    ) -> Option<Fed> {
+        let mut search = self.search?;
+        match byte {
+            0x12 => {
+                let from = search.found.map_or(0, |found| found + 1);
+                search.found = find_in_history(history, &search.pattern[..search.length], from)
+                    .or(search.found);
+            }
+            0x7f | BACKSPACE => {
+                search.length = search.length.saturating_sub(1);
+                search.found = find_in_history(history, &search.pattern[..search.length], 0);
+            }
+            0x07 | 0x1b => {
+                self.search = None;
+                echo(b"\n");
+                return Some(Fed::Editing);
+            }
+            0x20..=0x7e if search.length < SEARCH_CAPACITY => {
+                search.pattern[search.length] = byte;
+                search.length += 1;
+                search.found = find_in_history(history, &search.pattern[..search.length], 0);
+            }
+            _ => {
+                self.search = None;
+                echo(b"\n");
+                if let Some(found) = search.found {
+                    self.back = Some(found.saturating_add(1));
+                    self.recall(false, buffer, history, echo);
+                }
+                return match byte {
+                    b'\r' | b'\n' => None,
+                    _ => Some(Fed::Editing),
+                };
+            }
+        }
+        self.search = Some(search);
+        echo(b"\r(reverse-i-search)`");
+        echo(&search.pattern[..search.length]);
+        echo(b"': ");
+        if let Some(line) = search.found.and_then(|found| history.get(found)) {
+            echo(line);
+        }
+        echo(b"\x1b[K");
+        Some(Fed::Editing)
+    }
+
     fn recall(
         &mut self,
         older: bool,
@@ -485,6 +567,15 @@ impl Editor {
             backspaces(shown - now, echo);
         }
     }
+}
+
+/// The most recent history entry, `from` entries back or further, that holds `pattern`.
+fn find_in_history(history: &History, pattern: &[u8], from: usize) -> Option<usize> {
+    (from..history.len()).find(|&back| {
+        history
+            .get(back)
+            .is_some_and(|line| pattern.is_empty() || line.windows(pattern.len()).any(|window| window == pattern))
+    })
 }
 
 fn final_key(byte: u8, parameter: u16) -> Option<Key> {

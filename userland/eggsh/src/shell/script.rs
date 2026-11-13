@@ -623,6 +623,9 @@ impl<S: System> Shell<'_, S> {
     }
 
     fn expand_pathnames(&mut self, words: &mut Words) -> Result<(), SyntaxError> {
+        if self.options.noglob {
+            return Ok(());
+        }
         for index in (words.assignment_count()..words.count()).rev() {
             if words.is_pattern(index) {
                 self.expand_pathname(words, index)?;
