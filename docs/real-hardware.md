@@ -50,6 +50,15 @@ Until then, a user can keep Secure Boot on by enrolling EggOS's own certificate 
 setup instead of turning it off. Arm boards mostly have no Secure Boot; Apple silicon Macs need their
 own reduced-security setting.
 
+Decided (owner, 2026-11-13): the upstream `shim`, then EggOS's own Rust loader. shim is the one
+exception to "no C": a third-party binary EggOS ships unchanged, while everything it starts stays EggOS's
+own Rust, signed with EggOS's key. Microsoft's rules (in force since 20 October 2025) exempt a reviewed
+upstream shim that hands over to an open-source loader from the yearly paid security audit (OCP SAFE)
+that any other loader, our own Rust one included, would need. shim costs nothing at run time (it checks
+one signature at power-on and is gone once EggOS takes over the machine); the chores it adds are
+updating it when it ships a security fix (then review and Microsoft's signature again) and keeping
+EggOS's key on a hardware token.
+
 Status: not started. The signing key, a Microsoft Partner Center account and an EV code-signing
 certificate are the owner's (CLAUDE.md, "Still the owner's"), and the work is planned for when EggOS is
 close to 1.0. Microsoft's 2011 UEFI CA was due to expire in 2026 and new signatures come from its 2023
