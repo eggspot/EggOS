@@ -5,6 +5,7 @@
 //! configuration space through [`ConfigSpace`], so it runs against fake registers in host tests.
 
 mod bar;
+pub mod hotplug;
 pub mod ecam;
 #[cfg(test)]
 pub(crate) mod fake;

@@ -41,6 +41,7 @@ pub mod intel_wifi;
 pub mod interrupts;
 pub mod message_interrupts;
 mod pci_bus;
+pub mod pci_hotplug;
 #[cfg(any(test, feature = "rtc"))]
 pub mod rtc;
 pub(crate) mod selftest;
@@ -746,6 +747,24 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
         report.discovery_error = Some(error);
     }
     probe_all(&mut probe, BUILTIN);
+    {
+        let BootProbe {
+            table,
+            memory,
+            ecam,
+            firmware,
+            ..
+        } = &mut probe;
+        let config = ecam
+            .as_ref()
+            .map(|ecam| ecam as &dyn ConfigSpace)
+            .or(*firmware);
+        if let Some(config) = config {
+            pci_hotplug::prepare(config, table, &mut |region| {
+                pci_hotplug::boot_map::<P>(memory, region)
+            });
+        }
+    }
     match (probe.ecam.take(), probe.firmware) {
         (Some(ecam), _) => interrupts::keep_configuration(alloc::boxed::Box::leak(alloc::boxed::Box::new(ecam))),
         (None, Some(firmware)) => interrupts::keep_configuration(firmware),

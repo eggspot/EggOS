@@ -76,6 +76,12 @@ pub fn keep_configuration(space: &'static dyn eggos_drivers::pci::ConfigSpace) {
     CONFIGURATION.lock().0 = Some(space);
 }
 
+/// The PCI configuration space probing kept ([`keep_configuration`]), for code that reads it
+/// after boot (hot-plug, D567).
+pub fn kept_configuration() -> Option<&'static dyn eggos_drivers::pci::ConfigSpace> {
+    CONFIGURATION.lock().0
+}
+
 /// Records that `line` reaches its CPU through `function`'s plain MSI capability, so [`steer`]
 /// can move it (D555). The record's few words stay allocated for good, as a handler's do.
 pub fn record_msi_function(line: DeviceLine, function: MsiFunction) {
