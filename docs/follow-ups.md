@@ -47,14 +47,14 @@ and is not listed per item.
 
 ## M6 Linux system-call ABI
 
-- [ ] Line discipline: `VREPRINT`, `VDISCARD`, `IXON` flow control, output flags the UART obeys, tab erase from the output's column (column tracking), a long echo written outside the lock (D100)
+- [x] Line discipline: `VREPRINT`, `VDISCARD`, `IXON` flow control, output flags the UART obeys, tab erase from the output's column (column tracking), a long echo written outside the lock (D100) — code written, unbuilt, D559
 - [x] `noexec` mounts (D103) — code written, unbuilt, D558
 - [x] `umask` per process (the `umask` call, inherited by `fork`, applied by every create) instead of the fixed 022 (D125) — code written, unbuilt, D557
 - [x] `sendmmsg` and `recvmmsg` (D138) — code written, unbuilt, D557
-- [ ] An out-of-memory killer that ends the largest program, and a second reserve tier for an ending program (D155)
+- [x] An out-of-memory killer that ends the largest program, and a second reserve tier for an ending program (D155) — code written, unbuilt, D559
 - [x] `RLIMIT_AS` and `RLIMIT_DATA` enforced by `brk` and `mmap` (D53, D155) — code written, unbuilt, D558
-- [ ] Netlink sockets (`NETLINK_ROUTE`: links, addresses, routes) so iproute2 and musl's `getifaddrs` work (D157)
-- [ ] `TCP_INFO` and `SO_LINGER`'s timeout (D158)
+- [x] Netlink sockets (`NETLINK_ROUTE`: links, addresses, routes) so iproute2 and musl's `getifaddrs` work (D157) — code written, unbuilt, D559
+- [x] `TCP_INFO` and `SO_LINGER`'s timeout (D158) — code written, unbuilt, D559
 - [ ] A vDSO (`AT_SYSINFO_EHDR`): `clock_gettime`, `gettimeofday`, `time`, `getcpu` without a system call, with the counter readable from user mode (D51, D73, D167)
 - [x] `ETXTBSY` for writes to a running program's file (D167) — code written, unbuilt, D558
 - [x] `/proc/<pid>/mountinfo`, `/proc/thread-self` and `/proc/<pid>/task/<tid>` directories (D168, D171) — code written, unbuilt, D558

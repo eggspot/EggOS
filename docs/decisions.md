@@ -26055,3 +26055,31 @@ the license, by an explicit instruction recorded here.
   attributes, `DN_MULTISHOT`), fed from the same events `inotify` reports, and sends `SIGIO`.
 - **Not yet.** Building and running; the opener's wait for a lease to be given up; per-thread names in
   `task/<tid>/comm` and a `thread-self` that names the calling thread; `MAP_GROWSDOWN` past 64 KiB.
+
+## D559 Linux calls, batch 3: the out-of-memory killer, `SO_LINGER` and `TCP_INFO`, the line discipline's flow control and reprint, and `NETLINK_ROUTE` sockets (M6; D100's, D155's, D157's and D158's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **The out-of-memory killer.** When a page fault finds no frame above the reserve, the program with
+  the most writable memory mapped, other than init, the kernel's own and the faulting one, is sent
+  `SIGKILL`; the faulting thread waits up to 100 ms for its memory to come back and tries the fault
+  again. Only when nothing else can be ended does the faulting program end, as before. The ending
+  program's second reserve tier is not built: the reserve stays the kernel's.
+- **`SO_LINGER` and `TCP_INFO`.** A stream socket keeps `SO_LINGER`; closing one with a linger of 0
+  resets the connection (RST) instead of closing it; a positive linger closes as before, without the
+  close waiting. `getsockopt(TCP_INFO)` answers the classic 104 bytes of `struct tcp_info` with
+  Linux's state number and the segment size; the counters EggOS's TCP does not keep read 0.
+- **The line discipline.** With `IXON`, `VSTOP` stops a program's console output and `VSTART` (or any
+  character with `IXANY`) starts it again: a writer waits, in 10 ms steps, until then, a signal or its
+  end. `VDISCARD` toggles throwing output away. `VREPRINT` echoes the line being edited again on a new
+  line. Output is processed as the settings say (`OPOST` with `ONLCR` turns `\n` into `\r\n`) and
+  followed for its column, so a tab is rubbed out to where the output put it after a prompt.
+- **`NETLINK_ROUTE`** (`linux::socket::netlink`). `socket(AF_NETLINK, SOCK_RAW or SOCK_DGRAM,
+  NETLINK_ROUTE)` makes an event-file socket whose requests are answered at once into its queue: link
+  dumps (`RTM_NEWLINK` with name, MTU, hardware and broadcast address, operational state), IPv4
+  address dumps (`RTM_NEWADDR` with address, broadcast and label) and route dumps (the default route
+  through the DHCP router and each interface's network route), each ended by `NLMSG_DONE`;
+  acknowledgments as `NLMSG_ERROR` 0; changes refused with `EPERM`. `sendmsg`, `sendto`, `recvmsg`,
+  `recvfrom`, `read`, `getsockname`, `getpeername` and `getsockopt` work; `bind` and `setsockopt` are
+  accepted; an empty queue reads `EAGAIN` (replies are queued before the request returns, so a
+  program that asks then reads never finds it empty).
+- **Not yet.** Building and running; the second reserve tier; a lingering close that waits; multicast
+  notifications of changes; IPv6 addresses (no IPv6 yet); a long echo written outside the lock.
