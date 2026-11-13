@@ -454,6 +454,7 @@ impl FilesWindow {
                 scroll: 0,
                 placeholder: "",
                 escape: Escape::Revert,
+                masked: false,
             },
             path_before: Text::new(),
             rename: None,
@@ -1429,6 +1430,7 @@ impl FilesWindow {
             scroll: 0,
             placeholder: "",
             escape: Escape::Revert,
+            masked: false,
         };
         self.select(Some(index));
         widget::keep_caret_visible(&mut field, self.rename_rect(index));
@@ -2301,7 +2303,9 @@ impl FilesWindow {
             }
             Kind::Bundle
             | Kind::Archive
-            | Kind::Program(manifest::Source::Windows | manifest::Source::Macos) => {
+            | Kind::Program(
+                manifest::Source::Windows | manifest::Source::Macos | manifest::Source::Android,
+            ) => {
                 let real = self.real_path(files, index).unwrap_or(path);
                 self.ask(Request::Install(real))
             }

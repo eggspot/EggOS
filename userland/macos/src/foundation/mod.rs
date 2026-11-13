@@ -56,6 +56,7 @@ mod timer;
 
 #[cfg(eggos_user)]
 pub use property_list::object_of_file as property_list_of_file;
+#[cfg(eggos_user)]
 pub use runtime::*;
 
 #[cfg(eggos_user)]

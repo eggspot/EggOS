@@ -101,7 +101,7 @@ mod tests {
     use super::*;
     use alloc::collections::VecDeque;
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct FakeController {
         space: [u8; 256],
         command: Option<u8>,
@@ -109,6 +109,19 @@ mod tests {
         output: Option<u8>,
         events: VecDeque<u8>,
         busy_polls: u32,
+    }
+
+    impl Default for FakeController {
+        fn default() -> Self {
+            Self {
+                space: [0; 256],
+                command: None,
+                arguments: VecDeque::new(),
+                output: None,
+                events: VecDeque::new(),
+                busy_polls: 0,
+            }
+        }
     }
 
     impl EcPorts for FakeController {

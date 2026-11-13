@@ -281,7 +281,8 @@ fn every_request_table_is_ordered_and_bounded() {
             ("xdg_activation_v1", 1),
             ("zwp_text_input_manager_v3", 1),
             ("org_kde_kwin_server_decoration_manager", 1),
-            ("wp_fractional_scale_manager_v1", 1)
+            ("wp_fractional_scale_manager_v1", 1),
+            ("zwp_linux_dmabuf_v1", 3)
         ]
     );
     assert_eq!(
@@ -294,7 +295,7 @@ fn every_request_table_is_ordered_and_bounded() {
     );
     assert_eq!(
         protocol::GLOBALS.map(|global| global.name),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     );
 }
 

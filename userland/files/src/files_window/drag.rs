@@ -6,6 +6,8 @@
 //! same targets.
 
 use super::*;
+use eggos_toolkit::canvas::Canvas;
+use eggos_toolkit::colour;
 
 /// How long the pointer rests on a folder before the window browses into it.
 pub const DRAG_SPRING_MS: u32 = 1000;

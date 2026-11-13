@@ -425,7 +425,7 @@ impl Desktop {
             return Some(self.shade_press(x, y, damage));
         }
         if self.phone.switcher && !on_bar {
-            return Some(self.switcher_press(x, y, damage, events));
+            return Some(self.phone_switcher_press(x, y, damage, events));
         }
         if self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y)) {
             let zone = (0..NAVIGATION_ZONES).find(|&index| self.navigation_zone(index).is_some_and(|zone| contains(zone, x, y)))?;
@@ -673,18 +673,10 @@ impl Desktop {
         };
         canvas.text(CLOCK_X, TEXT_Y, self.clock_text(), ink);
         let mut right = bar.width.saturating_sub(RIGHT_EDGE_FROM_SCREEN);
-        if let Some(state) = self.network.state {
+        if let Some(state) = self.network_state() {
             let x = right - NETWORK_SIDE;
             for rect in state.glyph().into_iter().flatten() {
-                canvas.fill(
-                    Rect::new(
-                        x + u32::from(rect.x),
-                        TEXT_Y + u32::from(rect.y),
-                        u32::from(rect.width),
-                        u32::from(rect.height),
-                    ),
-                    colour::TEXT,
-                );
+                canvas.fill(rect.placed(x, TEXT_Y, 1), colour::TEXT);
             }
             right = x - ITEM_GAP;
         }

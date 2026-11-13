@@ -80,7 +80,7 @@ impl Desktop {
         }
     }
 
-    fn switcher_entries(&self) -> Vec<usize> {
+    fn phone_switcher_entries(&self) -> Vec<usize> {
         let mut order = [0u8; MAX_WINDOWS];
         let count = self.switcher_order(&mut order);
         order[..count].iter().map(|&slot| usize::from(slot)).collect()
@@ -107,7 +107,7 @@ impl Desktop {
 
     /// A press in the switcher: a card's `Close` asks its window to close, the card shows it,
     /// `Close all` asks every window, anywhere else closes the switcher.
-    pub(super) fn switcher_press(
+    pub(super) fn phone_switcher_press(
         &mut self,
         x: u32,
         y: u32,
@@ -115,7 +115,7 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         damage.add(self.screen());
-        let entries = self.switcher_entries();
+        let entries = self.phone_switcher_entries();
         if !entries.is_empty() && contains(self.close_all_button(entries.len()), x, y) {
             for slot in entries {
                 if self.window_at(slot).closable {
@@ -148,7 +148,7 @@ impl Desktop {
         if !self.phone.switcher {
             return false;
         }
-        let count = self.switcher_entries().len() as u32;
+        let count = self.phone_switcher_entries().len() as u32;
         let content = count * (CARD.1 + CARD_GAP) + CLOSE_ALL_HEIGHT + 2 * CARD_GAP;
         let most = content.saturating_sub(self.layout.work_area.height);
         let step = notches.unsigned_abs() * WHEEL_STEP;
@@ -347,7 +347,7 @@ impl Desktop {
     fn draw_switcher_cards(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents) {
         let work = self.layout.work_area;
         canvas.fill(work, colour::WINDOW_BACKGROUND);
-        let entries = self.switcher_entries();
+        let entries = self.phone_switcher_entries();
         if entries.is_empty() {
             let text = "No open apps.";
             let x = (self.width - text.len() as u32 * GLYPH_WIDTH as u32) / 2;

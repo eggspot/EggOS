@@ -189,8 +189,9 @@ impl Edit {
         match start {
             -1 => self.anchor = self.caret,
             start => {
-                self.anchor = at(start);
-                self.caret = at(end);
+                let (anchor, caret) = (at(start), at(end));
+                self.anchor = anchor;
+                self.caret = caret;
             }
         }
         self.scroll(view);

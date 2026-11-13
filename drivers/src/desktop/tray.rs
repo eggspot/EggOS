@@ -62,6 +62,9 @@ pub(super) struct Tray {
     overflow_open: bool,
     overflow_hover: Option<usize>,
     last_pressed: Option<u8>,
+    balloon: [u8; BALLOON_BYTES],
+    balloon_length: usize,
+    balloon_owner: Option<(usize, u32)>,
 }
 
 impl Default for Tray {

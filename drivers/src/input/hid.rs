@@ -96,7 +96,8 @@ impl BootKeyboard {
         }
         self.previous.copy_from_slice(report);
         if sent > 0 {
-            send(SYNC);
+            event(SYNC);
+            sent += 1;
         }
         sent
     }
@@ -151,7 +152,8 @@ impl BootMouse {
             }
         }
         if sent > 0 {
-            send(SYNC);
+            event(SYNC);
+            sent += 1;
         }
         sent
     }

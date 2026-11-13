@@ -2265,7 +2265,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Kind::List(list) => self.list_key(id, &list, code, unused),
             Kind::MenuButton(_) => self.menu_button_key(id, code),
             Kind::Table(table) => self.table_key(id, &table, code, unused),
-            Kind::Outline(outline) => self.outline_key(id, &outline, code, character, unused),
+            Kind::Outline(outline) => {
+                self.outline_key(id, &outline, code, char::from_u32(character), unused)
+            }
             Kind::TextArea(_) => self.area_key(id, code, character, command, time_ms, unused),
             Kind::TextField(_) => self.field_key(id, code, character, command, time_ms, unused),
             _ => unused,

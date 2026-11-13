@@ -187,6 +187,7 @@ pub mod colour {
     pub const ICON_WINDOWS: u32 = 0x004f_8fe0;
     pub const ICON_MAC: u32 = 0x00c9_d1db;
     pub const ICON_LINUX: u32 = 0x00e2_b341;
+    pub const ICON_ANDROID: u32 = 0x003d_dc84;
     pub const ICON_DARK: u32 = 0x000b_0e13;
     pub const ICON_PAGE: u32 = 0x00f6_f1e7;
     pub const ICON_PAGE_EDGE: u32 = 0x00c9_d1db;

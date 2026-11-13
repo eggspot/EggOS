@@ -100,6 +100,7 @@ mod uname;
 mod utilities;
 #[cfg(any(test, eggos_user))]
 mod wc;
+#[cfg(any(test, eggos_user))]
 mod wifi;
 #[cfg(any(test, eggos_user))]
 mod window_capture;

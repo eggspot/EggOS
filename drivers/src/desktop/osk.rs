@@ -615,7 +615,7 @@ impl OskState {
         if with_shift && self.shift != Shift::Off {
             bits |= Modifiers::SHIFT.bits();
         }
-        Modifiers(bits)
+        Modifiers::from_bits(bits)
     }
 
     fn after_character(&mut self) {
@@ -1205,7 +1205,7 @@ impl Desktop {
                 match as_key {
                     Some((code, modifiers)) => self.osk.output.push(ScreenKey::Key {
                         code,
-                        modifiers: Modifiers(modifiers.bits() | self.osk.modifiers(false).bits()),
+                        modifiers: Modifiers::from_bits(modifiers.bits() | self.osk.modifiers(false).bits()),
                     }),
                     None => self.osk.output.push(ScreenKey::Character(character)),
                 }
@@ -1288,7 +1288,7 @@ impl Desktop {
             if typist.character_of(code, held) == u32::from(wanted) {
                 self.osk.output.push(ScreenKey::Key {
                     code,
-                    modifiers: Modifiers(modifiers.bits() | held.bits()),
+                    modifiers: Modifiers::from_bits(modifiers.bits() | held.bits()),
                 });
                 return;
             }

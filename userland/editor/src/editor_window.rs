@@ -273,6 +273,7 @@ fn field(placeholder: &'static str) -> Field {
         scroll: 0,
         placeholder,
         escape: Escape::Clear,
+        masked: false,
     }
 }
 
