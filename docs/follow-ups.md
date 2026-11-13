@@ -108,11 +108,11 @@ and is not listed per item.
 - [ ] TLS: Ed25519 and ECDSA P-521 certificates (D159)
 - [ ] Text Editor: syntax colouring (D149)
 - [ ] D-Bus: a session bus of our own (`eggos-dbus`, the wire protocol, `org.freedesktop.DBus` names) for single-instance apps, portals and accessibility (D176)
-- [ ] eggsh: arithmetic expansion `$((...))` and `let` (D182)
-- [ ] eggsh: `trap`, `getopts`, `printf`, `exec`, `command`, `readonly`, `umask`, `times` built-ins (D182)
-- [ ] eggsh: aliases (`alias`, `unalias`) and `set -u`, `-x`, `-f`, `-n` with `$-` (D182)
-- [ ] eggsh: `disown`, `suspend`, `set -b`, and `history` with `^R` reverse search (D181)
-- [ ] `shutdown` with a delay and a message, and `wall` (D183)
+- [x] eggsh: arithmetic expansion `$((...))` and `let` (D182) — code written, unbuilt, D572
+- [x] eggsh: `trap`, `getopts`, `printf`, `exec`, `command`, `readonly`, `umask`, `times` built-ins (D182) — code written, unbuilt, D572
+- [x] eggsh: aliases (`alias`, `unalias`) and `set -u`, `-x`, `-f`, `-n` with `$-` (D182) — code written, unbuilt, D572
+- [x] eggsh: `disown`, `suspend`, `set -b`, and `history` with `^R` reverse search (D181) — code written, unbuilt, D572
+- [x] `shutdown` with a delay and a message, and `wall` (D183) — code written, unbuilt, D572
 - [ ] MCP over the network: `Mcp-Session-Id`, the `GET` event stream, more than one connection at a time, per-address limits (D193)
 - [ ] MCP over the network: mDNS advertisement of the agent endpoint (`_mcp._tcp`) (D193)
 - [ ] MCP: `subscriptions/listen` and `input_required` with a signed `requestState` (D193)

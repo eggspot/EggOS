@@ -26396,3 +26396,36 @@ the license, by an explicit instruction recorded here.
   channel subsystem, polled (D322), whose I/O interruptions float to any enabled CPU anyway;
   SPARC64's devices have no interrupts yet (D326).
 - **Not yet.** Building and running; more than eight queued CPUs on POWER; NUMA nodes.
+
+## D572 eggsh grows its missing pieces, and `shutdown` and `wall` (M10; D181's, D182's and D183's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from POSIX's shell chapter)
+
+- **Arithmetic.** `arithmetic::evaluate` works out POSIX shell arithmetic (64-bit, wrapping;
+  decimal, octal and hexadecimal; variables as integers; C's operators and precedence,
+  assignments, `?:` and `,`; the branch not taken assigns nothing). `$((...))` expands its
+  parameters first, then evaluates; `let` evaluates each operand.
+- **Built-ins.** `trap` (signals recorded by a handler and run between commands; `EXIT` as
+  the shell ends or `exec`s; `-` and an empty action), `getopts` (with `OPTARG`, `OPTIND` and a
+  leading `:`), `printf` (`%s %b %c %d %i %u %o %x %X %%`, `-`, `0`, widths, the format reused),
+  `exec` (with no program, a no-op that keeps the redirections), `command` (`-v`, `-V`,
+  skipping functions and aliases), `readonly` (assignments and `unset` refuse), `umask` (octal
+  and `-S`), `times`, `alias`/`unalias` (`-a`), `disown`, `suspend` (a login shell needs `-f`)
+  and `history`. The commands registry defines them (41 built-ins).
+- **Options.** `set -u` (an unset parameter's expansion fails), `-x` (`+ words` on standard
+  error), `-f` (no pathname expansion), `-n` (read, not run, in scripts), `-b` (job changes told
+  before each command) and `$-` with their letters (`e` and `i` too).
+- **Aliases** expand a command's first word: the alias's text runs with the other words
+  quoted after it, nested at most eight deep.
+- **History search.** `^R` at the prompt searches the history backwards as the pattern grows;
+  `^R` again looks further back, backspace shortens the pattern, `^G` or Escape gives up, Enter
+  runs the line found and other keys take it into the editor.
+- **`shutdown [-P|-r|-H] [-c] [-k] [time] [message]`** waits until `now`, `+minutes` or
+  `hh:mm` (UTC), warning every terminal (at the start, ten minutes before and each minute after),
+  keeps its process id in `/run/shutdown.pid` for `-c`, then asks init as `poweroff`, `reboot` or
+  `halt` do. **`wall`** writes a message (or standard input) on the console and every
+  `/dev/pts` terminal.
+- **Decided by research.** Aliases expanded at run time on the first word rather than in the
+  parser: the parser keeps no alias table, and the common use (a word naming a command line) is
+  the same; the difference (aliases that make syntax, a trailing space expanding the next word)
+  is noted below.
+- **Not yet.** Building and running; aliases that make syntax (`alias if=…`) and the
+  trailing-space rule; `printf`'s `%f`/`%e`; `shutdown`'s times in the local zone.
