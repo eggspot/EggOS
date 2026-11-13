@@ -104,6 +104,11 @@ impl Device {
 
 /// A character device's file type bits (`S_IFCHR`).
 pub const S_IFCHR: u32 = 0o020000;
+/// A block device's file type bits (`S_IFBLK`, D562): the disks in `/dev`.
+pub const S_IFBLK: u32 = 0o060000;
+/// Linux's major number for virtio disks (`vda`), and the minors each disk's partitions take.
+const VIRTIO_BLOCK_MAJOR: u32 = 254;
+const DISK_MINORS: u32 = 16;
 
 /// A pipe's file type bits (`S_IFIFO`).
 pub const S_IFIFO: u32 = 0o010000;
@@ -166,7 +171,15 @@ pub fn node_status(node: Node) -> Status {
         NodeKind::Socket => S_IFSOCK,
         NodeKind::SymbolicLink => S_IFLNK,
     };
-    let (represented_major, represented_minor) = node.character_device().unwrap_or((0, 0));
+    let disk = crate::vfs::devfs::disk_index(node);
+    let file_type = match disk {
+        Some(_) => S_IFBLK,
+        None => file_type,
+    };
+    let (represented_major, represented_minor) = match disk {
+        Some(index) => (VIRTIO_BLOCK_MAJOR, index as u32 * DISK_MINORS),
+        None => node.character_device().unwrap_or((0, 0)),
+    };
     Status {
         device: Device { major, minor },
         inode: attributes.file_id,

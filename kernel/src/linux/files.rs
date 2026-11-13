@@ -664,8 +664,7 @@ fn copy_out_through_buffer<P: Platform>(
         copied += length as u64;
     }
     if copied > 0 {
-        node.file_system()
-            .note_read(node.id(), super::file_changes::now::<P>());
+        note_read::<P>(node);
     }
     Ok(copied)
 }
@@ -1013,6 +1012,20 @@ fn change_directory(thread: &LinuxThread, node: Node) -> Result<u64, Errno> {
     }
     thread.working_directory().set(node);
     Ok(0)
+}
+
+
+/// Moves `node`'s access time for a read as its mount asks (D534, D562): `relatime` by
+/// default, never under `noatime`, on every read under `strictatime`.
+pub fn note_read<P: Platform>(node: Node) {
+    let now = super::file_changes::now::<P>();
+    match vfs::access_times(node) {
+        vfs::AccessTimes::Never => {}
+        vfs::AccessTimes::Relative => node.file_system().note_read(node.id(), now),
+        vfs::AccessTimes::Strict => {
+            let _ = node.file_system().set_accessed(node.id(), now);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -37,7 +37,7 @@ pub mod initramfs;
 pub mod shared_pages;
 pub mod tmpfs;
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 
 /// The longest path, its terminating NUL included (`PATH_MAX`).
 pub const PATH_MAX: usize = 4096;
@@ -441,6 +441,11 @@ pub trait FileSystem: Sync + Send {
     }
     /// Notes that `node` was read at `now`, for a file system that keeps access times.
     fn note_read(&self, _node: u64, _now: u64) {}
+    /// Sets when `node` was last read (`utimensat`, `strictatime`, D562); a file system that
+    /// keeps no access time has nothing to set.
+    fn set_accessed(&self, _node: u64, _time: u64) -> Result<(), Refused> {
+        Ok(())
+    }
     /// Entry `position` of `directory`, in a stable order, `.` and `..` not included.
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry>;
     /// Puts every change made so far on stable storage (`sync`, `syncfs`, `fsync`); a file
@@ -937,9 +942,43 @@ pub const MAX_MOUNTS: usize = 16;
 struct Mounted {
     point: Node,
     root: Node,
-    no_set_ids: bool,
+    no_set_ids: AtomicBool,
     /// Programs on it may not run (`noexec`, D558).
-    no_execution: bool,
+    no_execution: AtomicBool,
+    /// Its [`AccessTimes`], as a `u8` (D562).
+    access_times: AtomicU8,
+}
+
+/// When reading a file on a mounted file system moves its access time (D562), as Linux's
+/// mount options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AccessTimes {
+    /// `relatime`, the default: when it is not after the last change or is a day old.
+    Relative = 0,
+    /// `noatime`: never.
+    Never = 1,
+    /// `strictatime`: on every read.
+    Strict = 2,
+}
+
+impl AccessTimes {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Never,
+            2 => Self::Strict,
+            _ => Self::Relative,
+        }
+    }
+
+    /// The mount option `/proc/mounts` names it with.
+    pub fn option(self) -> &'static str {
+        match self {
+            Self::Relative => "relatime",
+            Self::Never => "noatime",
+            Self::Strict => "strictatime",
+        }
+    }
 }
 
 static MOUNTS: [AtomicPtr<Mounted>; MAX_MOUNTS] =
@@ -1033,26 +1072,76 @@ fn mount_directory_as(
 /// Whether programs on `node`'s file system may run: it was not mounted `noexec` (D558).
 pub fn allows_execution(node: Node) -> bool {
     !mounts().any(|mounted| {
-        mounted.no_execution && core::ptr::addr_eq(mounted.root.file_system, node.file_system)
+        mounted.no_execution.load(Ordering::Relaxed)
+            && core::ptr::addr_eq(mounted.root.file_system, node.file_system)
     })
 }
 
 /// Whether the file system mounted on `point` refuses to run programs, for `/proc/mounts`.
 pub fn refuses_execution_at(point: Node) -> bool {
-    mounts().any(|mounted| mounted.point == point && mounted.no_execution)
+    mounts().any(|mounted| mounted.point == point && mounted.no_execution.load(Ordering::Relaxed))
+}
+
+/// When reading `node` moves its access time: its file system's mount's [`AccessTimes`],
+/// [`AccessTimes::Relative`] for the root file system (D562).
+pub fn access_times(node: Node) -> AccessTimes {
+    mounts()
+        .find(|mounted| core::ptr::addr_eq(mounted.root.file_system, node.file_system))
+        .map_or(AccessTimes::Relative, |mounted| {
+            AccessTimes::from_u8(mounted.access_times.load(Ordering::Relaxed))
+        })
+}
+
+/// The [`AccessTimes`] of the file system mounted on `point`, for `/proc/mounts`.
+pub fn access_times_at(point: Node) -> AccessTimes {
+    mounts()
+        .find(|mounted| mounted.point == point)
+        .map_or(AccessTimes::Relative, |mounted| {
+            AccessTimes::from_u8(mounted.access_times.load(Ordering::Relaxed))
+        })
+}
+
+/// What a remount changes on a mounted file system (Linux's `MS_REMOUNT`, D562).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountOptions {
+    /// `nosuid`.
+    pub no_set_ids: bool,
+    /// `noexec`.
+    pub no_execution: bool,
+    /// `relatime`, `noatime` or `strictatime`.
+    pub access_times: AccessTimes,
+}
+
+/// Changes the options of the file system mounted on `point`: `NoMountPoint` when nothing is
+/// mounted there (the root file system's are fixed).
+pub fn remount(point: Node, options: MountOptions) -> Result<(), MountError> {
+    let mounted = mounts()
+        .find(|mounted| mounted.point == point || mounted.root == point)
+        .ok_or(MountError::NoMountPoint)?;
+    mounted
+        .no_set_ids
+        .store(options.no_set_ids, Ordering::Relaxed);
+    mounted
+        .no_execution
+        .store(options.no_execution, Ordering::Relaxed);
+    mounted
+        .access_times
+        .store(options.access_times as u8, Ordering::Relaxed);
+    Ok(())
 }
 
 /// Whether programs on `node`'s file system may take their set-user-id and set-group-id bits:
 /// it was not mounted [`mount_without_set_ids`].
 pub fn allows_set_ids(node: Node) -> bool {
     !mounts().any(|mounted| {
-        mounted.no_set_ids && core::ptr::addr_eq(mounted.root.file_system, node.file_system)
+        mounted.no_set_ids.load(Ordering::Relaxed)
+            && core::ptr::addr_eq(mounted.root.file_system, node.file_system)
     })
 }
 
 /// Whether the file system mounted on `point` ignores set-id bits, for `/proc/mounts`.
 pub fn ignores_set_ids_at(point: Node) -> bool {
-    mounts().any(|mounted| mounted.point == point && mounted.no_set_ids)
+    mounts().any(|mounted| mounted.point == point && mounted.no_set_ids.load(Ordering::Relaxed))
 }
 
 /// Mounts `file_system`, whose root is a regular file, over the regular file `path` names from
@@ -1081,8 +1170,9 @@ fn add_mount(
     let mounted = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(Mounted {
         point,
         root: Node::root_of(file_system),
-        no_set_ids,
-        no_execution,
+        no_set_ids: AtomicBool::new(no_set_ids),
+        no_execution: AtomicBool::new(no_execution),
+        access_times: AtomicU8::new(AccessTimes::Relative as u8),
     }));
     for slot in &MOUNTS {
         if slot

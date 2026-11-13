@@ -230,6 +230,13 @@ pub fn is_rtc(node: Node) -> bool {
     node.file_system().device() == DEVICE && node.id() == RTC
 }
 
+/// The disk `node` is, as a block device (D562): its index among the disks.
+pub fn disk_index(node: Node) -> Option<usize> {
+    (node.file_system().device() == DEVICE)
+        .then(|| disk_of(node.id()))
+        .flatten()
+}
+
 /// Whether `node` is `/dev/android_log`, the Android log.
 pub fn is_android_log(node: Node) -> bool {
     node.file_system().device() == DEVICE && node.id() == ANDROID_LOG

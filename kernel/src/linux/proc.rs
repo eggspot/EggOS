@@ -572,11 +572,14 @@ pub fn mounts_text() -> Option<Vec<u8>> {
             (false, true) => ",noexec",
             (false, false) => "",
         };
+        let access_times = crate::vfs::access_times_at(point).option();
         let written = text
             .bytes(kind.as_bytes())
             .and_then(|()| text.bytes(b" "))
             .and_then(|()| text.bytes(&path[start..]))
-            .and_then(|()| writeln!(text, " {kind} {access}{set_ids} 0 0").ok());
+            .and_then(|()| {
+                writeln!(text, " {kind} {access}{set_ids},{access_times} 0 0").ok()
+            });
         complete &= written.is_some();
     });
     complete.then_some(text.0)
@@ -999,6 +1002,8 @@ fn mountinfo_text() -> Option<Vec<u8>> {
         if crate::vfs::refuses_execution_at(point) {
             options.push_str(",noexec");
         }
+        options.push(',');
+        options.push_str(crate::vfs::access_times_at(point).option());
         let written = write!(text, "{number} 1 {major}:{minor} / ")
             .ok()
             .and_then(|()| text.bytes(&path[start..]))

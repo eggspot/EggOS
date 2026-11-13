@@ -539,6 +539,10 @@ impl<D: Disk + Send + 'static> FileSystem for Folder<D> {
         let _ = self.changing(|volume| volume.note_read(node, now));
     }
 
+    fn set_accessed(&self, node: u64, time: u64) -> Result<(), Refused> {
+        self.changing(|volume| volume.set_accessed(node, time))
+    }
+
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         let entry = self.volume().entry(directory, position).ok()??;
         Some(DirectoryEntry {

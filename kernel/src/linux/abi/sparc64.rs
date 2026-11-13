@@ -233,6 +233,7 @@ pub mod number {
     pub const PTRACE: u64 = 26;
     pub const FANOTIFY_INIT: u64 = 329;
     pub const FANOTIFY_MARK: u64 = 330;
+    pub const MOUNT: u64 = 167;
     pub const LAST: u64 = FCHMODAT2;
     const NOT_ON_SPARC64: u64 = 0x1_0000;
 }

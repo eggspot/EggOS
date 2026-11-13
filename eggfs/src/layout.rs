@@ -84,7 +84,14 @@ pub struct Geometry {
     pub data_start: u32,
     pub created: u64,
     pub label: [u8; MAX_LABEL],
+    /// The superblock's flags: [`BACKUP_SUPERBLOCK`] (D562).
+    pub flags: u32,
 }
+
+/// The volume keeps a copy of its superblock in its last block, which formatting reserved, for
+/// the checker to repair a damaged one from (D562).
+pub const BACKUP_SUPERBLOCK: u32 = 1;
+const FLAGS_AT: usize = 72;
 
 const SUPERBLOCK_CHECKSUM: usize = BLOCK_SIZE - 4;
 
@@ -122,6 +129,7 @@ impl Geometry {
             data_start,
             created,
             label: [0; MAX_LABEL],
+            flags: BACKUP_SUPERBLOCK,
         };
         geometry.is_consistent().then_some(geometry)
     }
@@ -154,12 +162,19 @@ impl Geometry {
             && self.journal_blocks >= MIN_JOURNAL_BLOCKS
     }
 
+    /// Where the backup superblock is, if the volume keeps one (D562): its last block.
+    pub fn backup_superblock(&self) -> Option<u32> {
+        (self.flags & BACKUP_SUPERBLOCK != 0).then(|| self.blocks - 1)
+    }
+
     pub fn transaction_capacity(&self) -> u32 {
         (self.journal_blocks - 2).min(DESCRIPTOR_CAPACITY)
     }
 
     pub fn is_data_block(&self, block: u32) -> bool {
-        block >= self.data_start && block < self.blocks
+        block >= self.data_start
+            && block < self.blocks
+            && Some(block) != self.backup_superblock()
     }
 
     pub fn inode_location(&self, inode: u32) -> (u32, usize) {
@@ -191,6 +206,7 @@ impl Geometry {
             put_u32(&mut block[..], 24 + 4 * index, value);
         }
         put_u64(&mut block[..], 64, self.created);
+        put_u32(&mut block[..], FLAGS_AT, self.flags);
         block[LABEL_AT..LABEL_AT + MAX_LABEL].copy_from_slice(&self.label);
         let checksum = crc32c(&block[..SUPERBLOCK_CHECKSUM]);
         put_u32(&mut block[..], SUPERBLOCK_CHECKSUM, checksum);
@@ -223,6 +239,7 @@ impl Geometry {
             label: block[LABEL_AT..LABEL_AT + MAX_LABEL]
                 .try_into()
                 .unwrap_or([0; MAX_LABEL]),
+            flags: u32_at(block, FLAGS_AT),
         };
         geometry.is_consistent().then_some(geometry)
     }

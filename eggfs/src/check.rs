@@ -325,6 +325,9 @@ impl<D: Disk> Volume<D> {
         for block in 0..geometry.data_start {
             used.set(block);
         }
+        if let Some(backup) = geometry.backup_superblock() {
+            used.set(backup);
+        }
         let mut seen = Bits::new(geometry.inodes);
         seen.set(0);
         seen.set(ROOT_INODE);

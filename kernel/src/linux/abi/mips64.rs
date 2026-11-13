@@ -235,6 +235,7 @@ pub mod number {
     pub const PTRACE: u64 = 5099;
     pub const FANOTIFY_INIT: u64 = 5295;
     pub const FANOTIFY_MARK: u64 = 5296;
+    pub const MOUNT: u64 = 5160;
     pub const LAST: u64 = FCHMODAT2;
     /// Not in n64: past [`LAST`].
     pub const TIME: u64 = LAST + 1;

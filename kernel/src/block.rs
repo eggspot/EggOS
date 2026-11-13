@@ -89,12 +89,15 @@ pub struct DiskFacts {
     pub read_only: bool,
     /// Where a file system holding it is mounted, `None` while none does.
     pub mounted_on: Option<&'static str>,
+    /// The mounted volume's label, up to 64 bytes, empty for none (D562).
+    pub label: [u8; 64],
 }
 
 const NO_DISK: DiskFacts = DiskFacts {
     present: false,
     sectors: 0,
     read_only: false,
+    label: [0; 64],
     mounted_on: None,
 };
 
@@ -141,6 +144,16 @@ pub fn put_back(index: usize, disk: Box<dyn BlockDevice>) {
 pub fn mark_mounted(index: usize, place: &'static str) {
     if let Some(facts) = FACTS.lock().get_mut(index) {
         facts.mounted_on = Some(place);
+    }
+}
+
+/// Records the label of the volume mounted from disk `index` (D562), shown in
+/// `/proc/driver/disks`.
+pub fn set_label(index: usize, label: &[u8]) {
+    if let Some(facts) = FACTS.lock().get_mut(index) {
+        let length = label.len().min(facts.label.len());
+        facts.label = [0; 64];
+        facts.label[..length].copy_from_slice(&label[..length]);
     }
 }
 
@@ -293,7 +306,13 @@ pub fn disks_text() -> Option<Vec<u8>> {
     {
         let access = if facts.read_only { "ro" } else { "rw" };
         let place = facts.mounted_on.unwrap_or("-");
-        writeln!(text, "{name} {} {access} {place}", facts.sectors).ok()?;
+        write!(text, "{name} {} {access} {place}", facts.sectors).ok()?;
+        let length = facts.label.iter().position(|&byte| byte == 0).unwrap_or(facts.label.len());
+        if length > 0 {
+            let label = core::str::from_utf8(&facts.label[..length]).unwrap_or("?");
+            write!(text, " {label}").ok()?;
+        }
+        writeln!(text).ok()?;
     }
     Some(text.0)
 }

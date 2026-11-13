@@ -111,8 +111,12 @@ pub fn format_with<D: Disk + ?Sized>(
     marker[..8].copy_from_slice(&FORMATTING_MAGIC);
     disk.write(0, &marker[..]).map_err(io)?;
     disk.flush().map_err(io)?;
+    let usable = match geometry.backup_superblock() {
+        Some(backup) => backup,
+        None => geometry.blocks,
+    };
     for index in 0..geometry.block_bitmap_blocks {
-        let block = bitmap_block(index, geometry.data_start, geometry.blocks);
+        let block = bitmap_block(index, geometry.data_start, usable);
         disk.write(u64::from(geometry.block_bitmap + index), &block[..])
             .map_err(io)?;
     }
@@ -129,7 +133,11 @@ pub fn format_with<D: Disk + ?Sized>(
     root.encode(ROOT_INODE, &mut table[at..]);
     disk.write(u64::from(block), &table[..]).map_err(io)?;
     disk.flush().map_err(io)?;
-    disk.write(0, &geometry.encode()[..]).map_err(io)?;
+    let superblock = geometry.encode();
+    if let Some(backup) = geometry.backup_superblock() {
+        disk.write(u64::from(backup), &superblock[..]).map_err(io)?;
+    }
+    disk.write(0, &superblock[..]).map_err(io)?;
     disk.flush().map_err(io)
 }
 

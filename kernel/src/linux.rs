@@ -79,6 +79,7 @@ pub mod limits;
 pub mod memfd;
 pub mod memory;
 pub mod memory_devices;
+pub mod mount;
 pub mod out_of_memory;
 pub mod pidfd;
 pub mod pipe;
@@ -163,6 +164,7 @@ pub mod number {
             RENAME,
             UMASK,
             PTRACE,
+            MOUNT,
             FANOTIFY_INIT,
             FANOTIFY_MARK,
             CAPGET,
@@ -964,6 +966,7 @@ fn out_of_line_result<P: Platform>(
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UMASK => Ok(file_changes::umask(process, first)),
         number::PTRACE => ptrace::ptrace(process, thread, context.syscall_arguments()),
+        number::MOUNT => mount::mount(process, second, fourth),
         number::FANOTIFY_INIT => fanotify::fanotify_init(process, thread, first, second),
         number::FANOTIFY_MARK => {
             let arguments = context.syscall_arguments();
@@ -1299,6 +1302,43 @@ pub fn wait_for_end<P: Platform>(process: &Process<P>) -> Option<ProcessExit> {
     process.exit_status()
 }
 
+/// The block-device `ioctl`s Linux tools ask a disk (D562): `BLKGETSIZE64` (bytes),
+/// `BLKGETSIZE` (512-byte sectors), `BLKSSZGET` and `BLKBSZGET` (512 and 4096), `BLKFLSBUF`
+/// (writes the disk's cache out), `BLKROGET`.
+fn block_ioctl<P: Platform>(
+    process: &Process<P>,
+    disk: usize,
+    request: u64,
+    argument: u64,
+) -> Result<u64, Errno> {
+    const BLKROGET: u32 = 0x125e;
+    const BLKGETSIZE: u32 = 0x1260;
+    const BLKFLSBUF: u32 = 0x1261;
+    const BLKSSZGET: u32 = 0x1268;
+    const BLKBSZGET: u32 = abi::block::BLKBSZGET;
+    const BLKGETSIZE64: u32 = abi::block::BLKGETSIZE64;
+    let facts = crate::block::facts(disk);
+    let write = |bytes: &[u8]| {
+        process
+            .write_user_memory(argument, bytes)
+            .map(|()| 0)
+            .map_err(|_| Errno::EFAULT)
+    };
+    match request as u32 {
+        BLKGETSIZE64 => write(&(facts.sectors * 512).to_ne_bytes()),
+        BLKGETSIZE => {
+            let mut word = [0u8; 8];
+            abi::put_word(&mut word, facts.sectors);
+            write(&word[..abi::WORD_BYTES])
+        }
+        BLKSSZGET => write(&512i32.to_ne_bytes()),
+        BLKBSZGET => write(&4096i32.to_ne_bytes()),
+        BLKROGET => write(&i32::from(facts.read_only).to_ne_bytes()),
+        BLKFLSBUF => crate::block::flush(disk).map(|()| 0).map_err(|_| Errno::EIO),
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
 #[inline(never)]
 fn exit<P: Platform>(
     process: &Process<P>,
@@ -1627,6 +1667,9 @@ fn ioctl<P: Platform>(
         }
         FileKind::Regular(node) if crate::vfs::devfs::is_rtc(*node) => {
             rtc_device::ioctl(process, request, argument)
+        }
+        FileKind::Regular(node) if crate::vfs::devfs::disk_index(*node).is_some() => {
+            block_ioctl(process, crate::vfs::devfs::disk_index(*node).unwrap_or(0), request, argument)
         }
         FileKind::Pipe(end) if request as u32 == terminal::request::FIONREAD => {
             let available = i32::try_from(end.available()).unwrap_or(i32::MAX);

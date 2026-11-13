@@ -274,6 +274,7 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
         if wanted {
             match mount_eggfs::<P, _>(disk, blank_writable, console)? {
                 Ok(mut volume) => {
+                    block::set_label(index, volume.label());
                     let is_work = eggos_eggfs::is_work_disk(&mut volume) == Ok(true);
                     let placed = match (is_work, work, persistent) {
                         (true, false, _) => attach_work::<P, _>(volume, console)?,

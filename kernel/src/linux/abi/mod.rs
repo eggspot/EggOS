@@ -67,6 +67,12 @@ pub use x86_64::*;
 mod riscv_misaligned;
 
 mod ptrace_registers;
+
+/// The block-device `ioctl` numbers whose size field follows the word width (D562).
+pub mod block {
+    pub const BLKBSZGET: u32 = 0x8000_1270 | (super::WORD_BYTES as u32) << 16;
+    pub const BLKGETSIZE64: u32 = 0x8000_1272 | (super::WORD_BYTES as u32) << 16;
+}
 pub use ptrace_registers::{
     PTRACE_REGISTERS_BYTES, SINGLE_STEPS, ptrace_registers, set_ptrace_registers, set_single_step,
 };
@@ -514,6 +520,7 @@ pub mod generic {
         pub const PTRACE: u64 = 117;
         pub const FANOTIFY_INIT: u64 = 262;
         pub const FANOTIFY_MARK: u64 = 263;
+        pub const MOUNT: u64 = 40;
         pub const LAST: u64 = FCHMODAT2;
     }
 

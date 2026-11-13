@@ -811,9 +811,9 @@ fn change_mode<P: Platform>(process: &Process<P>, node: Node, mode: u64) -> Resu
     Ok(0)
 }
 
-/// `utimensat(dirfd, path, times, flags)`: sets when a file last changed, the second of the
-/// two `struct timespec`s at `times` (`UTIME_NOW` or now when `times` is null, `UTIME_OMIT`
-/// for no change); the access time is not kept. A null `path` names `dirfd` itself. As Linux:
+/// `utimensat(dirfd, path, times, flags)`: sets when a file was last read and last changed,
+/// the two `struct timespec`s at `times` (`UTIME_NOW` or now when `times` is null,
+/// `UTIME_OMIT` for no change; D562). A null `path` names `dirfd` itself. As Linux:
 /// `EINVAL` for a flag other than `AT_SYMLINK_NOFOLLOW` or `AT_EMPTY_PATH`, or a bad
 /// `tv_nsec`, `EFAULT`, the path's errors, `EROFS` on a file system that cannot be changed.
 pub fn utimensat<P: Platform>(
@@ -828,8 +828,8 @@ pub fn utimensat<P: Platform>(
     if flags & !(at::SYMLINK_NOFOLLOW | at::EMPTY_PATH) != 0 {
         return Err(Errno::EINVAL);
     }
-    let modified = match times {
-        0 => Some(now::<P>()),
+    let (accessed, modified) = match times {
+        0 => (Some(now::<P>()), Some(now::<P>())),
         _ => {
             let mut bytes = [0u8; 32];
             process
@@ -844,11 +844,12 @@ pub fn utimensat<P: Platform>(
                     return Err(Errno::EINVAL);
                 }
             }
-            match field(24) {
+            let time = |seconds: usize| match field(seconds + 8) {
                 UTIME_OMIT => None,
                 UTIME_NOW => Some(now::<P>()),
-                _ => Some(field(16).max(0) as u64),
-            }
+                _ => Some(field(seconds).max(0) as u64),
+            };
+            (time(0), time(16))
         }
     };
     let node = match path {
@@ -858,12 +859,19 @@ pub fn utimensat<P: Platform>(
         }
         _ => super::files::lookup(process, thread, dirfd, path)?,
     };
-    let Some(modified) = modified else {
+    if accessed.is_none() && modified.is_none() {
         return Ok(0);
-    };
-    node.file_system()
-        .set_modified(node.id(), modified)
-        .map_err(refused)?;
+    }
+    if let Some(modified) = modified {
+        node.file_system()
+            .set_modified(node.id(), modified)
+            .map_err(refused)?;
+    }
+    if let Some(accessed) = accessed {
+        node.file_system()
+            .set_accessed(node.id(), accessed)
+            .map_err(refused)?;
+    }
     inotify::changed(node, watched::ATTRIB);
     Ok(0)
 }

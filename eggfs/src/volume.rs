@@ -1076,8 +1076,13 @@ impl<D: Disk> Volume<D> {
             version: VERSION,
             ..self.geometry
         };
+        let encoded = upgraded.encode();
         let superblock = self.cache.get_mut(&mut self.disk, 0, false)?;
-        superblock.copy_from_slice(&upgraded.encode()[..]);
+        superblock.copy_from_slice(&encoded[..]);
+        if let Some(backup) = upgraded.backup_superblock() {
+            let copy = self.cache.get_mut(&mut self.disk, backup, false)?;
+            copy.copy_from_slice(&encoded[..]);
+        }
         self.geometry = upgraded;
         Ok(())
     }

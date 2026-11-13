@@ -330,6 +330,9 @@ impl Scan {
         for block in 0..geometry.data_start {
             used.set(block);
         }
+        if let Some(backup) = geometry.backup_superblock() {
+            used.set(backup);
+        }
         let mut reached = Bits::new(geometry.inodes);
         reached.set(0);
         reached.set(ROOT_INODE);
@@ -499,12 +502,52 @@ fn open<D: Disk>(
     let mut block = zeroed_block();
     disk.read(0, &mut block[..]).map_err(io)?;
     let Some(geometry) = Geometry::decode(&block[..]) else {
+        if let Some(restored) = restore_from_backup(disk, findings)? {
+            return open_with(disk, findings, restored);
+        }
         if block[..8] != MAGIC {
             return Err(CheckError::NotEggFs);
         }
         findings.push(unrepairable(Problem::DamagedSuperblock, 0));
         return Ok(None);
     };
+    open_with(disk, findings, geometry)
+}
+
+/// A damaged superblock's backup in the disk's last block (D562), when it is one: it is
+/// written back over the damaged one (when the check may change the disk, `write` succeeds)
+/// and the finding says it was repaired.
+fn restore_from_backup<D: Disk>(
+    disk: &mut D,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<Geometry>, CheckError> {
+    let io = |_: DiskError| CheckError::Io;
+    let last = disk.blocks().checked_sub(1).ok_or(CheckError::NotEggFs)?;
+    let mut backup = zeroed_block();
+    disk.read(last, &mut backup[..]).map_err(io)?;
+    let Some(geometry) = Geometry::decode(&backup[..]) else {
+        return Ok(None);
+    };
+    if geometry.backup_superblock().map(u64::from) != Some(last) {
+        return Ok(None);
+    }
+    let repaired = disk.write(0, &backup[..]).is_ok() && disk.flush().is_ok();
+    findings.push(Finding {
+        problem: Problem::DamagedSuperblock,
+        inode: 0,
+        block: 0,
+        outcome: if repaired { Outcome::Repaired } else { Outcome::Repairable },
+    });
+    Ok(Some(geometry))
+}
+
+fn open_with<D: Disk>(
+    disk: &mut D,
+    findings: &mut Vec<Finding>,
+    geometry: Geometry,
+) -> Result<Option<(Geometry, u64)>, CheckError> {
+    let io = |_: DiskError| CheckError::Io;
+    let mut block = zeroed_block();
     if u64::from(geometry.blocks) > disk.blocks() {
         findings.push(unrepairable(Problem::SuperblockLargerThanDisk, 0));
         return Ok(None);
