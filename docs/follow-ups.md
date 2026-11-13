@@ -10,9 +10,10 @@ and is not listed per item.
 
 ## M4 Scheduler, processes, threads and memory
 
-- [ ] Double-free detection for single frames, debug-only, with the per-CPU frame caches (D28, D31)
-- [ ] Buddy allocator: free runs that straddle a range's untouched part and the free stack; one bitmap per range; anti-fragmentation grouping (migrate types); a high watermark on the free stack giving frames back (D31)
-- [ ] Per-CPU frame and heap caches instead of one heap lock (D30, D31)
+- [x] Double-free detection for single frames, debug-only, with the per-CPU frame caches (D28, D31) — code written, unbuilt, D551
+- [x] Buddy allocator: free runs that straddle a range's untouched part and the free stack; one bitmap per range; anti-fragmentation grouping (migrate types); a high watermark on the free stack giving frames back (D31) — code written, unbuilt, D551
+- [x] Per-CPU frame and heap caches instead of one heap lock (D30, D31) — code written, unbuilt, D551
+- [x] Empty heap slabs given back to the frame allocator (D30) — code written, unbuilt, D551
 - [ ] 1 GiB pages on x86_64 (CPUID) for the direct map (D29)
 - [ ] Svpbmt on RISC-V for device and non-cacheable mappings (D29)
 - [ ] Global kernel mappings and PCID/ASIDs (D33, D45)

@@ -25798,3 +25798,41 @@ the license, by an explicit instruction recorded here.
   them, but our code is always write our self". Some hardware is described only in copyleft drivers
   (for example Qualcomm's DPU, which D549 left on the firmware framebuffer); this lets EggOS support it.
 - **What stays.** MIT OR Apache-2.0 (D79), no third-party crates, no copyleft code in the repo.
+
+## D551 Memory follow-ups: per-range buddy metadata, block kinds, the free stack's watermark, a double-free check, per-CPU frame and heap caches, and empty slabs given back (M4; D28's, D30's and D31's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Per-range metadata.** The buddy allocator keeps its bits per range of the memory map, in one
+  run of frames taken as before: a frame bit per frame of each range and a kind bit per pageblock
+  it touches. A sparse machine no longer pays a bit per 4 KiB of its holes; a frame's range is found
+  by a binary search over at most 64 ranges, only on the buddy paths.
+- **Block kinds (anti-fragmentation grouping).** Pageblocks of 2 MiB (`PAGEBLOCK_ORDER` 9) are kept
+  for the kernel or for programs (`BlockKind`), with free lists per kind and order. A free block's
+  header names the list it is on, since its pageblock can change kind while it is free. An allocation
+  that finds nothing in its kind's lists takes the largest block of the other kind's and claims the
+  pageblocks it covers, as Linux's fallback does, so the next ones of its kind find frames together.
+  `allocate_contiguous_for_user` (huge pages, window buffers, pipe rings) allocates as `User`; the rest
+  as `Kernel`.
+- **Runs that straddle untouched memory and freed frames.** When carving and draining the stack
+  both fail, every untouched range and the whole free stack go to the buddy allocator, where they
+  merge, before a contiguous allocation gives up. Single frames then come from the buddy allocator.
+- **The free stack's watermark.** Past an eighth of the machine's frames (at least 4096) on the free
+  stack, a free moves 256 frames into the buddy allocator, so long-freed memory merges back into
+  contiguous blocks. One compare on the free path.
+- **Double frees.** Debug builds mark a stacked frame's second word with a constant mixed with its
+  address; a free that finds the mark walks the stack and panics if the frame is on it. A frame in use
+  that holds the mark by chance costs a walk, never a false report. Release builds do nothing.
+- **Per-CPU frame caches.** Each CPU keeps up to 32 frames for programs' page faults
+  (`memory::allocate_user_frame`), refilled 16 at a time under one frame-allocator lock, counted as
+  allocated meanwhile. Before reporting memory exhausted the allocator empties every CPU's cache, then
+  gives back empty heap slabs. Lock order: a CPU's cache, then `FRAMES`. Demand faults and
+  copy-on-write faults use it.
+- **Per-CPU heap caches.** Each of the first 64 CPUs keeps up to 8 freed blocks per size class,
+  refilled 4 at a time from the shared heap; the kernel tells the heap how to find the CPU once the
+  boot CPU's block exists (`KernelHeap::set_cpu_index`). The cache itself is a heap block made at the
+  CPU's first allocation. Lock order: a CPU's cache, the shared heap, `FRAMES`.
+- **Empty slabs.** `KernelHeap::release_empty_slabs` empties the CPU caches, sorts each class's free
+  list by address in place (a bottom-up merge sort of the linked blocks, no memory needed), and gives
+  back every frame whose blocks are all free, except the frame being carved. It runs only when memory
+  runs low, so the allocation paths stay as they were.
+- **Not yet.** Building and running; measuring the caches against the single lock on a many-CPU
+  machine; slabs given back on a timer rather than only under pressure.
