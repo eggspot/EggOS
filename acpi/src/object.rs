@@ -266,6 +266,8 @@ pub struct Field {
     pub bit_length: u64,
     pub access: Access,
     pub update: UpdateRule,
+    /// The field list said `Lock`: every access holds the firmware's global lock (D556).
+    pub lock: bool,
 }
 
 /// Bits of a buffer named by `CreateField` and its kin.

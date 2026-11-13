@@ -298,10 +298,15 @@ impl<H: Host> Interpreter<H> {
             }
             ACQUIRE => {
                 let target = self.super_name(frame, stream)?;
-                stream.word()?;
+                let timeout = u64::from(stream.word()?);
                 let Target::Node(node) = target else {
                     return Err(Error::WrongType);
                 };
+                let global = self.is_global_lock(node);
+                let first = matches!(self.namespace.get(node), Some(Object::Mutex { held: 0, .. }));
+                if global && first && !self.host.acquire_global_lock(timeout) {
+                    return Ok(self.truth(true));
+                }
                 match self.namespace.get_mut(node) {
                     Some(Object::Mutex { held, .. }) => *held = held.saturating_add(1),
                     _ => return Err(Error::WrongType),
@@ -350,7 +355,23 @@ impl<H: Host> Interpreter<H> {
                 }
                 self.result(frame, stream, Object::Integer(bcd & mask))
             }
-            LOAD_TABLE => Err(Error::Unsupported("loading tables from AML")),
+            LOAD_TABLE => {
+                let signature = self.string_operand(frame, stream)?;
+                let oem_id = self.string_operand(frame, stream)?;
+                let oem_table_id = self.string_operand(frame, stream)?;
+                let _root_path = self.operand(frame, stream)?;
+                let parameter_path = self.string_operand(frame, stream)?;
+                let parameter_data = self.operand(frame, stream)?;
+                let handle = self.load_named_table(&signature, &oem_id, &oem_table_id);
+                if handle != 0
+                    && !parameter_path.is_empty()
+                    && let Some(path) = Path::parse(&parameter_path)
+                    && let Some(node) = self.namespace.find(&path)
+                {
+                    self.store(frame, &Target::Node(node), parameter_data)?;
+                }
+                Ok(Object::Integer(handle))
+            }
             other => Err(Error::UnknownOpcode(other)),
         }
     }

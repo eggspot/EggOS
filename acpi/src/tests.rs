@@ -222,6 +222,7 @@ fn fields_write_their_bits_and_preserve_the_rest_of_the_unit() {
         bit_length: 8,
         access: Access::Byte,
         update: UpdateRule::Preserve,
+        lock: false,
     };
     assert_eq!(interpreter.read_field(&outside), Err(Error::OutsideRegion));
 }

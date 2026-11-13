@@ -76,6 +76,9 @@ pub struct DeviceStatus {
     pub status: u64,
 }
 
+/// The largest definition block `Load` and `LoadTable` read (D556).
+const MAX_LOADED_TABLE: u64 = 1 << 20;
+
 impl DeviceStatus {
     pub fn is_present(&self) -> bool {
         self.status & STATUS_PRESENT != 0
@@ -635,7 +638,18 @@ impl<H: Host> Interpreter<H> {
                     argument,
                 });
             }
-            LOAD | UNLOAD => return Err(Error::Unsupported("loading tables from AML")),
+            LOAD => {
+                let source = self.super_name(frame, stream)?;
+                let target = self.super_name(frame, stream)?;
+                let handle = match self.table_bytes_of(frame, &source) {
+                    Ok(table) => self.load_table(&table).map_or(0, |()| self.tables.len() as u64),
+                    Err(_) => 0,
+                };
+                self.store(frame, &target, Object::Integer(handle))?;
+            }
+            UNLOAD => {
+                self.super_name(frame, stream)?;
+            }
             other => {
                 self.operand_with(frame, stream, other)?;
             }
@@ -751,8 +765,10 @@ impl<H: Host> Interpreter<H> {
         const ACCESS: u8 = 0x01;
         const CONNECTION: u8 = 0x02;
         const EXTENDED_ACCESS: u8 = 0x03;
+        const LOCK_RULE: u8 = 1 << 4;
         let mut access = Access::from_flags(flags);
         let update = UpdateRule::from_flags(flags);
+        let lock = flags & LOCK_RULE != 0;
         let mut bit_offset = 0u64;
         while let Some(lead) = list.peek() {
             match lead {
@@ -791,6 +807,7 @@ impl<H: Host> Interpreter<H> {
                         bit_length,
                         access,
                         update,
+                        lock,
                     };
                     let name = NameString {
                         root: false,
@@ -835,13 +852,104 @@ impl<H: Host> Interpreter<H> {
         let Target::Node(node) = target else {
             return Err(Error::WrongType);
         };
+        let global = opcode == RELEASE && self.is_global_lock(*node);
         match (self.namespace.get_mut(*node), opcode) {
             (Some(Object::Event { signals }), SIGNAL) => *signals = signals.saturating_add(1),
             (Some(Object::Event { signals }), RESET) => *signals = 0,
-            (Some(Object::Mutex { held, .. }), RELEASE) => *held = held.saturating_sub(1),
+            (Some(Object::Mutex { held, .. }), RELEASE) => {
+                if global && *held == 1 {
+                    self.host.release_global_lock();
+                }
+                *held = held.saturating_sub(1);
+            }
             _ => return Err(Error::WrongType),
         }
         Ok(())
+    }
+
+    /// Whether `node` is `\_GL`, the mutex that stands for the firmware's global lock (D556).
+    pub(crate) fn is_global_lock(&self, node: NodeId) -> bool {
+        self.namespace
+            .path_of(node)
+            .is_some_and(|path| *path == Path::root().child(NameSeg::new(b"_GL_")))
+    }
+
+    /// The bytes of the definition block `source` names for `Load` (D556): a buffer's, or an
+    /// operation region's read whole through the host, up to its header's length.
+    fn table_bytes_of(&mut self, frame: &mut Frame, source: &Target) -> Result<Vec<u8>, Error> {
+        let object = self.read_target(frame, source)?;
+        match object {
+            Object::Buffer(bytes) => Ok(bytes),
+            Object::Region(region) => {
+                let mut bytes = Vec::new();
+                let length = region.length.min(MAX_LOADED_TABLE);
+                for at in 0..length {
+                    let byte = self
+                        .host
+                        .read(region.space, region.offset + at, 8)
+                        .map_err(Error::Host)?;
+                    bytes.push(byte as u8);
+                    if bytes.len() == TABLE_HEADER_BYTES {
+                        let declared = u32::from_le_bytes([
+                            bytes[TABLE_LENGTH_AT],
+                            bytes[TABLE_LENGTH_AT + 1],
+                            bytes[TABLE_LENGTH_AT + 2],
+                            bytes[TABLE_LENGTH_AT + 3],
+                        ]) as u64;
+                        if declared < length {
+                            return self.read_rest(region, bytes, declared);
+                        }
+                    }
+                }
+                Ok(bytes)
+            }
+            _ => Err(Error::WrongType),
+        }
+    }
+
+    fn read_rest(&mut self, region: Region, mut bytes: Vec<u8>, length: u64) -> Result<Vec<u8>, Error> {
+        for at in bytes.len() as u64..length {
+            let byte = self
+                .host
+                .read(region.space, region.offset + at, 8)
+                .map_err(Error::Host)?;
+            bytes.push(byte as u8);
+        }
+        Ok(bytes)
+    }
+
+    /// `LoadTable`'s work (D556): the table the host knows by `signature`, `oem_id` and
+    /// `oem_table_id`, read whole and loaded; its handle, or 0 when there is none or it fails.
+    pub(crate) fn load_named_table(
+        &mut self,
+        signature: &[u8],
+        oem_id: &[u8],
+        oem_table_id: &[u8],
+    ) -> u64 {
+        if let Some(bytes) = self.host.table_bytes(signature, oem_id, oem_table_id) {
+            return match self.load_table(&bytes) {
+                Ok(()) => self.tables.len() as u64,
+                Err(_) => 0,
+            };
+        }
+        let Some((address, length)) = self.host.table_place(signature, oem_id, oem_table_id)
+        else {
+            return 0;
+        };
+        let region = Region {
+            space: RegionSpace::SystemMemory,
+            offset: address,
+            length: length.min(MAX_LOADED_TABLE),
+            pci: None,
+        };
+        let length = region.length;
+        let Ok(bytes) = self.read_rest(region, Vec::new(), length) else {
+            return 0;
+        };
+        match self.load_table(&bytes) {
+            Ok(()) => self.tables.len() as u64,
+            Err(_) => 0,
+        }
     }
 
     /// A `DataRefObject` or a package element: a name stays a name.

@@ -1,6 +1,7 @@
 //! What the interpreter asks of the machine: operation regions' reads and writes, time, and the
 //! notifications AML sends.
 
+use alloc::vec::Vec;
 use crate::name::Path;
 use crate::object::{Object, PciFunction, RegionSpace};
 
@@ -61,6 +62,28 @@ pub trait Host {
 
     /// AML stored `object` to `Debug`. Nothing by default.
     fn debug(&mut self, _object: &Object) {}
+
+    /// The bytes of the firmware's table with `signature`, `oem_id` and `oem_table_id` (blank
+    /// IDs match any), for `LoadTable` (D556). None by default.
+    fn table_bytes(
+        &mut self,
+        _signature: &[u8],
+        _oem_id: &[u8],
+        _oem_table_id: &[u8],
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Takes the firmware's global lock (the FACS's lock word, ACPI 6.5, 5.2.10.1), waiting up to
+    /// `timeout` milliseconds (0xffff for ever) while the firmware holds it; whether it did (D556).
+    /// Granted at once by default, for a machine with no FACS.
+    fn acquire_global_lock(&mut self, _timeout: u64) -> bool {
+        true
+    }
+
+    /// Gives the firmware's global lock back, telling the firmware if it waits for it (D556).
+    /// Nothing by default.
+    fn release_global_lock(&mut self) {}
 
     /// The address and length of the loaded table with `signature`, `oem_id` and
     /// `oem_table_id`, for a `DataTableRegion`. None by default.

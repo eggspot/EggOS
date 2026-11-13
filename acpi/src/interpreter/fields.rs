@@ -11,6 +11,9 @@ use crate::object::{Access, Field, FieldKind, Object, PciFunction, RegionSpace, 
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// `Acquire`'s timeout that never ends, for fields whose list says `Lock` (D556).
+const FOREVER: u64 = 0xffff;
+
 impl<H: Host> Interpreter<H> {
     /// The value of `bits` bits read into `bytes`: an integer when they fit one, else a buffer.
     pub(crate) fn field_value(&self, bytes: Vec<u8>, bits: u64) -> Object {
@@ -26,6 +29,16 @@ impl<H: Host> Interpreter<H> {
     }
 
     pub(crate) fn read_field(&mut self, field: &Field) -> Result<Object, Error> {
+        if field.lock {
+            self.host.acquire_global_lock(FOREVER);
+            let read = self.read_field_unlocked(field);
+            self.host.release_global_lock();
+            return read;
+        }
+        self.read_field_unlocked(field)
+    }
+
+    fn read_field_unlocked(&mut self, field: &Field) -> Result<Object, Error> {
         let width = unit_bits(field);
         let end = field.bit_offset + field.bit_length;
         let mut out = vec![0u8; field.bit_length.div_ceil(8) as usize];
@@ -42,6 +55,16 @@ impl<H: Host> Interpreter<H> {
     }
 
     pub(crate) fn write_field(&mut self, field: &Field, value: &Object) -> Result<(), Error> {
+        if field.lock {
+            self.host.acquire_global_lock(FOREVER);
+            let written = self.write_field_unlocked(field, value);
+            self.host.release_global_lock();
+            return written;
+        }
+        self.write_field_unlocked(field, value)
+    }
+
+    fn write_field_unlocked(&mut self, field: &Field, value: &Object) -> Result<(), Error> {
         let mut bytes = self.to_buffer(value)?;
         bytes.resize(field.bit_length.div_ceil(8) as usize, 0);
         let width = unit_bits(field);

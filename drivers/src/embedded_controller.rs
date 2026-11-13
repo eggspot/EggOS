@@ -24,6 +24,10 @@ pub mod status {
 const READ: u8 = 0x80;
 const WRITE: u8 = 0x81;
 const QUERY: u8 = 0x84;
+const BURST_ENABLE: u8 = 0x82;
+const BURST_DISABLE: u8 = 0x83;
+/// What the controller answers `BE_EC` with once it is in burst mode.
+const BURST_ACKNOWLEDGE: u8 = 0x90;
 
 /// The controller did not answer within the polls allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +84,20 @@ impl<T: EcPorts> EmbeddedController<T> {
         self.send_command(WRITE)?;
         self.send_data(address)?;
         self.send_data(value)?;
+        self.wait_for(|status| status & status::INPUT_FULL == 0)
+    }
+
+    /// `BE_EC`: asks the controller to stay in burst mode, serving the host's next commands
+    /// without pausing for its own work, until [`Self::end_burst`] (ACPI 6.5, 12.3.3); whether it
+    /// agreed. Several bytes read in a row go faster in burst mode.
+    pub fn begin_burst(&mut self) -> Result<bool, Timeout> {
+        self.send_command(BURST_ENABLE)?;
+        Ok(self.receive_data()? == BURST_ACKNOWLEDGE)
+    }
+
+    /// `BD_EC`: ends burst mode.
+    pub fn end_burst(&mut self) -> Result<(), Timeout> {
+        self.send_command(BURST_DISABLE)?;
         self.wait_for(|status| status & status::INPUT_FULL == 0)
     }
 

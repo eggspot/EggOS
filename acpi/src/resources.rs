@@ -14,6 +14,12 @@ const FIXED_IO_ADDRESS_MASK: u16 = 0x03ff;
 /// The base port of each I/O port and fixed-location I/O port descriptor in `template`, in
 /// order (6.4.2.5 and 6.4.2.6): an embedded controller's data port, then its command port.
 pub fn io_ports(template: &[u8]) -> Vec<u16> {
+    io_ranges(template).into_iter().map(|(port, _)| port).collect()
+}
+
+/// Each I/O port and fixed-location I/O port descriptor's base port and length in bytes, in
+/// order (6.4.2.5 and 6.4.2.6): a GPE block device's register block (D556).
+pub fn io_ranges(template: &[u8]) -> Vec<(u16, u8)> {
     let mut ports = Vec::new();
     let mut at = 0;
     while let Some(&tag) = template.get(at) {
@@ -29,9 +35,14 @@ pub fn io_ports(template: &[u8]) -> Vec<u16> {
             break;
         };
         match tag >> SMALL_ITEM_TYPE_SHIFT & SMALL_ITEM_TYPE_MASK {
-            IO_PORT if body.len() >= 3 => ports.push(u16::from_le_bytes([body[1], body[2]])),
-            FIXED_IO_PORT if body.len() >= 2 => {
-                ports.push(u16::from_le_bytes([body[0], body[1]]) & FIXED_IO_ADDRESS_MASK);
+            IO_PORT if body.len() >= 7 => {
+                ports.push((u16::from_le_bytes([body[1], body[2]]), body[6]));
+            }
+            FIXED_IO_PORT if body.len() >= 3 => {
+                ports.push((
+                    u16::from_le_bytes([body[0], body[1]]) & FIXED_IO_ADDRESS_MASK,
+                    body[2],
+                ));
             }
             END_TAG => break,
             _ => {}
