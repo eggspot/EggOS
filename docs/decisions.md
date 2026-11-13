@@ -25908,3 +25908,31 @@ the license, by an explicit instruction recorded here.
   sends, so a restored snapshot or a cloned machine never repeats the generator's output.
 - **Not yet.** Building and running; system time apart from user time; another thread's CPU clock;
   another process's affinity; per-CPU run-queue locks (left in docs/follow-ups.md).
+
+## D554 The driver model's follow-ups, part 1: device windows given back, the console's input on another CPU, reserved ranges out of x86_64's direct map, and device-tree `dma-ranges` (M5; D29's, D98's, D110's and D269's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Device windows given back.** Each remembered window counts its users; `window::release` unmaps a
+  window when its last user gives it back (`PageTables::unmap_device_window` clears its leaves while
+  the tables are active) and drops the translations: broadcast where the architecture can (AArch64's
+  `TLBI VAAE1IS`, RISC-V's RFENCE), else on this CPU (`invlpg`, `sfence.vma`). The window's
+  addresses are never handed out again, so a translation another CPU keeps of them is never used;
+  that is why no interrupt is sent. The driver model gives back every window a probe mapped when the
+  probe fails (`Probe::probe_started`, `probe_failed`), so a refused device costs no mapping.
+  Unbinding a bound driver is still not offered: none of the built-in drivers can stop its device
+  yet.
+- **The console's input on another CPU (D98).** `Platform::steer_console_input` moves the console's
+  interrupt; x86_64 rewrites COM1's I/O APIC entry's destination. The kernel hands it the next CPU's
+  turn when it spreads the device lines (D536). The other architectures keep it on the boot CPU.
+- **Reserved ranges out of the direct map (D29).** x86_64's direct map covers the PVH memory map's
+  RAM and ACPI entries (types 1, 3 and 4), its boot data and low memory; reserved entries are left
+  out, so registers a firmware marks reserved are never mapped cached. The ACPI tables QEMU's firmware
+  keeps in a reserved entry are added on their own: the RSDP, the root table, every table it lists,
+  the FADT's DSDT and its FACS. Reading a table before the kernel's tables exist checks it against
+  every entry the firmware described, as before.
+- **`dma-ranges` (D269).** The device-tree walker reads a bus's `dma-ranges` and gives each node the
+  offset its ancestors' first ranges add to a CPU address to make a DMA address
+  (`Node::dma_offset`, `DeviceNode::dma_offset`). When the devices with an offset agree, it becomes
+  the offset every DMA buffer is given at (`dma::set_device_offset`); machines whose buses differ keep
+  the identity.
+- **Not yet.** Building and running; offsets per device when buses differ; unbinding drivers; the
+  console's input steered on the other architectures.

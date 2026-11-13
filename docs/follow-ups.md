@@ -31,10 +31,10 @@ and is not listed per item.
 
 ## M5 Driver model, interrupts and ACPI
 
-- [ ] Unmapping device windows and unbinding drivers, with cross-CPU TLB shootdown of kernel mappings (D29, D110)
-- [ ] On x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of the cached direct map (D29)
-- [ ] Console input taken on any CPU, not only the boot CPU (D98)
-- [ ] Device-tree `dma-ranges` for devices whose DMA addresses differ from the CPU's (D269)
+- [x] Unmapping device windows and unbinding drivers, with cross-CPU TLB shootdown of kernel mappings (D29, D110) — code written, unbuilt, D554 (windows; unbinding bound drivers stays)
+- [x] On x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of the cached direct map (D29) — code written, unbuilt, D554
+- [x] Console input taken on any CPU, not only the boot CPU (D98) — code written, unbuilt, D554 (x86_64)
+- [x] Device-tree `dma-ranges` for devices whose DMA addresses differ from the CPU's (D269) — code written, unbuilt, D554
 - [ ] Plain MSI (without MSI-X) steered to other CPUs; moving lines off CPUs that go offline; balancing by load (D536)
 - [ ] RISC-V AIA: the APLIC's direct mode, PCI MSIs straight into the IMSIC, interrupts on harts other than the boot hart (D532)
 - [ ] x86_64: interrupt remapping (VT-d / AMD-Vi) so x2APIC destinations above 255 work, and the HPET as a timer of its own (D531, D536)
