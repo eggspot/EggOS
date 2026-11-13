@@ -177,10 +177,8 @@ pub fn write_from_program<P: Platform>(bytes: &[u8], stop_waiting: &dyn Fn() -> 
         }
         crate::thread::sleep::<P>(core::time::Duration::from_millis(10));
     }
-    let settings_copy = LINE_DISCIPLINE.lock().settings();
-    let mut processed = LineDiscipline::new();
-    processed.set_settings(settings_copy, false);
-    processed.process_output(bytes, &mut |piece| write::<P>(piece));
+    let settings = LINE_DISCIPLINE.lock().settings();
+    LineDiscipline::process_output(settings, bytes, &mut |piece| write::<P>(piece));
     LINE_DISCIPLINE.lock().note_output(bytes);
     true
 }

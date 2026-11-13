@@ -347,8 +347,7 @@ impl LineDiscipline {
 
     /// Output processing (D559): with `OPOST` and `ONLCR`, a newline becomes `\r\n`; `write`
     /// gets each piece of the output to send, in order.
-    pub fn process_output(&self, bytes: &[u8], write: &mut impl FnMut(&[u8])) {
-        let settings = self.settings;
+    pub fn process_output(settings: Termios, bytes: &[u8], write: &mut impl FnMut(&[u8])) {
         if settings.output & output::OPOST == 0 || settings.output & output::ONLCR == 0 {
             write(bytes);
             return;
