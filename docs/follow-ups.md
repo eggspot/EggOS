@@ -49,8 +49,8 @@ and is not listed per item.
 
 - [ ] Line discipline: `VREPRINT`, `VDISCARD`, `IXON` flow control, output flags the UART obeys, tab erase from the output's column (column tracking), a long echo written outside the lock (D100)
 - [ ] `noexec` mounts (D103)
-- [ ] `umask` per process (the `umask` call, inherited by `fork`, applied by every create) instead of the fixed 022 (D125)
-- [ ] `sendmmsg` and `recvmmsg` (D138)
+- [x] `umask` per process (the `umask` call, inherited by `fork`, applied by every create) instead of the fixed 022 (D125) — code written, unbuilt, D557
+- [x] `sendmmsg` and `recvmmsg` (D138) — code written, unbuilt, D557
 - [ ] An out-of-memory killer that ends the largest program, and a second reserve tier for an ending program (D155)
 - [ ] `RLIMIT_AS` and `RLIMIT_DATA` enforced by `brk` and `mmap` (D53, D155)
 - [ ] Netlink sockets (`NETLINK_ROUTE`: links, addresses, routes) so iproute2 and musl's `getifaddrs` work (D157)
@@ -60,14 +60,14 @@ and is not listed per item.
 - [ ] `/proc/<pid>/mountinfo`, `/proc/thread-self` and `/proc/<pid>/task/<tid>` directories (D168, D171)
 - [ ] `/sys`: `/sys/devices/system/cpu/{online,possible,present}`, `/sys/kernel/mm/transparent_hugepage/enabled`, and `/proc/sys/vm/overcommit_memory` (D168)
 - [ ] `F_SETLEASE`/`F_GETLEASE` and `F_NOTIFY` (D171)
-- [ ] `copy_file_range`, `splice`, `tee` and `sendfile` (D176)
-- [ ] Extended attributes: `setxattr`, `getxattr`, `listxattr`, `removexattr` and their `l`/`f` forms (D176)
-- [ ] `prctl` `PR_SET_NAME`/`PR_GET_NAME` with `/proc/<pid>/comm` and `/proc/<pid>/task/<tid>/comm` (D176)
-- [ ] `chown`, `fchown`, `lchown`, `fchownat` (D176)
+- [x] `copy_file_range`, `splice`, `tee` and `sendfile` (D176) — code written, unbuilt, D557
+- [x] Extended attributes: `setxattr`, `getxattr`, `listxattr`, `removexattr` and their `l`/`f` forms (D176) — code written, unbuilt, D557
+- [x] `prctl` `PR_SET_NAME`/`PR_GET_NAME` with `/proc/<pid>/comm` and `/proc/<pid>/task/<tid>/comm` (D176) — code written, unbuilt, D557
+- [x] `chown`, `fchown`, `lchown`, `fchownat` (D176) — code written, unbuilt, D557
 - [ ] `fanotify` (D179)
-- [ ] `pidfd_open`, `pidfd_send_signal` and `pidfd_getfd` (D183)
+- [x] `pidfd_open`, `pidfd_send_signal` and `pidfd_getfd` (D183) — code written, unbuilt, D557
 - [ ] Address-space layout randomization of the `mmap` area, the break and the interpreter's base (D51, D53, D201)
-- [ ] POSIX capabilities: `capget`/`capset`, the bounding and ambient sets, `PR_CAPBSET_*`, file capabilities not yet (D270)
+- [x] POSIX capabilities: `capget`/`capset`, the bounding and ambient sets, `PR_CAPBSET_*`, file capabilities not yet (D270) — code written, unbuilt, D557
 - [ ] RISC-V misaligned loads and stores emulated as Linux does on harts that trap them (D65)
 - [ ] `MAP_GROWSDOWN` and `MAP_POPULATE` (D53, D167)
 - [ ] `ptrace` for debuggers: `PTRACE_TRACEME`, `ATTACH`/`SEIZE`, `PEEK`/`POKE`, `GETREGS`/`SETREGS`, `CONT`, `SINGLESTEP` with `TRAP_TRACE`, hardware breakpoints with `TRAP_HWBKPT`, and the `PTRACE_MODE_READ` check on `/proc/<pid>` files (D65, D168)

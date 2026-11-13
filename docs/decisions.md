@@ -25986,3 +25986,41 @@ the license, by an explicit instruction recorded here.
   at once (one thread runs AML, sleeping out a wait's timeout); GPIO and serial-bus connection
   fields; acting on the lid (sleep) and on critical temperatures; the power state's CLI, MCP and
   bar front-ends; sleep states other than S5.
+
+## D557 Linux calls, batch 1: `umask`, `chown`, `copy_file_range`, `sendfile`, `splice`, `tee`, extended attributes, pidfds, thread names, `sendmmsg`/`recvmmsg` and capabilities (M6; D125's, D138's, D176's, D183's and D270's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Numbers.** Every new call has its number in each architecture's table (`linux/abi/<arch>.rs`,
+  the generic table for aarch64, riscv and loongarch64); `chown` and `lchown` only where the
+  architecture keeps the legacy calls. 32-bit Arm's `sendfile` is its `sendfile64`.
+- **`umask`.** A process's file mode creation mask lives with its credentials and limits
+  (`CredentialsAndLimits::umask`, 022 to start), copied by `fork` and kept by `execve`; `openat`'s
+  creation, `mkdirat` and socket files apply it, and `/proc/<pid>/status` reports it.
+- **Owners.** A file, directory or socket file a process creates belongs to its file-system user and
+  group ids. `fchownat`, `fchown`, `chown` and `lchown` change them as Linux does: only root changes
+  the owner, the owner may change the group to one of its own, and a change by someone else than root
+  clears a regular file's set-user-id and set-group-id bits. tmpfs now keeps owners; EggFS writes its
+  inode's owner and group (`Volume::set_owner`).
+- **Moving bytes in the kernel (`linux::splice`).** `copy_file_range`, `sendfile`, `splice` and `tee`
+  move bytes through a 64 KiB bounce buffer between regular files (read and written through their
+  file system, shared pages kept in step) and pipes (taken, peeked at, pushed, or given back at the
+  front when the sink took less). They never wait: an empty or full pipe ends the call with what moved,
+  or `EAGAIN`. Pages are not shared between the two files.
+- **Extended attributes.** The twelve calls, with names in the `user.`, `security.`, `system.` and
+  root-only `trusted.` namespaces, names up to 255 bytes and values up to 64 KiB. tmpfs keeps them in
+  memory, charged to its budget; EggFS has no place on disk for them yet and answers `EOPNOTSUPP`
+  (`listxattr` an empty list).
+- **pidfds.** `pidfd_open` makes an event file naming a process, ready to read once it has ended
+  (woken by every process's end); `pidfd_send_signal` sends as `kill` would (a given `siginfo_t` is
+  not used); `pidfd_getfd` copies one of the process's descriptors for root or a caller with the
+  process's real user id.
+- **Thread names.** `PR_SET_NAME` names the calling thread, and the process when the thread is its
+  first; `PR_GET_NAME` reads it back; `/proc/<pid>/comm` shows the process's name.
+- **`sendmmsg` and `recvmmsg`.** Each `mmsghdr` in turn goes through the ordinary `sendmsg` or
+  `recvmsg` of whatever socket the descriptor is (Unix, datagram or inet), its byte count written to
+  `msg_len`; messages after the first never wait. `recvmmsg`'s timeout is not used.
+- **Capabilities.** `capget` and `capset` (version 3) report and lower a process's sets, which start
+  as all or none by its effective user id; `PR_CAPBSET_READ` and `PR_CAPBSET_DROP` read and lower the
+  bounding set. The kernel's own checks still decide by root or not: holding a capability grants
+  nothing yet, which keeps every program that only drops them working.
+- **Not yet.** Building and running; EggFS extended attributes; capabilities that grant; file
+  capabilities; `vmsplice`; `/proc/<pid>/task/<tid>/comm`.
