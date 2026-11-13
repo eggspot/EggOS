@@ -132,12 +132,14 @@ fn a_segment_round_trips_with_its_option_and_a_damaged_one_is_refused() {
         flags: flags::SYN | flags::ACK,
         window: 65535,
         mss: Some(1460),
+        ..Header::default()
     };
-    let mut bytes = [0u8; MAX_HEADER_BYTES + 3];
-    bytes[MAX_HEADER_BYTES..].copy_from_slice(b"abc");
+    const WRITTEN: usize = HEADER_BYTES + MSS_OPTION_BYTES;
+    let mut bytes = [0u8; WRITTEN + 3];
+    bytes[WRITTEN..].copy_from_slice(b"abc");
     assert_eq!(
         write_header(&mut bytes, CLIENT.0, SERVER.0, &header, 3),
-        Some(MAX_HEADER_BYTES + 3)
+        Some(WRITTEN + 3)
     );
     let segment = parse(CLIENT.0, SERVER.0, &bytes).unwrap();
     assert_eq!(segment.header, header);
@@ -145,17 +147,17 @@ fn a_segment_round_trips_with_its_option_and_a_damaged_one_is_refused() {
     assert_eq!(segment.length(), 4);
     assert_eq!(parse(CLIENT.0, Ipv4Address::new(10, 0, 2, 3), &bytes), None);
     let mut damaged = bytes;
-    damaged[MAX_HEADER_BYTES] ^= 1;
+    damaged[WRITTEN] ^= 1;
     assert_eq!(parse(CLIENT.0, SERVER.0, &damaged), None);
     let mut short = bytes;
     short[12] = 0x10;
     assert_eq!(parse(CLIENT.0, SERVER.0, &short[..HEADER_BYTES]), None);
     assert_eq!(
-        mss_option(&[OPTION_NOP, OPTION_NOP, OPTION_MSS, 4, 0x05, 0xb4]),
+        parse_options(&[OPTION_NOP, OPTION_NOP, OPTION_MSS, 4, 0x05, 0xb4]).mss,
         Some(1460)
     );
-    assert_eq!(mss_option(&[OPTION_MSS, 9, 0, 0]), None);
-    assert_eq!(mss_option(&[8, 0]), None);
+    assert_eq!(parse_options(&[OPTION_MSS, 9, 0, 0]).mss, None);
+    assert_eq!(parse_options(&[8, 0]).mss, None);
     assert!(before(u32::MAX, 0));
     assert!(not_after(5, 5));
     assert!(!before(5, 5));
@@ -188,6 +190,7 @@ fn a_partial_checksum_completed_or_made_partial_again_matches_the_whole_one() {
         flags: flags::ACK | flags::PSH,
         window: 4096,
         mss: None,
+        ..Header::default()
     };
     let mut whole = [0u8; HEADER_BYTES + 5];
     whole[HEADER_BYTES..].copy_from_slice(b"hello");
@@ -445,3 +448,83 @@ fn a_syn_with_an_ack_or_a_reset_makes_no_connection() {
     assert_eq!(accepted.send_mss(), DEFAULT_MSS);
     assert!(accepted.is_connecting());
 }
+
+#[test]
+fn every_option_round_trips() {
+    let mut sack = SackBlocks::default();
+    sack.push((100, 200));
+    sack.push((300, 400));
+    let header = Header {
+        source_port: 1,
+        destination_port: 2,
+        sequence: 3,
+        acknowledgment: 4,
+        flags: flags::ACK | flags::URG,
+        window: 5,
+        mss: Some(1460),
+        window_scale: Some(7),
+        sack_permitted: true,
+        sack,
+        urgent: 9,
+    };
+    let length = header_bytes(&header);
+    assert_eq!(length, HEADER_BYTES + 4 + 4 + 4 + 4 + 16);
+    let mut bytes = vec![0u8; length];
+    write_header(&mut bytes, CLIENT.0, SERVER.0, &header, 0).unwrap();
+    assert_eq!(parse(CLIENT.0, SERVER.0, &bytes).unwrap().header, header);
+}
+
+fn extended_pair(room: usize) -> (End, End) {
+    let extensions = Extensions {
+        window_scale: Some(5),
+        selective_acknowledgments: true,
+    };
+    let mut client = End {
+        connection: Connection::connect(CLIENT, SERVER, 1000, MSS),
+        queues: Queues::with_room(room),
+    };
+    client.connection.set_extensions(extensions);
+    let syn = client.output(0);
+    let segment = parse(CLIENT.0, SERVER.0, &syn[0]).unwrap();
+    assert_eq!(segment.header.window_scale, Some(5));
+    assert!(segment.header.sack_permitted);
+    let mut server = End {
+        connection: Connection::accept(SERVER, CLIENT, &segment, 5000, MSS).unwrap(),
+        queues: Queues::with_room(room),
+    };
+    server.connection.set_extensions(extensions);
+    exchange(&mut client, &mut server, 0, |_, _| false);
+    (client, server)
+}
+
+#[test]
+fn both_sides_scale_their_windows_once_both_offered_it() {
+    let (client, server) = extended_pair(65_535);
+    assert_eq!(client.connection.window_scales(), (5, 5));
+    assert_eq!(server.connection.window_scales(), (5, 5));
+    assert!(client.connection.uses_selective_acknowledgments());
+    let (plain, _) = connected(65_535);
+    assert_eq!(plain.connection.window_scales(), (0, 0));
+}
+
+#[test]
+fn an_idle_connection_probes_and_gives_up_when_unanswered() {
+    let (mut client, _server) = connected(65_535);
+    let keep_alive = KeepAlive {
+        idle_ms: 1000,
+        interval_ms: 100,
+        probes: 2,
+    };
+    client.connection.set_keep_alive(Some(keep_alive), 0);
+    assert_eq!(client.connection.next_poll_ms(), 1000);
+    client.connection.poll(1000);
+    let probe = client.output(1000);
+    assert_eq!(probe.len(), 1);
+    let segment = parse(CLIENT.0, SERVER.0, &probe[0]).unwrap();
+    assert!(segment.data.is_empty());
+    client.connection.poll(1100);
+    client.output(1100);
+    assert!(client.connection.poll(1200));
+    assert_eq!(client.connection.error(), Some(Error::TimedOut));
+}
+

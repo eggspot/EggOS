@@ -22,16 +22,26 @@ use eggos_hal::Platform;
 use eggos_net::checksum::{self, Completion};
 use eggos_net::interface::SendError;
 use eggos_net::ipv4::{self, Ipv4Address};
-use eggos_net::tcp::{self, Buffers, Connection, Error, Segment, State, flags};
+use eggos_net::tcp::{
+    self, Buffers, Connection, Error, Extensions, KeepAlive, Segment, State, flags,
+};
 
 /// The segment size connections ask for and send at most: an Ethernet link's.
 pub const MSS: u16 = 1460;
-/// The bytes a connection queues for sending before a program's send waits, as Linux's
-/// default `tcp_wmem`'s ceiling for a socket without `SO_SNDBUF`, kept to what one window holds.
-pub const SEND_LIMIT: usize = 64 * 1024;
-/// The bytes a connection keeps received before its window closes: the largest window a
-/// header carries without window scaling.
-pub const RECEIVE_LIMIT: usize = tcp::MAX_WINDOW;
+/// The bytes a connection queues for sending before a program's send waits (D564: a scaled
+/// window lets more be in flight).
+pub const SEND_LIMIT: usize = 256 * 1024;
+/// The bytes a connection keeps received before its window closes (D564), out-of-order data
+/// held for it included.
+pub const RECEIVE_LIMIT: usize = 1024 * 1024;
+/// The window scale shift connections offer: the smallest that lets a window reach
+/// [`RECEIVE_LIMIT`].
+pub const RECEIVE_WINDOW_SCALE: u8 = 5;
+/// The most separate out-of-order runs a connection holds; a segment that would make more is
+/// dropped and sent again.
+pub const HELD_RUNS: usize = 32;
+
+const _: () = assert!(tcp::MAX_WINDOW << RECEIVE_WINDOW_SCALE >= RECEIVE_LIMIT);
 /// The most segments one connection sends in one [`run`].
 pub const SEGMENTS_PER_RUN: usize = 64;
 /// The most rounds of loopback delivery one [`run`] makes.
@@ -51,6 +61,9 @@ static SEGMENT_SCRATCH: LeafSpinLock<Vec<u8>> = LeafSpinLock::new_leaf(Vec::new(
 struct Queues {
     send: VecDeque<u8>,
     received: VecDeque<u8>,
+    held: Vec<(u32, Vec<u8>)>,
+    held_bytes: usize,
+    last_held: Option<u32>,
 }
 
 impl Buffers for Queues {
@@ -70,7 +83,7 @@ impl Buffers for Queues {
     }
 
     fn receive_room(&self) -> usize {
-        RECEIVE_LIMIT.saturating_sub(self.received.len())
+        RECEIVE_LIMIT.saturating_sub(self.received.len() + self.held_bytes)
     }
 
     fn received(&mut self, data: &[u8]) -> usize {
@@ -83,6 +96,122 @@ impl Buffers for Queues {
         }
         self.received.extend(&data[..count]);
         count
+    }
+
+    fn hold_out_of_order(&mut self, sequence: u32, data: &[u8]) -> bool {
+        if data.is_empty()
+            || self.held_bytes + data.len() > RECEIVE_LIMIT.saturating_sub(self.received.len())
+            || !crate::heap::may_grow_for_user(data.len())
+        {
+            return false;
+        }
+        let end = sequence.wrapping_add(data.len() as u32);
+        let covered = self.held.iter().any(|(start, bytes)| {
+            let held_end = start.wrapping_add(bytes.len() as u32);
+            tcp::not_after(*start, sequence) && tcp::not_after(end, held_end)
+        });
+        if covered {
+            self.last_held = Some(sequence);
+            return true;
+        }
+        if self.held.len() >= HELD_RUNS || self.held.try_reserve(1).is_err() {
+            return false;
+        }
+        let mut copy = Vec::new();
+        if copy.try_reserve_exact(data.len()).is_err() {
+            return false;
+        }
+        copy.extend_from_slice(data);
+        let at = self
+            .held
+            .iter()
+            .position(|(start, _)| tcp::before(sequence, *start))
+            .unwrap_or(self.held.len());
+        self.held.insert(at, (sequence, copy));
+        self.held_bytes += data.len();
+        self.last_held = Some(sequence);
+        true
+    }
+
+    fn take_held(&mut self, next: u32) -> u32 {
+        let mut next = next;
+        let mut moved = 0u32;
+        while let Some(start) = self.held.first().map(|&(start, _)| start) {
+            if tcp::before(next, start) {
+                break;
+            }
+            let (_, bytes) = self.held.remove(0);
+            self.held_bytes -= bytes.len();
+            let end = start.wrapping_add(bytes.len() as u32);
+            if tcp::not_after(end, next) {
+                continue;
+            }
+            let skip = next.wrapping_sub(start) as usize;
+            let taken = self.received(&bytes[skip..]);
+            next = next.wrapping_add(taken as u32);
+            moved = moved.wrapping_add(taken as u32);
+            if skip + taken < bytes.len() {
+                break;
+            }
+        }
+        if self.held.is_empty() {
+            self.held = Vec::new();
+            self.last_held = None;
+        }
+        moved
+    }
+
+    fn held_ranges(&self, out: &mut [(u32, u32)]) -> usize {
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        for (start, bytes) in &self.held {
+            let end = start.wrapping_add(bytes.len() as u32);
+            match runs.last_mut() {
+                Some(last) if tcp::not_after(*start, last.1) => {
+                    if tcp::before(last.1, end) {
+                        last.1 = end;
+                    }
+                }
+                _ => {
+                    if runs.try_reserve(1).is_err() {
+                        break;
+                    }
+                    runs.push((*start, end));
+                }
+            }
+        }
+        let recent = self.last_held.and_then(|sequence| {
+            runs.iter().position(|&(start, end)| {
+                tcp::not_after(start, sequence) && tcp::before(sequence, end)
+            })
+        });
+        let mut written = 0;
+        if let Some(index) = recent
+            && let Some(slot) = out.first_mut()
+        {
+            *slot = runs[index];
+            written = 1;
+        }
+        for (index, &run) in runs.iter().enumerate() {
+            if Some(index) == recent {
+                continue;
+            }
+            let Some(slot) = out.get_mut(written) else {
+                break;
+            };
+            *slot = run;
+            written += 1;
+        }
+        written
+    }
+}
+
+
+impl Queues {
+    fn drop_received(&mut self) {
+        self.received.clear();
+        self.held = Vec::new();
+        self.held_bytes = 0;
+        self.last_held = None;
     }
 }
 
@@ -116,6 +245,7 @@ struct StreamState {
     released: bool,
     error_reported: bool,
     segmentation_decided: bool,
+    keep_alive: KeepAlive,
 }
 
 /// One connection with its bytes.
@@ -137,11 +267,17 @@ pub struct StreamStatus {
     pub read_ended: bool,
     /// Bytes a send can queue now.
     pub send_room: usize,
+    /// Whether urgent data waits (`POLLPRI`, D564).
+    pub urgent: bool,
 }
 
 impl Stream {
     fn new(mut connection: Connection, listener: Option<Weak<Listener>>) -> Arc<Self> {
         connection.set_checksum(Completion::Partial);
+        connection.set_extensions(Extensions {
+            window_scale: Some(RECEIVE_WINDOW_SCALE),
+            selective_acknowledgments: true,
+        });
         Arc::new(Self {
             state: LeafSpinLock::new_leaf(StreamState {
                 connection,
@@ -151,6 +287,7 @@ impl Stream {
                 released: false,
                 error_reported: false,
                 segmentation_decided: false,
+                keep_alive: KeepAlive::LINUX,
             }),
         })
     }
@@ -199,7 +336,57 @@ impl Stream {
                 || connection.fin_received()
                 || connection.state() == State::Closed,
             send_room: room,
+            urgent: connection.has_urgent(),
         }
+    }
+
+    /// Turns keep-alive probes on or off (`SO_KEEPALIVE`, D564) with the times last set.
+    pub fn set_keep_alive<P: Platform>(&self, on: bool) {
+        let mut state = self.state.lock();
+        let settings = state.keep_alive;
+        state
+            .connection
+            .set_keep_alive(on.then_some(settings), now_ms::<P>());
+    }
+
+    /// Whether keep-alive probes are on.
+    pub fn keeps_alive(&self) -> bool {
+        self.state.lock().connection.keep_alive().is_some()
+    }
+
+    /// The keep-alive times (`TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT`).
+    pub fn keep_alive_settings(&self) -> KeepAlive {
+        self.state.lock().keep_alive
+    }
+
+    /// Changes the keep-alive times; probes that are on follow them from now.
+    pub fn set_keep_alive_settings<P: Platform>(&self, settings: KeepAlive) {
+        let mut state = self.state.lock();
+        state.keep_alive = settings;
+        if state.connection.keep_alive().is_some() {
+            state
+                .connection
+                .set_keep_alive(Some(settings), now_ms::<P>());
+        }
+    }
+
+    /// Marks what is queued to send as urgent (`send(MSG_OOB)`).
+    pub fn mark_urgent(&self) {
+        let mut state = self.state.lock();
+        let StreamState {
+            connection, queues, ..
+        } = &mut *state;
+        connection.mark_urgent(queues);
+    }
+
+    /// The urgent byte received apart from the stream, taken unless `peek` (`recv(MSG_OOB)`).
+    pub fn take_urgent_byte(&self, peek: bool) -> Option<u8> {
+        self.state.lock().connection.take_urgent_byte(peek)
+    }
+
+    /// Keeps urgent bytes in the stream (`SO_OOBINLINE`).
+    pub fn set_urgent_inline(&self, inline: bool) {
+        self.state.lock().connection.set_urgent_inline(inline);
     }
 
     /// The error the connection ended with, once: a program is told only the first time.
@@ -254,7 +441,7 @@ impl Stream {
     pub fn shut_down_receiving(&self) {
         let mut state = self.state.lock();
         state.read_closed = true;
-        state.queues.received.clear();
+        state.queues.drop_received();
     }
 
     fn release(&self) {
@@ -263,7 +450,7 @@ impl Stream {
         match state.queues.received.is_empty() {
             true => state.connection.close(),
             false => {
-                state.queues.received.clear();
+                state.queues.drop_received();
                 state.connection.abort();
             }
         }
@@ -392,6 +579,10 @@ pub struct Socket {
     /// `SO_LINGER` (D559): `None` when off, else the seconds `close` lingers; 0 resets the
     /// connection at close instead of closing it.
     linger: LeafSpinLock<Option<u32>>,
+    /// `SO_KEEPALIVE` and `SO_OOBINLINE` as set (D564): given to the connection it makes, or
+    /// to the ones a listener accepts.
+    keep_alive: core::sync::atomic::AtomicBool,
+    urgent_inline: core::sync::atomic::AtomicBool,
 }
 
 impl Socket {
@@ -400,6 +591,8 @@ impl Socket {
         Self {
             phase: LeafSpinLock::new_leaf(Phase::Idle),
             linger: LeafSpinLock::new_leaf(None),
+            keep_alive: core::sync::atomic::AtomicBool::new(false),
+            urgent_inline: core::sync::atomic::AtomicBool::new(false),
             run,
         }
     }
@@ -408,6 +601,9 @@ impl Socket {
     pub fn accepted(stream: Arc<Stream>, run: fn()) -> Self {
         Self {
             phase: LeafSpinLock::new_leaf(Phase::Connected(stream)),
+            linger: LeafSpinLock::new_leaf(None),
+            keep_alive: core::sync::atomic::AtomicBool::new(false),
+            urgent_inline: core::sync::atomic::AtomicBool::new(false),
             run,
         }
     }
@@ -456,6 +652,35 @@ impl Socket {
     /// `SO_LINGER` as set.
     pub fn linger(&self) -> Option<u32> {
         *self.linger.lock()
+    }
+
+    /// Sets `SO_KEEPALIVE` (D564), for the connection now and the ones to come.
+    pub fn set_keep_alive<P: Platform>(&self, on: bool) {
+        self.keep_alive
+            .store(on, core::sync::atomic::Ordering::Relaxed);
+        if let Phase::Connected(stream) = self.phase() {
+            stream.set_keep_alive::<P>(on);
+        }
+    }
+
+    /// Sets `SO_OOBINLINE` (D564), for the connection now and the ones to come.
+    pub fn set_urgent_inline(&self, inline: bool) {
+        self.urgent_inline
+            .store(inline, core::sync::atomic::Ordering::Relaxed);
+        if let Phase::Connected(stream) = self.phase() {
+            stream.set_urgent_inline(inline);
+        }
+    }
+
+    /// Gives `stream`, a connection it made or accepted, its `SO_KEEPALIVE` and
+    /// `SO_OOBINLINE`.
+    pub fn hand_options_to<P: Platform>(&self, stream: &Stream) {
+        if self.keep_alive.load(core::sync::atomic::Ordering::Relaxed) {
+            stream.set_keep_alive::<P>(true);
+        }
+        if self.urgent_inline.load(core::sync::atomic::Ordering::Relaxed) {
+            stream.set_urgent_inline(true);
+        }
     }
 }
 
@@ -592,7 +817,7 @@ pub fn deliver<P: Platform>(
             let was_connecting = connection.is_connecting();
             connection.receive(segment, now, queues);
             if *read_closed || *released {
-                queues.received.clear();
+                queues.drop_received();
             }
             let made = was_connecting && !connection.is_connecting();
             match (made, connection.state()) {

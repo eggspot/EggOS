@@ -2,8 +2,9 @@
 //! `bind`, `listen`, `accept`, `accept4`, `connect`, `getsockname`, `getpeername`, `sendto`,
 //! `sendmsg`, `recvfrom`, `recvmsg` (with `MSG_PEEK`, `MSG_DONTWAIT`, `MSG_WAITALL`),
 //! `shutdown`, `setsockopt` and `getsockopt` (`SO_ERROR` reports a failed connection once,
-//! `TCP_NODELAY` is always on), and `read`, `write`, `poll`, `ioctl(FIONREAD)` and `fstat` on
-//! them, as Linux answers them.
+//! `TCP_NODELAY` is always on; `SO_KEEPALIVE`, `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT`
+//! and `SO_OOBINLINE` work, D564), urgent data with `MSG_OOB` and `POLLPRI`, and `read`,
+//! `write`, `poll`, `ioctl(FIONREAD)` and `fstat` on them, as Linux answers them.
 //!
 //! A socket that listens or connects before it binds is bound to a port the kernel picks. A
 //! blocking `connect` waits for the handshake (`ECONNREFUSED` when the peer resets it,
@@ -33,8 +34,14 @@ use eggos_net::ipv4::Ipv4Address;
 use eggos_net::tcp::{Error, State};
 
 const TCP_NODELAY: u32 = 1;
+const TCP_KEEPIDLE: u32 = 4;
+const TCP_KEEPINTVL: u32 = 5;
+const TCP_KEEPCNT: u32 = 6;
 const SO_KEEPALIVE: u32 = 9;
+const SO_OOBINLINE: u32 = 10;
 const SO_LINGER: u32 = 13;
+const MAX_KEEPALIVE_SECONDS: u32 = 32_767;
+const MAX_KEEPALIVE_PROBES: u32 = 127;
 const CHUNK: usize = 4096;
 
 fn connection_error(error: Error) -> Errno {
@@ -239,7 +246,35 @@ fn setsockopt<P: Platform>(
             tcp_socket(socket)?.set_linger(on.then_some(seconds));
             Ok(0)
         }
-        (IPPROTO_TCP, _) | (SOL_SOCKET, SO_KEEPALIVE) => {
+        (SOL_SOCKET, SO_KEEPALIVE) | (SOL_SOCKET, SO_OOBINLINE) => {
+            let on = read_option_int(process, value, length)? != 0;
+            let tcp_socket = tcp_socket(socket)?;
+            match name as u32 {
+                SO_KEEPALIVE => tcp_socket.set_keep_alive::<P>(on),
+                _ => tcp_socket.set_urgent_inline(on),
+            }
+            Ok(0)
+        }
+        (IPPROTO_TCP, TCP_KEEPIDLE) | (IPPROTO_TCP, TCP_KEEPINTVL) | (IPPROTO_TCP, TCP_KEEPCNT) => {
+            let wanted = read_option_int(process, value, length)?;
+            let limit = match name as u32 {
+                TCP_KEEPCNT => MAX_KEEPALIVE_PROBES,
+                _ => MAX_KEEPALIVE_SECONDS,
+            };
+            if wanted < 1 || wanted as u32 > limit {
+                return Err(Errno::EINVAL);
+            }
+            let stream = connected(socket)?;
+            let mut settings = stream.keep_alive_settings();
+            match name as u32 {
+                TCP_KEEPIDLE => settings.idle_ms = u64::from(wanted as u32) * 1000,
+                TCP_KEEPINTVL => settings.interval_ms = u64::from(wanted as u32) * 1000,
+                _ => settings.probes = wanted as u8,
+            }
+            stream.set_keep_alive_settings::<P>(settings);
+            Ok(0)
+        }
+        (IPPROTO_TCP, _) => {
             if (length as u32) < 4 {
                 return Err(Errno::EINVAL);
             }
@@ -247,6 +282,17 @@ fn setsockopt<P: Platform>(
         }
         _ => inet::setsockopt(process, socket, level, name, value, length),
     }
+}
+
+fn read_option_int<P: Platform>(process: &Process<P>, value: u64, length: u64) -> Result<i32, Errno> {
+    if (length as u32) < 4 {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0u8; 4];
+    process
+        .read_user_memory(value, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(i32::from_ne_bytes(bytes))
 }
 
 fn getsockopt<P: Platform>(
@@ -279,7 +325,21 @@ fn getsockopt<P: Platform>(
                 .map_or(0, |error| connection_error(error).0 as u32),
             _ => 0,
         },
-        (SOL_SOCKET, SO_KEEPALIVE) => 0,
+        (SOL_SOCKET, SO_KEEPALIVE) => match &phase {
+            Phase::Connected(stream) => u32::from(stream.keeps_alive()),
+            _ => 0,
+        },
+        (IPPROTO_TCP, TCP_KEEPIDLE) | (IPPROTO_TCP, TCP_KEEPINTVL) | (IPPROTO_TCP, TCP_KEEPCNT) => {
+            let settings = match &phase {
+                Phase::Connected(stream) => stream.keep_alive_settings(),
+                _ => eggos_net::tcp::KeepAlive::LINUX,
+            };
+            match name as u32 {
+                TCP_KEEPIDLE => (settings.idle_ms / 1000) as u32,
+                TCP_KEEPINTVL => (settings.interval_ms / 1000) as u32,
+                _ => u32::from(settings.probes),
+            }
+        }
         (IPPROTO_TCP, TCP_NODELAY) => 1,
         _ => return inet::getsockopt(process, socket, level, name, value, length_at),
     };
@@ -371,6 +431,9 @@ pub fn events(socket: &Socket, requested: u16) -> u16 {
             if status.error.is_some() {
                 events |= event::ERR;
             }
+            if status.urgent {
+                events |= requested & event::PRI;
+            }
             if status.read_ended && !matches!(status.state, State::Established | State::CloseWait) {
                 events |= event::HUP;
             }
@@ -430,6 +493,9 @@ fn accept<P: Platform>(
     let result = loop {
         tcp::run::<P>();
         if let Some(stream) = listener.take_ready() {
+            if let Ok(listening) = tcp_socket(socket) {
+                listening.hand_options_to::<P>(&stream);
+            }
             break install_accepted(process, thread, stream, address, length_at, flags);
         }
         if file.is_nonblocking() {
@@ -560,6 +626,7 @@ fn start_connection<P: Platform>(
     if !tcp_socket.leave_idle(Phase::Connected(Arc::clone(&stream))) {
         return Err(Errno::EALREADY);
     }
+    tcp_socket.hand_options_to::<P>(&stream);
     tcp::run::<P>();
     Ok((stream, true))
 }
@@ -573,10 +640,14 @@ fn send<P: Platform>(
     buffers: Iovecs,
     flags: u32,
 ) -> ControlFlow<()> {
-    let result = match flags & message::OOB {
-        0 => send_bytes(process, thread, context, file, socket, &buffers, flags)?,
-        _ => Some(Err(Errno::EOPNOTSUPP)),
-    };
+    let result = send_bytes(process, thread, context, file, socket, &buffers, flags)?;
+    if flags & message::OOB != 0
+        && matches!(result, Some(Ok(sent)) if sent > 0)
+        && let Ok(stream) = connected(socket)
+    {
+        stream.mark_urgent();
+        tcp::run::<P>();
+    }
     match result {
         Some(result) => finish_send(process, thread, context, result, flags),
         None => ControlFlow::Continue(()),
@@ -774,7 +845,7 @@ fn receive_bytes<P: Platform>(
     receive: &Receive,
 ) -> ControlFlow<(), Option<Result<u64, Errno>>> {
     if receive.flags & message::OOB != 0 {
-        return ControlFlow::Continue(Some(Err(Errno::EOPNOTSUPP)));
+        return ControlFlow::Continue(Some(receive_urgent(process, socket, receive)));
     }
     let stream = match connected(socket) {
         Ok(stream) => stream,
@@ -839,6 +910,36 @@ fn receive_bytes<P: Platform>(
 }
 
 /// `read` or `readv` on a stream socket: a receive with no flags.
+/// `recv(MSG_OOB)` (D564): the urgent byte the peer sent, apart from the stream, as Linux:
+/// `EINVAL` when there is none or urgent bytes stay in the stream, `EAGAIN` while it is
+/// announced but has not come yet.
+fn receive_urgent<P: Platform>(
+    process: &Process<P>,
+    socket: &InetSocket,
+    receive: &Receive,
+) -> Result<u64, Errno> {
+    let stream = connected(socket)?;
+    let peek = receive.flags & message::PEEK != 0;
+    let Some(byte) = stream.take_urgent_byte(peek) else {
+        return match stream.status().urgent {
+            true => Err(Errno::EAGAIN),
+            false => Err(Errno::EINVAL),
+        };
+    };
+    let Some((base, _)) = receive
+        .buffers
+        .entries()
+        .map(iovec)
+        .find(|&(_, length)| length > 0)
+    else {
+        return Ok(0);
+    };
+    process
+        .write_user_memory(base, &[byte])
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(1)
+}
+
 pub(in crate::linux) fn read<P: Platform>(
     process: &Arc<Process<P>>,
     thread: &mut LinuxThread,
