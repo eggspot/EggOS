@@ -25936,3 +25936,53 @@ the license, by an explicit instruction recorded here.
   the identity.
 - **Not yet.** Building and running; offsets per device when buses differ; unbinding drivers; the
   console's input steered on the other architectures.
+
+## D555 Interrupts, the rest of D532's and D536's "Not yet": plain MSI lines steered, the APLIC's direct mode, and PCI MSIs into RISC-V's IMSICs (M5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Plain MSI.** The driver model keeps the PCI configuration space it probed with (the ECAM window,
+  leaked into a box, or the firmware's accessor) and records, for each line a function's plain MSI
+  capability carries, the function and the capability. Moving such a line writes the HAL's new
+  message into the capability, as MSI-X lines have their table entry rewritten (D536). The records
+  stay allocated for good, as handlers do, so an interrupt in flight never reads freed memory.
+- **The APLIC's direct mode.** A supervisor APLIC without `msi-parent` (machines without IMSICs) is
+  driven in direct mode: the domain is turned on without MSI delivery, each hart's interrupt
+  delivery control (32 bytes at 0x4000 + 32 × its index) is turned on with every priority as it
+  starts, sources are routed with a hart and a priority, and the trap claims through the hart's
+  `claimi` register. Moving a line rewrites the source's target. The hart's index in the APLIC is
+  taken to be its hart id, as on QEMU's `virt` machine.
+- **PCI MSIs into the IMSIC.** With IMSICs, `Platform::message_interrupt` on RISC-V hands a PCI
+  function an identity of its own from 128 up (below the 256 identities every hart enables, so the
+  line can move), enabled on the boot hart, and the message is the boot hart's supervisor interrupt
+  file (the `riscv,imsics` node the APLIC's `msi-parent` names, 4 KiB per hart) with the identity as
+  data. `message_for` gives another hart's file. Each hart now records its id in its per-CPU block
+  (`HalCpuLocal::hart_id`).
+- **Not yet.** Building and running; harts whose APLIC index differs from their hart id; more than
+  128 MSI lines; balancing lines by load; moving lines off CPUs that go offline.
+
+## D556 ACPI, the rest of D537's to D539's "Not yet": `Load`, `LoadTable`, the global lock, the ECDT, EC burst reads, GPE block devices and the power devices' notifications (M5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Loading tables from AML.** `Load(source, handle)` reads a definition block from a buffer, a
+  field, or an operation region (through the host, up to its header's length and at most 1 MiB) and
+  loads it; the handle is the table count, 0 on failure. `LoadTable` asks the host for the
+  firmware's table by signature, OEM ID and OEM table ID (`Host::table_bytes`; the kernel's host
+  looks through `Platform::acpi_tables`, blank IDs matching any) and stores its parameter at the
+  path given. `Unload` is accepted and leaves the objects, which nothing then reaches.
+- **The global lock.** Acquiring `\_GL` and every access to a field whose list says `Lock` take the
+  firmware's global lock: the FACS's lock word, updated atomically as ACPI 6.5 5.2.10.1 gives it
+  (owned, and pending when the firmware holds it), polled every millisecond up to the timeout;
+  releasing it sets PM1a's `GBL_RLS` when the firmware was waiting. Without a FACS it is granted at
+  once.
+- **The ECDT.** The embedded controller's ports, event and path come from the ECDT when the firmware
+  gives one, before `_CRS`; a machine whose namespace has no `PNP0C09` uses the ECDT's alone.
+- **Burst reads.** A field wider than a byte in the controller's space is read in burst mode
+  (`BE_EC`, `BD_EC`), when the controller agrees.
+- **GPE block devices.** Devices with `_HID` `ACPI0006` add their register block (the first I/O
+  range of `_CRS`) to the event blocks, with their own `_Lxx`/`_Exx` methods under the device.
+- **The power devices.** At start and on every status (0x80), information (0x81) or device-check
+  notification, the kernel reads the lids (`_LID`), AC adapters (`ACPI0003`, `_PSR`), batteries
+  (`_BST` against `_BIF`'s last full capacity), thermal zones (`_TMP`) and docks (`_STA` of a device
+  with `_DCK`), shown in `/proc/driver/power`.
+- **Not yet.** Building and running; real waits on mutexes and events, and AML from several threads
+  at once (one thread runs AML, sleeping out a wait's timeout); GPIO and serial-bus connection
+  fields; acting on the lid (sleep) and on critical temperatures; the power state's CLI, MCP and
+  bar front-ends; sleep states other than S5.

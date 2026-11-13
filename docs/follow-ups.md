@@ -35,11 +35,14 @@ and is not listed per item.
 - [x] On x86_64, map ACPI tables on demand and reserved PVH ranges uncached instead of the cached direct map (D29) — code written, unbuilt, D554
 - [x] Console input taken on any CPU, not only the boot CPU (D98) — code written, unbuilt, D554 (x86_64)
 - [x] Device-tree `dma-ranges` for devices whose DMA addresses differ from the CPU's (D269) — code written, unbuilt, D554
-- [ ] Plain MSI (without MSI-X) steered to other CPUs; moving lines off CPUs that go offline; balancing by load (D536)
-- [ ] RISC-V AIA: the APLIC's direct mode, PCI MSIs straight into the IMSIC, interrupts on harts other than the boot hart (D532)
+- [x] Plain MSI (without MSI-X) steered to other CPUs; moving lines off CPUs that go offline; balancing by load (D536) — code written, unbuilt, D555 (plain MSI; offline CPUs and load balancing stay open below)
+- [x] RISC-V AIA: the APLIC's direct mode, PCI MSIs straight into the IMSIC, interrupts on harts other than the boot hart (D532) — code written, unbuilt, D555
 - [ ] x86_64: interrupt remapping (VT-d / AMD-Vi) so x2APIC destinations above 255 work, and the HPET as a timer of its own (D531, D536)
-- [ ] AML: loading tables from AML (`Load`, `LoadTable`), the global lock's hardware handshake, real waits on mutexes and events, GPIO and serial-bus connection fields (D537, D538)
-- [ ] ACPI: the ECDT, EC burst mode, GPE block devices (`ACPI0006`), acting on lid, battery, thermal and dock notifications (D539)
+- [x] AML: loading tables from AML (`Load`, `LoadTable`), the global lock's hardware handshake, real waits on mutexes and events, GPIO and serial-bus connection fields (D537, D538) — code written, unbuilt, D556 (real waits and GPIO/serial fields stay open below)
+- [ ] AML: real waits on mutexes and events with several AML threads; GPIO and serial-bus connection fields (D537)
+- [ ] Moving device lines off CPUs that go offline, and balancing lines by load (D536)
+- [ ] The power state's front-ends: `power` CLI, MCP `power_status`, a battery indicator on the bar; acting on the lid and critical temperatures (D556)
+- [x] ACPI: the ECDT, EC burst mode, GPE block devices (`ACPI0006`), acting on lid, battery, thermal and dock notifications (D539) — code written, unbuilt, D556
 - [ ] ACPI sleep states other than S5 (S3 suspend to RAM with wake events) (D538, D539)
 
 ## M6 Linux system-call ABI
