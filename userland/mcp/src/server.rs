@@ -679,7 +679,9 @@ impl Server {
                         let mut present: [(&'static str, bool); 8] = [("", false); 8];
                         let mut known = 0;
                         for file in tools::TOOLS.iter().filter_map(|tool| tool.needs) {
-                            if known < present.len() && !present[..known].iter().any(|(seen, _)| *seen == file) {
+                            if known < present.len()
+                                && !present[..known].iter().any(|(seen, _)| *seen == file)
+                            {
                                 present[known] = (file, system.reaches_file(file));
                                 known += 1;
                             }
@@ -688,8 +690,14 @@ impl Server {
                         rpc::write_result(out, id, |out| {
                             tools::write_list(
                                 out,
-                                &mut |file| present[..known].iter().any(|(seen, here)| *seen == file && *here),
-                                &mut |out| crate::app_actions::write_tools(out, system, &mut actions_file),
+                                &mut |file| {
+                                    present[..known]
+                                        .iter()
+                                        .any(|(seen, here)| *seen == file && *here)
+                                },
+                                &mut |out| {
+                                    crate::app_actions::write_tools(out, system, &mut actions_file)
+                                },
                             )
                         })
                     }

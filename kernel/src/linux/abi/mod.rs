@@ -90,7 +90,9 @@ pub const WORD_BYTES: usize = 8;
 /// The `long` or pointer at the start of `bytes` ([`WORD_BYTES`] of them), widened.
 pub fn word(bytes: &[u8]) -> u64 {
     match WORD_BYTES {
-        4 => u64::from(u32::from_ne_bytes(bytes[..4].try_into().unwrap_or_default())),
+        4 => u64::from(u32::from_ne_bytes(
+            bytes[..4].try_into().unwrap_or_default(),
+        )),
         _ => u64::from_ne_bytes(bytes[..8].try_into().unwrap_or_default()),
     }
 }
@@ -470,12 +472,10 @@ pub mod generic {
         pub const SIGMASK: usize = UCONTEXT + ucontext::STACK + STACK_SIZE;
         pub const MCONTEXT: usize = UCONTEXT + (SIGMASK - UCONTEXT + 128).next_multiple_of(16);
         const _: () = assert!(
-            super::super::WORD_BYTES != 8
-                || UCONTEXT == 128 && SIGMASK == 168 && MCONTEXT == 304
+            super::super::WORD_BYTES != 8 || UCONTEXT == 128 && SIGMASK == 168 && MCONTEXT == 304
         );
         const _: () = assert!(
-            super::super::WORD_BYTES != 4
-                || UCONTEXT == 128 && SIGMASK == 148 && MCONTEXT == 288
+            super::super::WORD_BYTES != 4 || UCONTEXT == 128 && SIGMASK == 148 && MCONTEXT == 288
         );
     }
 }

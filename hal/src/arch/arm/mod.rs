@@ -12,7 +12,6 @@
 //! address, sets the stack, installs the vectors (D478, D482) and the GICv2 with the virtual
 //! timer, and calls the kernel's `kernel_main`, [`Arm`] being its [`crate::Platform`].
 
-
 mod fp;
 mod test_program;
 mod thread;
@@ -38,8 +37,7 @@ const NORMAL_INDEX: u32 = 1;
 const DEVICE_INDEX: u32 = 0;
 const ATTRIBUTE_SHIFT: u32 = 2;
 const EXECUTE_NEVER_HIGH: u32 = (1u64 << 54 >> 32) as u32 | (1u64 << 53 >> 32) as u32;
-const NORMAL_BLOCK: u32 =
-    BLOCK | ACCESS_FLAG | INNER_SHAREABLE | NORMAL_INDEX << ATTRIBUTE_SHIFT;
+const NORMAL_BLOCK: u32 = BLOCK | ACCESS_FLAG | INNER_SHAREABLE | NORMAL_INDEX << ATTRIBUTE_SHIFT;
 const DEVICE_BLOCK: u32 = BLOCK | ACCESS_FLAG | DEVICE_INDEX << ATTRIBUTE_SHIFT;
 const MAIR0: u32 = 0x0044_ff00;
 const TTBCR_LPAE: u32 = 1 << 31 | 0b11 << 12 | 0b01 << 10 | 0b01 << 8;
@@ -435,7 +433,10 @@ impl crate::Platform for Arm {
     }
 
     fn early_device_regions(region: &mut dyn FnMut(crate::memory::PhysicalRange)) {
-        region(crate::memory::PhysicalRange::from_start_length(u64::from(UART), UART_BYTES));
+        region(crate::memory::PhysicalRange::from_start_length(
+            u64::from(UART),
+            UART_BYTES,
+        ));
         region(crate::memory::PhysicalRange::from_start_length(
             GIC_DISTRIBUTOR as u64,
             GIC_BYTES,
@@ -504,7 +505,16 @@ impl crate::Platform for Arm {
         const DIVIDE: u64 = 1 << 17 | 1 << 18;
         const LPAE: u64 = 1 << 20;
         [
-            HALF_WORD | THUMB | FAST_MULTIPLY | VFP | EDSP | NEON | VFPV3 | TLS | VFPV4 | DIVIDE
+            HALF_WORD
+                | THUMB
+                | FAST_MULTIPLY
+                | VFP
+                | EDSP
+                | NEON
+                | VFPV3
+                | TLS
+                | VFPV4
+                | DIVIDE
                 | LPAE,
             0,
         ]

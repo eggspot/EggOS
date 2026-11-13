@@ -138,7 +138,12 @@ mod tests {
         let writes = mailbox.regs.writes();
         assert_eq!(
             writes,
-            vec![(0x800, 0xb), (0x804, 0x0010_0000), (0x808, 0x37), (0x80c, 0)]
+            vec![
+                (0x800, 0xb),
+                (0x804, 0x0010_0000),
+                (0x808, 0x37),
+                (0x80c, 0)
+            ]
         );
     }
 
@@ -160,7 +165,10 @@ mod tests {
     fn layouts_come_from_the_compatible_strings() {
         let names: [&[u8]; 2] = [b"apple,t6000-asc-mailbox", b"apple,asc-mailbox-v4"];
         assert_eq!(Layout::of_compatible(names), Some(Layout::Asc));
-        assert_eq!(Layout::of_compatible([&b"apple,m3-mailbox-v2"[..]]), Some(Layout::M3));
+        assert_eq!(
+            Layout::of_compatible([&b"apple,m3-mailbox-v2"[..]]),
+            Some(Layout::M3)
+        );
         assert_eq!(Layout::of_compatible([&b"arm,pl011"[..]]), None);
     }
 }

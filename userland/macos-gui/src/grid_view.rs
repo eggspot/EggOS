@@ -23,10 +23,19 @@ pub type Track = Option<i32>;
 
 /// The sizes of `tracks` tracks (columns or rows): each the one the app set, else its largest
 /// cell's along that axis (`cell(track, index)` for each of `count` cells in it).
-pub fn sizes<const N: usize>(tracks: &[Track], count: usize, cell: impl Fn(usize, usize) -> i32) -> [i32; N] {
+pub fn sizes<const N: usize>(
+    tracks: &[Track],
+    count: usize,
+    cell: impl Fn(usize, usize) -> i32,
+) -> [i32; N] {
     let mut out = [0; N];
     for (index, (slot, set)) in out.iter_mut().zip(tracks).enumerate() {
-        *slot = set.unwrap_or_else(|| (0..count).map(|other| cell(index, other)).max().unwrap_or(0));
+        *slot = set.unwrap_or_else(|| {
+            (0..count)
+                .map(|other| cell(index, other))
+                .max()
+                .unwrap_or(0)
+        });
     }
     out
 }
@@ -71,7 +80,9 @@ mod tests {
 
     #[test]
     fn tracks_take_their_largest_cell_unless_set() {
-        let widths: [i32; 2] = sizes(&[None, Some(50)], 2, |column, row| [[10, 30], [5, 5]][column][row]);
+        let widths: [i32; 2] = sizes(&[None, Some(50)], 2, |column, row| {
+            [[10, 30], [5, 5]][column][row]
+        });
         assert_eq!(widths, [30, 50]);
     }
 
@@ -86,8 +97,17 @@ mod tests {
     #[test]
     fn a_view_is_placed_by_its_placements() {
         let cell = Rect::new(10, 20, 40, 30);
-        assert_eq!(place(cell, (20, 10), (placement::LEADING, placement::LEADING)), Rect::new(10, 20, 20, 10));
-        assert_eq!(place(cell, (20, 10), (placement::CENTER, placement::TRAILING)), Rect::new(20, 40, 20, 10));
-        assert_eq!(place(cell, (20, 10), (placement::FILL, placement::FILL)), cell);
+        assert_eq!(
+            place(cell, (20, 10), (placement::LEADING, placement::LEADING)),
+            Rect::new(10, 20, 20, 10)
+        );
+        assert_eq!(
+            place(cell, (20, 10), (placement::CENTER, placement::TRAILING)),
+            Rect::new(20, 40, 20, 10)
+        );
+        assert_eq!(
+            place(cell, (20, 10), (placement::FILL, placement::FILL)),
+            cell
+        );
     }
 }

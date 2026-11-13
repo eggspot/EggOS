@@ -174,7 +174,6 @@ const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
 const CDRF_NOTIFYITEMDRAW: usize = 0x20;
 const MOST_CUSTOM_ITEMS: usize = 64;
 
-/// `NMCUSTOMDRAW`, which a header sends as it is.
 #[repr(C)]
 struct NmCustomDraw {
     header: NotifyHeader,
@@ -205,9 +204,6 @@ fn text_colour_of(hdc: usize) -> Option<u32> {
     Some((colour_ref & 0xff) << 16 | (colour_ref & 0xff00) | (colour_ref >> 16 & 0xff))
 }
 
-/// Custom draw around a header's paint (D368): `CDDS_PREPAINT`, then `CDDS_ITEMPREPAINT` for
-/// each item when asked; `CDRF_NEWFONT` takes the text colour the program set on the device
-/// context, `CDRF_SKIPDEFAULT` leaves the item to the program.
 fn paint(window: usize) {
     let Ok((hdc, _, _)) = super::super::paint::begin(window) else {
         return;
@@ -229,7 +225,9 @@ fn paint(window: usize) {
         for index in 0..count {
             let answer = custom_draw(window, CDDS_ITEMPREPAINT, hdc, index, rects[index]);
             draws[index] = RowDraw {
-                text: (answer & CDRF_NEWFONT != 0).then(|| text_colour_of(hdc)).flatten(),
+                text: (answer & CDRF_NEWFONT != 0)
+                    .then(|| text_colour_of(hdc))
+                    .flatten(),
                 background: None,
                 skip: answer & CDRF_SKIPDEFAULT != 0,
             };
@@ -241,7 +239,10 @@ fn paint(window: usize) {
             return;
         };
         let Some(control) = read_state::<HeaderState, _>(gui, window, |_, control| {
-            (control.pressed.filter(|_| control.inside), control.list != 0)
+            (
+                control.pressed.filter(|_| control.inside),
+                control.list != 0,
+            )
         }) else {
             return;
         };

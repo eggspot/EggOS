@@ -83,7 +83,10 @@ pub enum Security {
 /// The pairwise cipher and key management an RSN element offers that the crate takes.
 pub fn rsn_security(element: &[u8]) -> Security {
     let suites = |at: usize| -> Option<(usize, &[u8])> {
-        let count = usize::from(u16::from_le_bytes([*element.get(at)?, *element.get(at + 1)?]));
+        let count = usize::from(u16::from_le_bytes([
+            *element.get(at)?,
+            *element.get(at + 1)?,
+        ]));
         Some((at + 2 + count * 4, element.get(at + 2..at + 2 + count * 4)?))
     };
     let selector = |bytes: &[u8]| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -91,13 +94,25 @@ pub fn rsn_security(element: &[u8]) -> Security {
         let after_group = 2 + 4;
         let (after_pairwise, pairwise) = suites(after_group)?;
         let (_, management) = suites(after_pairwise)?;
-        let ccmp = pairwise.chunks_exact(4).any(|suite| selector(suite) == suite::CCMP);
-        let has = |wanted: u32| management.chunks_exact(4).any(|suite| selector(suite) == wanted);
-        Some(match (ccmp, has(suite::PSK) || has(suite::PSK_SHA256), has(suite::SAE)) {
-            (true, true, _) => Security::Wpa2Personal,
-            (true, false, true) => Security::Wpa3Personal,
-            _ => Security::Other,
-        })
+        let ccmp = pairwise
+            .chunks_exact(4)
+            .any(|suite| selector(suite) == suite::CCMP);
+        let has = |wanted: u32| {
+            management
+                .chunks_exact(4)
+                .any(|suite| selector(suite) == wanted)
+        };
+        Some(
+            match (
+                ccmp,
+                has(suite::PSK) || has(suite::PSK_SHA256),
+                has(suite::SAE),
+            ) {
+                (true, true, _) => Security::Wpa2Personal,
+                (true, false, true) => Security::Wpa3Personal,
+                _ => Security::Other,
+            },
+        )
     };
     parse().unwrap_or(Security::Other)
 }
@@ -111,7 +126,10 @@ pub fn network(frame: &[u8]) -> Option<Network> {
         return None;
     }
     let bssid = address(frame, 16)?;
-    let capability = u16::from_le_bytes([*frame.get(HEADER_BYTES + 10)?, *frame.get(HEADER_BYTES + 11)?]);
+    let capability = u16::from_le_bytes([
+        *frame.get(HEADER_BYTES + 10)?,
+        *frame.get(HEADER_BYTES + 11)?,
+    ]);
     let mut network = Network {
         bssid,
         ssid: [0; MAX_SSID_BYTES],
@@ -144,16 +162,62 @@ pub fn network(frame: &[u8]) -> Option<Network> {
 /// The RSN element a WPA2-Personal station sends in its association request and in message 2:
 /// version 1, CCMP group and pairwise, PSK.
 pub const WPA2_PERSONAL_RSN: [u8; 22] = [
-    ELEMENT_RSN, 20, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 2,
-    0, 0,
+    ELEMENT_RSN,
+    20,
+    1,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    4,
+    1,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    4,
+    1,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    2,
+    0,
+    0,
 ];
 
 /// The RSN element a WPA3-Personal station sends (D285): version 1, CCMP group and pairwise,
 /// SAE, management frame protection capable and required, BIP-CMAC-128 for group management
 /// frames.
 pub const WPA3_PERSONAL_RSN: [u8; 28] = [
-    ELEMENT_RSN, 26, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 8,
-    0xc0, 0x00, 0, 0, 0x00, 0x0f, 0xac, 6,
+    ELEMENT_RSN,
+    26,
+    1,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    4,
+    1,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    4,
+    1,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    8,
+    0xc0,
+    0x00,
+    0,
+    0,
+    0x00,
+    0x0f,
+    0xac,
+    6,
 ];
 
 #[cfg(test)]
@@ -186,8 +250,14 @@ mod tests {
 
     #[test]
     fn open_and_legacy_networks_are_told_apart() {
-        assert_eq!(network(&beacon(&[0, 1, b'x'], false)).unwrap().security, Security::Open);
-        assert_eq!(network(&beacon(&[0, 1, b'x'], true)).unwrap().security, Security::Legacy);
+        assert_eq!(
+            network(&beacon(&[0, 1, b'x'], false)).unwrap().security,
+            Security::Open
+        );
+        assert_eq!(
+            network(&beacon(&[0, 1, b'x'], true)).unwrap().security,
+            Security::Legacy
+        );
     }
 
     #[test]

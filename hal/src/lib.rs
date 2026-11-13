@@ -18,6 +18,7 @@ pub mod acpi;
 pub mod aml;
 pub mod arch;
 pub mod atomic;
+pub mod cache;
 pub mod command_line;
 pub mod cpu;
 mod exception;
@@ -95,7 +96,10 @@ pub trait Platform: 'static {
     /// Hands `event` what the PS/2 devices sent since the last call, at most `budget` bytes'
     /// worth, and returns how many bytes it took. Called by the kernel's input poller only, once
     /// [`Self::start_legacy_input`] found a device.
-    fn poll_legacy_input(_budget: usize, _event: &mut dyn FnMut(eggos_drivers::input::RawEvent)) -> usize {
+    fn poll_legacy_input(
+        _budget: usize,
+        _event: &mut dyn FnMut(eggos_drivers::input::RawEvent),
+    ) -> usize {
         0
     }
 

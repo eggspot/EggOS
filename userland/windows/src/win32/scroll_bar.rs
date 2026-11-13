@@ -84,7 +84,9 @@ pub(super) fn control_message(window: usize, number: u32, wparam: usize, lparam:
     let Some(record) = record_for(number, lparam) else {
         return 0;
     };
-    let answer = with_scroll_bar(window, |bar| bar_message(bar, number, wparam, lparam, record));
+    let answer = with_scroll_bar(window, |bar| {
+        bar_message(bar, number, wparam, lparam, record)
+    });
     if changes(number) {
         invalidate(window);
     }
@@ -178,9 +180,6 @@ fn bar_message(
     }
 }
 
-/// The `SBM_*` message `number` done on window `window`'s own `vertical` (or horizontal) bar
-/// (D342). A new range or page that makes the bar needed shows it and one that makes it
-/// unneeded hides it, unless `SIF_DISABLENOSCROLL` keeps it, as Windows does.
 fn window_bar_message(
     window: usize,
     vertical: bool,
@@ -214,8 +213,6 @@ fn window_bar_message(
     result
 }
 
-/// Shows or hides window `window`'s own `vertical` (or horizontal) bar: its `WS_VSCROLL` (or
-/// `WS_HSCROLL`) set or cleared, its client area fitted, and `WM_SIZE` when that changed it.
 fn set_shown(window: usize, vertical: bool, shown: bool) {
     let bit = match vertical {
         true => windows::WS_VSCROLL,
@@ -351,8 +348,6 @@ extern "efiapi" fn get_scroll_range(
     }
 }
 
-/// `ShowScrollBar`: a window's own bars (`SB_HORZ`, `SB_VERT`, `SB_BOTH`) shown or hidden
-/// (D342); a scroll bar control (`SB_CTL`) is shown or hidden as a window.
 extern "efiapi" fn show_scroll_bar(window: usize, bar: i32, show: Bool) -> Bool {
     let shown = show != FALSE;
     let bars: &[bool] = match bar {

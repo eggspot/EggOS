@@ -22,7 +22,9 @@ pub(super) fn now() -> u64 {
 
 fn set_comparator(value: u64) {
     // SAFETY: `sckc` only sets when this CPU's next clock-comparator interruption comes.
-    unsafe { core::arch::asm!("sckc 0({0})", in(reg) &raw const value, options(nostack, readonly)) };
+    unsafe {
+        core::arch::asm!("sckc 0({0})", in(reg) &raw const value, options(nostack, readonly))
+    };
 }
 
 /// Raises the clock-comparator interruption once the clock passes `deadline`; `u64::MAX`

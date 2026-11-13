@@ -372,8 +372,6 @@ struct AtThreadExit {
 static AT_THREAD_EXIT: SpinLock<[Option<AtThreadExit>; MOST_AT_THREAD_EXIT]> =
     SpinLock::new([None; MOST_AT_THREAD_EXIT]);
 
-/// `_Cnd_register_at_thread_exit`, for `std::notify_all_at_thread_exit`: when this thread
-/// ends, `ready` is set to 1, `mutex` unlocked and `condition` broadcast.
 extern "efiapi" fn register_at_thread_exit(condition: usize, mutex: usize, ready: usize) {
     let entry = AtThreadExit {
         thread: thread_id(),
@@ -388,7 +386,6 @@ extern "efiapi" fn register_at_thread_exit(condition: usize, mutex: usize, ready
     });
 }
 
-/// `_Cnd_unregister_at_thread_exit`: what was registered with `mutex` is forgotten.
 extern "efiapi" fn unregister_at_thread_exit(mutex: usize) {
     AT_THREAD_EXIT.with(|entries| {
         for slot in entries.iter_mut() {
@@ -399,8 +396,6 @@ extern "efiapi" fn unregister_at_thread_exit(mutex: usize) {
     });
 }
 
-/// `_Cnd_do_broadcast_at_thread_exit`, which `std::thread` calls as each thread ends: does
-/// what this thread registered.
 extern "efiapi" fn broadcast_at_thread_exit() {
     let thread = thread_id();
     loop {

@@ -125,7 +125,6 @@ impl<H: Host> Interpreter<H> {
         Ok(())
     }
 
-    /// Reads, or writes `value` to, `width` bits at `byte_offset` of the region at `region`.
     fn region_access(
         &mut self,
         region: NodeId,
@@ -143,8 +142,8 @@ impl<H: Host> Interpreter<H> {
         let result = match held.space {
             RegionSpace::PciConfig => {
                 let function = self.pci_function(region)?;
-                let offset = u16::try_from(held.offset + byte_offset)
-                    .map_err(|_| Error::OutsideRegion)?;
+                let offset =
+                    u16::try_from(held.offset + byte_offset).map_err(|_| Error::OutsideRegion)?;
                 match value {
                     Some(value) => self
                         .host
@@ -164,9 +163,6 @@ impl<H: Host> Interpreter<H> {
         result.map_err(Error::Host)
     }
 
-    /// The PCI function a `PCI_Config` region at `region` is in: the device it is declared in
-    /// gives the device and function (`_ADR`), and the nearest host bridge at or above it the
-    /// bus (`_BBN`) and segment (`_SEG`), 0 when they have none. Found once, then kept.
     fn pci_function(&mut self, region: NodeId) -> Result<PciFunction, Error> {
         if let Some(Object::Region(held)) = self.namespace.get(region)
             && let Some(function) = held.pci
@@ -211,8 +207,6 @@ impl<H: Host> Interpreter<H> {
     }
 }
 
-/// The width in bits each access to `field` takes: its access type's, or for `AnyAcc` the
-/// narrowest of 8, 16 and 32 bits whose aligned unit holds the whole field (32 when none does).
 fn unit_bits(field: &Field) -> u64 {
     match field.access {
         Access::Byte | Access::Buffer => 8,

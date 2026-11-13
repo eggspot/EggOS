@@ -177,9 +177,6 @@ unsafe fn field<T: Copy>(data: *const u8, offset: usize) -> T {
     unsafe { data.wrapping_add(offset).cast::<T>().read_unaligned() }
 }
 
-/// The icon's 16x16 pixels, opaque ones with the top byte set (D357): its colour bitmap
-/// scaled or centred, transparent where its alpha is under half or, without alpha, where its
-/// mask is set.
 fn tray_pixels(icon: usize) -> Option<[u32; 256]> {
     let (colour, mask) = super::icon::icon_bitmaps(icon)?;
     let mut out = [0u32; 256];
@@ -199,7 +196,11 @@ fn tray_pixels(icon: usize) -> Option<[u32; 256]> {
             };
             let pixel = pixels.get(index).copied().unwrap_or(0);
             let opaque = !has_alpha || pixel >> 24 >= 0x80;
-            *slot = if opaque { OPAQUE | (pixel & 0x00ff_ffff) } else { 0 };
+            *slot = if opaque {
+                OPAQUE | (pixel & 0x00ff_ffff)
+            } else {
+                0
+            };
         }
         has_alpha
     })
@@ -250,9 +251,6 @@ fn show(entry: &TrayEntry, remove: bool) -> Result<(), u32> {
         .map_err(|_| error::NOT_ENOUGH_MEMORY)
 }
 
-/// `Shell_NotifyIconW`: `NIM_ADD`, `NIM_MODIFY` and `NIM_DELETE` of the icon `hWnd` and
-/// `uID` name (D357), with its callback message, icon, tip and hidden state; `NIM_SETVERSION`
-/// stores the version its messages are packed by; `NIM_SETFOCUS` is accepted.
 unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> Bool {
     if data.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
@@ -348,8 +346,12 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
     }
     if flags & NIF_STATE != 0 && size > DATA_STATE_MASK {
         // SAFETY: as above; the structure is long enough for the state.
-        let (state, mask) =
-            unsafe { (field::<u32>(data, DATA_STATE), field::<u32>(data, DATA_STATE_MASK)) };
+        let (state, mask) = unsafe {
+            (
+                field::<u32>(data, DATA_STATE),
+                field::<u32>(data, DATA_STATE_MASK),
+            )
+        };
         if mask & NIS_HIDDEN != 0 {
             entry.hidden = state & NIS_HIDDEN != 0;
         }
@@ -378,7 +380,6 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
     }
 }
 
-
 unsafe fn units_at(data: *const u8, offset: usize, room: usize, out: &mut [u16]) -> usize {
     let mut length = 0;
     while length < room.min(out.len()) {
@@ -393,11 +394,6 @@ unsafe fn units_at(data: *const u8, offset: usize, room: usize, out: &mut [u16])
     length
 }
 
-/// `NIF_INFO` (D364): the balloon's title and text, joined by `: ` when both are set, sent to
-/// the shell's notice; an empty text closes the icon's balloon.
-///
-/// # Safety
-/// `data` is a `NOTIFYICONDATAW` long enough for its balloon fields.
 unsafe fn show_balloon(entry: &TrayEntry, data: *const u8) -> Result<(), u32> {
     let mut info = [0u16; INFO_UNITS];
     let mut title = [0u16; INFO_TITLE_UNITS];
@@ -446,7 +442,10 @@ pub(super) fn tray_event(key: u32, message: u32, (x, y): (i32, i32)) {
     let point = (x as u16 as usize) | ((y as u16 as usize) << 16);
     let post = |number: u32| {
         let (wparam, lparam) = match entry.version {
-            4 => (point, (number as usize & 0xffff) | ((entry.id as usize & 0xffff) << 16)),
+            4 => (
+                point,
+                (number as usize & 0xffff) | ((entry.id as usize & 0xffff) << 16),
+            ),
             _ => (entry.id as usize, number as usize),
         };
         let _ = super::gui::post(entry.window, entry.callback, wparam, lparam);

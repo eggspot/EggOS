@@ -7,10 +7,10 @@
 use crate::frames::Address;
 use crate::kdf::kdf_sha256;
 use alloc::vec::Vec;
+use eggos_crypto::HashAlgorithm;
 use eggos_crypto::constant_time::equal;
 use eggos_crypto::hmac::hmac;
 use eggos_crypto::p256::{self, AffinePoint, SCALAR_BYTES};
-use eggos_crypto::HashAlgorithm;
 
 /// IEEE 802.11's number for the group P-256.
 pub const GROUP_P256: u16 = 19;
@@ -56,7 +56,10 @@ impl Commit {
     fn read(bytes: &[u8]) -> Option<Self> {
         let scalar: [u8; SCALAR_BYTES] = bytes.get(..SCALAR_BYTES)?.try_into().ok()?;
         let x = bytes.get(SCALAR_BYTES..2 * SCALAR_BYTES)?.try_into().ok()?;
-        let y = bytes.get(2 * SCALAR_BYTES..SCALAR_BYTES + ELEMENT_BYTES)?.try_into().ok()?;
+        let y = bytes
+            .get(2 * SCALAR_BYTES..SCALAR_BYTES + ELEMENT_BYTES)?
+            .try_into()
+            .ok()?;
         Some(Self {
             scalar,
             element: AffinePoint { x, y },
@@ -78,7 +81,12 @@ pub fn password_element(password: &[u8], own: Address, peer: Address) -> Option<
         input.push(counter);
         let seed = hmac(HashAlgorithm::Sha256, &key, &input);
         let mut value = [0u8; SCALAR_BYTES];
-        kdf_sha256(seed.as_bytes(), b"SAE Hunting and Pecking", &prime, &mut value);
+        kdf_sha256(
+            seed.as_bytes(),
+            b"SAE Hunting and Pecking",
+            &prime,
+            &mut value,
+        );
         let usable = p256::below_prime(&value) & p256::has_point_at(&value);
         let odd = seed.as_bytes()[31] & 1 == 1;
         if usable && found.is_none() {
@@ -114,7 +122,12 @@ fn draw(random: &mut dyn FnMut(&mut [u8])) -> Result<[u8; SCALAR_BYTES], SaeErro
 impl Sae {
     /// Starts SAE for `password` between station `own` and access point `peer`, `random`
     /// filling buffers with the system's randomness.
-    pub fn new(password: &[u8], own: Address, peer: Address, random: &mut dyn FnMut(&mut [u8])) -> Result<Self, SaeError> {
+    pub fn new(
+        password: &[u8],
+        own: Address,
+        peer: Address,
+        random: &mut dyn FnMut(&mut [u8]),
+    ) -> Result<Self, SaeError> {
         let password_element = password_element(password, own, peer).ok_or(SaeError::NoElement)?;
         for _ in 0..SCALAR_DRAWS {
             let secret = draw(random)?;
@@ -153,7 +166,9 @@ impl Sae {
 
     /// Takes the access point's commit body, checks it and derives the keys.
     pub fn receive_commit(&mut self, body: &[u8]) -> Result<(), SaeError> {
-        let group = body.get(..2).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+        let group = body
+            .get(..2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
         if group != Some(GROUP_P256) || body.len() != 2 + SCALAR_BYTES + ELEMENT_BYTES {
             return Err(SaeError::BadCommit);
         }
@@ -164,7 +179,8 @@ impl Sae {
         if peer == self.own {
             return Err(SaeError::Reflected);
         }
-        let scaled = p256::multiply(&self.password_element, &peer.scalar).ok_or(SaeError::BadCommit)?;
+        let scaled =
+            p256::multiply(&self.password_element, &peer.scalar).ok_or(SaeError::BadCommit)?;
         let sum = p256::add(&scaled, &peer.element).ok_or(SaeError::BadCommit)?;
         let shared = p256::multiply(&sum, &self.random).ok_or(SaeError::BadCommit)?;
         let keyseed = hmac(HashAlgorithm::Sha256, &[0u8; 32], &shared.x);
@@ -183,7 +199,9 @@ impl Sae {
         first.write(&mut data);
         second.write(&mut data);
         let digest = hmac(HashAlgorithm::Sha256, &self.kck, &data);
-        digest.as_bytes()[..CONFIRM_BYTES].try_into().unwrap_or([0; CONFIRM_BYTES])
+        digest.as_bytes()[..CONFIRM_BYTES]
+            .try_into()
+            .unwrap_or([0; CONFIRM_BYTES])
     }
 
     /// The body of the confirm authentication frame, numbered `send_confirm`; after
@@ -231,19 +249,34 @@ mod tests {
     #[test]
     fn two_sides_with_one_password_agree_on_the_pmk() {
         let (station, access_point) = ([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]);
-        assert_eq!(password_element(b"mekmitasdigoat", station, access_point), password_element(b"mekmitasdigoat", access_point, station));
+        assert_eq!(
+            password_element(b"mekmitasdigoat", station, access_point),
+            password_element(b"mekmitasdigoat", access_point, station)
+        );
         let mut one = Sae::new(b"mekmitasdigoat", station, access_point, &mut counting(3)).unwrap();
-        let mut other = Sae::new(b"mekmitasdigoat", access_point, station, &mut counting(91)).unwrap();
+        let mut other =
+            Sae::new(b"mekmitasdigoat", access_point, station, &mut counting(91)).unwrap();
         one.receive_commit(&other.commit_body(&[])).unwrap();
         other.receive_commit(&one.commit_body(&[])).unwrap();
         let from_other = other.confirm_body(1).unwrap();
         let from_one = one.confirm_body(1).unwrap();
-        assert_eq!(one.receive_confirm(&from_other).unwrap(), other.receive_confirm(&from_one).unwrap());
-        let mut wrong = Sae::new(b"another password", access_point, station, &mut counting(5)).unwrap();
-        let mut fresh = Sae::new(b"mekmitasdigoat", station, access_point, &mut counting(9)).unwrap();
+        assert_eq!(
+            one.receive_confirm(&from_other).unwrap(),
+            other.receive_confirm(&from_one).unwrap()
+        );
+        let mut wrong =
+            Sae::new(b"another password", access_point, station, &mut counting(5)).unwrap();
+        let mut fresh =
+            Sae::new(b"mekmitasdigoat", station, access_point, &mut counting(9)).unwrap();
         fresh.receive_commit(&wrong.commit_body(&[])).unwrap();
         wrong.receive_commit(&fresh.commit_body(&[])).unwrap();
-        assert_eq!(fresh.receive_confirm(&wrong.confirm_body(1).unwrap()), Err(SaeError::BadConfirm));
-        assert_eq!(one.receive_commit(&one.commit_body(&[])), Err(SaeError::Reflected));
+        assert_eq!(
+            fresh.receive_confirm(&wrong.confirm_body(1).unwrap()),
+            Err(SaeError::BadConfirm)
+        );
+        assert_eq!(
+            one.receive_commit(&one.commit_body(&[])),
+            Err(SaeError::Reflected)
+        );
     }
 }

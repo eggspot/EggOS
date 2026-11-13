@@ -17,17 +17,16 @@
 
 use super::view::fields;
 use super::{
-    NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META,
-    NSSTACKVIEW, NSSTACKVIEW_META, NSVIEW,
+    NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META, NSSTACKVIEW,
+    NSSTACKVIEW_META, NSVIEW,
 };
 use crate::foundation::{class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, class, message, methods, sel, send, send1, send_bool};
+use crate::objc::{Runtime, class, message, methods, sel, send, send_bool, send1};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_macos_gui::geometry::{Frame, Point, Size};
 
-/// `NSLayoutAttribute`.
 mod attribute {
     pub const LEFT: u64 = 1;
     pub const RIGHT: u64 = 2;
@@ -44,8 +43,7 @@ mod attribute {
 const MOST_CONSTRAINTS: usize = 512;
 const PASSES: usize = 3;
 
-static ACTIVE: [AtomicUsize; MOST_CONSTRAINTS] =
-    [const { AtomicUsize::new(0) }; MOST_CONSTRAINTS];
+static ACTIVE: [AtomicUsize; MOST_CONSTRAINTS] = [const { AtomicUsize::new(0) }; MOST_CONSTRAINTS];
 
 #[repr(C)]
 struct AnchorFields {
@@ -136,7 +134,12 @@ fn to_anchor(this: Id, other: Id, multiplier: f64, constant: f64) -> Id {
         true => new_constraint((view, kind), (core::ptr::null_mut(), 0), 0.0, constant),
         false => {
             let other = anchor(other);
-            new_constraint((view, kind), (other.view, other.attribute), multiplier, constant)
+            new_constraint(
+                (view, kind),
+                (other.view, other.attribute),
+                multiplier,
+                constant,
+            )
         }
     }
 }
@@ -179,7 +182,12 @@ extern "C" fn with_item(
     multiplier: f64,
     constant: f64,
 ) -> Id {
-    new_constraint((first, first_attribute), (second, second_attribute), multiplier, constant)
+    new_constraint(
+        (first, first_attribute),
+        (second, second_attribute),
+        multiplier,
+        constant,
+    )
 }
 
 fn set_active(object: Id, active: bool) {
@@ -200,12 +208,8 @@ fn set_active(object: Id, active: bool) {
         }
         false => {
             for slot in &ACTIVE {
-                let _ = slot.compare_exchange(
-                    object as usize,
-                    0,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
+                let _ =
+                    slot.compare_exchange(object as usize, 0, Ordering::AcqRel, Ordering::Acquire);
             }
         }
     }
@@ -293,7 +297,6 @@ fn read(frame: Frame, kind: u64) -> Option<f64> {
     })
 }
 
-/// What one pass wants of a view along one axis: its low edge, high edge, size and centre.
 #[derive(Default, Clone, Copy)]
 struct Axis {
     low: Option<f64>,
@@ -320,7 +323,11 @@ impl Axis {
 }
 
 fn intrinsic_size(view: Id) -> Option<Size> {
-    if !send_bool(view, sel!("respondsToSelector:"), sel!("intrinsicContentSize") as usize) {
+    if !send_bool(
+        view,
+        sel!("respondsToSelector:"),
+        sel!("intrinsicContentSize") as usize,
+    ) {
         return None;
     }
     let size: extern "C" fn(Id, Sel) -> Size = message::msg_send_as();
@@ -422,7 +429,9 @@ fn stack(object: Id) -> &'static mut StackFields {
 }
 
 fn register_stack(object: Id) {
-    let known = STACKS.iter().any(|slot| slot.load(Ordering::Acquire) == object as usize);
+    let known = STACKS
+        .iter()
+        .any(|slot| slot.load(Ordering::Acquire) == object as usize);
     if !known {
         let _ = STACKS.iter().any(|slot| {
             slot.compare_exchange(0, object as usize, Ordering::AcqRel, Ordering::Acquire)
@@ -447,7 +456,9 @@ extern "C" fn stack_add_arranged(this: Id, _: Sel, view: Id) {
 extern "C" fn stack_with_views(class: Id, _: Sel, views: Id) -> Id {
     let this = send(send(class, sel!("alloc")), sel!("init"));
     if !this.is_null() {
-        each_in(views, |view| stack_add_arranged(this, sel!("addArrangedSubview:"), view));
+        each_in(views, |view| {
+            stack_add_arranged(this, sel!("addArrangedSubview:"), view)
+        });
     }
     this
 }
@@ -455,7 +466,9 @@ extern "C" fn stack_with_views(class: Id, _: Sel, views: Id) -> Id {
 extern "C" fn stack_init_with_arranged(this: Id, _: Sel, views: Id) -> Id {
     let this = send(this, sel!("init"));
     if !this.is_null() {
-        each_in(views, |view| stack_add_arranged(this, sel!("addArrangedSubview:"), view));
+        each_in(views, |view| {
+            stack_add_arranged(this, sel!("addArrangedSubview:"), view)
+        });
     }
     this
 }

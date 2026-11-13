@@ -17,7 +17,6 @@
 //! held and for [`ACTIVE_WINDOW_MS`] after the last event, every [`IDLE_POLL_MS`] otherwise, and
 //! at each repeat, an idle device costing one load of its used ring's index per poll.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::console;
 use crate::devices::interrupts::DeviceEvents;
 use crate::sync::LeafSpinLock;
@@ -37,6 +36,7 @@ use eggos_drivers::input::{
 };
 use eggos_drivers::terminal::WHEEL_LINES;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::time::mul_div_ceil;
 use eggos_settings_file::{KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 
@@ -1216,7 +1216,10 @@ impl InputState {
         let report = report_now;
         if let Some((width, height)) = screen.filter(|&(width, height)| width > 0 && height > 0) {
             let rotation = crate::display::rotation();
-            let (mut x, mut y) = (self.pointer.0.min(width - 1), self.pointer.1.min(height - 1));
+            let (mut x, mut y) = (
+                self.pointer.0.min(width - 1),
+                self.pointer.1.min(height - 1),
+            );
             if let Some((x_range, y_range)) = capabilities.absolute {
                 let (device_width, device_height) = turned_size(rotation, width, height);
                 let (mut device_x, mut device_y) = rotation.turn(x, y, width, height);
@@ -1289,8 +1292,6 @@ impl InputState {
         self.second_touch_report(capabilities, &report, screen, sink);
     }
 
-    /// The second finger's part of a report: where it is, and an event when it went down or
-    /// lifted.
     fn second_touch_report(
         &mut self,
         capabilities: &Capabilities,
@@ -1308,8 +1309,12 @@ impl InputState {
         let (device_width, device_height) = turned_size(rotation, width, height);
         let at = self.second_touch.unwrap_or(self.pointer);
         let (at_x, at_y) = rotation.turn(at.0.min(width - 1), at.1.min(height - 1), width, height);
-        let device_x = report.second_x.map_or(at_x, |value| scale_to_screen(value, x_range, device_width));
-        let device_y = report.second_y.map_or(at_y, |value| scale_to_screen(value, y_range, device_height));
+        let device_x = report
+            .second_x
+            .map_or(at_x, |value| scale_to_screen(value, x_range, device_width));
+        let device_y = report
+            .second_y
+            .map_or(at_y, |value| scale_to_screen(value, y_range, device_height));
         let (x, y) = rotation.unturn(device_x, device_y, width, height);
         match report.second_down {
             Some(true) if self.second_touch.is_none() => {
@@ -1378,15 +1383,21 @@ impl InputState {
                 report.y = Some(event.value);
                 report.pending = true;
             }
-            (event_type::ABS, absolute::MT_POSITION_X) if report.touch_slot == SECOND_TOUCH_SLOT => {
+            (event_type::ABS, absolute::MT_POSITION_X)
+                if report.touch_slot == SECOND_TOUCH_SLOT =>
+            {
                 report.second_x = Some(event.value);
                 report.pending = true;
             }
-            (event_type::ABS, absolute::MT_POSITION_Y) if report.touch_slot == SECOND_TOUCH_SLOT => {
+            (event_type::ABS, absolute::MT_POSITION_Y)
+                if report.touch_slot == SECOND_TOUCH_SLOT =>
+            {
                 report.second_y = Some(event.value);
                 report.pending = true;
             }
-            (event_type::ABS, absolute::MT_TRACKING_ID) if report.touch_slot == SECOND_TOUCH_SLOT => {
+            (event_type::ABS, absolute::MT_TRACKING_ID)
+                if report.touch_slot == SECOND_TOUCH_SLOT =>
+            {
                 report.second_down = Some(event.value >= 0);
                 report.pending = true;
             }
@@ -1477,10 +1488,6 @@ static LAYOUTS: AtomicU64 = AtomicU64::new((layout::US_LAYOUT as u64) << IN_FORC
 
 static CAPS_LOCK: AtomicBool = AtomicBool::new(false);
 
-/// The multi-touch slot whose finger moves the pointer and presses its left button: the first
-/// finger down, as a single-touch screen behaves (D296).
-/// The device's own width and height for a picture `width` by `height` the display turns by
-/// `rotation` (D330): an absolute device's axes are the device's.
 fn turned_size(rotation: crate::display::Rotation, width: u32, height: u32) -> (u32, u32) {
     match rotation.swaps() {
         true => (height, width),
@@ -1489,10 +1496,8 @@ fn turned_size(rotation: crate::display::Rotation, width: u32, height: u32) -> (
 }
 
 const PRIMARY_TOUCH: i32 = 0;
-/// The multi-touch slot of the second finger, which the on-screen keyboard types with (D329).
 const SECOND_TOUCH_SLOT: i32 = 1;
 
-/// Whether a touch screen reported a touch since boot: what the shell's form looks at (M12).
 static TOUCH_SCREEN: AtomicBool = AtomicBool::new(false);
 
 /// Whether a touch screen reported a touch since boot (D296).
@@ -1797,8 +1802,6 @@ pub fn type_from_screen<P: Platform>(keys: &[eggos_drivers::desktop::ScreenKey])
     }
 }
 
-/// The on-screen keyboard's bytes for the console, typed while the desktop's lock was held:
-/// the next poll hands them over, as a keyboard's.
 static SCREEN_BYTES: LeafSpinLock<([u8; POLL_BUDGET_BYTES], usize)> =
     LeafSpinLock::new_leaf(([0; POLL_BUDGET_BYTES], 0));
 

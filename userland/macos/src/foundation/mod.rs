@@ -34,12 +34,6 @@ mod keyed_archiver;
 #[cfg(eggos_user)]
 mod keyed_unarchiver;
 #[cfg(eggos_user)]
-mod property_list;
-#[cfg(eggos_user)]
-mod url;
-#[cfg(eggos_user)]
-mod user_defaults;
-#[cfg(eggos_user)]
 mod log;
 #[cfg(eggos_user)]
 mod notification;
@@ -48,11 +42,17 @@ mod number;
 #[cfg(eggos_user)]
 mod process_info;
 #[cfg(eggos_user)]
+mod property_list;
+#[cfg(eggos_user)]
 mod set;
 #[cfg(eggos_user)]
 mod string;
 #[cfg(eggos_user)]
 mod timer;
+#[cfg(eggos_user)]
+mod url;
+#[cfg(eggos_user)]
+mod user_defaults;
 
 #[cfg(eggos_user)]
 pub use property_list::object_of_file as property_list_of_file;

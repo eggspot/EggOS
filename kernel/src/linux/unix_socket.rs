@@ -24,7 +24,6 @@
 //! change to it ([`Connection::changed`]), a listener's own list is woken when connections
 //! come and go. While nobody waits, a change costs the connection's lock and two relaxed loads.
 
-use eggos_hal::atomic::AtomicU64;
 use super::Errno;
 use super::descriptors::{FileKind, OpenFile};
 use super::poll::{WakeList, event};
@@ -36,6 +35,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use eggos_hal::atomic::AtomicU64;
 
 /// The most bytes queued towards one side of a connection.
 pub const QUEUE_CAPACITY: usize = 256 * 1024;

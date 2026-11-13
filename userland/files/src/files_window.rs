@@ -2110,7 +2110,9 @@ impl FilesWindow {
             }
         }
         files.close(handle);
-        eggos_app_manifest::actions::actions(&file[..filled]).next().is_some()
+        eggos_app_manifest::actions::actions(&file[..filled])
+            .next()
+            .is_some()
     }
 
     fn is_installed_app(&self, index: usize) -> bool {

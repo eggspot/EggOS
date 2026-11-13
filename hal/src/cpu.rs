@@ -110,7 +110,8 @@ impl HalCpuLocal {
                 context_top: 0,
                 entry_stack_top: 0,
                 entry_stack: EntryStack([0; ENTRY_STACK_BYTES]),
-                exception_stacks: [const { ExceptionStack([0; EXCEPTION_STACK_BYTES]) }; EXCEPTION_STACKS],
+                exception_stacks: [const { ExceptionStack([0; EXCEPTION_STACK_BYTES]) };
+                    EXCEPTION_STACKS],
             })),
         }
     }

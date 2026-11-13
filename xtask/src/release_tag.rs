@@ -76,7 +76,12 @@ pub enum TagState {
 
 /// The decision for a commit with `trailer`, whose workspace version is `version`, whose notes
 /// file exists or not, and whose version's tag stands as `state`.
-pub fn decide(trailer: Option<&str>, version: &str, notes_exist: bool, state: &TagState) -> Result<Decision, String> {
+pub fn decide(
+    trailer: Option<&str>,
+    version: &str,
+    notes_exist: bool,
+    state: &TagState,
+) -> Result<Decision, String> {
     let wanted = format!("v{version}");
     let Some(trailer) = trailer else {
         return match state {
@@ -89,10 +94,14 @@ pub fn decide(trailer: Option<&str>, version: &str, notes_exist: bool, state: &T
         };
     };
     if parse_tag(trailer).is_none() {
-        return Err(format!("`Release: {trailer}` is not a vMAJOR.MINOR.PATCH version"));
+        return Err(format!(
+            "`Release: {trailer}` is not a vMAJOR.MINOR.PATCH version"
+        ));
     }
     if trailer != wanted {
-        return Err(format!("`Release: {trailer}` does not match the workspace version {version}"));
+        return Err(format!(
+            "`Release: {trailer}` does not match the workspace version {version}"
+        ));
     }
     if !notes_exist {
         return Err(format!("docs/releases/{wanted}.md is missing"));
@@ -112,7 +121,11 @@ fn git(args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|e| format!("could not run git: {e}"))?;
     if !output.status.success() {
-        return Err(format!("`git {}` failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim()));
+        return Err(format!(
+            "`git {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -127,11 +140,14 @@ fn tag_state(tag: &str, sha: &str) -> Result<TagState, String> {
         return Ok(TagState::Elsewhere);
     }
     let view = Command::new("gh")
-        .args(["release", "view", tag, "--json", "isDraft", "--jq", ".isDraft"])
+        .args([
+            "release", "view", tag, "--json", "isDraft", "--jq", ".isDraft",
+        ])
         .current_dir(crate::workspace_root())
         .output()
         .map_err(|e| format!("could not run gh: {e}"))?;
-    let published = view.status.success() && String::from_utf8_lossy(&view.stdout).trim() == "false";
+    let published =
+        view.status.success() && String::from_utf8_lossy(&view.stdout).trim() == "false";
     Ok(TagState::OnCommit { published })
 }
 
@@ -144,9 +160,15 @@ pub fn run(sha: &str, push: bool) -> Result<(), String> {
     let message = git(&["log", "-1", "--format=%B", sha])?;
     let trailer = release_trailer(&message)?;
     let manifest = git(&["show", &format!("{sha}:Cargo.toml")])?;
-    let version = workspace_version(&manifest).ok_or("Cargo.toml has no [workspace.package] version")?;
+    let version =
+        workspace_version(&manifest).ok_or("Cargo.toml has no [workspace.package] version")?;
     let wanted = format!("v{version}");
-    let notes_exist = git(&["cat-file", "-e", &format!("{sha}:docs/releases/{wanted}.md")]).is_ok();
+    let notes_exist = git(&[
+        "cat-file",
+        "-e",
+        &format!("{sha}:docs/releases/{wanted}.md"),
+    ])
+    .is_ok();
     let state = tag_state(&wanted, sha)?;
     let tag = match decide(trailer.as_deref(), &version, notes_exist, &state)? {
         Decision::Nothing => String::new(),
@@ -179,16 +201,32 @@ mod tests {
     fn the_trailer_is_found_in_the_last_paragraphs_only() {
         let message = "Batch 8 (#170)\n\nRelease: v0.9.0 is mentioned here\n\nSummary.\n\nRelease: v0.5.0\nCo-authored-by: someone\n";
         assert_eq!(release_trailer(message).unwrap().as_deref(), Some("v0.5.0"));
-        assert_eq!(release_trailer("Fix (#171)\n\nNo trailer.\n").unwrap(), None);
+        assert_eq!(
+            release_trailer("Fix (#171)\n\nNo trailer.\n").unwrap(),
+            None
+        );
         assert!(release_trailer("x\n\nRelease: v0.5.0\nRelease: v0.5.1\n").is_err());
-        assert_eq!(release_trailer("x\r\n\r\nRelease: v0.5.0\r\n\r\n").unwrap().as_deref(), Some("v0.5.0"));
+        assert_eq!(
+            release_trailer("x\r\n\r\nRelease: v0.5.0\r\n\r\n")
+                .unwrap()
+                .as_deref(),
+            Some("v0.5.0")
+        );
     }
 
     #[test]
     fn only_plain_three_part_versions_are_tags() {
         assert_eq!(parse_tag("v0.5.0"), Some((0, 5, 0)));
         assert_eq!(parse_tag("v1.20.3"), Some((1, 20, 3)));
-        for bad in ["0.5.0", "v1.2", "v01.2.3", "v1.2.3-rc1", "v1.2.3;rm", "v$(x).1.1", "v1.2.3.4"] {
+        for bad in [
+            "0.5.0",
+            "v1.2",
+            "v01.2.3",
+            "v1.2.3-rc1",
+            "v1.2.3;rm",
+            "v$(x).1.1",
+            "v1.2.3.4",
+        ] {
             assert_eq!(parse_tag(bad), None, "{bad}");
         }
     }
@@ -202,15 +240,24 @@ mod tests {
     #[test]
     fn the_decision_follows_trailer_version_notes_and_tag() {
         let absent = TagState::Absent;
-        assert_eq!(decide(Some("v0.5.0"), "0.5.0", true, &absent), Ok(Decision::Tag("v0.5.0".into())));
+        assert_eq!(
+            decide(Some("v0.5.0"), "0.5.0", true, &absent),
+            Ok(Decision::Tag("v0.5.0".into()))
+        );
         assert!(decide(Some("v0.5.1"), "0.5.0", true, &absent).is_err());
         assert!(decide(Some("v0.5.0"), "0.5.0", false, &absent).is_err());
         assert!(decide(None, "0.5.0", true, &absent).is_err());
         let tagged = TagState::OnCommit { published: true };
         assert_eq!(decide(None, "0.5.0", true, &tagged), Ok(Decision::Nothing));
-        assert_eq!(decide(Some("v0.5.0"), "0.5.0", true, &tagged), Ok(Decision::Nothing));
+        assert_eq!(
+            decide(Some("v0.5.0"), "0.5.0", true, &tagged),
+            Ok(Decision::Nothing)
+        );
         let draft = TagState::OnCommit { published: false };
-        assert_eq!(decide(Some("v0.5.0"), "0.5.0", true, &draft), Ok(Decision::Publish("v0.5.0".into())));
+        assert_eq!(
+            decide(Some("v0.5.0"), "0.5.0", true, &draft),
+            Ok(Decision::Publish("v0.5.0".into()))
+        );
         assert!(decide(Some("v0.5.0"), "0.5.0", true, &TagState::Elsewhere).is_err());
     }
 }

@@ -49,7 +49,10 @@ impl Desktop {
         self.updates = UpdatesState {
             count,
             bytes,
-            tooltip: format!("{count} component {noun}, {}. Click to open Components.", size_text(bytes)),
+            tooltip: format!(
+                "{count} component {noun}, {}. Click to open Components.",
+                size_text(bytes)
+            ),
         };
         for panel in self.layout.panels() {
             damage.add(panel);

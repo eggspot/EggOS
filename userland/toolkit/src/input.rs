@@ -150,11 +150,21 @@ pub enum Input {
     Overflow,
     /// A drag between windows is over the window at (`x`, `y`) (D393): its payload's `kind`
     /// and `serial`.
-    DragOver { x: i32, y: i32, kind: u32, serial: u32 },
+    DragOver {
+        x: i32,
+        y: i32,
+        kind: u32,
+        serial: u32,
+    },
     /// The drag between windows left the window.
     DragLeave,
     /// The drag between windows was let go over the window at (`x`, `y`).
-    Drop { x: i32, y: i32, kind: u32, serial: u32 },
+    Drop {
+        x: i32,
+        y: i32,
+        kind: u32,
+        serial: u32,
+    },
     /// The window's own drag between windows ended, `landed` on a window or not.
     DragEnded { landed: bool },
 }

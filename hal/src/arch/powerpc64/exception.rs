@@ -1153,12 +1153,9 @@ ppc64_user_test_end:
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
 
-/// `gp_regs` and `fp_regs` in a 64-bit `ucontext_t`: `uc_mcontext` at 168, `gp_regs` 64 into
-/// it, `fp_regs` after its 48 words.
 const GP_REGS: usize = 168 + 64;
 const FP_REGS: usize = GP_REGS + 48 * 8;
 
-/// The registers the kernel entry saves, in the order it stores them.
 #[repr(C)]
 struct TrapFrame {
     gpr: [u64; 32],
@@ -1168,7 +1165,6 @@ struct TrapFrame {
     lr: u64,
     xer: u64,
     cr: u64,
-    /// The vector, bit 0 set when it uses `HSRR0`/`HSRR1`.
     vector: u64,
     dar: u64,
     dsisr: u64,
@@ -1177,7 +1173,6 @@ struct TrapFrame {
 
 const _: () = assert!(core::mem::size_of::<TrapFrame>() == 336);
 
-/// The vectors the HAL tells apart.
 const DATA_STORAGE: u64 = 0x300;
 const DATA_SEGMENT: u64 = 0x380;
 const INSTRUCTION_STORAGE: u64 = 0x400;
@@ -1201,17 +1196,13 @@ const VSX_UNAVAILABLE: u64 = 0xf40;
 const FACILITY_UNAVAILABLE: u64 = 0xf60;
 const HYPERVISOR_FACILITY_UNAVAILABLE: u64 = 0xf80;
 
-/// `DSISR`: the access was a store; no translation was found.
 const DSISR_STORE: u64 = 0x0200_0000;
 const DSISR_NO_TRANSLATION: u64 = 0x4000_0000;
-/// `SRR1` after an instruction storage interrupt: the cause bits; no translation.
 const SRR1_ISI_CAUSE: u64 = 0x5800_0000;
 const SRR1_ISI_NO_TRANSLATION: u64 = 0x4000_0000;
-/// `SRR1` after a program interrupt: FP enabled exception, illegal, privileged, trap.
 const SRR1_PROGRAM_CAUSE: u64 = 0x1f_0000;
 const SRR1_FP_ENABLED: u64 = 0x10_0000;
 const SRR1_TRAP: u64 = 0x2_0000;
-/// The size of every POWER instruction.
 const INSTRUCTION_SIZE: u64 = 4;
 
 fn scratch() -> *mut u64 {
@@ -1224,7 +1215,11 @@ fn scratch() -> *mut u64 {
 /// Records `block` as the kernel's `r13`, which the way out of user mode loads again.
 pub(super) fn set_kernel_r13(block: usize) {
     // SAFETY: `HSPRG0` holds this CPU's scratch area since boot; only this CPU writes it.
-    unsafe { scratch().add(SCRATCH_KERNEL_R13).write_volatile(block as u64) };
+    unsafe {
+        scratch()
+            .add(SCRATCH_KERNEL_R13)
+            .write_volatile(block as u64)
+    };
 }
 
 /// Whether programs on this CPU run with FP, vector and VSX on.
@@ -1234,7 +1229,6 @@ pub(super) fn set_user_fp(on: bool) {
     unsafe { scratch().add(SCRATCH_USER_FP).write_volatile(bits) };
 }
 
-/// Called by the kernel entry with the saved registers.
 extern "C" fn ppc64_exception(frame: &mut TrapFrame) {
     let vector = frame.vector & !1;
     if interrupt(vector) {
@@ -1247,7 +1241,6 @@ extern "C" fn ppc64_exception(frame: &mut TrapFrame) {
     }
 }
 
-/// Handles the interrupt `vector` names, if it is one the kernel takes; whether it was.
 #[inline(always)]
 fn interrupt(vector: u64) -> bool {
     match vector {
@@ -1271,8 +1264,6 @@ fn interrupt(vector: u64) -> bool {
 }
 
 unsafe extern "C" {
-    /// Enters problem state with `context`'s registers; returns once an interrupt from it saved
-    /// them back.
     fn ppc64_enter_user(context: *mut user::powerpc64::Registers);
     static ppc64_user_test_start: u8;
     static ppc64_user_test_checks: u8;
@@ -1317,7 +1308,13 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     if interrupt(vector) {
         return UserExit::Interrupt;
     }
-    UserExit::Exception(decode(vector, registers.msr, registers.dar, registers.dsisr, registers.nip))
+    UserExit::Exception(decode(
+        vector,
+        registers.msr,
+        registers.dar,
+        registers.dsisr,
+        registers.nip,
+    ))
 }
 
 impl crate::user::powerpc64::Registers {
@@ -1388,14 +1385,20 @@ fn decode(vector: u64, srr1: u64, dar: u64, dsisr: u64, pc: u64) -> Exception {
     let (kind, name, address, cause) = match vector {
         DATA_STORAGE => (ExceptionKind::DataFault, "data storage", Some(dar), dsisr),
         DATA_SEGMENT => (ExceptionKind::Segment, "data segment", Some(dar), 0),
-        INSTRUCTION_STORAGE => {
-            (ExceptionKind::InstructionFault, "instruction storage", Some(pc), srr1 & SRR1_ISI_CAUSE)
-        }
+        INSTRUCTION_STORAGE => (
+            ExceptionKind::InstructionFault,
+            "instruction storage",
+            Some(pc),
+            srr1 & SRR1_ISI_CAUSE,
+        ),
         INSTRUCTION_SEGMENT => (ExceptionKind::Segment, "instruction segment", Some(pc), 0),
         ALIGNMENT => (ExceptionKind::Alignment, "alignment", Some(dar), dsisr),
-        PROGRAM if srr1 & SRR1_TRAP != 0 => {
-            (ExceptionKind::Breakpoint, "trap", None, srr1 & SRR1_PROGRAM_CAUSE)
-        }
+        PROGRAM if srr1 & SRR1_TRAP != 0 => (
+            ExceptionKind::Breakpoint,
+            "trap",
+            None,
+            srr1 & SRR1_PROGRAM_CAUSE,
+        ),
         PROGRAM if srr1 & SRR1_FP_ENABLED != 0 => (
             ExceptionKind::Arithmetic,
             "floating-point enabled exception",
@@ -1408,23 +1411,56 @@ fn decode(vector: u64, srr1: u64, dar: u64, dsisr: u64, pc: u64) -> Exception {
             None,
             srr1 & SRR1_PROGRAM_CAUSE,
         ),
-        FP_UNAVAILABLE => (ExceptionKind::IllegalInstruction, "floating point unavailable", None, 0),
-        VECTOR_UNAVAILABLE => (ExceptionKind::IllegalInstruction, "vector unavailable", None, 0),
-        VSX_UNAVAILABLE => (ExceptionKind::IllegalInstruction, "VSX unavailable", None, 0),
-        FACILITY_UNAVAILABLE | HYPERVISOR_FACILITY_UNAVAILABLE => {
-            (ExceptionKind::IllegalInstruction, "facility unavailable", None, 0)
-        }
-        EMULATION_ASSISTANCE => {
-            (ExceptionKind::IllegalInstruction, "hypervisor emulation assistance", None, 0)
-        }
+        FP_UNAVAILABLE => (
+            ExceptionKind::IllegalInstruction,
+            "floating point unavailable",
+            None,
+            0,
+        ),
+        VECTOR_UNAVAILABLE => (
+            ExceptionKind::IllegalInstruction,
+            "vector unavailable",
+            None,
+            0,
+        ),
+        VSX_UNAVAILABLE => (
+            ExceptionKind::IllegalInstruction,
+            "VSX unavailable",
+            None,
+            0,
+        ),
+        FACILITY_UNAVAILABLE | HYPERVISOR_FACILITY_UNAVAILABLE => (
+            ExceptionKind::IllegalInstruction,
+            "facility unavailable",
+            None,
+            0,
+        ),
+        EMULATION_ASSISTANCE => (
+            ExceptionKind::IllegalInstruction,
+            "hypervisor emulation assistance",
+            None,
+            0,
+        ),
         TRACE => (ExceptionKind::Debug, "trace", None, 0),
-        HYPERVISOR_DATA_STORAGE => (ExceptionKind::DataFault, "hypervisor data storage", Some(dar), dsisr),
-        HYPERVISOR_INSTRUCTION_STORAGE => {
-            (ExceptionKind::InstructionFault, "hypervisor instruction storage", Some(pc), 0)
-        }
+        HYPERVISOR_DATA_STORAGE => (
+            ExceptionKind::DataFault,
+            "hypervisor data storage",
+            Some(dar),
+            dsisr,
+        ),
+        HYPERVISOR_INSTRUCTION_STORAGE => (
+            ExceptionKind::InstructionFault,
+            "hypervisor instruction storage",
+            Some(pc),
+            0,
+        ),
         SYSTEM_CALL => (ExceptionKind::Other, "system call", None, 0),
-        DECREMENTER | HYPERVISOR_DECREMENTER | EXTERNAL | HYPERVISOR_VIRTUALIZATION
-        | HYPERVISOR_DOORBELL | DOORBELL => (ExceptionKind::Interrupt, "interrupt", None, 0),
+        DECREMENTER
+        | HYPERVISOR_DECREMENTER
+        | EXTERNAL
+        | HYPERVISOR_VIRTUALIZATION
+        | HYPERVISOR_DOORBELL
+        | DOORBELL => (ExceptionKind::Interrupt, "interrupt", None, 0),
         _ => (ExceptionKind::Other, "exception", None, 0),
     };
     Exception {

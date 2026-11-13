@@ -209,7 +209,13 @@ pub fn write_dpcd<R: RegisterIo + ?Sized>(
     message[4..4 + length].copy_from_slice(&bytes[..length]);
     for _ in 0..MOST_TRIES {
         let mut reply = [0u8; MOST_BYTES];
-        transfer(regs, channel, &message[..4 + length], &mut reply, keep_waiting)?;
+        transfer(
+            regs,
+            channel,
+            &message[..4 + length],
+            &mut reply,
+            keep_waiting,
+        )?;
         match reply[0] >> 4 & 0x3 {
             REPLY_DEFER => continue,
             REPLY_NACK => return Err(AuxError::Refused),
@@ -314,7 +320,10 @@ mod tests {
 
     #[test]
     fn an_edid_read_names_the_i2c_address() {
-        assert_eq!(header(I2C_READ | MIDDLE_OF_TRANSACTION, EDID_ADDRESS, 16), [0x50, 0, 0x50, 15]);
+        assert_eq!(
+            header(I2C_READ | MIDDLE_OF_TRANSACTION, EDID_ADDRESS, 16),
+            [0x50, 0, 0x50, 15]
+        );
     }
 
     #[test]

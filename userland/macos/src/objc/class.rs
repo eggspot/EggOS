@@ -448,8 +448,6 @@ pub fn extend(
     true
 }
 
-/// What answers UIKit selector `sel` on an AppKit class standing for a UIKit one (D473): the
-/// AppKit method it names, or UIKit's own.
 fn uikit_method(record: &ClassRecord, sel: Sel) -> Option<Imp> {
     // SAFETY: a selector is its permanent NUL-terminated name.
     let name = unsafe { core::ffi::CStr::from_ptr(sel.cast()) }.to_bytes();

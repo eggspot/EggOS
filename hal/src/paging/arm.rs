@@ -23,7 +23,6 @@ impl Format for ArmLpae {
     const ROOTS: usize = 1;
     const MAX_LEAF_LEVEL: usize = 2;
     const ENCODES_MEMORY_TYPE: bool = true;
-    /// The low 3 GiB.
     const USER_END: u64 = 0xc000_0000;
 
     fn root(virt: u64) -> Option<usize> {

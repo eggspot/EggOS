@@ -196,14 +196,11 @@ impl TrustAnchors for RootsFile {
     }
 }
 
-/// An `https://` connection's TLS session, over buffers in their own heap block, which the
-/// session borrows until the link closes.
 struct Secure {
     session: Session<'static>,
     buffers: *mut Buffers,
 }
 
-/// A request's connection: plain TCP for `http://`, TLS over it for `https://` (D352).
 struct Link {
     fd: usize,
     secure: Option<Secure>,
@@ -214,8 +211,6 @@ impl Link {
         Link { fd, secure: None }
     }
 
-    /// The TLS handshake with `host` over connected `fd`, the server's certificate checked
-    /// against the machine's roots; the descriptor is closed when it fails.
     fn secure(fd: usize, host: &[u8]) -> Result<Link, u32> {
         let failed = |code: u32| {
             let _ = linux::close(fd);
@@ -280,7 +275,6 @@ impl Link {
         }
     }
 
-    /// Ends the session (TLS's close notice), frees its buffers and closes the descriptor.
     fn close(&mut self) {
         if let Some(mut secure) = self.secure.take() {
             let mut socket = Socket { fd: self.fd };
@@ -377,7 +371,11 @@ fn redirected_url(
     match http::redirect(location).map_err(|_| ERROR_HTTP_REDIRECT_FAILED)? {
         Redirect::Absolute(_) => put(location)?,
         Redirect::Path(path) => {
-            put(if current.secure { b"https://" } else { b"http://" })?;
+            put(if current.secure {
+                b"https://"
+            } else {
+                b"http://"
+            })?;
             put(current.host)?;
             let mut port = [0u8; 6];
             port[0] = b':';

@@ -56,7 +56,10 @@ pub(crate) fn strings(chunk: &[u8]) -> Option<Vec<String>> {
                 let skip = if chunk.get(at)? & 0x80 != 0 { 2 } else { 1 };
                 let first = *chunk.get(at + skip)?;
                 let (length, start) = match first & 0x80 != 0 {
-                    true => (usize::from(first & 0x7f) << 8 | usize::from(*chunk.get(at + skip + 1)?), at + skip + 2),
+                    true => (
+                        usize::from(first & 0x7f) << 8 | usize::from(*chunk.get(at + skip + 1)?),
+                        at + skip + 2,
+                    ),
                     false => (usize::from(first), at + skip + 1),
                 };
                 String::from_utf8_lossy(chunk.get(start..start + length)?).into_owned()
@@ -64,10 +67,15 @@ pub(crate) fn strings(chunk: &[u8]) -> Option<Vec<String>> {
             false => {
                 let first = half(chunk, at)?;
                 let (length, start) = match first & 0x8000 != 0 {
-                    true => (usize::from(first & 0x7fff) << 16 | usize::from(half(chunk, at + 2)?), at + 4),
+                    true => (
+                        usize::from(first & 0x7fff) << 16 | usize::from(half(chunk, at + 2)?),
+                        at + 4,
+                    ),
                     false => (usize::from(first), at + 2),
                 };
-                let units: Vec<u16> = (0..length).map(|unit| half(chunk, start + 2 * unit)).collect::<Option<_>>()?;
+                let units: Vec<u16> = (0..length)
+                    .map(|unit| half(chunk, start + 2 * unit))
+                    .collect::<Option<_>>()?;
                 String::from_utf16_lossy(&units)
             }
         };
@@ -119,7 +127,9 @@ impl Manifest {
         let mut attributes = Vec::with_capacity(count);
         for index in 0..count {
             let at = 16 + start + index * size;
-            let attribute = pool.get(word(chunk, at + 4)? as usize).map_or("", String::as_str);
+            let attribute = pool
+                .get(word(chunk, at + 4)? as usize)
+                .map_or("", String::as_str);
             let raw = word(chunk, at + 8)?;
             let kind = *chunk.get(at + 15)?;
             let data = word(chunk, at + 16)?;
@@ -155,7 +165,9 @@ impl Manifest {
             }
             "activity" | "activity-alias" => walk.in_activity = text("name"),
             "action" if text("name").as_deref() == Some(MAIN_ACTION) => walk.filter_main = true,
-            "category" if text("name").as_deref() == Some(LAUNCHER_CATEGORY) => walk.filter_launcher = true,
+            "category" if text("name").as_deref() == Some(LAUNCHER_CATEGORY) => {
+                walk.filter_launcher = true
+            }
             _ => {}
         }
         Some(())
@@ -197,7 +209,11 @@ mod tests {
             }
         }
 
-        fn start(&mut self, name: &'static str, attributes: &[(&'static str, Result<&'static str, u32>)]) {
+        fn start(
+            &mut self,
+            name: &'static str,
+            attributes: &[(&'static str, Result<&'static str, u32>)],
+        ) {
             let name = self.index(name);
             let mut chunk = Vec::new();
             chunk.extend_from_slice(&START_ELEMENT.to_le_bytes());
@@ -288,11 +304,21 @@ mod tests {
         };
         xml.start(
             "manifest",
-            &[("package", Ok("org.example.notes")), ("versionName", Ok("1.2")), ("versionCode", Err(12))],
+            &[
+                ("package", Ok("org.example.notes")),
+                ("versionName", Ok("1.2")),
+                ("versionCode", Err(12)),
+            ],
         );
-        xml.start("uses-sdk", &[("minSdkVersion", Err(24)), ("targetSdkVersion", Err(34))]);
+        xml.start(
+            "uses-sdk",
+            &[("minSdkVersion", Err(24)), ("targetSdkVersion", Err(34))],
+        );
         xml.end("uses-sdk");
-        xml.start("uses-permission", &[("name", Ok("android.permission.INTERNET"))]);
+        xml.start(
+            "uses-permission",
+            &[("name", Ok("android.permission.INTERNET"))],
+        );
         xml.end("uses-permission");
         xml.start("application", &[]);
         xml.start("activity", &[("name", Ok(".SettingsActivity"))]);
@@ -309,7 +335,10 @@ mod tests {
         xml.end("manifest");
         let manifest = Manifest::parse(&xml.finish()).unwrap();
         assert_eq!(manifest.package, "org.example.notes");
-        assert_eq!((manifest.version_name.as_str(), manifest.version_code), ("1.2", 12));
+        assert_eq!(
+            (manifest.version_name.as_str(), manifest.version_code),
+            ("1.2", 12)
+        );
         assert_eq!((manifest.min_sdk, manifest.target_sdk), (24, 34));
         assert_eq!(manifest.permissions, ["android.permission.INTERNET"]);
         assert_eq!(manifest.launcher_activity.as_deref(), Some(".MainActivity"));

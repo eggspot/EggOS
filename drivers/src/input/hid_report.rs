@@ -4,7 +4,9 @@
 //! touch screens and media keys that speak the report protocol rather than the boot protocol.
 
 use super::hid::{BootKeyboard, KEYBOARD_REPORT_BYTES};
-use super::{AxisRange, Capabilities, RawEvent, SYN_REPORT, absolute, button, event_type, relative};
+use super::{
+    AxisRange, Capabilities, RawEvent, SYN_REPORT, absolute, button, event_type, relative,
+};
 
 pub const MAX_FIELDS: usize = 48;
 const MAX_DEPTH: usize = 4;
@@ -94,7 +96,9 @@ struct Globals {
 }
 
 fn unsigned(data: &[u8]) -> u32 {
-    data.iter().rev().fold(0, |value, &byte| (value << 8) | u32::from(byte))
+    data.iter()
+        .rev()
+        .fold(0, |value, &byte| (value << 8) | u32::from(byte))
 }
 
 fn signed(data: &[u8]) -> i32 {
@@ -155,7 +159,11 @@ impl Layout {
                             flags,
                         };
                         let split = flags & FLAG_VARIABLE != 0 && usage_count > 1;
-                        let pieces = if split { usage_count.min(globals.count as usize) } else { 1 };
+                        let pieces = if split {
+                            usage_count.min(globals.count as usize)
+                        } else {
+                            1
+                        };
                         for piece in 0..pieces {
                             if layout.count == MAX_FIELDS {
                                 break;
@@ -248,7 +256,10 @@ impl Layout {
 
     /// What a device with this layout reports.
     pub fn capabilities(&self) -> Capabilities {
-        let keyboard = self.fields().iter().any(|field| field.page == PAGE_KEYBOARD);
+        let keyboard = self
+            .fields()
+            .iter()
+            .any(|field| field.page == PAGE_KEYBOARD);
         let x = self.find(PAGE_GENERIC_DESKTOP, USAGE_X);
         let y = self.find(PAGE_GENERIC_DESKTOP, USAGE_Y);
         let buttons = self.fields().iter().any(|field| field.page == PAGE_BUTTON)
@@ -323,7 +334,12 @@ pub struct Decoder {
 impl Decoder {
     /// Hands `event` what report `report` (with its report id first when the layout has ids)
     /// changed, then a report's end; returns how many events it sent.
-    pub fn report(&mut self, layout: &Layout, report: &[u8], event: &mut dyn FnMut(RawEvent)) -> usize {
+    pub fn report(
+        &mut self,
+        layout: &Layout,
+        report: &[u8],
+        event: &mut dyn FnMut(RawEvent),
+    ) -> usize {
         let (id, body) = match (layout.has_report_ids, report.split_first()) {
             (true, Some((&id, body))) => (id, body),
             (true, None) => return 0,
@@ -344,7 +360,11 @@ impl Decoder {
             for index in 0..field.count {
                 let raw = extract(body, field.bit + index * field.size, field.size);
                 let value = sign_extend(raw, field.size, field);
-                let usage = if field.is_variable() { field.usage_of(index) } else { field.usage_minimum.saturating_add(raw as u16) };
+                let usage = if field.is_variable() {
+                    field.usage_of(index)
+                } else {
+                    field.usage_minimum.saturating_add(raw as u16)
+                };
                 match (field.page, field.is_variable()) {
                     (PAGE_SENSOR, true)
                         if (USAGE_ACCELERATION_X..=USAGE_ACCELERATION_Z).contains(&usage) =>
@@ -375,13 +395,23 @@ impl Decoder {
                     (PAGE_BUTTON, true) if (1..=3).contains(&usage) => {
                         buttons_seen = true;
                         let bit = 1 << (usage - 1);
-                        if value != 0 { buttons |= bit } else { buttons &= !bit }
+                        if value != 0 {
+                            buttons |= bit
+                        } else {
+                            buttons &= !bit
+                        }
                     }
                     (PAGE_DIGITIZER, true) if usage == USAGE_TIP_SWITCH => {
                         buttons_seen = true;
-                        if value != 0 { buttons |= 1 } else { buttons &= !1 }
+                        if value != 0 {
+                            buttons |= 1
+                        } else {
+                            buttons &= !1
+                        }
                     }
-                    (PAGE_GENERIC_DESKTOP, true) if matches!(usage, USAGE_X | USAGE_Y | USAGE_WHEEL) => {
+                    (PAGE_GENERIC_DESKTOP, true)
+                        if matches!(usage, USAGE_X | USAGE_Y | USAGE_WHEEL) =>
+                    {
                         let relative_field = field.is_relative();
                         let (kind, code) = match (usage, relative_field) {
                             (USAGE_X, true) => (event_type::REL, relative::X),
@@ -402,7 +432,11 @@ impl Decoder {
                         });
                     }
                     (PAGE_CONSUMER, _) => {
-                        let pressed = if field.is_variable() { (value != 0).then_some(usage) } else { (raw != 0).then_some(usage) };
+                        let pressed = if field.is_variable() {
+                            (value != 0).then_some(usage)
+                        } else {
+                            (raw != 0).then_some(usage)
+                        };
                         if pressed.is_some() || consumer_seen.is_none() {
                             consumer_seen = Some(pressed.unwrap_or(0));
                         }
@@ -415,7 +449,10 @@ impl Decoder {
             sent += self.keyboard.report(&boot, &mut |raw| event(raw));
         }
         if buttons_seen {
-            for (bit, code) in [button::LEFT, button::RIGHT, button::MIDDLE].into_iter().enumerate() {
+            for (bit, code) in [button::LEFT, button::RIGHT, button::MIDDLE]
+                .into_iter()
+                .enumerate()
+            {
                 let mask = 1 << bit;
                 if self.buttons & mask != buttons & mask {
                     event(RawEvent {
@@ -430,7 +467,10 @@ impl Decoder {
         }
         if let Some(usage) = consumer_seen {
             if usage != self.consumer {
-                for (code, pressed) in [(consumer_key(self.consumer), false), (consumer_key(usage), true)] {
+                for (code, pressed) in [
+                    (consumer_key(self.consumer), false),
+                    (consumer_key(usage), true),
+                ] {
                     if code != 0 {
                         event(RawEvent {
                             kind: event_type::KEY,
@@ -473,10 +513,24 @@ mod tests {
         assert!(capabilities.relative && capabilities.buttons);
         let mut decoder = Decoder::default();
         let mut events = Vec::new();
-        decoder.report(&layout, &[0x01, 0x05, 0xfe], &mut |event| events.push(event));
-        assert!(events.contains(&RawEvent { kind: event_type::REL, code: relative::X, value: 5 }));
-        assert!(events.contains(&RawEvent { kind: event_type::REL, code: relative::Y, value: -2 }));
-        assert!(events.contains(&RawEvent { kind: event_type::KEY, code: button::LEFT, value: 1 }));
+        decoder.report(&layout, &[0x01, 0x05, 0xfe], &mut |event| {
+            events.push(event)
+        });
+        assert!(events.contains(&RawEvent {
+            kind: event_type::REL,
+            code: relative::X,
+            value: 5
+        }));
+        assert!(events.contains(&RawEvent {
+            kind: event_type::REL,
+            code: relative::Y,
+            value: -2
+        }));
+        assert!(events.contains(&RawEvent {
+            kind: event_type::KEY,
+            code: button::LEFT,
+            value: 1
+        }));
     }
 
     #[test]
@@ -492,10 +546,26 @@ mod tests {
         assert_eq!(capabilities.absolute.map(|(x, _)| x.max), Some(4095));
         let mut decoder = Decoder::default();
         let mut events = Vec::new();
-        decoder.report(&layout, &[0x02, 0x01, 0x00, 0x08, 0x00, 0x04], &mut |event| events.push(event));
-        assert!(events.contains(&RawEvent { kind: event_type::ABS, code: absolute::X, value: 0x800 }));
-        assert!(events.contains(&RawEvent { kind: event_type::ABS, code: absolute::Y, value: 0x400 }));
-        assert!(events.contains(&RawEvent { kind: event_type::KEY, code: button::LEFT, value: 1 }));
+        decoder.report(
+            &layout,
+            &[0x02, 0x01, 0x00, 0x08, 0x00, 0x04],
+            &mut |event| events.push(event),
+        );
+        assert!(events.contains(&RawEvent {
+            kind: event_type::ABS,
+            code: absolute::X,
+            value: 0x800
+        }));
+        assert!(events.contains(&RawEvent {
+            kind: event_type::ABS,
+            code: absolute::Y,
+            value: 0x400
+        }));
+        assert!(events.contains(&RawEvent {
+            kind: event_type::KEY,
+            code: button::LEFT,
+            value: 1
+        }));
     }
 
     #[test]
@@ -509,8 +579,18 @@ mod tests {
         assert!(layout.capabilities().keyboard);
         let mut decoder = Decoder::default();
         let mut events = Vec::new();
-        decoder.report(&layout, &[0x02, 0x04, 0, 0, 0, 0, 0], &mut |event| events.push(event));
-        assert!(events.contains(&RawEvent { kind: event_type::KEY, code: 42, value: 1 }));
-        assert!(events.contains(&RawEvent { kind: event_type::KEY, code: 30, value: 1 }));
+        decoder.report(&layout, &[0x02, 0x04, 0, 0, 0, 0, 0], &mut |event| {
+            events.push(event)
+        });
+        assert!(events.contains(&RawEvent {
+            kind: event_type::KEY,
+            code: 42,
+            value: 1
+        }));
+        assert!(events.contains(&RawEvent {
+            kind: event_type::KEY,
+            code: 30,
+            value: 1
+        }));
     }
 }

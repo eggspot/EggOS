@@ -95,7 +95,6 @@ fn shown_tree(console: &str, step: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether the tree shows the result: an element whose name or value is exactly `42`.
 fn shows_result(lines: &[String]) -> bool {
     lines.iter().any(|line| {
         line.split('"')
@@ -147,11 +146,15 @@ fn verdict(arch: &str, console: &str, clean_exit: bool) -> Result<(), String> {
     }
     let listed = format!("{APP}\tmacos\t{arch}\t/Applications/{APP}/{APP}.app/");
     if !console.lines().any(|line| line.starts_with(&listed)) {
-        return Err(format!("{arch}: `app list` does not list {APP} as a macOS app"));
+        return Err(format!(
+            "{arch}: `app list` does not list {APP} as a macOS app"
+        ));
     }
     match clean_exit {
         true => Ok(()),
-        false => Err(format!("{arch}: QEMU did not exit cleanly after the UDCalc test")),
+        false => Err(format!(
+            "{arch}: QEMU did not exit cleanly after the UDCalc test"
+        )),
     }
 }
 
@@ -233,7 +236,10 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     type_line(&mut boot, POWER_OFF)?;
     let (console, clean_exit) = boot.finish()?;
     verdict(arch.name, &console, clean_exit)?;
-    eprintln!("xtask: {}: UDCalc boot test passed ({APP} {VERSION})", arch.name);
+    eprintln!(
+        "xtask: {}: UDCalc boot test passed ({APP} {VERSION})",
+        arch.name
+    );
     Ok(())
 }
 

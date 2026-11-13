@@ -5,15 +5,18 @@
 //! bulk endpoints with SCSI commands (D264).
 
 use super::{
-    BootDevice, BootInterface, DESCRIPTOR_CONFIGURATION, DESCRIPTOR_DEVICE, Setup, StorageInterface, boot_interface,
-    command_block, scsi_read_write_10, status_passed, storage_interface,
+    BootDevice, BootInterface, DESCRIPTOR_CONFIGURATION, DESCRIPTOR_DEVICE, Setup,
+    StorageInterface, boot_interface, command_block, scsi_read_write_10, status_passed,
+    storage_interface,
 };
 use crate::dma::DmaMemory;
 use crate::input::hid::{BootKeyboard, BootMouse, lights_report};
 use crate::input::hid_report::{Decoder, Layout};
 use crate::input::{Capabilities, LockLights, RawEvent};
 use crate::io::RegisterIo;
-use crate::storage::{Covering, SECTOR_SIZE, copy_in, copy_out, covering, read32, write32, write64, zero};
+use crate::storage::{
+    Covering, SECTOR_SIZE, copy_in, copy_out, covering, read32, write32, write64, zero,
+};
 use core::sync::atomic::{Ordering, fence};
 
 const CAPABILITY_LENGTH: usize = 0x00;
@@ -207,11 +210,10 @@ impl DiskBuffer<'_> {
 enum Handler {
     Keyboard(BootKeyboard),
     Mouse(BootMouse),
-    /// A hub: enumerated through at attach time, never polled (D254).
-    Hub { ports: u8 },
-    /// A HID device read through its report descriptor (D256).
+    Hub {
+        ports: u8,
+    },
     Report(Layout, Decoder),
-    /// A USB mass-storage device with the bulk-only transport (D264).
     Storage {
         interface: StorageInterface,
         block_bytes: u32,
@@ -249,7 +251,11 @@ const SPEED_SUPER: u32 = 4;
 
 /// The speed a USB 2.0 hub's port status gives its device.
 pub fn hub_port_speed(status: u16, super_speed_hub: bool) -> u32 {
-    match (super_speed_hub, status & HUB_PORT_LOW_SPEED != 0, status & HUB_PORT_HIGH_SPEED != 0) {
+    match (
+        super_speed_hub,
+        status & HUB_PORT_LOW_SPEED != 0,
+        status & HUB_PORT_HIGH_SPEED != 0,
+    ) {
         (true, _, _) => SPEED_SUPER,
         (false, true, _) => SPEED_LOW,
         (false, false, true) => SPEED_HIGH,
@@ -307,16 +313,26 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
     /// Takes the controller at `regs` from the firmware, resets it and starts it with its rings
     /// in `memory` ([`MEMORY_BYTES`]). On failure `memory` is handed back only when the
     /// controller is halted.
-    pub fn new(regs: R, memory: M, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Self, (Error, Option<M>)> {
+    pub fn new(
+        regs: R,
+        memory: M,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, (Error, Option<M>)> {
         if memory.len() < MEMORY_BYTES {
-            return Err((Error::Unsupported("too little DMA memory for a USB controller"), Some(memory)));
+            return Err((
+                Error::Unsupported("too little DMA memory for a USB controller"),
+                Some(memory),
+            ));
         }
         let operational = usize::from(regs.read8(CAPABILITY_LENGTH));
         let parameters = regs.read32(CAPABILITY_PARAMETERS_1);
         let addresses_64_bit = parameters & 1 != 0;
         let end = memory.dma_addr().get().saturating_add(memory.len() as u64);
         if !addresses_64_bit && end > u64::from(u32::MAX) {
-            return Err((Error::Unsupported("the USB controller reaches only 32-bit addresses"), Some(memory)));
+            return Err((
+                Error::Unsupported("the USB controller reaches only 32-bit addresses"),
+                Some(memory),
+            ));
         }
         let structure = regs.read32(STRUCTURAL_PARAMETERS_1);
         let mut controller = Self {
@@ -380,7 +396,8 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
 
     fn halt(&self, keep_waiting: &mut dyn FnMut() -> bool) -> bool {
         let command = self.regs.read32(self.op(USB_COMMAND));
-        self.regs.write32(self.op(USB_COMMAND), command & !COMMAND_RUN);
+        self.regs
+            .write32(self.op(USB_COMMAND), command & !COMMAND_RUN);
         loop {
             if self.regs.read32(self.op(USB_STATUS)) & STATUS_HALTED != 0 {
                 return true;
@@ -392,7 +409,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         }
     }
 
-    fn start(&mut self, structure: u32, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    fn start(
+        &mut self,
+        structure: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         if !self.halt(keep_waiting) {
             return Err(Error::TimedOut);
         }
@@ -415,21 +436,43 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let parameters_2 = self.regs.read32(STRUCTURAL_PARAMETERS_2);
         let scratchpads = (((parameters_2 >> 21) & 0x1f) << 5 | (parameters_2 >> 27)) as usize;
         if scratchpads > MAX_SCRATCHPAD_PAGES {
-            return Err(Error::Unsupported("the USB controller wants more scratchpad memory than given"));
+            return Err(Error::Unsupported(
+                "the USB controller wants more scratchpad memory than given",
+            ));
         }
         if scratchpads > 0 {
             for page in 0..scratchpads {
-                write64(&self.memory, SCRATCHPAD_ARRAY_AT + page * 8, base + (SCRATCHPAD_PAGES_AT + page * 4096) as u64);
+                write64(
+                    &self.memory,
+                    SCRATCHPAD_ARRAY_AT + page * 8,
+                    base + (SCRATCHPAD_PAGES_AT + page * 4096) as u64,
+                );
             }
-            write64(&self.memory, DEVICE_CONTEXT_ARRAY_AT, base + SCRATCHPAD_ARRAY_AT as u64);
+            write64(
+                &self.memory,
+                DEVICE_CONTEXT_ARRAY_AT,
+                base + SCRATCHPAD_ARRAY_AT as u64,
+            );
         }
-        self.write64_register(self.op(DEVICE_CONTEXT_ARRAY), base + DEVICE_CONTEXT_ARRAY_AT as u64);
-        self.write64_register(self.op(COMMAND_RING_CONTROL), base + COMMAND_RING_AT as u64 | 1);
+        self.write64_register(
+            self.op(DEVICE_CONTEXT_ARRAY),
+            base + DEVICE_CONTEXT_ARRAY_AT as u64,
+        );
+        self.write64_register(
+            self.op(COMMAND_RING_CONTROL),
+            base + COMMAND_RING_AT as u64 | 1,
+        );
         write64(&self.memory, EVENT_TABLE_AT, base + EVENT_RING_AT as u64);
         write32(&self.memory, EVENT_TABLE_AT + 8, EVENT_TRBS as u32);
         self.regs.write32(self.runtime + INTERRUPTER_TABLE_SIZE, 1);
-        self.write64_register(self.runtime + INTERRUPTER_DEQUEUE, base + EVENT_RING_AT as u64);
-        self.write64_register(self.runtime + INTERRUPTER_TABLE_BASE, base + EVENT_TABLE_AT as u64);
+        self.write64_register(
+            self.runtime + INTERRUPTER_DEQUEUE,
+            base + EVENT_RING_AT as u64,
+        );
+        self.write64_register(
+            self.runtime + INTERRUPTER_TABLE_BASE,
+            base + EVENT_TABLE_AT as u64,
+        );
         self.regs.write32(self.op(USB_COMMAND), COMMAND_RUN);
         loop {
             if self.regs.read32(self.op(USB_STATUS)) & STATUS_HALTED == 0 {
@@ -443,7 +486,8 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         for port in 1..=self.ports {
             let status = self.regs.read32(self.port(port));
             if status & PORT_POWER == 0 {
-                self.regs.write32(self.port(port), (status & PORT_WRITE_PRESERVE) | PORT_POWER);
+                self.regs
+                    .write32(self.port(port), (status & PORT_WRITE_PRESERVE) | PORT_POWER);
             }
         }
         Ok(())
@@ -463,7 +507,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             write64(&self.memory, link, base + ring.at as u64);
             write32(&self.memory, link + 8, 0);
             fence(Ordering::SeqCst);
-            write32(&self.memory, link + 12, (TRB_LINK << 10) | TRB_TOGGLE_CYCLE | u32::from(ring.cycle));
+            write32(
+                &self.memory,
+                link + 12,
+                (TRB_LINK << 10) | TRB_TOGGLE_CYCLE | u32::from(ring.cycle),
+            );
             ring.index = 0;
             ring.cycle = !ring.cycle;
         }
@@ -472,7 +520,8 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
 
     fn ring_doorbell(&self, slot: u8, target: u32) {
         fence(Ordering::SeqCst);
-        self.regs.write32(self.doorbells + usize::from(slot) * 4, target);
+        self.regs
+            .write32(self.doorbells + usize::from(slot) * 4, target);
     }
 
     fn next_event(&mut self) -> Option<[u32; 4]> {
@@ -482,14 +531,23 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             return None;
         }
         fence(Ordering::SeqCst);
-        let event = [read32(&self.memory, at), read32(&self.memory, at + 4), read32(&self.memory, at + 8), control];
+        let event = [
+            read32(&self.memory, at),
+            read32(&self.memory, at + 4),
+            read32(&self.memory, at + 8),
+            control,
+        ];
         self.events.index += 1;
         if self.events.index == self.events.trbs {
             self.events.index = 0;
             self.events.cycle = !self.events.cycle;
         }
-        let next = self.memory.dma_addr().get() + (self.events.at + self.events.index * TRB_BYTES) as u64;
-        self.write64_register(self.runtime + INTERRUPTER_DEQUEUE, next | EVENT_HANDLER_BUSY);
+        let next =
+            self.memory.dma_addr().get() + (self.events.at + self.events.index * TRB_BYTES) as u64;
+        self.write64_register(
+            self.runtime + INTERRUPTER_DEQUEUE,
+            next | EVENT_HANDLER_BUSY,
+        );
         Some(event)
     }
 
@@ -533,7 +591,12 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         }
     }
 
-    fn command(&mut self, parameter: u64, control: u32, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u8, Error> {
+    fn command(
+        &mut self,
+        parameter: u64,
+        control: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<u8, Error> {
         let mut ring = self.commands;
         let trb = self.enqueue(&mut ring, parameter, 0, control);
         self.commands = ring;
@@ -564,13 +627,32 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             (_, false) => TRANSFER_TYPE_OUT,
         };
         let mut ring = device.control;
-        self.enqueue(&mut ring, setup.as_u64(), 8, (TRB_SETUP << 10) | TRB_IMMEDIATE_DATA | transfer_type);
+        self.enqueue(
+            &mut ring,
+            setup.as_u64(),
+            8,
+            (TRB_SETUP << 10) | TRB_IMMEDIATE_DATA | transfer_type,
+        );
         if length > 0 {
             let direction = if setup.is_in() { TRB_DIRECTION_IN } else { 0 };
-            self.enqueue(&mut ring, base + (device.area + data) as u64, length, (TRB_DATA << 10) | direction);
+            self.enqueue(
+                &mut ring,
+                base + (device.area + data) as u64,
+                length,
+                (TRB_DATA << 10) | direction,
+            );
         }
-        let status_direction = if length > 0 && setup.is_in() { 0 } else { TRB_DIRECTION_IN };
-        let status = self.enqueue(&mut ring, 0, 0, (TRB_STATUS << 10) | status_direction | TRB_INTERRUPT_ON_COMPLETION);
+        let status_direction = if length > 0 && setup.is_in() {
+            0
+        } else {
+            TRB_DIRECTION_IN
+        };
+        let status = self.enqueue(
+            &mut ring,
+            0,
+            0,
+            (TRB_STATUS << 10) | status_direction | TRB_INTERRUPT_ON_COMPLETION,
+        );
         device.control = ring;
         self.ring_doorbell(device.slot, 1);
         let event = self.wait_for(TRB_TRANSFER_EVENT, status, keep_waiting)?;
@@ -585,18 +667,35 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         Ok(length as usize)
     }
 
-    fn recover_control(&mut self, device: &mut Device, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    fn recover_control(
+        &mut self,
+        device: &mut Device,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let slot = u32::from(device.slot) << 24;
-        self.command(0, (TRB_RESET_ENDPOINT << 10) | (1 << 16) | slot, keep_waiting)?;
+        self.command(
+            0,
+            (TRB_RESET_ENDPOINT << 10) | (1 << 16) | slot,
+            keep_waiting,
+        )?;
         let base = self.memory.dma_addr().get();
-        let dequeue = base + (device.control.at + device.control.index * TRB_BYTES) as u64 | u64::from(device.control.cycle);
-        self.command(dequeue, (TRB_SET_DEQUEUE << 10) | (1 << 16) | slot, keep_waiting)?;
+        let dequeue = base + (device.control.at + device.control.index * TRB_BYTES) as u64
+            | u64::from(device.control.cycle);
+        self.command(
+            dequeue,
+            (TRB_SET_DEQUEUE << 10) | (1 << 16) | slot,
+            keep_waiting,
+        )?;
         Ok(())
     }
 
     /// Waits for the root ports' devices to show up while `settle` keeps waiting, then
     /// addresses and configures every HID boot keyboard and mouse found on them: how many.
-    pub fn attach_devices(&mut self, settle: &mut dyn FnMut() -> bool, keep_waiting: &mut dyn FnMut() -> bool) -> usize {
+    pub fn attach_devices(
+        &mut self,
+        settle: &mut dyn FnMut() -> bool,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> usize {
         while settle() {
             core::hint::spin_loop();
         }
@@ -639,13 +738,23 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             let speed = self.reset_hub_port(&mut hub, port, keep_waiting);
             self.devices[index] = Some(hub);
             if let Some(speed) = speed {
-                attached += self.attach_at(child_location(&location, hub.slot, port, speed), keep_waiting);
+                attached += self.attach_at(
+                    child_location(&location, hub.slot, port, speed),
+                    keep_waiting,
+                );
             }
         }
         attached
     }
 
-    fn hub_request(&mut self, hub: &mut Device, request: u8, feature: u16, port: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    fn hub_request(
+        &mut self,
+        hub: &mut Device,
+        request: u8,
+        feature: u16,
+        port: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let setup = Setup {
             request_type: 0x23,
             request,
@@ -653,10 +762,16 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             index: u16::from(port),
             length: 0,
         };
-        self.control_transfer(hub, setup, 0, keep_waiting).map(|_| ())
+        self.control_transfer(hub, setup, 0, keep_waiting)
+            .map(|_| ())
     }
 
-    fn hub_port_status(&mut self, hub: &mut Device, port: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Option<(u16, u16)> {
+    fn hub_port_status(
+        &mut self,
+        hub: &mut Device,
+        port: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Option<(u16, u16)> {
         let setup = Setup {
             request_type: 0xa3,
             request: 0,
@@ -664,28 +779,45 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             index: u16::from(port),
             length: 4,
         };
-        self.control_transfer(hub, setup, DESCRIPTOR_BUFFER, keep_waiting).ok()?;
+        self.control_transfer(hub, setup, DESCRIPTOR_BUFFER, keep_waiting)
+            .ok()?;
         let mut status = [0u8; 4];
         copy_out(&self.memory, hub.area + DESCRIPTOR_BUFFER, &mut status);
-        Some((u16::from_le_bytes([status[0], status[1]]), u16::from_le_bytes([status[2], status[3]])))
+        Some((
+            u16::from_le_bytes([status[0], status[1]]),
+            u16::from_le_bytes([status[2], status[3]]),
+        ))
     }
 
-    fn reset_hub_port(&mut self, hub: &mut Device, port: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Option<u32> {
+    fn reset_hub_port(
+        &mut self,
+        hub: &mut Device,
+        port: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Option<u32> {
         let connected = (0..HUB_STATUS_POLLS).find_map(|_| {
             let (status, _) = self.hub_port_status(hub, port, keep_waiting)?;
             (status & HUB_PORT_CONNECTED != 0).then_some(())
         });
         connected?;
-        self.hub_request(hub, 3, PORT_FEATURE_RESET, port, keep_waiting).ok()?;
+        self.hub_request(hub, 3, PORT_FEATURE_RESET, port, keep_waiting)
+            .ok()?;
         let status = (0..HUB_STATUS_POLLS).find_map(|_| {
             let (status, change) = self.hub_port_status(hub, port, keep_waiting)?;
             (change & HUB_CHANGE_RESET != 0).then_some(status)
         })?;
-        self.hub_request(hub, 1, PORT_FEATURE_RESET_CHANGE, port, keep_waiting).ok()?;
+        self.hub_request(hub, 1, PORT_FEATURE_RESET_CHANGE, port, keep_waiting)
+            .ok()?;
         Some(hub_port_speed(status, hub.location.speed >= SPEED_SUPER))
     }
 
-    fn write_slot_context(&self, area: usize, entries: u32, location: &Location, hub_ports: Option<u8>) {
+    fn write_slot_context(
+        &self,
+        area: usize,
+        entries: u32,
+        location: &Location,
+        hub_ports: Option<u8>,
+    ) {
         let slot_context = self.input_context(area, 1);
         let hub = if hub_ports.is_some() { SLOT_HUB } else { 0 };
         write32(
@@ -706,17 +838,25 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         );
     }
 
-    fn reset_port(&self, port: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u32, Error> {
+    fn reset_port(
+        &self,
+        port: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<u32, Error> {
         let status = self.regs.read32(self.port(port));
         if status & PORT_CONNECTED == 0 {
             return Err(Error::Unsupported("nothing is connected"));
         }
         if status & PORT_ENABLED == 0 {
-            self.regs.write32(self.port(port), (status & PORT_WRITE_PRESERVE) | PORT_RESET);
+            self.regs
+                .write32(self.port(port), (status & PORT_WRITE_PRESERVE) | PORT_RESET);
             loop {
                 let status = self.regs.read32(self.port(port));
                 if status & PORT_RESET_CHANGE != 0 {
-                    self.regs.write32(self.port(port), (status & PORT_WRITE_PRESERVE) | PORT_RESET_CHANGE);
+                    self.regs.write32(
+                        self.port(port),
+                        (status & PORT_WRITE_PRESERVE) | PORT_RESET_CHANGE,
+                    );
                     break;
                 }
                 if !keep_waiting() {
@@ -732,11 +872,18 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         Ok((status >> 10) & 0xf)
     }
 
-    fn attach(&mut self, location: Location, index: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Device, Error> {
+    fn attach(
+        &mut self,
+        location: Location,
+        index: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Device, Error> {
         let speed = location.speed;
         let slot = self.command(0, TRB_ENABLE_SLOT << 10, keep_waiting)?;
         if slot == 0 || usize::from(slot) > MAX_DEVICES {
-            return Err(Error::Unsupported("the controller gave a slot past its configured ones"));
+            return Err(Error::Unsupported(
+                "the controller gave a slot past its configured ones",
+            ));
         }
         let base = self.memory.dma_addr().get();
         let area = DEVICES_AT + index * DEVICE_BYTES;
@@ -760,7 +907,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             location,
             bulk_out: Ring::new(area + BULK_OUT_RING, RING_TRBS),
         };
-        write64(&self.memory, DEVICE_CONTEXT_ARRAY_AT + usize::from(slot) * 8, base + (area + OUTPUT_CONTEXT) as u64);
+        write64(
+            &self.memory,
+            DEVICE_CONTEXT_ARRAY_AT + usize::from(slot) * 8,
+            base + (area + OUTPUT_CONTEXT) as u64,
+        );
         let mut max_packet = default_max_packet(speed);
         write32(&self.memory, self.input_context(area, 0) + 4, 0b11);
         self.write_slot_context(area, 1, &location, None);
@@ -770,7 +921,12 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             (TRB_ADDRESS_DEVICE << 10) | (u32::from(slot) << 24),
             keep_waiting,
         )?;
-        self.control_transfer(&mut device, Setup::get_descriptor(DESCRIPTOR_DEVICE, 0, 8), DESCRIPTOR_BUFFER, keep_waiting)?;
+        self.control_transfer(
+            &mut device,
+            Setup::get_descriptor(DESCRIPTOR_DEVICE, 0, 8),
+            DESCRIPTOR_BUFFER,
+            keep_waiting,
+        )?;
         let mut header = [0u8; 8];
         copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut header);
         let reported = u32::from(header[7]);
@@ -784,10 +940,16 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                 keep_waiting,
             )?;
         }
-        self.control_transfer(&mut device, Setup::get_descriptor(DESCRIPTOR_CONFIGURATION, 0, 9), DESCRIPTOR_BUFFER, keep_waiting)?;
+        self.control_transfer(
+            &mut device,
+            Setup::get_descriptor(DESCRIPTOR_CONFIGURATION, 0, 9),
+            DESCRIPTOR_BUFFER,
+            keep_waiting,
+        )?;
         let mut head = [0u8; 9];
         copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut head);
-        let total = usize::from(u16::from_le_bytes([head[2], head[3]])).clamp(9, DESCRIPTOR_BUFFER_BYTES);
+        let total =
+            usize::from(u16::from_le_bytes([head[2], head[3]])).clamp(9, DESCRIPTOR_BUFFER_BYTES);
         self.control_transfer(
             &mut device,
             Setup::get_descriptor(DESCRIPTOR_CONFIGURATION, 0, total as u16),
@@ -795,7 +957,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             keep_waiting,
         )?;
         let mut configuration = [0u8; DESCRIPTOR_BUFFER_BYTES];
-        copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut configuration[..total]);
+        copy_out(
+            &self.memory,
+            area + DESCRIPTOR_BUFFER,
+            &mut configuration[..total],
+        );
         if let Some(storage) = storage_interface(&configuration[..total]) {
             self.set_up_storage(&mut device, storage, keep_waiting)?;
             return Ok(device);
@@ -809,7 +975,12 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let interface = boot_interface(&configuration[..total])
             .ok_or(Error::Unsupported("not a HID boot keyboard or mouse"))?;
         device.interface = interface;
-        self.control_transfer(&mut device, Setup::set_configuration(interface.configuration), 0, keep_waiting)?;
+        self.control_transfer(
+            &mut device,
+            Setup::set_configuration(interface.configuration),
+            0,
+            keep_waiting,
+        )?;
         device.handler = match interface.kind {
             BootDevice::Keyboard => Handler::Keyboard(BootKeyboard::default()),
             BootDevice::Mouse => Handler::Mouse(BootMouse::default()),
@@ -822,27 +993,58 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                     keep_waiting,
                 )?;
                 let mut descriptor = [0u8; DESCRIPTOR_BUFFER_BYTES];
-                copy_out(&self.memory, area + DESCRIPTOR_BUFFER, &mut descriptor[..length]);
-                let layout = Layout::parse(&descriptor[..length])
-                    .ok_or(Error::Unsupported("the device's report descriptor does not parse"))?;
+                copy_out(
+                    &self.memory,
+                    area + DESCRIPTOR_BUFFER,
+                    &mut descriptor[..length],
+                );
+                let layout = Layout::parse(&descriptor[..length]).ok_or(Error::Unsupported(
+                    "the device's report descriptor does not parse",
+                ))?;
                 Handler::Report(layout, Decoder::default())
             }
         };
         if interface.kind != BootDevice::Report {
-            let _ = self.control_transfer(&mut device, Setup::hid_set_protocol_boot(interface.interface), 0, keep_waiting);
+            let _ = self.control_transfer(
+                &mut device,
+                Setup::hid_set_protocol_boot(interface.interface),
+                0,
+                keep_waiting,
+            );
         }
-        let _ = self.control_transfer(&mut device, Setup::hid_set_idle(interface.interface), 0, keep_waiting);
+        let _ = self.control_transfer(
+            &mut device,
+            Setup::hid_set_idle(interface.interface),
+            0,
+            keep_waiting,
+        );
 
         let dci = u32::from(interface.endpoint) * 2 + 1;
         device.report_endpoint = dci;
         zero(&self.memory, area + INPUT_CONTEXT, 0x1000);
-        write32(&self.memory, self.input_context(area, 0) + 4, 1 | (1 << dci));
+        write32(
+            &self.memory,
+            self.input_context(area, 0) + 4,
+            1 | (1 << dci),
+        );
         self.write_slot_context(area, dci, &location, None);
         let endpoint = self.input_context(area, dci as usize + 1);
         let packet = u32::from(interface.max_packet.max(1));
-        write32(&self.memory, endpoint, interval_field(speed, interface.interval) << 16);
-        write32(&self.memory, endpoint + 4, (3 << 1) | (ENDPOINT_INTERRUPT_IN << 3) | (packet << 16));
-        write64(&self.memory, endpoint + 8, base + (area + REPORT_RING) as u64 | 1);
+        write32(
+            &self.memory,
+            endpoint,
+            interval_field(speed, interface.interval) << 16,
+        );
+        write32(
+            &self.memory,
+            endpoint + 4,
+            (3 << 1) | (ENDPOINT_INTERRUPT_IN << 3) | (packet << 16),
+        );
+        write64(
+            &self.memory,
+            endpoint + 8,
+            base + (area + REPORT_RING) as u64 | 1,
+        );
         write32(&self.memory, endpoint + 16, packet | (packet << 16));
         self.command(
             base + (area + INPUT_CONTEXT) as u64,
@@ -859,13 +1061,22 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         storage: StorageInterface,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        self.control_transfer(device, Setup::set_configuration(storage.configuration), 0, keep_waiting)?;
+        self.control_transfer(
+            device,
+            Setup::set_configuration(storage.configuration),
+            0,
+            keep_waiting,
+        )?;
         let base = self.memory.dma_addr().get();
         let area = device.area;
         let input = u32::from(storage.bulk_in) * 2 + 1;
         let output = u32::from(storage.bulk_out) * 2;
         zero(&self.memory, area + INPUT_CONTEXT, 0x1000);
-        write32(&self.memory, self.input_context(area, 0) + 4, 1 | (1 << input) | (1 << output));
+        write32(
+            &self.memory,
+            self.input_context(area, 0) + 4,
+            1 | (1 << input) | (1 << output),
+        );
         let location = device.location;
         self.write_slot_context(area, input.max(output), &location, None);
         let packet = u32::from(storage.max_packet.max(64));
@@ -875,7 +1086,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         ] {
             let endpoint = self.input_context(area, dci as usize + 1);
             write32(&self.memory, endpoint, 0);
-            write32(&self.memory, endpoint + 4, (3 << 1) | (kind << 3) | (packet << 16));
+            write32(
+                &self.memory,
+                endpoint + 4,
+                (3 << 1) | (kind << 3) | (packet << 16),
+            );
             write64(&self.memory, endpoint + 8, base + ring as u64 | 1);
             write32(&self.memory, endpoint + 16, 3072);
         }
@@ -894,7 +1109,10 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         };
         let mut ready = false;
         for _ in 0..UNIT_READY_TRIES {
-            if self.scsi(device, &SCSI_TEST_UNIT_READY, true, 0, keep_waiting).is_ok() {
+            if self
+                .scsi(device, &SCSI_TEST_UNIT_READY, true, 0, keep_waiting)
+                .is_ok()
+            {
                 ready = true;
                 break;
             }
@@ -908,9 +1126,16 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let last = u32::from_be_bytes([capacity[0], capacity[1], capacity[2], capacity[3]]);
         let block_bytes = u32::from_be_bytes([capacity[4], capacity[5], capacity[6], capacity[7]]);
         if !(512..=4096).contains(&block_bytes) || !block_bytes.is_power_of_two() {
-            return Err(Error::Unsupported("the USB disk's block size is not one the kernel takes"));
+            return Err(Error::Unsupported(
+                "the USB disk's block size is not one the kernel takes",
+            ));
         }
-        if let Handler::Storage { blocks, block_bytes: size, .. } = &mut device.handler {
+        if let Handler::Storage {
+            blocks,
+            block_bytes: size,
+            ..
+        } = &mut device.handler
+        {
             *blocks = u64::from(last) + 1;
             *size = block_bytes;
         }
@@ -969,24 +1194,46 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let tag = *tag;
         let wrapper = command_block(tag, length as u32, data_in, command);
         copy_in(&self.memory, device.area + DESCRIPTOR_BUFFER, &wrapper);
-        self.bulk(device, true, device.area + DESCRIPTOR_BUFFER, wrapper.len(), keep_waiting)?;
+        self.bulk(
+            device,
+            true,
+            device.area + DESCRIPTOR_BUFFER,
+            wrapper.len(),
+            keep_waiting,
+        )?;
         if length > 0 {
             self.bulk(device, !data_in, STORAGE_BUFFER, length, keep_waiting)?;
         }
-        self.bulk(device, false, device.area + DESCRIPTOR_BUFFER, 13, keep_waiting)?;
+        self.bulk(
+            device,
+            false,
+            device.area + DESCRIPTOR_BUFFER,
+            13,
+            keep_waiting,
+        )?;
         let mut status = [0u8; 13];
         copy_out(&self.memory, device.area + DESCRIPTOR_BUFFER, &mut status);
-        status_passed(&status, tag).then_some(()).ok_or(Error::TransferFailed)
+        status_passed(&status, tag)
+            .then_some(())
+            .ok_or(Error::TransferFailed)
     }
 
     /// The USB disks attached: each one's device index and size in 512-byte sectors.
     pub fn disks(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
-        self.devices.iter().enumerate().filter_map(|(index, device)| match device.as_ref()?.handler {
-            Handler::Storage { block_bytes, blocks, .. } => {
-                Some((index, blocks.saturating_mul(u64::from(block_bytes / SECTOR_SIZE as u32))))
-            }
-            _ => None,
-        })
+        self.devices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, device)| match device.as_ref()?.handler {
+                Handler::Storage {
+                    block_bytes,
+                    blocks,
+                    ..
+                } => Some((
+                    index,
+                    blocks.saturating_mul(u64::from(block_bytes / SECTOR_SIZE as u32)),
+                )),
+                _ => None,
+            })
     }
 
     /// Reads whole 512-byte sectors from `sector` on of USB disk `index` into `buffer`.
@@ -1019,8 +1266,18 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         mut buffer: DiskBuffer<'_>,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        let mut device = self.devices.get(index).copied().flatten().ok_or(Error::Unsupported("no such USB disk"))?;
-        let Handler::Storage { block_bytes, blocks: disk_blocks, .. } = device.handler else {
+        let mut device = self
+            .devices
+            .get(index)
+            .copied()
+            .flatten()
+            .ok_or(Error::Unsupported("no such USB disk"))?;
+        let Handler::Storage {
+            block_bytes,
+            blocks: disk_blocks,
+            ..
+        } = device.handler
+        else {
             return Err(Error::Unsupported("not a USB disk"));
         };
         let block_bytes = block_bytes as usize;
@@ -1030,21 +1287,39 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         }
         let sectors = (length / SECTOR_SIZE) as u64;
         let disk_sectors = disk_blocks.saturating_mul((block_bytes / SECTOR_SIZE) as u64);
-        if sector.checked_add(sectors).is_none_or(|end| end > disk_sectors) {
+        if sector
+            .checked_add(sectors)
+            .is_none_or(|end| end > disk_sectors)
+        {
             return Err(Error::Unsupported("past the end of the USB disk"));
         }
-        let per_chunk = ((STORAGE_BUFFER_BYTES / block_bytes - 1) * (block_bytes / SECTOR_SIZE)) as u64;
+        let per_chunk =
+            ((STORAGE_BUFFER_BYTES / block_bytes - 1) * (block_bytes / SECTOR_SIZE)) as u64;
         let mut done = 0u64;
         let mut result = Ok(());
         while done < sectors && result.is_ok() {
             let count = per_chunk.min(sectors - done);
-            let Covering { first_block, blocks, skip_bytes } = covering(sector + done, count, block_bytes);
+            let Covering {
+                first_block,
+                blocks,
+                skip_bytes,
+            } = covering(sector + done, count, block_bytes);
             let start = done as usize * SECTOR_SIZE;
             let chunk = count as usize * SECTOR_SIZE;
             let bytes = blocks as usize * block_bytes;
             result = match u32::try_from(first_block) {
                 Err(_) => Err(Error::Unsupported("past 2 TiB on a USB disk")),
-                Ok(lba) => self.disk_chunk(&mut device, lba, blocks as u16, bytes, skip_bytes, &mut buffer, start, chunk, keep_waiting),
+                Ok(lba) => self.disk_chunk(
+                    &mut device,
+                    lba,
+                    blocks as u16,
+                    bytes,
+                    skip_bytes,
+                    &mut buffer,
+                    start,
+                    chunk,
+                    keep_waiting,
+                ),
             };
             done += count;
         }
@@ -1068,32 +1343,87 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let partial = skip_bytes != 0 || chunk != bytes;
         match buffer {
             DiskBuffer::Read(buffer) => {
-                self.scsi(device, &scsi_read_write_10(false, lba, blocks), true, bytes, keep_waiting)?;
-                copy_out(&self.memory, STORAGE_BUFFER + skip_bytes, &mut buffer[start..start + chunk]);
+                self.scsi(
+                    device,
+                    &scsi_read_write_10(false, lba, blocks),
+                    true,
+                    bytes,
+                    keep_waiting,
+                )?;
+                copy_out(
+                    &self.memory,
+                    STORAGE_BUFFER + skip_bytes,
+                    &mut buffer[start..start + chunk],
+                );
             }
             DiskBuffer::Write(buffer) => {
                 if partial {
-                    self.scsi(device, &scsi_read_write_10(false, lba, blocks), true, bytes, keep_waiting)?;
+                    self.scsi(
+                        device,
+                        &scsi_read_write_10(false, lba, blocks),
+                        true,
+                        bytes,
+                        keep_waiting,
+                    )?;
                 }
-                copy_in(&self.memory, STORAGE_BUFFER + skip_bytes, &buffer[start..start + chunk]);
-                self.scsi(device, &scsi_read_write_10(true, lba, blocks), false, bytes, keep_waiting)?;
+                copy_in(
+                    &self.memory,
+                    STORAGE_BUFFER + skip_bytes,
+                    &buffer[start..start + chunk],
+                );
+                self.scsi(
+                    device,
+                    &scsi_read_write_10(true, lba, blocks),
+                    false,
+                    bytes,
+                    keep_waiting,
+                )?;
             }
         }
         Ok(())
     }
 
     /// Asks USB disk `index` to write its cache out.
-    pub fn disk_flush(&mut self, index: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
-        let mut device = self.devices.get(index).copied().flatten().ok_or(Error::Unsupported("no such USB disk"))?;
-        let result = self.scsi(&mut device, &SCSI_SYNCHRONIZE_CACHE_10, true, 0, keep_waiting);
+    pub fn disk_flush(
+        &mut self,
+        index: usize,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let mut device = self
+            .devices
+            .get(index)
+            .copied()
+            .flatten()
+            .ok_or(Error::Unsupported("no such USB disk"))?;
+        let result = self.scsi(
+            &mut device,
+            &SCSI_SYNCHRONIZE_CACHE_10,
+            true,
+            0,
+            keep_waiting,
+        );
         self.devices[index] = Some(device);
         result
     }
 
-    fn set_up_hub(&mut self, device: &mut Device, configuration: u8, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u8, Error> {
-        self.control_transfer(device, Setup::set_configuration(configuration), 0, keep_waiting)?;
+    fn set_up_hub(
+        &mut self,
+        device: &mut Device,
+        configuration: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<u8, Error> {
+        self.control_transfer(
+            device,
+            Setup::set_configuration(configuration),
+            0,
+            keep_waiting,
+        )?;
         let super_speed = device.location.speed >= SPEED_SUPER;
-        let kind = if super_speed { HUB_DESCRIPTOR_USB3 } else { HUB_DESCRIPTOR_USB2 };
+        let kind = if super_speed {
+            HUB_DESCRIPTOR_USB3
+        } else {
+            HUB_DESCRIPTOR_USB2
+        };
         let setup = Setup {
             request_type: 0xa0,
             request: 6,
@@ -1103,7 +1433,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         };
         self.control_transfer(device, setup, DESCRIPTOR_BUFFER, keep_waiting)?;
         let mut descriptor = [0u8; 9];
-        copy_out(&self.memory, device.area + DESCRIPTOR_BUFFER, &mut descriptor);
+        copy_out(
+            &self.memory,
+            device.area + DESCRIPTOR_BUFFER,
+            &mut descriptor,
+        );
         let ports = descriptor[2].min(15);
         if super_speed {
             let depth = Setup {
@@ -1137,8 +1471,16 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         let base = self.memory.dma_addr().get();
         let endpoint = self.input_context(device.area, 2);
         write32(&self.memory, endpoint, 0);
-        write32(&self.memory, endpoint + 4, (3 << 1) | (ENDPOINT_CONTROL << 3) | (max_packet << 16));
-        write64(&self.memory, endpoint + 8, base + device.control.at as u64 | u64::from(device.control.cycle));
+        write32(
+            &self.memory,
+            endpoint + 4,
+            (3 << 1) | (ENDPOINT_CONTROL << 3) | (max_packet << 16),
+        );
+        write64(
+            &self.memory,
+            endpoint + 8,
+            base + device.control.at as u64 | u64::from(device.control.cycle),
+        );
         write32(&self.memory, endpoint + 16, 8);
     }
 
@@ -1159,11 +1501,9 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
     fn handle_transfer(&mut self, event: [u32; 4], emit: &mut dyn FnMut(RawEvent)) -> usize {
         let slot = (event[3] >> 24) as u8;
         let endpoint = (event[3] >> 16) & 0x1f;
-        let Some(index) = self
-            .devices
-            .iter()
-            .position(|device| device.is_some_and(|device| device.slot == slot && device.report_endpoint == endpoint))
-        else {
+        let Some(index) = self.devices.iter().position(|device| {
+            device.is_some_and(|device| device.slot == slot && device.report_endpoint == endpoint)
+        }) else {
             return 0;
         };
         let Some(mut device) = self.devices[index] else {
@@ -1176,7 +1516,11 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             let left = (event[2] & 0x00ff_ffff) as usize;
             let mut report = [0u8; REPORT_BYTES];
             let length = requested.saturating_sub(left);
-            copy_out(&self.memory, device.area + REPORT_BUFFER, &mut report[..length]);
+            copy_out(
+                &self.memory,
+                device.area + REPORT_BUFFER,
+                &mut report[..length],
+            );
             sent = match &mut device.handler {
                 Handler::Keyboard(keyboard) => keyboard.report(&report[..length], emit),
                 Handler::Mouse(mouse) => mouse.report(&report[..length], emit),
@@ -1192,17 +1536,23 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
     /// Asks the controller to interrupt on its events (D255), once a message interrupt is
     /// connected.
     pub fn enable_interrupts(&mut self) {
-        self.regs
-            .write32(self.runtime + INTERRUPTER_MANAGEMENT, INTERRUPT_ENABLE | INTERRUPT_PENDING);
+        self.regs.write32(
+            self.runtime + INTERRUPTER_MANAGEMENT,
+            INTERRUPT_ENABLE | INTERRUPT_PENDING,
+        );
         let command = self.regs.read32(self.op(USB_COMMAND));
-        self.regs.write32(self.op(USB_COMMAND), command | COMMAND_INTERRUPTS);
+        self.regs
+            .write32(self.op(USB_COMMAND), command | COMMAND_INTERRUPTS);
     }
 
     fn clear_interrupt(&self) {
         let management = self.regs.read32(self.runtime + INTERRUPTER_MANAGEMENT);
+        self.regs.write32(
+            self.runtime + INTERRUPTER_MANAGEMENT,
+            management | INTERRUPT_PENDING,
+        );
         self.regs
-            .write32(self.runtime + INTERRUPTER_MANAGEMENT, management | INTERRUPT_PENDING);
-        self.regs.write32(self.op(USB_STATUS), STATUS_EVENT_INTERRUPT);
+            .write32(self.op(USB_STATUS), STATUS_EVENT_INTERRUPT);
     }
 
     /// Hands `emit` the reports the devices sent, at most `budget` events' worth of reports;
@@ -1242,7 +1592,12 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             write32(&self.memory, buffer, u32::from(lights_report(lights)));
             let setup = Setup::hid_set_output_report(device.interface.interface, 1);
             let mut ring = device.control;
-            self.enqueue(&mut ring, setup.as_u64(), 8, (TRB_SETUP << 10) | TRB_IMMEDIATE_DATA | TRANSFER_TYPE_OUT);
+            self.enqueue(
+                &mut ring,
+                setup.as_u64(),
+                8,
+                (TRB_SETUP << 10) | TRB_IMMEDIATE_DATA | TRANSFER_TYPE_OUT,
+            );
             self.enqueue(&mut ring, base + buffer as u64, 1, TRB_DATA << 10);
             self.enqueue(&mut ring, 0, 0, (TRB_STATUS << 10) | TRB_DIRECTION_IN);
             device.control = ring;
@@ -1324,7 +1679,16 @@ mod tests {
         assert_eq!(child.route, 2);
         assert_eq!(child.translator, Some((5, 2)));
         assert_eq!(child.root_port, 3);
-        let grandchild = child_location(&Location { speed: SPEED_HIGH, translator: None, ..child }, 6, 4, SPEED_HIGH);
+        let grandchild = child_location(
+            &Location {
+                speed: SPEED_HIGH,
+                translator: None,
+                ..child
+            },
+            6,
+            4,
+            SPEED_HIGH,
+        );
         assert_eq!(grandchild.route, 0x42);
         assert_eq!(grandchild.translator, None);
     }

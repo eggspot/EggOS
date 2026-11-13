@@ -124,23 +124,25 @@ pub fn shown_text(gui: &Gui, window: usize) -> &[u16] {
     combo.shown_text()
 }
 
-/// The edit field's visible cells in combo box `window`, for its caret's scrolling (D340).
 fn edit_cells(gui: &Gui, window: usize) -> usize {
     let cells = || {
         let entry = gui.windows.get(window)?;
         let address = address_of(gui, window)?;
         // SAFETY: as `model`, a shared reference while the lock is held.
         let area = model::field_area(entry.client(), unsafe { &*(address as *const ComboBox) });
-        Some(eggos_windows_gui::controls::edit::visible_cells(area.right - area.left))
+        Some(eggos_windows_gui::controls::edit::visible_cells(
+            area.right - area.left,
+        ))
     };
     cells().unwrap_or(0)
 }
 
-/// Applies `work` to editable combo box `window`'s edit field; whether it was editable, and
-/// the outcome.
 fn with_edit(
     window: usize,
-    work: impl FnOnce(&mut eggos_windows_gui::controls::edit::Edit, usize) -> eggos_windows_gui::controls::edit::EditOutcome,
+    work: impl FnOnce(
+        &mut eggos_windows_gui::controls::edit::Edit,
+        usize,
+    ) -> eggos_windows_gui::controls::edit::EditOutcome,
 ) -> Option<eggos_windows_gui::controls::edit::EditOutcome> {
     with(|gui| {
         let visible = edit_cells(gui, window);
@@ -152,8 +154,6 @@ fn with_edit(
     .flatten()
 }
 
-/// What an edit of the field did: repainted, and `CBN_EDITUPDATE` then `CBN_EDITCHANGE` when
-/// its text changed.
 fn edited(window: usize, outcome: eggos_windows_gui::controls::edit::EditOutcome) {
     use eggos_windows_gui::controls::edit::EditOutcome;
     match outcome {
@@ -462,7 +462,9 @@ fn left_button_down(window: usize, (x, y): (i32, i32)) {
         if is_open(window) {
             close_and_notify(window, false);
         }
-        if let Some(outcome) = with_edit(window, |field, visible| field.click((x, 0), false, visible)) {
+        if let Some(outcome) =
+            with_edit(window, |field, visible| field.click((x, 0), false, visible))
+        {
             edited(window, outcome);
         }
         return;
@@ -479,8 +481,6 @@ fn left_button_down(window: usize, (x, y): (i32, i32)) {
     open(window);
 }
 
-/// A press on a simple combo box's list (D343): a row selects its item at once, the scroll
-/// bar scrolls the list.
 fn simple_list_press(window: usize, (x, y): (i32, i32)) {
     let pressed = with(|gui| {
         let list = model::simple_list_rect(gui.windows.get(window)?.client());
@@ -532,8 +532,10 @@ fn key_down(window: usize, virtual_key: u32) {
         toggle(window);
         return;
     }
-    if !matches!(virtual_key, key::UP | key::DOWN | key::PAGE_UP | key::PAGE_DOWN)
-        && let Some(outcome) = with_edit(window, |field, visible| field.key(virtual_key, visible))
+    if !matches!(
+        virtual_key,
+        key::UP | key::DOWN | key::PAGE_UP | key::PAGE_DOWN
+    ) && let Some(outcome) = with_edit(window, |field, visible| field.key(virtual_key, visible))
     {
         edited(window, outcome);
         return;
@@ -551,7 +553,9 @@ fn character(window: usize, character: usize) {
     if character < 0x20 {
         return;
     }
-    if let Some(outcome) = with_edit(window, |field, visible| field.character(character as u32, visible)) {
+    if let Some(outcome) = with_edit(window, |field, visible| {
+        field.character(character as u32, visible)
+    }) {
         edited(window, outcome);
         return;
     }
@@ -750,7 +754,13 @@ pub fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> us
             0
         }
         message::LEFT_BUTTON_DOWN => {
-            left_button_down(window, (lparam as u16 as i16 as i32, (lparam >> 16) as u16 as i16 as i32));
+            left_button_down(
+                window,
+                (
+                    lparam as u16 as i16 as i32,
+                    (lparam >> 16) as u16 as i16 as i32,
+                ),
+            );
             0
         }
         message::SET_TEXT if is_editable(window) => {

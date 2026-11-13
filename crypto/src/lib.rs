@@ -18,8 +18,8 @@
 
 pub mod aes;
 pub mod bignum;
-pub mod chacha20;
 pub mod ccm;
+pub mod chacha20;
 pub mod chacha20poly1305;
 pub mod cmac;
 pub mod constant_time;

@@ -274,7 +274,15 @@ pub fn find_store<F: Files>(files: &mut F, arch: &str) -> Option<Store> {
     path.push_str(&store_file_name(VERSION, arch));
     read_store(files, &path, Source::Share, arch)
         .ok()
-        .or_else(|| read_store(files, &downloaded_store_path(VERSION, arch), Source::Downloaded, arch).ok())
+        .or_else(|| {
+            read_store(
+                files,
+                &downloaded_store_path(VERSION, arch),
+                Source::Downloaded,
+                arch,
+            )
+            .ok()
+        })
 }
 
 /// The installed components, in the order their folders are listed; a folder without a valid
@@ -604,9 +612,6 @@ pub fn unlock<F: Files>(files: &mut F) {
     let _ = files.remove_file(LOCK.as_bytes());
 }
 
-/// Finishes what an interrupted update left (D293) before anything is removed: a component
-/// whose folder is gone while its old copy waits under the replaced prefix gets the new copy
-/// when the staged one is complete (it holds its record), else the old one back.
 fn finish_swaps<F: Files>(files: &mut F) {
     let mut name = [0u8; NAME_BYTES];
     let mut at = 0;
@@ -685,7 +690,9 @@ pub fn install<F: Files>(
     component: &Component,
     progress: &mut dyn FnMut(u64, u64) -> bool,
 ) -> Result<(), Failure> {
-    install_reporting(files, store, component, &mut |_, done, total| progress(done, total))
+    install_reporting(files, store, component, &mut |_, done, total| {
+        progress(done, total)
+    })
 }
 
 /// [`install`], with the file system handed to `progress`, so a job can record its bytes and
@@ -751,10 +758,17 @@ fn copy_component<F: Files>(
         if result.is_err() {
             break;
         }
-        result = copy_file(files, source, file, &root, &mut buffer, &mut |files, piece| {
-            done += piece;
-            progress(files, done, total)
-        })
+        result = copy_file(
+            files,
+            source,
+            file,
+            &root,
+            &mut buffer,
+            &mut |files, piece| {
+                done += piece;
+                progress(files, done, total)
+            },
+        )
         .map_err(|failure| match failure {
             Failure::Damaged(_) => {
                 Failure::Damaged([component.name.as_str(), ".component"].concat())
@@ -873,7 +887,11 @@ pub fn plan_update<'a>(installed: &Component, available: &'a Component) -> Optio
             .iter()
             .any(|old| old.path == file.path && old.sha256 == file.sha256 && old.mode == file.mode)
     };
-    let changed: Vec<&index::File> = available.files.iter().filter(|file| !same_file(file)).collect();
+    let changed: Vec<&index::File> = available
+        .files
+        .iter()
+        .filter(|file| !same_file(file))
+        .collect();
     let dropped: Vec<String> = installed
         .files
         .iter()
@@ -931,7 +949,9 @@ pub fn update<F: Files>(
     let folder = component_folder(name);
     let old = join(COMPONENTS, &[REPLACED_PREFIX, name].concat());
     files.sync();
-    files.rename(folder.as_bytes(), old.as_bytes()).map_err(failure)?;
+    files
+        .rename(folder.as_bytes(), old.as_bytes())
+        .map_err(failure)?;
     files.sync();
     if let Err(errno) = files.rename(staging.as_bytes(), folder.as_bytes()) {
         let _ = files.rename(old.as_bytes(), folder.as_bytes());
@@ -961,17 +981,31 @@ fn stage_update<F: Files>(
         true => None,
         false => {
             let store = store.ok_or(Failure::Detached)?;
-            Some(files.open(store.path.as_bytes()).map_err(|_| Failure::Detached)?)
+            Some(
+                files
+                    .open(store.path.as_bytes())
+                    .map_err(|_| Failure::Detached)?,
+            )
         }
     };
     let mut result = Ok(());
     for file in &component.files {
-        let changed = plan.changed.iter().any(|changed| core::ptr::eq(*changed, file));
+        let changed = plan
+            .changed
+            .iter()
+            .any(|changed| core::ptr::eq(*changed, file));
         result = match (changed, source) {
-            (true, Some(source)) => copy_file(files, source, file, &root, &mut buffer, &mut |files, piece| {
-                done += piece;
-                progress(files, done, total)
-            }),
+            (true, Some(source)) => copy_file(
+                files,
+                source,
+                file,
+                &root,
+                &mut buffer,
+                &mut |files, piece| {
+                    done += piece;
+                    progress(files, done, total)
+                },
+            ),
             (true, None) => Err(Failure::Detached),
             (false, _) => {
                 let path = installed_path(&component.name, &file.path);
@@ -981,10 +1015,17 @@ fn stage_update<F: Files>(
                             offset: 0,
                             ..file.clone()
                         };
-                        let copied = copy_file(files, local, &at_start, &root, &mut buffer, &mut |files, piece| {
-                            done += piece;
-                            progress(files, done, total)
-                        });
+                        let copied = copy_file(
+                            files,
+                            local,
+                            &at_start,
+                            &root,
+                            &mut buffer,
+                            &mut |files, piece| {
+                                done += piece;
+                                progress(files, done, total)
+                            },
+                        );
                         files.close(local);
                         copied
                     }
@@ -1007,7 +1048,9 @@ fn stage_update<F: Files>(
     component.write_block(&mut record);
     let path = join(staging, RECORD);
     let handle = files.create(path.as_bytes(), 0o644).map_err(failure)?;
-    let written = files.write(handle, record.as_bytes()).and_then(|()| files.sync_file(handle));
+    let written = files
+        .write(handle, record.as_bytes())
+        .and_then(|()| files.sync_file(handle));
     files.close(handle);
     written.map_err(written_failure)
 }

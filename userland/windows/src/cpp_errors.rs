@@ -138,8 +138,6 @@ pub const GENERIC_MESSAGES: [(i32, &[u8]); 78] = [
 
 const UNKNOWN_ERROR: &[u8] = b"unknown error\0";
 
-/// The `std::errc` value (the UCRT's `errno` number) each Windows error stands for, as
-/// `_Winerror_map` gives it to `std::system_category()`'s `default_error_condition`.
 const WINDOWS_ERRORS: [(u32, i32); 78] = [
     (1, 40),
     (2, 2),

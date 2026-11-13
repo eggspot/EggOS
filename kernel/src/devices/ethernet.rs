@@ -3,7 +3,9 @@
 //! polled.
 
 use super::dma::DmaRegion;
-use super::{DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
+use super::{
+    DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass,
+};
 use crate::net::NetDevice;
 use alloc::boxed::Box;
 use eggos_drivers::ethernet::{self, MEMORY_BYTES, e1000, igc, realtek};
@@ -97,16 +99,17 @@ fn probe_ethernet(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError>
     let Identity::Pci(function) = node.identity else {
         return Err(ProbeError::Refused("not a PCI function"));
     };
-    let kind = kind_of(function.vendor_id, function.device_id)
-        .ok_or(ProbeError::Refused("an Ethernet adapter no driver takes yet"))?;
+    let kind = kind_of(function.vendor_id, function.device_id).ok_or(ProbeError::Refused(
+        "an Ethernet adapter no driver takes yet",
+    ))?;
     if node.dma != DmaCoherence::Coherent {
         return Err(ProbeError::Refused("the device's DMA is not coherent"));
     }
-    let region = node
-        .regions()
-        .next()
-        .ok_or(ProbeError::Refused("the adapter's registers are not in memory space"))?;
-    let length = usize::try_from(region.len()).map_err(|_| ProbeError::Refused("the register block is too large"))?;
+    let region = node.regions().next().ok_or(ProbeError::Refused(
+        "the adapter's registers are not in memory space",
+    ))?;
+    let length = usize::try_from(region.len())
+        .map_err(|_| ProbeError::Refused("the register block is too large"))?;
     let base = probe.map_window(region)?;
     let config = probe
         .pci_config()
@@ -125,11 +128,13 @@ fn probe_ethernet(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError>
         ProbeError::Refused(error.description())
     };
     let mut adapter = match kind {
-        Kind::E1000(family) => Adapter::E1000(e1000::E1000::new(regs, memory, family, &mut keep_waiting).map_err(refuse)?),
+        Kind::E1000(family) => Adapter::E1000(
+            e1000::E1000::new(regs, memory, family, &mut keep_waiting).map_err(refuse)?,
+        ),
         Kind::Igc => Adapter::Igc(igc::Igc::new(regs, memory, &mut keep_waiting).map_err(refuse)?),
-        Kind::Realtek(generation) => {
-            Adapter::Realtek(realtek::Realtek::new(regs, memory, generation, &mut keep_waiting).map_err(refuse)?)
-        }
+        Kind::Realtek(generation) => Adapter::Realtek(
+            realtek::Realtek::new(regs, memory, generation, &mut keep_waiting).map_err(refuse)?,
+        ),
     };
     let interrupting = matches!(adapter, Adapter::E1000(_))
         && super::message_interrupts::connect(probe, id, &crate::net::DEVICE_EVENTS).is_ok();

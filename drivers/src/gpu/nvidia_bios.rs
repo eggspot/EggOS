@@ -67,7 +67,9 @@ fn word(image: &[u8], at: usize) -> Option<u32> {
 }
 
 fn bit_version(image: &[u8]) -> Option<u32> {
-    let at = image.windows(BIT_SIGNATURE.len()).position(|window| window == BIT_SIGNATURE)?;
+    let at = image
+        .windows(BIT_SIGNATURE.len())
+        .position(|window| window == BIT_SIGNATURE)?;
     let header_size = usize::from(*image.get(at + 8)?);
     let token_size = usize::from(*image.get(at + 9)?);
     let tokens = usize::from(*image.get(at + 10)?);
@@ -92,7 +94,9 @@ impl NvidiaBios {
         };
         let dcb = usize::from(half(image, DCB_POINTER)?);
         if dcb != 0
-            && image.get(dcb).is_some_and(|version| *version >= DCB_VERSION_4)
+            && image
+                .get(dcb)
+                .is_some_and(|version| *version >= DCB_VERSION_4)
             && word(image, dcb + 6) == Some(DCB_SIGNATURE)
         {
             let header = usize::from(*image.get(dcb + 1)?);
@@ -142,7 +146,8 @@ mod tests {
         image[dcb + 6..dcb + 10].copy_from_slice(&DCB_SIGNATURE.to_le_bytes());
         let entries = dcb + 0x17;
         for (index, kind) in [0x6u32, 0xf, 0x2, 0xe].into_iter().enumerate() {
-            image[entries + 8 * index..entries + 8 * index + 4].copy_from_slice(&kind.to_le_bytes());
+            image[entries + 8 * index..entries + 8 * index + 4]
+                .copy_from_slice(&kind.to_le_bytes());
         }
         image
     }

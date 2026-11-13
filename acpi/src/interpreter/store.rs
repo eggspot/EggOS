@@ -122,7 +122,11 @@ impl<H: Host> Interpreter<H> {
     }
 
     fn store_node(&mut self, frame: &mut Frame, node: NodeId, value: Object) -> Result<(), Error> {
-        let held = self.namespace.get(node).cloned().ok_or(Error::NameNotFound)?;
+        let held = self
+            .namespace
+            .get(node)
+            .cloned()
+            .ok_or(Error::NameNotFound)?;
         let stored = match held {
             Object::Field(field) => return self.write_field(&field, &value),
             Object::BufferField(field) => return self.write_buffer_field(frame, &field, &value),
@@ -175,8 +179,6 @@ impl<H: Host> Interpreter<H> {
         }
     }
 
-    /// The object `target` holds, to change in place, following references; `None` for a
-    /// temporary, whose changes go nowhere.
     fn location<'a>(
         &'a mut self,
         frame: &'a mut Frame,

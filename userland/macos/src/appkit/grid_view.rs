@@ -14,7 +14,7 @@ use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, message, methods, send, send1, sel};
+use crate::objc::{Runtime, message, methods, sel, send, send1};
 use eggos_macos_gui::geometry::{Frame, Size, round};
 use eggos_macos_gui::grid_view::{self as layout, DEFAULT_SPACING, Track, placement};
 use eggos_toolkit::geometry::Rect;
@@ -112,9 +112,10 @@ fn measure(this: Id) -> ([i32; MOST_COLUMNS], [i32; MOST_ROWS], (i32, i32)) {
         }
         tracks
     };
-    let widths: [i32; MOST_COLUMNS] = layout::sizes(column_tracks.as_slice(), rows, |column, row| {
-        view_size(cell_view(this, column, row)).0
-    });
+    let widths: [i32; MOST_COLUMNS] =
+        layout::sizes(column_tracks.as_slice(), rows, |column, row| {
+            view_size(cell_view(this, column, row)).0
+        });
     let heights: [i32; MOST_ROWS] = layout::sizes(row_tracks.as_slice(), columns, |row, column| {
         view_size(cell_view(this, column, row)).1
     });
@@ -204,7 +205,9 @@ fn array_items(array: Id) -> (usize, impl Fn(usize) -> Id) {
         true => 0,
         false => send(array, sel!("count")) as usize,
     };
-    (count, move |index: usize| send1(array, sel!("objectAtIndex:"), index))
+    (count, move |index: usize| {
+        send1(array, sel!("objectAtIndex:"), index)
+    })
 }
 
 fn add_row(this: Id, views: Id) -> bool {
@@ -289,7 +292,12 @@ extern "C" fn number_of_columns(this: Id, _: Sel) -> isize {
     grid(this).columns as isize
 }
 
-fn new_part(class: &'static crate::objc::abi::ClassObject, owner: Id, index: usize, second: usize) -> Id {
+fn new_part(
+    class: &'static crate::objc::abi::ClassObject,
+    owner: Id,
+    index: usize,
+    second: usize,
+) -> Id {
     let made = new_instance(class_pointer(class));
     if made.is_null() {
         return made;
@@ -317,7 +325,8 @@ extern "C" fn column_at_index(this: Id, _: Sel, index: isize) -> Id {
 
 extern "C" fn cell_at(this: Id, _: Sel, column: isize, row: isize) -> Id {
     let fields = grid(this);
-    let inside = (0..fields.columns as isize).contains(&column) && (0..fields.rows as isize).contains(&row);
+    let inside =
+        (0..fields.columns as isize).contains(&column) && (0..fields.rows as isize).contains(&row);
     match inside {
         true => new_part(&NSGRIDCELL, this, column as usize, row as usize),
         false => core::ptr::null_mut(),
@@ -326,7 +335,12 @@ extern "C" fn cell_at(this: Id, _: Sel, column: isize, row: isize) -> Id {
 
 extern "C" fn cell_for_view(this: Id, _: Sel, shown: Id) -> Id {
     let fields = grid(this);
-    let Some(index) = fields.cells.as_slice().iter().position(|&each| each == shown && !shown.is_null()) else {
+    let Some(index) = fields
+        .cells
+        .as_slice()
+        .iter()
+        .position(|&each| each == shown && !shown.is_null())
+    else {
         return core::ptr::null_mut();
     };
     let columns = fields.columns.max(1);
@@ -433,7 +447,12 @@ extern "C" fn row_number_of_cells(this: Id, _: Sel) -> isize {
 
 extern "C" fn row_cell_at(this: Id, _: Sel, index: isize) -> Id {
     let fields = part(this);
-    cell_at(fields.grid, sel!("cellAtColumnIndex:rowIndex:"), index, fields.index as isize)
+    cell_at(
+        fields.grid,
+        sel!("cellAtColumnIndex:rowIndex:"),
+        index,
+        fields.index as isize,
+    )
 }
 
 extern "C" fn column_width(this: Id, _: Sel) -> f64 {
@@ -464,7 +483,12 @@ extern "C" fn column_number_of_cells(this: Id, _: Sel) -> isize {
 
 extern "C" fn column_cell_at(this: Id, _: Sel, index: isize) -> Id {
     let fields = part(this);
-    cell_at(fields.grid, sel!("cellAtColumnIndex:rowIndex:"), fields.index as isize, index)
+    cell_at(
+        fields.grid,
+        sel!("cellAtColumnIndex:rowIndex:"),
+        fields.index as isize,
+        index,
+    )
 }
 
 fn cell_index(this: Id) -> usize {
@@ -480,7 +504,12 @@ extern "C" fn cell_content_view(this: Id, _: Sel) -> Id {
 extern "C" fn cell_set_content_view(this: Id, _: Sel, shown: Id) {
     let owner = part(this).grid;
     let index = cell_index(this);
-    let old = grid(owner).cells.as_slice().get(index).copied().unwrap_or(core::ptr::null_mut());
+    let old = grid(owner)
+        .cells
+        .as_slice()
+        .get(index)
+        .copied()
+        .unwrap_or(core::ptr::null_mut());
     if old == shown {
         return;
     }
@@ -502,7 +531,14 @@ extern "C" fn cell_set_content_view(this: Id, _: Sel, shown: Id) {
 
 extern "C" fn cell_x_placement(this: Id, _: Sel) -> usize {
     let index = cell_index(this);
-    usize::from(grid(part(this).grid).cell_x.as_slice().get(index).copied().unwrap_or(0))
+    usize::from(
+        grid(part(this).grid)
+            .cell_x
+            .as_slice()
+            .get(index)
+            .copied()
+            .unwrap_or(0),
+    )
 }
 
 extern "C" fn cell_set_x_placement(this: Id, _: Sel, value: usize) {
@@ -516,7 +552,14 @@ extern "C" fn cell_set_x_placement(this: Id, _: Sel, value: usize) {
 
 extern "C" fn cell_y_placement(this: Id, _: Sel) -> usize {
     let index = cell_index(this);
-    usize::from(grid(part(this).grid).cell_y.as_slice().get(index).copied().unwrap_or(0))
+    usize::from(
+        grid(part(this).grid)
+            .cell_y
+            .as_slice()
+            .get(index)
+            .copied()
+            .unwrap_or(0),
+    )
 }
 
 extern "C" fn cell_set_y_placement(this: Id, _: Sel, value: usize) {

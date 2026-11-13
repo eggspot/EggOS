@@ -28,19 +28,14 @@ const VALID: u64 = 1 << 1;
 const DIRTY: u64 = 1 << 2;
 const CACHE_SHIFT: u32 = 3;
 const CACHE_MASK: u64 = 7 << CACHE_SHIFT;
-/// Uncached: device registers.
 const UNCACHED: u64 = 2 << CACHE_SHIFT;
-/// Cacheable, coherent: RAM.
 const CACHED: u64 = 3 << CACHE_SHIFT;
-/// Uncached accelerated: write-combining.
 const UNCACHED_ACCELERATED: u64 = 7 << CACHE_SHIFT;
 const FRAME_SHIFT: u32 = 6;
-/// The page frame field: physical bits 47:12 at bits 41:6.
 const FRAME_FIELD: u64 = ((1 << 36) - 1) << FRAME_SHIFT;
 const USER: u64 = 1 << 60;
 const KEPT: u64 = 1 << 59;
 const EXECUTE_INHIBIT: u64 = 1 << 62;
-/// The physical address bits a table pointer keeps.
 const PHYSICAL: u64 = ((1 << 48) - 1) & !0xfff;
 
 /// The cached `XKPHYS` window: physical address `p` at `CACHED_WINDOW | p`.
@@ -51,7 +46,6 @@ impl Format for Mips64 {
     const ROOTS: usize = 2;
     const MAX_LEAF_LEVEL: usize = 0;
     const ENCODES_MEMORY_TYPE: bool = true;
-    /// 40 bits: every MIPS64 CPU's `XUSEG` is at least that large.
     const USER_END: u64 = 1 << 40;
 
     fn root(virt: u64) -> Option<usize> {
@@ -138,8 +132,14 @@ mod tests {
 
     #[test]
     fn encodings_match_entrylo() {
-        assert_eq!(Mips64::leaf(0x20_0000, 0, Attributes::READ_WRITE), 0x4000_0000_0000_801f);
-        assert_eq!(Mips64::leaf(0x20_0000, 0, Attributes::USER_TEXT), 0x1000_0000_0000_801a);
+        assert_eq!(
+            Mips64::leaf(0x20_0000, 0, Attributes::READ_WRITE),
+            0x4000_0000_0000_801f
+        );
+        assert_eq!(
+            Mips64::leaf(0x20_0000, 0, Attributes::USER_TEXT),
+            0x1000_0000_0000_801a
+        );
         assert_eq!(Mips64::table(0x1234_5000, 3, false), 0x9800_0000_1234_5000);
         assert_eq!(Mips64::root(0xc000_ff00_0000_0000), Some(1));
         assert_eq!(Mips64::root(0x0000_00ff_ffff_ffff), Some(0));

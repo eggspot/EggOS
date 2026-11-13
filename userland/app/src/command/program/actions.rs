@@ -30,13 +30,13 @@ fn path_of(app: &[u8], out: &mut [u8; PATH_BYTES]) -> Option<usize> {
     let parts: [&[u8]; 4] = [APPLICATIONS, b"/", app, b"/"];
     let mut length = 0;
     for part in parts.iter().chain([actions::FILE_NAME.as_bytes()].iter()) {
-        out.get_mut(length..length + part.len())?.copy_from_slice(part);
+        out.get_mut(length..length + part.len())?
+            .copy_from_slice(part);
         length += part.len();
     }
     Some(length)
 }
 
-/// Reads `app`'s actions file: its bytes, empty when it has none.
 fn read(files: &mut LinuxFiles, app: &[u8]) -> &'static [u8] {
     use crate::files::Files;
     let mut path = [0u8; PATH_BYTES];
@@ -134,8 +134,6 @@ pub fn list(name: Option<&[u8]>, json: bool) -> i32 {
     0
 }
 
-/// The values `--values` holds, a JSON object of strings, numbers and booleans, appended to
-/// `pairs` with their text in `text`.
 fn values_from_json<'a>(
     values: &[u8],
     text: &'a mut [u8; VALUE_BYTES],
@@ -162,12 +160,16 @@ fn values_from_json<'a>(
             Value::Str(string) => string.decode_prefix_into(room).0.len(),
             Value::Number(number) => {
                 let raw = number.raw();
-                room.get_mut(..raw.len()).ok_or("--values is too long")?.copy_from_slice(raw);
+                room.get_mut(..raw.len())
+                    .ok_or("--values is too long")?
+                    .copy_from_slice(raw);
                 raw.len()
             }
             Value::Bool(flag) => {
                 let raw: &[u8] = if flag { b"true" } else { b"false" };
-                room.get_mut(..raw.len()).ok_or("--values is too long")?.copy_from_slice(raw);
+                room.get_mut(..raw.len())
+                    .ok_or("--values is too long")?
+                    .copy_from_slice(raw);
                 raw.len()
             }
             _ => return Err("--values holds a value that is not text, a number or a boolean"),
@@ -178,7 +180,10 @@ fn values_from_json<'a>(
     }
     let text: &'a [u8] = text;
     for &(key_at, key_length, value_at, value_length) in &spans[..found] {
-        pairs[*count] = (&text[key_at..key_at + key_length], &text[value_at..value_at + value_length]);
+        pairs[*count] = (
+            &text[key_at..key_at + key_length],
+            &text[value_at..value_at + value_length],
+        );
         *count += 1;
     }
     Ok(())
@@ -195,13 +200,21 @@ pub fn run(
 ) -> i32 {
     let mut files = LinuxFiles::new();
     let mut installed = false;
-    let _ = installer::for_each_installed(&mut files, |found| installed |= found.name.as_bytes() == app);
+    let _ = installer::for_each_installed(&mut files, |found| {
+        installed |= found.name.as_bytes() == app
+    });
     if !installed {
         report(false, &errors::NO_SUCH_APP, "no such app is installed");
         return FAILED;
     }
-    let Some(action) = actions::actions(read(&mut files, app)).find(|action| action.name == action_name) else {
-        report(false, &errors::NO_SUCH_ACTION, "the app offers no such action");
+    let Some(action) =
+        actions::actions(read(&mut files, app)).find(|action| action.name == action_name)
+    else {
+        report(
+            false,
+            &errors::NO_SUCH_ACTION,
+            "the app offers no such action",
+        );
         return FAILED;
     };
     if action.effect == Effect::Destroy && !confirmed {
@@ -234,7 +247,9 @@ pub fn run(
                 ExpandError::WrongType => "a value is not of its argument's type",
                 ExpandError::Unknown => "a value names no argument of the action",
                 ExpandError::TooLong => "the action's words are too long",
-                ExpandError::BadPlaceholder => "the app's action names an argument it does not have",
+                ExpandError::BadPlaceholder => {
+                    "the app's action names an argument it does not have"
+                }
             };
             report(false, &errors::USAGE, line);
             return USAGE_ERROR;
@@ -264,7 +279,11 @@ fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
         _ => {
             let total = folder_end + 1 + first.len();
             if total >= PATH_BYTES {
-                report(false, &errors::FAILED, "the action's program path is too long");
+                report(
+                    false,
+                    &errors::FAILED,
+                    "the action's program path is too long",
+                );
                 return FAILED;
             }
             program[..folder_end].copy_from_slice(&folder[..folder_end]);
@@ -277,7 +296,11 @@ fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
         CStr::from_bytes_with_nul(&program[..program_length + 1]),
         CStr::from_bytes_with_nul(&folder[..folder_end + 1]),
     ) else {
-        report(false, &errors::FAILED, "the action's program path is not valid");
+        report(
+            false,
+            &errors::FAILED,
+            "the action's program path is not valid",
+        );
         return FAILED;
     };
     let mut pointers = [core::ptr::null::<u8>(); actions::MAX_WORDS + 1];
@@ -287,8 +310,13 @@ fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
         at += words[at..].iter().position(|&byte| byte == 0).unwrap_or(0) + 1;
     }
     pointers[0] = program.as_ptr().cast();
-    let environment = [b"PATH=/bin\0".as_ptr(), b"NO_COLOR=1\0".as_ptr(), core::ptr::null()];
-    let request = Spawn::new(program, &pointers[..count + 1], &environment, [0, 1, 2]).in_directory(directory);
+    let environment = [
+        b"PATH=/bin\0".as_ptr(),
+        b"NO_COLOR=1\0".as_ptr(),
+        core::ptr::null(),
+    ];
+    let request = Spawn::new(program, &pointers[..count + 1], &environment, [0, 1, 2])
+        .in_directory(directory);
     // SAFETY: the program has one thread and starts one child at a time on this stack, which
     // `spawn` uses only until the child's `execve`.
     let stack = unsafe { &mut *(&raw mut STACK) };
@@ -305,7 +333,8 @@ fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
     let mut status = 0i32;
     loop {
         // SAFETY: `wait4` writes the child's status into `status`, which this function owns.
-        let waited = unsafe { syscall::call(number::WAIT4, [child, &raw mut status as usize, 0, 0, 0, 0]) };
+        let waited =
+            unsafe { syscall::call(number::WAIT4, [child, &raw mut status as usize, 0, 0, 0, 0]) };
         match Errno::result(waited) {
             Ok(_) => break,
             Err(Errno::EINTR) => {}
@@ -321,5 +350,8 @@ fn execute(app: &[u8], words: &[u8], count: usize) -> i32 {
 
 #[allow(dead_code)]
 fn usage_line() {
-    say(STANDARD_OUTPUT, "app do <name> <action> [<argument>=<value>]...");
+    say(
+        STANDARD_OUTPUT,
+        "app do <name> <action> [<argument>=<value>]...",
+    );
 }

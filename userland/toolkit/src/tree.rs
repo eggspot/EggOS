@@ -436,7 +436,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             if let Kind::List(list) = kind {
                 let count = items.len().min(crate::widget::MAX_ROWS);
                 list.items = items;
-                list.shown = if count == 32 { u32::MAX } else { (1 << count) - 1 };
+                list.shown = if count == 32 {
+                    u32::MAX
+                } else {
+                    (1 << count) - 1
+                };
                 list.selected = list.selected.min(count.saturating_sub(1));
             }
         });
@@ -1375,10 +1379,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             let elapsed = now_ms.wrapping_sub(self.caret_epoch_ms);
             now_ms.wrapping_add(CARET_BLINK_MS - elapsed % CARET_BLINK_MS)
         });
-        [caret, self.tooltip_deadline(), self.pick_deadline(), self.handles_deadline()]
-            .into_iter()
-            .flatten()
-            .min_by_key(|deadline| deadline.wrapping_sub(now_ms) as i32)
+        [
+            caret,
+            self.tooltip_deadline(),
+            self.pick_deadline(),
+            self.handles_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|deadline| deadline.wrapping_sub(now_ms) as i32)
     }
 
     fn set_hover(&mut self, hover: Option<Target>) {

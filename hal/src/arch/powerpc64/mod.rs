@@ -23,8 +23,8 @@ mod thread;
 mod timer;
 mod xive;
 
-use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
+use crate::atomic::AtomicU64;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, KernelImage};
@@ -367,15 +367,10 @@ ppc64_boot_common:      .quad ppc64_common_entry
 /// `linker.ld` uses the same value and checks it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xc000_0000_0000_0000;
 
-/// The direct map: physical address `p` at `DIRECT_MAP_OFFSET + p`, the kernel's own place.
 const DIRECT_MAP_OFFSET: usize = KERNEL_VIRTUAL_OFFSET as usize;
-/// The physical memory the boot direct map covers: 512 GiB.
 const BOOT_DIRECT_MAP_END: u64 = 512 << 30;
-/// Below it: the interrupt vectors (at 0x4000) and what the firmware keeps.
 const LOW_RESERVED: u64 = 0x1_0000;
-/// The room OPAL keeps at its base, which the device tree also reserves.
 const OPAL_RESERVED: u64 = 32 << 20;
-/// QEMU `powernv`'s RAM without a device tree: the first 1 GiB.
 const DEFAULT_RAM_END: u64 = 1 << 30;
 
 /// `MSR` values (Power ISA 3.0B, Book III, 4.2.1).
@@ -415,7 +410,6 @@ pub(super) mod msr {
     pub const USER_FP: u64 = FLOATING_POINT | VECTOR | VSX;
 }
 
-/// `LPCR` bits the HAL sets or clears.
 mod lpcr {
     pub const HOST_RADIX: u64 = 1 << 20;
     pub const PROCESS_TABLES: u64 = 1 << 22;
@@ -426,14 +420,10 @@ mod lpcr {
     pub const HYPERVISOR_VIRTUALIZATION_INTERRUPTS: u64 = 1 << 1;
 }
 
-/// A radix directory entry's flags: valid, 9 index bits at the next level.
 const DIRECTORY_ENTRY: u64 = (1 << 63) | 9;
-/// A boot leaf of 1 GiB at physical 0: valid, leaf, read, write, execute, privileged,
-/// referenced and changed.
 const BOOT_GIGABYTE_LEAF: u64 = (1 << 63) | (1 << 62) | 0x18f;
-/// Partition table entry 0's first doubleword but the root: host radix, 52 bits, 4 root bits.
-const PARTITION_ENTRY: u64 = (1 << 63) | paging::powerpc64::RADIX_TREE_SIZE | paging::powerpc64::ROOT_INDEX_BITS;
-/// A process table entry's first doubleword but the root.
+const PARTITION_ENTRY: u64 =
+    (1 << 63) | paging::powerpc64::RADIX_TREE_SIZE | paging::powerpc64::ROOT_INDEX_BITS;
 const PROCESS_ENTRY: u64 = paging::powerpc64::RADIX_TREE_SIZE | paging::powerpc64::ROOT_INDEX_BITS;
 
 #[repr(C, align(4096))]
@@ -444,22 +434,17 @@ struct BootTable([u64; paging::ENTRIES]);
 #[repr(C, align(4096))]
 pub(super) struct ProcessTable(pub(super) [[u64; 2]; 256]);
 
-/// Built by `_start` before any Rust code runs.
 static mut BOOT_ROOT: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L3: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_L2: BootTable = BootTable([0; paging::ENTRIES]);
 static mut PARTITION_TABLE: ProcessTable = ProcessTable([[0; 2]; 256]);
 pub(super) static mut PROCESS_TABLE: ProcessTable = ProcessTable([[0; 2]; 256]);
 
-/// The device tree's physical address, from `r3` at entry; 0 for none.
 static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
 
-/// Each secondary CPU's `CpuStart`, by PIR, until it runs.
 static SECONDARY_STARTS: [AtomicU64; exception::MAX_CPUS] =
     [const { AtomicU64::new(0) }; exception::MAX_CPUS];
 
-/// Called by `eggos_secondary_start` on the `CpuStart`'s stack, translated with the boot tree:
-/// switches to the kernel's tables, sets this CPU's timer up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now; interrupts are masked (`MSR.EE` is
@@ -469,8 +454,6 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     (start.entry)(start.argument)
 }
 
-/// The device tree's physical address, or 0 when there is none or it lies beyond the boot
-/// direct map.
 fn device_tree() -> usize {
     let address = DEVICE_TREE.load(Ordering::Relaxed);
     if address as u64 > BOOT_DIRECT_MAP_END - boot_memory::MAX_DEVICE_TREE_SIZE as u64 {
@@ -517,7 +500,8 @@ impl Platform for Powerpc64 {
         Err("POWER devices use message interrupts (D312)")
     }
 
-    fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
+    fn message_interrupt()
+    -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         xive::message()
     }
 
@@ -897,7 +881,6 @@ impl Platform for Powerpc64 {
 
     unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
         unsafe extern "C" {
-            /// The secondary entry point in the boot code above.
             fn eggos_secondary_start();
         }
         if cpu >= exception::MAX_CPUS as u64 {
@@ -963,18 +946,23 @@ pub(crate) fn doorbell_barrier() {
     unsafe { core::arch::asm!("sync", options(nostack, preserves_flags)) };
 }
 
-/// The C library's memory functions, which the Linux target's prebuilt `core` calls and which
-/// no C library provides in the kernel (D304). Byte loops: the kernel never uses FP or vector
-/// registers, so these must not either.
 mod memory_functions {
     /// # Safety
     /// As C's `memcpy`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn memcpy(destination: *mut u8, source: *const u8, length: usize) -> *mut u8 {
+    pub unsafe extern "C" fn memcpy(
+        destination: *mut u8,
+        source: *const u8,
+        length: usize,
+    ) -> *mut u8 {
         let mut index = 0;
         while index < length {
             // SAFETY: the caller guarantees both ranges are valid for `length` bytes.
-            unsafe { destination.add(index).write_volatile(source.add(index).read()) };
+            unsafe {
+                destination
+                    .add(index)
+                    .write_volatile(source.add(index).read())
+            };
             index += 1;
         }
         destination
@@ -983,7 +971,11 @@ mod memory_functions {
     /// # Safety
     /// As C's `memmove`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn memmove(destination: *mut u8, source: *const u8, length: usize) -> *mut u8 {
+    pub unsafe extern "C" fn memmove(
+        destination: *mut u8,
+        source: *const u8,
+        length: usize,
+    ) -> *mut u8 {
         if (destination as usize) <= (source as usize) {
             // SAFETY: forward copy is safe when the destination is below the source.
             return unsafe { memcpy(destination, source, length) };
@@ -992,7 +984,11 @@ mod memory_functions {
         while index > 0 {
             index -= 1;
             // SAFETY: the caller guarantees both ranges are valid for `length` bytes.
-            unsafe { destination.add(index).write_volatile(source.add(index).read()) };
+            unsafe {
+                destination
+                    .add(index)
+                    .write_volatile(source.add(index).read())
+            };
         }
         destination
     }

@@ -1028,19 +1028,13 @@ loongarch64_user_test_end:
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
 
-/// `uc_mcontext` in a `ucontext_t`, and the FP registers in its FPU context, the first of the
-/// extended contexts after the 272 bytes of `struct sigcontext` and the context's 16-byte header.
 const SIGCONTEXT: usize = 176;
 const FP_REGISTERS: usize = SIGCONTEXT + 272 + 16;
 
-/// `PRMD` for a return to a program: privilege 3, interrupts enabled.
 const PRMD_USER: u64 = 0x7;
 
-/// The registers saved by the kernel entry, in the order it stores them.
 #[repr(C)]
 struct TrapFrame {
-    /// `$r0` to `$r31` by register number; `r[0]` is unused and `r[3]` is the `sp` at the time
-    /// of the exception.
     r: [u64; 32],
     era: u64,
     prmd: u64,
@@ -1068,7 +1062,6 @@ const ECODE_LSX_DISABLED: u64 = 0x10;
 const ECODE_LASX_DISABLED: u64 = 0x11;
 const ECODE_FP_EXCEPTION: u64 = 0x12;
 const ECODE_WATCHPOINT: u64 = 0x13;
-/// The size of every LoongArch instruction.
 const INSTRUCTION_SIZE: u64 = 4;
 
 /// `ESTAT`'s exception code.
@@ -1080,7 +1073,6 @@ fn subcode(estat: u64) -> u64 {
     (estat >> 22) & 0x1ff
 }
 
-/// Called by the kernel entry with the saved registers.
 extern "C" fn loongarch64_exception(frame: &mut TrapFrame) {
     let estat = csr_read!(csr::ESTAT);
     let badv = csr_read!(csr::BADV);
@@ -1094,8 +1086,6 @@ extern "C" fn loongarch64_exception(frame: &mut TrapFrame) {
     }
 }
 
-/// Handles the pending interrupts `estat` names that the kernel takes; returns whether there
-/// was one (if not, the interrupt is reported).
 #[inline(always)]
 fn interrupt(estat: u64, pc: u64) -> bool {
     let devices = estat & interrupts::PIN_INTERRUPT != 0;
@@ -1115,8 +1105,6 @@ fn interrupt(estat: u64, pc: u64) -> bool {
 }
 
 unsafe extern "C" {
-    /// Enters privilege 3 with `context`'s registers; returns once an exception from it saved
-    /// them back.
     fn loongarch64_enter_user(context: *mut user::loongarch64::Registers);
     static loongarch64_user_test_start: u8;
     static loongarch64_user_test_checks: u8;
@@ -1218,26 +1206,44 @@ fn decode(estat: u64, badv: u64, pc: u64) -> Exception {
         ECODE_INTERRUPT => (ExceptionKind::Interrupt, "interrupt", false),
         ECODE_PAGE_INVALID_LOAD => (ExceptionKind::DataFault, "page invalid (load)", true),
         ECODE_PAGE_INVALID_STORE => (ExceptionKind::DataFault, "page invalid (store)", true),
-        ECODE_PAGE_INVALID_FETCH => (ExceptionKind::InstructionFault, "page invalid (fetch)", true),
+        ECODE_PAGE_INVALID_FETCH => (
+            ExceptionKind::InstructionFault,
+            "page invalid (fetch)",
+            true,
+        ),
         ECODE_PAGE_MODIFY => (ExceptionKind::DataFault, "page modify", true),
         ECODE_PAGE_NOT_READABLE => (ExceptionKind::DataFault, "page not readable", true),
         ECODE_PAGE_NOT_EXECUTABLE => (ExceptionKind::InstructionFault, "page not executable", true),
         ECODE_PAGE_PRIVILEGE => (ExceptionKind::DataFault, "page privilege", true),
-        ECODE_ADDRESS_ERROR if subcode(estat) == 0 => {
-            (ExceptionKind::InstructionFault, "address error (fetch)", true)
-        }
+        ECODE_ADDRESS_ERROR if subcode(estat) == 0 => (
+            ExceptionKind::InstructionFault,
+            "address error (fetch)",
+            true,
+        ),
         ECODE_ADDRESS_ERROR => (ExceptionKind::DataFault, "address error (memory)", true),
         ECODE_ALIGNMENT => (ExceptionKind::Alignment, "address not aligned", true),
         ECODE_SYSCALL => (ExceptionKind::Other, "syscall", false),
         ECODE_BREAK => (ExceptionKind::Breakpoint, "breakpoint (break)", false),
-        ECODE_NO_INSTRUCTION => (ExceptionKind::IllegalInstruction, "instruction not exist", false),
-        ECODE_PRIVILEGED_INSTRUCTION => {
-            (ExceptionKind::IllegalInstruction, "instruction privilege error", false)
-        }
-        ECODE_FP_DISABLED => (ExceptionKind::IllegalInstruction, "floating-point disabled", false),
-        ECODE_LSX_DISABLED | ECODE_LASX_DISABLED => {
-            (ExceptionKind::IllegalInstruction, "vector unit disabled", false)
-        }
+        ECODE_NO_INSTRUCTION => (
+            ExceptionKind::IllegalInstruction,
+            "instruction not exist",
+            false,
+        ),
+        ECODE_PRIVILEGED_INSTRUCTION => (
+            ExceptionKind::IllegalInstruction,
+            "instruction privilege error",
+            false,
+        ),
+        ECODE_FP_DISABLED => (
+            ExceptionKind::IllegalInstruction,
+            "floating-point disabled",
+            false,
+        ),
+        ECODE_LSX_DISABLED | ECODE_LASX_DISABLED => (
+            ExceptionKind::IllegalInstruction,
+            "vector unit disabled",
+            false,
+        ),
         ECODE_FP_EXCEPTION => (ExceptionKind::Arithmetic, "floating-point exception", false),
         ECODE_WATCHPOINT => (ExceptionKind::Debug, "watchpoint", true),
         _ => (ExceptionKind::Other, "exception", false),

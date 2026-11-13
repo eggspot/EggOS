@@ -337,7 +337,10 @@ impl Curve {
             return None;
         }
         let (x, y) = self.affine(point);
-        Some(AffinePoint { x: to_be(&x), y: to_be(&y) })
+        Some(AffinePoint {
+            x: to_be(&x),
+            y: to_be(&y),
+        })
     }
 
     fn right_side(&self, x: &Limbs) -> Limbs {
@@ -608,4 +611,3 @@ mod group_tests {
         });
     }
 }
-

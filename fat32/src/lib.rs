@@ -44,7 +44,12 @@ pub fn short_name(name: &str) -> Option<[u8; 11]> {
         None => (name, ""),
     };
     let allowed = |byte: &u8| byte.is_ascii_alphanumeric() || b"_-~!#$%&'()@^`{}".contains(byte);
-    if base.is_empty() || base.len() > 8 || extension.len() > 3 || !base.bytes().all(|byte| allowed(&byte)) || !extension.bytes().all(|byte| allowed(&byte)) {
+    if base.is_empty()
+        || base.len() > 8
+        || extension.len() > 3
+        || !base.bytes().all(|byte| allowed(&byte))
+        || !extension.bytes().all(|byte| allowed(&byte))
+    {
         return None;
     }
     let mut out = [b' '; 11];
@@ -88,7 +93,8 @@ impl Geometry {
 
     /// The byte offset of cluster `cluster` in the volume.
     pub fn cluster_offset(&self, cluster: u32) -> u64 {
-        (u64::from(self.data_start()) + u64::from(cluster - 2) * u64::from(SECTORS_PER_CLUSTER)) * SECTOR_BYTES as u64
+        (u64::from(self.data_start()) + u64::from(cluster - 2) * u64::from(SECTORS_PER_CLUSTER))
+            * SECTOR_BYTES as u64
     }
 }
 
@@ -112,7 +118,11 @@ pub fn write_volume<E>(
     if files.len() > MAX_FILES {
         return Err(Error::BadName);
     }
-    let mut folders = [Folder { path: "", cluster: ROOT_CLUSTER, parent: 0 }; MAX_FOLDERS];
+    let mut folders = [Folder {
+        path: "",
+        cluster: ROOT_CLUSTER,
+        parent: 0,
+    }; MAX_FOLDERS];
     let mut folder_count = 1;
     let mut next_cluster = ROOT_CLUSTER + 1;
     for file in files {
@@ -121,13 +131,23 @@ pub fn write_volume<E>(
             let path = &file.path[..at + slash];
             let name = &file.path[at..at + slash];
             short_name(name).ok_or(Error::BadName)?;
-            if !folders[..folder_count].iter().any(|folder| folder.path == path) {
+            if !folders[..folder_count]
+                .iter()
+                .any(|folder| folder.path == path)
+            {
                 if folder_count == MAX_FOLDERS {
                     return Err(Error::BadName);
                 }
                 let parent_path = &file.path[..at.saturating_sub(1)];
-                let parent = folders[..folder_count].iter().find(|folder| folder.path == parent_path).map_or(ROOT_CLUSTER, |folder| folder.cluster);
-                folders[folder_count] = Folder { path, cluster: next_cluster, parent };
+                let parent = folders[..folder_count]
+                    .iter()
+                    .find(|folder| folder.path == parent_path)
+                    .map_or(ROOT_CLUSTER, |folder| folder.cluster);
+                folders[folder_count] = Folder {
+                    path,
+                    cluster: next_cluster,
+                    parent,
+                };
                 folder_count += 1;
                 next_cluster += 1;
             }
@@ -197,7 +217,11 @@ pub fn write_volume<E>(
                     let first = first_clusters[index];
                     let count = file.bytes.len().div_ceil(CLUSTER_BYTES) as u32;
                     if first != 0 && (first..first + count).contains(&cluster) {
-                        return if cluster + 1 == first + count { END_OF_CHAIN } else { cluster + 1 };
+                        return if cluster + 1 == first + count {
+                            END_OF_CHAIN
+                        } else {
+                            cluster + 1
+                        };
                     }
                 }
                 0
@@ -205,15 +229,21 @@ pub fn write_volume<E>(
         }
     };
     for fat in 0..FATS {
-        let fat_start = u64::from(RESERVED_SECTORS + fat * geometry.fat_sectors) * SECTOR_BYTES as u64;
+        let fat_start =
+            u64::from(RESERVED_SECTORS + fat * geometry.fat_sectors) * SECTOR_BYTES as u64;
         for index in 0..geometry.fat_sectors {
             let first = index * entries_per_sector;
             for (slot, entry) in sector.chunks_exact_mut(4).enumerate() {
                 let cluster = first + slot as u32;
-                let value = if cluster < next_cluster { entry_of(cluster) } else { 0 };
+                let value = if cluster < next_cluster {
+                    entry_of(cluster)
+                } else {
+                    0
+                };
                 entry.copy_from_slice(&value.to_le_bytes());
             }
-            write(fat_start + u64::from(index) * SECTOR_BYTES as u64, &sector).map_err(Error::Write)?;
+            write(fat_start + u64::from(index) * SECTOR_BYTES as u64, &sector)
+                .map_err(Error::Write)?;
         }
     }
 
@@ -234,7 +264,11 @@ pub fn write_volume<E>(
             entry(*b"EGGOS      ", ATTRIBUTE_VOLUME_LABEL, 0, 0);
         } else {
             entry(*b".          ", ATTRIBUTE_DIRECTORY, folder.cluster, 0);
-            let parent = if folder.parent == ROOT_CLUSTER { 0 } else { folder.parent };
+            let parent = if folder.parent == ROOT_CLUSTER {
+                0
+            } else {
+                folder.parent
+            };
             entry(*b"..         ", ATTRIBUTE_DIRECTORY, parent, 0);
         }
         for child in &folders[1..folder_count] {
@@ -249,7 +283,12 @@ pub fn write_volume<E>(
             let (folder_path, name) = file.path.rsplit_once('/').unwrap_or(("", file.path));
             if folder_path == folder.path {
                 if let Some(short) = short_name(name) {
-                    entry(short, ATTRIBUTE_ARCHIVE, first_clusters[index], file.bytes.len() as u32);
+                    entry(
+                        short,
+                        ATTRIBUTE_ARCHIVE,
+                        first_clusters[index],
+                        file.bytes.len() as u32,
+                    );
                 }
             }
         }
@@ -299,8 +338,14 @@ mod tests {
         let mut image = vec![0u8; 524_288 * SECTOR_BYTES];
         let kernel = vec![0x7fu8; 10_000];
         let files = [
-            File { path: "EFI/BOOT/BOOTX64.EFI", bytes: b"MZ loader" },
-            File { path: "EGGOS/KERNEL.ELF", bytes: &kernel },
+            File {
+                path: "EFI/BOOT/BOOTX64.EFI",
+                bytes: b"MZ loader",
+            },
+            File {
+                path: "EGGOS/KERNEL.ELF",
+                bytes: &kernel,
+            },
         ];
         write_volume::<()>(524_288, 2048, 0x1234_5678, &files, &mut |offset, bytes| {
             let start = offset as usize;
@@ -312,10 +357,17 @@ mod tests {
         assert_eq!(&image[510..512], &[0x55, 0xaa]);
         let geometry = Geometry::new(524_288).unwrap();
         let root = geometry.cluster_offset(ROOT_CLUSTER) as usize;
-        let names: Vec<&[u8]> = (0..4).map(|slot| &image[root + slot * 32..root + slot * 32 + 11]).collect();
+        let names: Vec<&[u8]> = (0..4)
+            .map(|slot| &image[root + slot * 32..root + slot * 32 + 11])
+            .collect();
         assert!(names.contains(&&b"EFI        "[..]));
         assert!(names.contains(&&b"EGGOS      "[..]));
-        let eggos_entry = (0..4).find(|&slot| &image[root + slot * 32..root + slot * 32 + 11] == b"EGGOS      " && image[root + slot * 32 + 11] == ATTRIBUTE_DIRECTORY).unwrap();
+        let eggos_entry = (0..4)
+            .find(|&slot| {
+                &image[root + slot * 32..root + slot * 32 + 11] == b"EGGOS      "
+                    && image[root + slot * 32 + 11] == ATTRIBUTE_DIRECTORY
+            })
+            .unwrap();
         let at = root + eggos_entry * 32;
         let cluster = u32::from(u16::from_le_bytes([image[at + 26], image[at + 27]]));
         let folder = geometry.cluster_offset(cluster) as usize;
@@ -323,7 +375,10 @@ mod tests {
         assert_eq!(&image[kernel_at..kernel_at + 11], b"KERNEL  ELF");
         let size = u32::from_le_bytes(image[kernel_at + 28..kernel_at + 32].try_into().unwrap());
         assert_eq!(size, 10_000);
-        let first = u32::from(u16::from_le_bytes([image[kernel_at + 26], image[kernel_at + 27]]));
+        let first = u32::from(u16::from_le_bytes([
+            image[kernel_at + 26],
+            image[kernel_at + 27],
+        ]));
         let data = geometry.cluster_offset(first) as usize;
         assert_eq!(image[data], 0x7f);
     }

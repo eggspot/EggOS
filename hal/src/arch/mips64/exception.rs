@@ -10,9 +10,9 @@
 //! [`run_user`] returns (D47). `KScratch1` holds a program's root table and [`KERNEL_ROOT`] the
 //! kernel's, both as cached-window addresses.
 
-use crate::atomic::AtomicU64;
 use super::{CACHED_WINDOW, timer};
 use crate::Interrupt;
+use crate::atomic::AtomicU64;
 use crate::exception::{Exception, ExceptionKind, deliver};
 use crate::paging::{Access, PageFault};
 use crate::user::{self, TestProgram, UserContext, UserExit};
@@ -1000,9 +1000,6 @@ mips64_user_test_end:
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
 
-/// Where n64's `ucontext` keeps what the test programs' handlers read and change: `uc_stack`
-/// after `uc_flags` and `uc_link`, then `uc_mcontext`'s `sc_regs[32]`, `sc_fpregs[32]`, the
-/// `hi` and `lo` words, `sc_pc` and `sc_fpc_csr`, then `uc_sigmask`.
 const UC_STACK: usize = 16;
 const UC_REGS: usize = 40;
 const UC_FP_REGS: usize = UC_REGS + 32 * 8;
@@ -1010,14 +1007,10 @@ const UC_PC: usize = UC_REGS + 576;
 const UC_FCSR: usize = UC_REGS + 584;
 const UC_SIGMASK: usize = UC_REGS + 600;
 
-/// The kernel's root table, as a cached-window address; 0 until the kernel's tables are active.
 static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
 
-/// The registers saved by the kernel entry, in the order it stores them.
 #[repr(C)]
 struct TrapFrame {
-    /// `$0` to `$31` by register number; `r[0]`, `r[26]` and `r[27]` are unused and `r[29]` is
-    /// the `sp` at the time of the exception.
     r: [u64; 32],
     hi: u64,
     lo: u64,
@@ -1027,7 +1020,6 @@ struct TrapFrame {
 
 const _: () = assert!(core::mem::size_of::<TrapFrame>() == 288);
 
-/// `Cause.ExcCode` of the exceptions the HAL tells apart.
 const INTERRUPT: u64 = 0;
 const TLB_MODIFIED: u64 = 1;
 const TLB_LOAD: u64 = 2;
@@ -1046,24 +1038,17 @@ const FLOATING_POINT: u64 = 15;
 const TLB_READ_INHIBIT: u64 = 19;
 const TLB_EXECUTE_INHIBIT: u64 = 20;
 const WATCH: u64 = 23;
-/// The size of every MIPS64 instruction.
 const INSTRUCTION_SIZE: u64 = 4;
-/// `Cause.BD`: the exception's instruction is in a branch delay slot, `EPC` the branch's.
 const BRANCH_DELAY: u64 = 1 << 31;
 
-/// TLB entries written by [`flush_tlb`] match addresses in this unused part of `XKSEG`, each
-/// its own page pair, so no two entries match one address.
 const UNUSED_PAGES: u64 = 0xc000_7000_0000_0000;
-/// `EntryHi.ASID`.
 const ASID_MASK: u64 = 0xff;
-/// `Index.P`: `tlbp` found no entry.
 const PROBE_FAILED: u64 = 1 << 31;
 
 fn exception_code(cause: u64) -> u64 {
     (cause >> 2) & 0x1f
 }
 
-/// The number of TLB entries, from `Config1.MMUSize`.
 fn tlb_entries() -> u64 {
     let config1: u64;
     // SAFETY: reading `Config1` has no side effects.
@@ -1078,7 +1063,6 @@ fn entry_hi() -> u64 {
     value
 }
 
-/// Writes an invalid entry matching nothing used at TLB index `index`, `asid` its identifier.
 fn invalidate_entry(index: u64, asid: u64) {
     // SAFETY: an entry with both halves invalid translates nothing; its page pair is one of
     // `UNUSED_PAGES`'s, distinct per index, so it duplicates no entry. The sequence touches no
@@ -1122,7 +1106,9 @@ pub(super) fn set_roots(low: u64, high: Option<u64>) {
     }
     // SAFETY: `KScratch1` is the refill handler's alone; the next refill from the low half walks
     // from this root.
-    unsafe { core::arch::asm!("dmtc0 {0}, $31, 2", "ehb", in(reg) CACHED_WINDOW | low, options(nomem, nostack)) };
+    unsafe {
+        core::arch::asm!("dmtc0 {0}, $31, 2", "ehb", in(reg) CACHED_WINDOW | low, options(nomem, nostack))
+    };
 }
 
 /// Gives this CPU a fresh address-space identifier, so no entry another program's tables left
@@ -1170,7 +1156,6 @@ pub(super) fn drop_translations(start: u64, length: u64) {
     set_entry_hi(asid);
 }
 
-/// Called by the kernel entry with the saved registers.
 extern "C" fn mips64_exception(frame: &mut TrapFrame) {
     let cause = read_cause();
     let bad = read_bad_address();
@@ -1198,8 +1183,6 @@ fn read_bad_address() -> u64 {
     value
 }
 
-/// Handles the pending interrupts `cause` names that the kernel takes; returns whether there
-/// was one (if not, the interrupt is reported).
 #[inline(always)]
 fn interrupt(cause: u64) -> bool {
     let (timer_due, wakeup) = timer::pending(cause);
@@ -1219,8 +1202,6 @@ fn interrupt(cause: u64) -> bool {
 }
 
 unsafe extern "C" {
-    /// Enters user mode with `context`'s registers; returns once an exception from it saved
-    /// them back.
     fn mips64_enter_user(context: *mut user::mips64::Registers);
     static mips64_user_test_start: u8;
     static mips64_user_test_checks: u8;
@@ -1344,7 +1325,11 @@ fn decode(cause: u64, bad: u64, pc: u64) -> Exception {
         TLB_LOAD if fetch => (ExceptionKind::InstructionFault, "TLB (fetch)", true),
         TLB_LOAD => (ExceptionKind::DataFault, "TLB (load)", true),
         TLB_STORE => (ExceptionKind::DataFault, "TLB (store)", true),
-        ADDRESS_ERROR_LOAD if fetch => (ExceptionKind::InstructionFault, "address error (fetch)", true),
+        ADDRESS_ERROR_LOAD if fetch => (
+            ExceptionKind::InstructionFault,
+            "address error (fetch)",
+            true,
+        ),
         ADDRESS_ERROR_LOAD | ADDRESS_ERROR_STORE if bad < (1 << 40) && bad & 7 != 0 => {
             (ExceptionKind::Alignment, "address not aligned", true)
         }
@@ -1353,8 +1338,16 @@ fn decode(cause: u64, bad: u64, pc: u64) -> Exception {
         BUS_ERROR_FETCH | BUS_ERROR_DATA => (ExceptionKind::Other, "bus error", false),
         SYSCALL => (ExceptionKind::Other, "syscall", false),
         BREAKPOINT => (ExceptionKind::Breakpoint, "breakpoint (break)", false),
-        RESERVED_INSTRUCTION => (ExceptionKind::IllegalInstruction, "reserved instruction", false),
-        COPROCESSOR_UNUSABLE => (ExceptionKind::IllegalInstruction, "coprocessor unusable", false),
+        RESERVED_INSTRUCTION => (
+            ExceptionKind::IllegalInstruction,
+            "reserved instruction",
+            false,
+        ),
+        COPROCESSOR_UNUSABLE => (
+            ExceptionKind::IllegalInstruction,
+            "coprocessor unusable",
+            false,
+        ),
         OVERFLOW => (ExceptionKind::Arithmetic, "integer overflow", false),
         TRAP => (ExceptionKind::Arithmetic, "trap", false),
         FLOATING_POINT => (ExceptionKind::Arithmetic, "floating-point exception", false),

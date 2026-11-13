@@ -83,11 +83,18 @@ impl FpState {
             fcsr: 0,
         };
         #[cfg(target_arch = "mips64")]
-        let arch = Mips64State { f: [0; 32], fcsr: 0 };
+        let arch = Mips64State {
+            f: [0; 32],
+            fcsr: 0,
+        };
         #[cfg(target_arch = "s390x")]
         let arch = S390xState { f: [0; 16], fpc: 0 };
         #[cfg(target_arch = "sparc64")]
-        let arch = Sparc64State { d: [0; 32], fsr: 0, gsr: 0 };
+        let arch = Sparc64State {
+            d: [0; 32],
+            fsr: 0,
+            gsr: 0,
+        };
         #[cfg(target_arch = "powerpc64")]
         let arch = Powerpc64State {
             vsr: [0; 64],
@@ -96,7 +103,10 @@ impl FpState {
             vrsave: 0,
         };
         #[cfg(target_arch = "arm")]
-        let arch = ArmState { d: [0; 32], fpscr: 0 };
+        let arch = ArmState {
+            d: [0; 32],
+            fpscr: 0,
+        };
         Self { arch }
     }
 }

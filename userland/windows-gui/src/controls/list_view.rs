@@ -137,7 +137,10 @@ fn sort_arrow(surface: &mut Surface<'_>, item: Rect, top: i32, up: bool, colour:
             true => row,
             false => SORT_ARROW_ROWS - 1 - row,
         };
-        surface.fill(Rect::sized(middle - half, top + row, 2 * half + 1, 1), colour);
+        surface.fill(
+            Rect::sized(middle - half, top + row, 2 * half + 1, 1),
+            colour,
+        );
     }
 }
 
@@ -1501,7 +1504,13 @@ pub fn paint_header(
     common: &CommonPalette,
 ) {
     let plain = |_: usize| RowDraw::default();
-    paint_header_custom(surface, (rect, columns, hpos), look, (palette, common), &plain);
+    paint_header_custom(
+        surface,
+        (rect, columns, hpos),
+        look,
+        (palette, common),
+        &plain,
+    );
 }
 
 /// Paints a header as [`paint_header`] does, each item as `items` says the program asked by
@@ -1672,7 +1681,16 @@ pub fn paint_custom(
         }
         let draw = rows(index);
         if !draw.skip {
-            paint_row(surface, list, &layout, index, (look, draw), images, palette, common);
+            paint_row(
+                surface,
+                list,
+                &layout,
+                index,
+                (look, draw),
+                images,
+                palette,
+                common,
+            );
         }
         surface.set_clip(rows_clip);
         index += 1;
@@ -2322,11 +2340,21 @@ mod tests {
         let mut pixels = vec![0x00f0_f0f0u32; (WIDTH * HEIGHT) as usize];
         let mut surface = Surface::new(&mut pixels, WIDTH, HEIGHT).unwrap();
         let look = focused_look();
-        paint_custom(&mut surface, rect, &list, look, (&NoImages, &LIGHT, &COMMON_LIGHT), &rows);
+        paint_custom(
+            &mut surface,
+            rect,
+            &list,
+            look,
+            (&NoImages, &LIGHT, &COMMON_LIGHT),
+            &rows,
+        );
         let second = list.row_top(&layout, 1);
         let third = list.row_top(&layout, 2);
         let x = layout.inner.left + 4;
-        assert_eq!(at(&pixels, layout.inner.left + 150, second + 1), 0x0000_00bb);
+        assert_eq!(
+            at(&pixels, layout.inner.left + 150, second + 1),
+            0x0000_00bb
+        );
         assert!(cell_has(&pixels, x, second + 2, 0x00aa_0000));
         assert!(!cell_has(&pixels, x, third + 2, LIGHT.text));
     }

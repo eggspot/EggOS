@@ -240,8 +240,16 @@ impl Desktop {
         if count < 2 {
             return None;
         }
-        let next = self.keyboard_layouts.in_force.map_or(0, |index| (index + 1) % count);
-        self.keyboard_layouts.choices.get(next).copied().flatten().map(|choice| choice.number)
+        let next = self
+            .keyboard_layouts
+            .in_force
+            .map_or(0, |index| (index + 1) % count);
+        self.keyboard_layouts
+            .choices
+            .get(next)
+            .copied()
+            .flatten()
+            .map(|choice| choice.number)
     }
 
     /// Whether the indicator's menu is open.

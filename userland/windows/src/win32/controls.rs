@@ -20,9 +20,7 @@ use crate::text::equal_ignoring_ascii_case;
 use eggos_element_tree::Action;
 use eggos_windows_gui::colour::{colour_ref, pixel, system_colour};
 use eggos_windows_gui::controls::button::{self, Button, ButtonKind, ButtonLook, ButtonOutcome};
-use eggos_windows_gui::controls::edit::{
-    self, Edit, EditLook, EditOutcome, Modifiers,
-};
+use eggos_windows_gui::controls::edit::{self, Edit, EditLook, EditOutcome, Modifiers};
 use eggos_windows_gui::controls::image::{self, Picture};
 use eggos_windows_gui::controls::label::{self, LabelLook};
 use eggos_windows_gui::controls::list_box::{self, ITEM_HEIGHT, ListBox, ListLook, visible_rows};
@@ -929,9 +927,7 @@ pub fn procedure(
         }
         message::CHAR => {
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => {
-                    Some(edit.character(wparam as u32, edit_view(entry)))
-                }
+                State::Edit(edit) => Some(edit.character(wparam as u32, edit_view(entry))),
                 _ => None,
             })
             .flatten();
@@ -966,27 +962,25 @@ pub fn procedure(
         | code::EM_GETLIMITTEXT
         | code::EM_SETREADONLY
         | code::EM_GETMODIFY
-        | code::EM_SETMODIFY => {
-            with_state(window, |_, state| match (state, number) {
-                (State::Edit(edit), code::EM_GETMODIFY) => usize::from(edit.modified),
-                (State::Edit(edit), code::EM_SETMODIFY) => {
-                    edit.modified = wparam != 0;
-                    0
-                }
-                (State::Edit(edit), code::EM_LIMITTEXT) => {
-                    edit.set_limit(wparam);
-                    0
-                }
-                (State::Edit(edit), code::EM_GETLIMITTEXT) => edit.limit(),
-                (State::Edit(edit), _) => {
-                    edit.read_only = wparam != 0;
-                    1
-                }
-                _ => 0,
-            })
-            .inspect(|_| invalidate(window))
-            .unwrap_or(0)
-        }
+        | code::EM_SETMODIFY => with_state(window, |_, state| match (state, number) {
+            (State::Edit(edit), code::EM_GETMODIFY) => usize::from(edit.modified),
+            (State::Edit(edit), code::EM_SETMODIFY) => {
+                edit.modified = wparam != 0;
+                0
+            }
+            (State::Edit(edit), code::EM_LIMITTEXT) => {
+                edit.set_limit(wparam);
+                0
+            }
+            (State::Edit(edit), code::EM_GETLIMITTEXT) => edit.limit(),
+            (State::Edit(edit), _) => {
+                edit.read_only = wparam != 0;
+                1
+            }
+            _ => 0,
+        })
+        .inspect(|_| invalidate(window))
+        .unwrap_or(0),
         number
             if (code::LB_ADDSTRING..=code::LB_GETITEMHEIGHT).contains(&number)
                 && kind == ControlKind::ListBox =>
@@ -1235,9 +1229,7 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
         State::Button(button) => {
             Effect::Button(button.pointer_moved(entry.client().contains(x, y)))
         }
-        State::Edit(edit) if captured => {
-            Effect::Edit(edit.drag((x, y), edit_view(entry)))
-        }
+        State::Edit(edit) if captured => Effect::Edit(edit.drag((x, y), edit_view(entry))),
         State::ScrollBar(bar) if captured => {
             let (offset, length) = along(bar, entry, (x, y));
             Effect::Scroll(bar.pointer_moved(offset, length))
@@ -1303,13 +1295,10 @@ fn selection_message(window: usize, number: u32, wparam: usize, lparam: usize) -
     result
 }
 
-
 fn edit_view(entry: &Window) -> edit::View {
     edit::view(entry.width as i32, entry.height as i32)
 }
 
-/// The edit line messages (D341); a single-line edit is one line. A `wParam` of -1 names the
-/// caret's line, or for `EM_LINELENGTH` the unselected characters of the selection's lines.
 fn line_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     let given = match wparam as i32 {
         -1 => None,
@@ -1338,7 +1327,10 @@ fn line_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
             code::EM_GETFIRSTVISIBLELINE => (edit.first_visible_line(), None),
             code::EM_LINESCROLL => {
                 let moved = edit.scroll_by(wparam as i32 as isize, lparam as i32 as isize);
-                (usize::from(edit.multiline), moved.then_some(EditOutcome::Moved))
+                (
+                    usize::from(edit.multiline),
+                    moved.then_some(EditOutcome::Moved),
+                )
             }
             _ => {
                 edit.scroll_to_caret(edit_view(entry));

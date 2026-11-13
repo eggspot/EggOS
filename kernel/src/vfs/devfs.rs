@@ -622,7 +622,10 @@ mod tests {
         assert_eq!(files.character_device(RENDER_NODE), Some((226, 128)));
         assert_eq!(files.attributes(RENDER_NODE).permissions, 0o666);
         let entry = files.entry(DRI, 0).unwrap();
-        assert_eq!((entry.name.as_bytes(), entry.node), (&b"renderD128"[..], RENDER_NODE));
+        assert_eq!(
+            (entry.name.as_bytes(), entry.node),
+            (&b"renderD128"[..], RENDER_NODE)
+        );
         assert!(files.entry(DRI, 1).is_none());
     }
 

@@ -5,6 +5,7 @@
 //! `/bin/text-editor` (D149), as a child process.
 
 use crate::files_window::{DEFAULT_SIZE, FilesWindow, LINE_CAPACITY, MINIMUM_SIZE, Request, TITLE};
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
 use eggos_app::files::{PATH_CAPACITY, Path};
@@ -19,7 +20,6 @@ use eggos_toolkit::damage::Damage;
 use eggos_toolkit::elements::{Action, Outcome, TreeWriter};
 use eggos_toolkit::input::Input;
 use eggos_toolkit::tree::PointerShape;
-use alloc::vec::Vec;
 use eggos_toolkit::window::{Window, WindowServer};
 
 const TYPE_IN_TERMINAL: usize = 0x4104_7711;
@@ -232,7 +232,11 @@ impl Program {
 fn ask_new_target(link: &Path, folder: &Path) -> Option<Path> {
     let mut title = [0u8; 96];
     let prefix = b"Change target of ";
-    let name = link.as_bytes().rsplit(|&byte| byte == b'/').next().unwrap_or(b"");
+    let name = link
+        .as_bytes()
+        .rsplit(|&byte| byte == b'/')
+        .next()
+        .unwrap_or(b"");
     let name = &name[..name.len().min(title.len() - prefix.len())];
     title[..prefix.len()].copy_from_slice(prefix);
     title[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
@@ -267,14 +271,17 @@ impl View for Program {
                         (PATHS_KIND, Some(server)) => {
                             let mut payload = alloc::vec![0u8; PAYLOAD_BYTES];
                             match server.drag_payload(0, &mut payload) {
-                                Ok((length, _, _)) => paths_of(&payload[..length.min(PAYLOAD_BYTES)]),
+                                Ok((length, _, _)) => {
+                                    paths_of(&payload[..length.min(PAYLOAD_BYTES)])
+                                }
                                 Err(_) => Vec::new(),
                             }
                         }
                         _ => Vec::new(),
                     };
                 }
-                self.window.drag_over(&mut self.files, x, y, serial, &self.arriving);
+                self.window
+                    .drag_over(&mut self.files, x, y, serial, &self.arriving);
                 return true;
             }
             Input::DragLeave => {
@@ -285,7 +292,8 @@ impl View for Program {
                 let modifiers = self.window.held_modifiers();
                 let arriving = core::mem::take(&mut self.arriving);
                 self.arriving_serial = None;
-                self.window.drag_dropped(&mut self.files, x, y, &arriving, modifiers);
+                self.window
+                    .drag_dropped(&mut self.files, x, y, &arriving, modifiers);
                 self.serve();
                 return true;
             }

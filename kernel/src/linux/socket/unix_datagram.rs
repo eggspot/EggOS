@@ -15,8 +15,8 @@
 
 use super::inet::finish_send;
 use super::{
-    HEADER_CONTROL_LENGTH, HEADER_FLAGS, HEADER_NAME_LENGTH, MSGHDR_SIZE, deadline, encode_address, finish, interrupted, message, read_address, read_header,
-    write_address,
+    HEADER_CONTROL_LENGTH, HEADER_FLAGS, HEADER_NAME_LENGTH, MSGHDR_SIZE, deadline, encode_address,
+    finish, interrupted, message, read_address, read_header, write_address,
 };
 use crate::linux::android_log;
 use crate::linux::descriptors::{FileKind, OpenFile};

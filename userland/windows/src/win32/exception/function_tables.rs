@@ -44,13 +44,15 @@ fn reach(base: u64, code_end: u64) -> u64 {
 }
 
 fn register(table: Registered) -> bool {
-    TABLES.with(|tables| match tables.iter_mut().find(|slot| slot.is_none()) {
-        Some(slot) => {
-            *slot = Some(table);
-            true
-        }
-        None => false,
-    })
+    TABLES.with(
+        |tables| match tables.iter_mut().find(|slot| slot.is_none()) {
+            Some(slot) => {
+                *slot = Some(table);
+                true
+            }
+            None => false,
+        },
+    )
 }
 
 fn unregister(identifier: u64) -> bool {
@@ -89,9 +91,7 @@ fn in_table(address: u64, count: u32, code: &Image<'_>, pc_rva: u64) -> Option<u
         bytes,
     };
     let mut function = unwinder::lookup_in(&table, 0, u32::try_from(size).ok()?, code, pc_rva)?;
-    function.entry = address
-        .wrapping_add(function.entry)
-        .wrapping_sub(code.base);
+    function.entry = address.wrapping_add(function.entry).wrapping_sub(code.base);
     Some(function)
 }
 

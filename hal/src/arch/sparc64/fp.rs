@@ -34,11 +34,11 @@ eggos_fp_restore:
 
 const _: () = assert!(core::mem::offset_of!(crate::fp::Sparc64State, fsr) == 256);
 
-/// `%fprs.FEF`: the FP registers are enabled.
 const FPRS_FEF: u64 = 1 << 2;
 
 /// Whether the next program gets the FP unit; the way into user mode sets `%fprs` from it.
-pub(super) static USER_FP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub(super) static USER_FP: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "C" {
     fn eggos_fp_save(state: *mut FpState);

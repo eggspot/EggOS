@@ -81,7 +81,9 @@ pub fn flavour(device: u16) -> Option<Flavour> {
         METEOR_LAKE => return Some(Flavour::Meteor),
         _ => {}
     }
-    let alder = ALDER_LAKE_P.iter().any(|&base| device & 0xfff0 == base & 0xfff0)
+    let alder = ALDER_LAKE_P
+        .iter()
+        .any(|&base| device & 0xfff0 == base & 0xfff0)
         || ALDER_LAKE_P_SINGLES.contains(&device);
     alder.then_some(Flavour::Alder)
 }
@@ -208,7 +210,10 @@ pub fn fia_slot(
     if first == COLD {
         return None;
     }
-    Some(fia(flavour == Flavour::Alder || first & MODULAR_FIA != 0, index))
+    Some(fia(
+        flavour == Flavour::Alder || first & MODULAR_FIA != 0,
+        index,
+    ))
 }
 
 /// Tells the FIA that DisplayPort uses its first `lanes` lanes (1, 2 or 4) on Type-C port
@@ -312,14 +317,23 @@ pub fn connect(
     }
     let meteor_buffer = METEOR_BUFFERS + index * METEOR_BUFFER_STRIDE;
     if flavour == Flavour::Meteor {
-        regs.write32(meteor_buffer, regs.read32(meteor_buffer) | TCSS_POWER_REQUEST);
+        regs.write32(
+            meteor_buffer,
+            regs.read32(meteor_buffer) | TCSS_POWER_REQUEST,
+        );
     }
     let ready = match flavour {
         Flavour::Tiger => wait(regs, base + PHY_READY, 1 << slot, 1 << slot, keep_waiting),
         Flavour::Alder => wait(regs, status_place, TCSS_READY, TCSS_READY, keep_waiting),
         Flavour::Meteor => {
             wait(regs, status_place, TCSS_READY, TCSS_READY, keep_waiting)
-                && wait(regs, meteor_buffer, TCSS_POWER_STATE, TCSS_POWER_STATE, keep_waiting)
+                && wait(
+                    regs,
+                    meteor_buffer,
+                    TCSS_POWER_STATE,
+                    TCSS_POWER_STATE,
+                    keep_waiting,
+                )
         }
     };
     if !ready {
@@ -398,7 +412,10 @@ mod tests {
         let regs = Registers::default();
         let modular_fia2 = FIA_BASES[1];
         regs.set(FIA_BASES[0] + LANE_STATE, MODULAR_FIA);
-        regs.set(modular_fia2 + LANE_STATE, (1 << (8 + LIVE_ALTERNATE_BIT)) | 0x3 << 8);
+        regs.set(
+            modular_fia2 + LANE_STATE,
+            (1 << (8 + LIVE_ALTERNATE_BIT)) | 0x3 << 8,
+        );
         regs.set(modular_fia2 + PHY_READY, 1 << 1);
         regs.set(modular_fia2 + PIN_ASSIGNMENT, 4 << 4);
         let mut requests = alloc::vec::Vec::new();
@@ -432,11 +449,17 @@ mod tests {
         regs.set(FIA_BASES[0] + PIN_ASSIGNMENT, 3);
         let connected = connect(&regs, Flavour::Alder, 0, &mut || true).unwrap();
         assert_eq!(connected.lanes, 4);
-        assert_eq!(regs.read32(DDI_BUF_CTL + 3 * PORT_STRIDE) & PHY_OWNERSHIP, PHY_OWNERSHIP);
+        assert_eq!(
+            regs.read32(DDI_BUF_CTL + 3 * PORT_STRIDE) & PHY_OWNERSHIP,
+            PHY_OWNERSHIP
+        );
         regs.set(TCSS_STATUS + 4, 0);
         let unplugged = connect(&regs, Flavour::Alder, 1, &mut || true);
         assert_eq!(unplugged, Err(TypeCError::NotConnected));
         regs.set(FIA_BASES[0] + LANE_STATE, COLD);
-        assert_eq!(connect(&regs, Flavour::Alder, 0, &mut || true), Err(TypeCError::Cold));
+        assert_eq!(
+            connect(&regs, Flavour::Alder, 0, &mut || true),
+            Err(TypeCError::Cold)
+        );
     }
 }

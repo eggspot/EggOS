@@ -11,7 +11,6 @@
 //! wake-up interrupts, and calls the kernel's `kernel_main`, [`Riscv32`] being its
 //! [`crate::Platform`] (D481).
 
-
 mod fp;
 mod test_program;
 mod thread;
@@ -299,7 +298,10 @@ riscv32_trap_entry:
 fn uart() -> Ns16550<Mmio> {
     // SAFETY: the boot table maps the UART's megapage at its physical address as device
     // memory, and only this console writes its registers.
-    Ns16550::new(unsafe { Mmio::new(UART as usize, UART_BYTES) }, UART_REGISTER_SHIFT)
+    Ns16550::new(
+        unsafe { Mmio::new(UART as usize, UART_BYTES) },
+        UART_REGISTER_SHIFT,
+    )
 }
 
 /// Writes `bytes` to the console.
@@ -349,7 +351,12 @@ fn sbi(extension: usize, function: usize, first: usize, second: usize) -> isize 
 /// Asks for the timer interrupt at `deadline` ticks, the 64-bit value split across `a0`
 /// and `a1` as RV32's SBI takes it.
 pub fn set_timer_deadline(deadline: u64) {
-    sbi(SBI_TIME, 0, deadline as u32 as usize, (deadline >> 32) as usize);
+    sbi(
+        SBI_TIME,
+        0,
+        deadline as u32 as usize,
+        (deadline >> 32) as usize,
+    );
 }
 
 /// Stops the machine.
@@ -514,7 +521,10 @@ impl Platform for Riscv32 {
     }
 
     fn early_device_regions(region: &mut dyn FnMut(PhysicalRange)) {
-        region(PhysicalRange::from_start_length(u64::from(UART), UART_BYTES as u64));
+        region(PhysicalRange::from_start_length(
+            u64::from(UART),
+            UART_BYTES as u64,
+        ));
     }
 
     fn device_tree() -> Option<&'static [u8]> {

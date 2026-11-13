@@ -184,7 +184,11 @@ impl Options {
                 Some(true) => {}
             }
             let value = match takes_value(word) {
-                true => Some(words.next().ok_or_else(|| UsageError::NoValue(shown(word)))?),
+                true => Some(
+                    words
+                        .next()
+                        .ok_or_else(|| UsageError::NoValue(shown(word)))?,
+                ),
                 false => None,
             };
             let value = value.unwrap_or_default();
@@ -197,7 +201,8 @@ impl Options {
                     options.button = button;
                 }
                 b"--over" => {
-                    let window = number(value).ok_or_else(|| UsageError::BadWindow(shown(value)))?;
+                    let window =
+                        number(value).ok_or_else(|| UsageError::BadWindow(shown(value)))?;
                     options.over = Some(window);
                 }
                 b"--name" => options.name = last_component(value).to_vec(),

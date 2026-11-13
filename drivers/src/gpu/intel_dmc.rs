@@ -40,15 +40,24 @@ fn word(bytes: &[u8], at: usize) -> Option<u32> {
 /// one for any stepping; `None` when the file is not one or names none that fits.
 pub fn parse(file: &[u8], stepping: u8, substepping: u8) -> Option<Dmc<'_>> {
     let css_length = (word(file, CSS_HEADER_LENGTH)? as usize).checked_mul(4)?;
-    let package_at = if css_length == CSS_HEADER_BYTES { css_length } else { CSS_HEADER_BYTES };
+    let package_at = if css_length == CSS_HEADER_BYTES {
+        css_length
+    } else {
+        CSS_HEADER_BYTES
+    };
     let package = file.get(package_at..)?;
     let package_length = usize::from(*package.first()?) * 4;
     let count = word(package, PACKAGE_COUNT_AT)? as usize;
-    let entries = package.get(PACKAGE_ENTRIES_AT..PACKAGE_ENTRIES_AT + count.checked_mul(PACKAGE_ENTRY_BYTES)?)?;
+    let entries = package
+        .get(PACKAGE_ENTRIES_AT..PACKAGE_ENTRIES_AT + count.checked_mul(PACKAGE_ENTRY_BYTES)?)?;
     let chosen = entries
         .chunks_exact(PACKAGE_ENTRY_BYTES)
         .find(|entry| entry[2] == stepping && entry[3] == substepping)
-        .or_else(|| entries.chunks_exact(PACKAGE_ENTRY_BYTES).find(|entry| entry[2] == ANY_STEPPING))?;
+        .or_else(|| {
+            entries
+                .chunks_exact(PACKAGE_ENTRY_BYTES)
+                .find(|entry| entry[2] == ANY_STEPPING)
+        })?;
     let offset = (word(chosen, 4)? as usize).checked_mul(4)?;
     let header = package.get(package_length.checked_add(offset)?..)?;
     if word(header, 0)? != DMC_SIGNATURE {
@@ -58,7 +67,13 @@ pub fn parse(file: &[u8], stepping: u8, substepping: u8) -> Option<Dmc<'_>> {
     let program_words = word(header, 12)? as usize;
     let writes_count = word(header, 20)? as usize;
     let (header_bytes, base, addresses_at, data_at, most) = match version {
-        1 => (V1_HEADER_BYTES, PROGRAM_BASE_V1, 24, 24 + 4 * V1_WRITES, V1_WRITES),
+        1 => (
+            V1_HEADER_BYTES,
+            PROGRAM_BASE_V1,
+            24,
+            24 + 4 * V1_WRITES,
+            V1_WRITES,
+        ),
         _ => (
             V3_HEADER_BYTES,
             word(header, 24)?,
@@ -72,9 +87,13 @@ pub fn parse(file: &[u8], stepping: u8, substepping: u8) -> Option<Dmc<'_>> {
     }
     let mut writes = [(0, 0); MOST_WRITES];
     for (index, write) in writes.iter_mut().take(writes_count).enumerate() {
-        *write = (word(header, addresses_at + 4 * index)?, word(header, data_at + 4 * index)?);
+        *write = (
+            word(header, addresses_at + 4 * index)?,
+            word(header, data_at + 4 * index)?,
+        );
     }
-    let program = header.get(header_bytes..header_bytes.checked_add(program_words.checked_mul(4)?)?)?;
+    let program =
+        header.get(header_bytes..header_bytes.checked_add(program_words.checked_mul(4)?)?)?;
     Some(Dmc {
         program,
         program_base: base,

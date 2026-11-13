@@ -52,7 +52,12 @@ fn overflow_button(desktop: &Desktop) -> Option<Rect> {
 
 fn press(desktop: &mut Desktop, code: u16, rect: Rect, events: &mut Recorded) {
     let mut damage = Damage::new();
-    desktop.pointer_moved(rect.x + rect.width / 2, rect.y + rect.height / 2, &mut damage, events);
+    desktop.pointer_moved(
+        rect.x + rect.width / 2,
+        rect.y + rect.height / 2,
+        &mut damage,
+        events,
+    );
     desktop.button(code, true, &mut damage, events);
     desktop.button(code, false, &mut damage, events);
 }
@@ -134,7 +139,13 @@ fn keys_move_through_the_popup_and_enter_is_a_left_click() {
     let mut events = Recorded::default();
     for code in [key::DOWN, key::DOWN, key::ENTER] {
         desktop.key(code, true, Modifiers::NONE, &mut Damage::new(), &mut events);
-        desktop.key(code, false, Modifiers::NONE, &mut Damage::new(), &mut events);
+        desktop.key(
+            code,
+            false,
+            Modifiers::NONE,
+            &mut Damage::new(),
+            &mut events,
+        );
     }
     assert!(!desktop.tray_overflow_open());
     assert!(tray_messages(&events).contains(&(WM_LBUTTONUP, 4)));
@@ -145,7 +156,13 @@ fn esc_closes_the_popup_and_a_removed_icon_closes_it_too() {
     let (mut desktop, window) = with_icons(Profile::Windows, 6);
     let button = overflow_button(&desktop).unwrap();
     press(&mut desktop, button::LEFT, button, &mut Recorded::default());
-    desktop.key(key::ESC, true, Modifiers::NONE, &mut Damage::new(), &mut DiscardEvents);
+    desktop.key(
+        key::ESC,
+        true,
+        Modifiers::NONE,
+        &mut Damage::new(),
+        &mut DiscardEvents,
+    );
     assert!(!desktop.tray_overflow_open());
     press(&mut desktop, button::LEFT, button, &mut Recorded::default());
     desktop
@@ -247,7 +264,13 @@ fn keys_skip_what_cannot_be_chosen_and_esc_answers_nothing() {
         desktop.key(code, true, Modifiers::NONE, &mut Damage::new(), &mut events);
     }
     assert_eq!(desktop.shell_menu_highlight(), Some(3));
-    desktop.key(key::ESC, true, Modifiers::NONE, &mut Damage::new(), &mut events);
+    desktop.key(
+        key::ESC,
+        true,
+        Modifiers::NONE,
+        &mut Damage::new(),
+        &mut events,
+    );
     assert_eq!(shell_menu_answers(&events), [0]);
 }
 
@@ -255,7 +278,12 @@ fn keys_skip_what_cannot_be_chosen_and_esc_answers_nothing() {
 fn a_click_elsewhere_closes_the_shell_menu_with_nothing_chosen() {
     let (mut desktop, _) = menu_after_right_click(Profile::Windows);
     let mut events = Recorded::default();
-    press(&mut desktop, button::LEFT, Rect::new(300, 300, 1, 1), &mut events);
+    press(
+        &mut desktop,
+        button::LEFT,
+        Rect::new(300, 300, 1, 1),
+        &mut events,
+    );
     assert!(!desktop.shell_menu_open());
     assert_eq!(shell_menu_answers(&events), [0]);
 }

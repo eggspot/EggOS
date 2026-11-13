@@ -46,8 +46,8 @@ impl Tokens<'_> {
         let mut seen_dot = false;
         let mut seen_exponent = false;
         while let Some(&byte) = self.bytes.get(self.at) {
-            let sign_allowed = self.at == start
-                || matches!(self.bytes.get(self.at - 1), Some(b'e' | b'E'));
+            let sign_allowed =
+                self.at == start || matches!(self.bytes.get(self.at - 1), Some(b'e' | b'E'));
             match byte {
                 b'0'..=b'9' => {}
                 b'-' | b'+' if sign_allowed => {}
@@ -57,7 +57,10 @@ impl Tokens<'_> {
             }
             self.at += 1;
         }
-        core::str::from_utf8(&self.bytes[start..self.at]).ok()?.parse().ok()
+        core::str::from_utf8(&self.bytes[start..self.at])
+            .ok()?
+            .parse()
+            .ok()
     }
 
     fn point(&mut self) -> Option<Point> {
@@ -161,7 +164,9 @@ pub fn polygons(data: &str) -> Vec<Vec<Point>> {
                     }
                     _ => reflected(last_control, current),
                 };
-                let (Some(second), Some(end)) = (tokens.point(), tokens.point()) else { break };
+                let (Some(second), Some(end)) = (tokens.point(), tokens.point()) else {
+                    break;
+                };
                 let (second, end) = (offset(second, current), offset(end, current));
                 cubic(current, first, second, end, &mut shape);
                 control = Some(second);
@@ -247,7 +252,10 @@ fn fill(pixels: &mut [u32], width: usize, shapes: &[Vec<Point>], even_odd: bool,
                 }
             }
         }
-        for (pixel, &amount) in pixels[row * width..(row + 1) * width].iter_mut().zip(&coverage) {
+        for (pixel, &amount) in pixels[row * width..(row + 1) * width]
+            .iter_mut()
+            .zip(&coverage)
+        {
             if amount > 0.0 {
                 over(pixel, colour, amount.min(1.0));
             }
@@ -275,7 +283,12 @@ pub fn rasterize(
         };
         let shapes: Vec<Vec<Point>> = polygons(&path.data)
             .into_iter()
-            .map(|shape| shape.into_iter().map(|(x, y)| (x * scale_x, y * scale_y)).collect())
+            .map(|shape| {
+                shape
+                    .into_iter()
+                    .map(|(x, y)| (x * scale_x, y * scale_y))
+                    .collect()
+            })
             .collect();
         fill(&mut pixels, width, &shapes, path.even_odd, colour);
     }

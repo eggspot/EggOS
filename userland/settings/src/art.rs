@@ -193,9 +193,15 @@ const STROKE: i32 = 2;
 
 fn frame(canvas: &mut Canvas<'_>, rect: Rect, ink: u32) {
     canvas.fill(Rect::new(rect.x, rect.y, rect.width, STROKE), ink);
-    canvas.fill(Rect::new(rect.x, rect.bottom() - STROKE, rect.width, STROKE), ink);
+    canvas.fill(
+        Rect::new(rect.x, rect.bottom() - STROKE, rect.width, STROKE),
+        ink,
+    );
     canvas.fill(Rect::new(rect.x, rect.y, STROKE, rect.height), ink);
-    canvas.fill(Rect::new(rect.right() - STROKE, rect.y, STROKE, rect.height), ink);
+    canvas.fill(
+        Rect::new(rect.right() - STROKE, rect.y, STROKE, rect.height),
+        ink,
+    );
 }
 
 /// Pane `pane`'s 24 px line icon (docs/ux/settings-forms-v0.5.md 1.1), its top left at `at`.

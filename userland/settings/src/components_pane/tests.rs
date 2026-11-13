@@ -607,7 +607,10 @@ fn an_agent_reads_the_rows_and_may_not_say_yes_to_a_remove() {
         .tree()
         .act(element_of(ids.confirm), Action::Invoke, "", 0);
     assert_eq!(outcome, Outcome::Done);
-    assert_eq!(window.respond(response, 0), Some(Request::StartComponentJob));
+    assert_eq!(
+        window.respond(response, 0),
+        Some(Request::StartComponentJob)
+    );
 }
 
 #[test]
@@ -687,7 +690,12 @@ fn on_a_phone_the_pane_is_one_column_of_full_width_blocks() {
     let button = rect(&window, ids.rows[0].button);
     let panel = rect(&window, ids.rows[0].panel);
     assert_eq!(
-        Rect::new(button.x - panel.x, button.y - panel.y, button.width, button.height),
+        Rect::new(
+            button.x - panel.x,
+            button.y - panel.y,
+            button.width,
+            button.height
+        ),
         Rect::new(8, 72, 312, 48)
     );
 }

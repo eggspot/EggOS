@@ -827,7 +827,11 @@ mod ccw_transport {
             crate::channel::SENSE_ID => data.copy_from_slice(&[0xff, 0x38, 0x32, 1, 0, 0, 0]),
             command::SET_REVISION => assert_eq!(&data[..4], &[0, 1, 0, 0]),
             command::READ_FEATURES => {
-                let word: u32 = if data[4] == 0 { 0x0000_0020 } else { 0x0000_0001 };
+                let word: u32 = if data[4] == 0 {
+                    0x0000_0020
+                } else {
+                    0x0000_0001
+                };
                 data[..4].copy_from_slice(&word.to_le_bytes());
             }
             command::READ_QUEUE_CONFIG => {
@@ -870,7 +874,8 @@ mod ccw_transport {
             _ => GOOD | UNIT_CHECK,
         }));
         let channels = Box::leak(Box::new(channels));
-        let refused = CcwTransport::new(channels, THE_SUBCHANNEL, memory).map_err(|(error, _)| error);
+        let refused =
+            CcwTransport::new(channels, THE_SUBCHANNEL, memory).map_err(|(error, _)| error);
         assert_eq!(refused.err(), Some(crate::virtio::Error::LegacyVersion));
     }
 }

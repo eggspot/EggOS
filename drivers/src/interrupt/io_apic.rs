@@ -118,7 +118,10 @@ mod tests {
             .script_reads(REGISTER_WINDOW, &[TWENTY_FOUR_LINES, 0x0000_a033]);
         apic.set_masked(5, true);
         let writes = apic.regs.writes();
-        assert_eq!(writes.last(), Some(&(REGISTER_WINDOW, 0x0000_a033 | REDIRECTION_MASKED)));
+        assert_eq!(
+            writes.last(),
+            Some(&(REGISTER_WINDOW, 0x0000_a033 | REDIRECTION_MASKED))
+        );
     }
 
     #[test]

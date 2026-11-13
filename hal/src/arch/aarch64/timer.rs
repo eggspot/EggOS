@@ -2,8 +2,8 @@
 //! virtual timer as the one-shot timer, signalled through the GICv2 as a private interrupt; and
 //! the wake-up interrupt between CPUs, a GICv2 software-generated interrupt (D41).
 
-use crate::atomic::AtomicU64;
 use super::DIRECT_MAP_OFFSET;
+use crate::atomic::AtomicU64;
 use crate::interrupt::SourceLines;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -18,16 +18,11 @@ use eggos_drivers::io::Mmio;
 /// not touch either timer (D210).
 pub(super) const CNTKCTL_USER_VIRTUAL_COUNTER: u64 = 1 << 1;
 
-/// QEMU `virt` (`-machine gic-version=2`): GICv2 distributor and CPU interface. Device-tree
-/// discovery replaces these in M5, along with GICv3 support.
 const GICD_BASE: usize = 0x0800_0000;
 const GICC_BASE: usize = 0x0801_0000;
 
-/// Which GIC the machine has (D237): QEMU `virt`'s GICv2 unless the UEFI loader's ACPI `MADT`
-/// names another; set by [`init`] on the boot CPU before anything else uses the GIC.
 static GIC_VERSION: AtomicU8 = AtomicU8::new(2);
 static GIC_DISTRIBUTOR: AtomicUsize = AtomicUsize::new(GICD_BASE);
-/// The GICv2 CPU interface, or the start of the GICv3 redistributors' range.
 static GIC_SECOND_BLOCK: AtomicUsize = AtomicUsize::new(GICC_BASE);
 static GIC_SECOND_BLOCK_BYTES: AtomicUsize = AtomicUsize::new(gicv2::CPU_INTERFACE_BLOCK_SIZE);
 /// The boot CPU's MPIDR affinity.
@@ -37,7 +32,6 @@ fn is_gicv3() -> bool {
     GIC_VERSION.load(Ordering::Relaxed) >= 3
 }
 
-/// Reads the GIC's place and version from the `MADT` when the UEFI loader started the kernel.
 fn discover() {
     let Some(gic) = super::madt().and_then(crate::acpi::madt_gic) else {
         discover_in_tree();
@@ -63,7 +57,6 @@ fn discover() {
     GIC_VERSION.store(gic.version.max(2), Ordering::Relaxed);
 }
 
-/// Reads the GIC's place and version from the device tree when there is no ACPI (D253).
 fn discover_in_tree() {
     let Some(gic) = super::device_tree_bytes().and_then(crate::fdt::gic) else {
         return;
@@ -80,7 +73,11 @@ fn discover_in_tree() {
     }
     GIC_DISTRIBUTOR.store(distributor, Ordering::Relaxed);
     GIC_SECOND_BLOCK.store(second, Ordering::Relaxed);
-    let second_bytes = if gic.version >= 3 { bytes } else { gicv2::CPU_INTERFACE_BLOCK_SIZE };
+    let second_bytes = if gic.version >= 3 {
+        bytes
+    } else {
+        gicv2::CPU_INTERFACE_BLOCK_SIZE
+    };
     GIC_SECOND_BLOCK_BYTES.store(second_bytes, Ordering::Relaxed);
     GIC_VERSION.store(gic.version, Ordering::Relaxed);
 }
@@ -102,7 +99,6 @@ pub(super) fn device_regions(region: &mut dyn FnMut(PhysicalRange)) {
     ));
 }
 
-/// The GICv3 CPU interface's system registers.
 #[derive(Debug, Clone, Copy)]
 struct SystemRegisters;
 
@@ -198,7 +194,8 @@ fn gicv3_this_redistributor() -> Option<Gicv3Redistributor<Mmio>> {
     }))
 }
 
-const GICV3_CPU_INTERFACE: Gicv3CpuInterface<SystemRegisters> = Gicv3CpuInterface::new(SystemRegisters);
+const GICV3_CPU_INTERFACE: Gicv3CpuInterface<SystemRegisters> =
+    Gicv3CpuInterface::new(SystemRegisters);
 
 /// An interrupt acknowledged at the GIC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,7 +216,6 @@ impl Acknowledged {
 /// The EL1 virtual timer's private interrupt (PPI 11, Arm's Server Base System Architecture
 /// assignment, used by every GIC-based board).
 pub(super) const VIRTUAL_TIMER_INTERRUPT: u32 = 27;
-/// Middle priority, leaving room above and below for interrupts added later.
 const TIMER_PRIORITY: u8 = 0x80;
 /// The software-generated interrupt that wakes a CPU ([`crate::Platform::wake_cpu`]).
 pub(super) const WAKEUP_SGI: u32 = 0;
@@ -227,7 +223,6 @@ const WAKEUP_PRIORITY: u8 = 0x80;
 /// QEMU `virt`: UART0's interrupt, SPI 1, level-triggered. Device-tree discovery replaces it
 /// in M5.
 pub(super) const UART0_INTERRUPT: u32 = 33;
-/// Below the timer and wake-up: input can wait for them.
 const CONSOLE_INPUT_PRIORITY: u8 = 0xa0;
 /// The first shared peripheral interrupt's id: UART0's and the devices' are from here on.
 pub(super) const FIRST_SHARED_INTERRUPT: u32 = 32;
@@ -235,17 +230,11 @@ const DEVICE_PRIORITY: u8 = 0xc0;
 /// The shared peripheral interrupts routed for devices, by line.
 pub(super) static DEVICE_LINES: SourceLines = SourceLines::new();
 
-/// The CPU interfaces a GICv2 has.
 const GIC_CPU_INTERFACES: usize = 8;
-/// Which CPU each GIC CPU interface belongs to, for [`wake`]: the MPIDR affinity (as the device
-/// tree's `/cpus` gives it) plus 1, or 0 for none yet. Each CPU fills its own entry as it sets its
-/// interrupts up, before it runs the kernel's code.
 static GIC_CPUS: [AtomicU64; GIC_CPU_INTERFACES] =
     [const { AtomicU64::new(0) }; GIC_CPU_INTERFACES];
 
-/// `CNTV_CTL_EL0` bit 0: timer enabled (bit 1, IMASK, left clear: interrupt not masked).
 const CNTV_CTL_ENABLE: u64 = 1;
-/// `CNTV_CTL_EL0` bit 2: the timer condition is met (read-only).
 const CNTV_CTL_ISTATUS: u64 = 1 << 2;
 
 fn distributor() -> Gicv2Distributor<Mmio> {
@@ -273,7 +262,6 @@ fn cpu_interface() -> Gicv2CpuInterface<Mmio> {
 /// Sets the boot CPU's timer and interrupts up ([`init_this_cpu`]) and turns the GIC's
 /// distributor on. Called once by the entry code, before `kernel_main`.
 pub(super) extern "C" fn init() {
-    // The panic handler reports this; the clock would be useless.
     assert!(
         frequency() != 0,
         "CNTFRQ_EL0 is 0: firmware did not set the counter frequency"
@@ -308,7 +296,6 @@ pub(super) fn init_this_cpu() {
     gicd.enable_interrupt(VIRTUAL_TIMER_INTERRUPT, TIMER_PRIORITY);
     gicd.enable_interrupt(WAKEUP_SGI, WAKEUP_PRIORITY);
     let target = gicd.this_cpu_target();
-    // 0 on a uniprocessor GIC: there is no other CPU to wake this one.
     if target != 0 {
         GIC_CPUS[target.trailing_zeros() as usize].store(affinity() + 1, Ordering::Release);
     }
@@ -374,7 +361,9 @@ pub(super) fn steer_device_interrupt(
     line: crate::DeviceLine,
     cpu: u64,
 ) -> Result<(), &'static str> {
-    let id = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    let id = DEVICE_LINES
+        .source_of(line)
+        .ok_or("the line is not routed")?;
     if is_gicv3() {
         gicv3_distributor().set_route(id, cpu);
         return Ok(());

@@ -452,8 +452,6 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         self.hand_over(frame, &header)
     }
 
-    /// Copies `header` and `frame` into enough contiguous free transmit buffers and hands them
-    /// to the device as one.
     fn hand_over(&mut self, frame: &[u8], header: &[u8; HEADER_BYTES]) -> Result<(), Error> {
         self.reclaim_transmitted();
         let count = (HEADER_BYTES + frame.len()).div_ceil(BUFFER_BYTES).max(1);

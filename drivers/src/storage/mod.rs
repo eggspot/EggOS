@@ -97,7 +97,11 @@ pub(crate) fn copy_out<M: DmaMemory>(memory: &M, offset: usize, bytes: &mut [u8]
     assert!(offset + bytes.len() <= memory.len());
     // SAFETY: as in `copy_in`, the other way.
     unsafe {
-        core::ptr::copy_nonoverlapping(memory.as_mut_ptr().add(offset), bytes.as_mut_ptr(), bytes.len())
+        core::ptr::copy_nonoverlapping(
+            memory.as_mut_ptr().add(offset),
+            bytes.as_mut_ptr(),
+            bytes.len(),
+        )
     }
 }
 

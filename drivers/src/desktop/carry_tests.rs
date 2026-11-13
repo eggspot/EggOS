@@ -27,7 +27,13 @@ impl Recorded {
 fn shown(desktop: &mut Desktop, client: u16, width: u32, height: u32) -> WindowId {
     let created = desktop.create(client, 0, 0, width, height, 0).unwrap();
     desktop
-        .commit(client, u32::from(created.window), &[], &mut Damage::new(), &mut DiscardEvents)
+        .commit(
+            client,
+            u32::from(created.window),
+            &[],
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
         .unwrap();
     created.window
 }
@@ -35,15 +41,22 @@ fn shown(desktop: &mut Desktop, client: u16, width: u32, height: u32) -> WindowI
 fn centre(desktop: &Desktop, id: WindowId) -> (u32, u32) {
     let slot = desktop.find(id).unwrap();
     let outside = desktop.window_at(slot).outside();
-    (outside.x + outside.width / 2, outside.y + outside.height / 2)
+    (
+        outside.x + outside.width / 2,
+        outside.y + outside.height / 2,
+    )
 }
 
 fn set_up() -> (Desktop, WindowId, WindowId) {
     let mut desktop = Desktop::new(1280, 800).unwrap();
     let target = shown(&mut desktop, TARGET, 300, 200);
     let source = shown(&mut desktop, SOURCE, 300, 200);
-    desktop.set_position(TARGET, u32::from(target), 0, 0, &mut Damage::new()).unwrap();
-    desktop.set_position(SOURCE, u32::from(source), 500, 0, &mut Damage::new()).unwrap();
+    desktop
+        .set_position(TARGET, u32::from(target), 0, 0, &mut Damage::new())
+        .unwrap();
+    desktop
+        .set_position(SOURCE, u32::from(source), 500, 0, &mut Damage::new())
+        .unwrap();
     let (x, y) = centre(&desktop, source);
     desktop.pointer_moved(x, y, &mut Damage::new(), &mut DiscardEvents);
     desktop.left_button(true, &mut Damage::new(), &mut DiscardEvents);
@@ -53,7 +66,14 @@ fn set_up() -> (Desktop, WindowId, WindowId) {
 #[test]
 fn a_window_holding_the_pointer_hands_its_drag_to_the_server() {
     let (mut desktop, source, _) = set_up();
-    let started = desktop.start_carry(SOURCE, u32::from(source), (1, 7), b"notes.txt", &mut Damage::new(), &mut DiscardEvents);
+    let started = desktop.start_carry(
+        SOURCE,
+        u32::from(source),
+        (1, 7),
+        b"notes.txt",
+        &mut Damage::new(),
+        &mut DiscardEvents,
+    );
     assert_eq!(started, Ok(()));
     assert!(desktop.carrying());
 }
@@ -61,7 +81,14 @@ fn a_window_holding_the_pointer_hands_its_drag_to_the_server() {
 #[test]
 fn a_window_not_holding_the_pointer_cannot_start_a_drag() {
     let (mut desktop, _, target) = set_up();
-    let started = desktop.start_carry(TARGET, u32::from(target), (1, 7), b"x", &mut Damage::new(), &mut DiscardEvents);
+    let started = desktop.start_carry(
+        TARGET,
+        u32::from(target),
+        (1, 7),
+        b"x",
+        &mut Damage::new(),
+        &mut DiscardEvents,
+    );
     assert_eq!(started, Err(WindowError::Invalid));
 }
 
@@ -69,7 +96,14 @@ fn a_window_not_holding_the_pointer_cannot_start_a_drag() {
 fn the_target_hears_over_and_drop_and_the_source_that_it_landed() {
     let (mut desktop, source, target) = set_up();
     desktop
-        .start_carry(SOURCE, u32::from(source), (1, 7), b"notes.txt", &mut Damage::new(), &mut DiscardEvents)
+        .start_carry(
+            SOURCE,
+            u32::from(source),
+            (1, 7),
+            b"notes.txt",
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
         .unwrap();
     let mut events = Recorded::default();
     let (x, y) = centre(&desktop, target);
@@ -90,10 +124,23 @@ fn the_target_hears_over_and_drop_and_the_source_that_it_landed() {
 fn esc_cancels_the_drag() {
     let (mut desktop, source, _) = set_up();
     desktop
-        .start_carry(SOURCE, u32::from(source), (2, 8), b"text", &mut Damage::new(), &mut DiscardEvents)
+        .start_carry(
+            SOURCE,
+            u32::from(source),
+            (2, 8),
+            b"text",
+            &mut Damage::new(),
+            &mut DiscardEvents,
+        )
         .unwrap();
     let mut events = Recorded::default();
-    desktop.key(key::ESC, true, crate::input::keymap::Modifiers::NONE, &mut Damage::new(), &mut events);
+    desktop.key(
+        key::ESC,
+        true,
+        crate::input::keymap::Modifiers::NONE,
+        &mut Damage::new(),
+        &mut events,
+    );
     let ended = events
         .0
         .iter()

@@ -87,9 +87,7 @@ pub mod signal_frame {
     use eggos_hal::fp::FpState;
     use eggos_hal::user::UserRegisters;
 
-    /// `sc_flags`: the FPU context is there.
     const USED_FP: u64 = 1;
-    /// The FPU context's record: its header, then its 272 bytes.
     const FPU_CONTEXT_MAGIC: u32 = 0x4650_5501;
     const FPU_RECORD: usize = MCONTEXT + 272;
     const FPU_RECORD_SIZE: u32 = 16 + 272;
@@ -150,7 +148,11 @@ pub mod signal_frame {
         put(&mut frame, SIGMASK, saved.blocked);
         put(&mut frame, MCONTEXT, saved.registers.pc);
         for index in 1..32 {
-            put(&mut frame, MCONTEXT + 8 + index * 8, saved.registers.r[index]);
+            put(
+                &mut frame,
+                MCONTEXT + 8 + index * 8,
+                saved.registers.r[index],
+            );
         }
         frame[MCONTEXT + 264..][..4].copy_from_slice(&(USED_FP as u32).to_ne_bytes());
         frame[FPU_RECORD..][..4].copy_from_slice(&FPU_CONTEXT_MAGIC.to_ne_bytes());
@@ -251,8 +253,6 @@ pub mod fault {
     use crate::linux::signal;
     use eggos_hal::{Exception, ExceptionKind};
 
-    /// `FPE_FLTINV`: an invalid floating-point operation, what an unmasked FP exception reports
-    /// when the kernel does not tell its causes apart.
     const FPE_FLTINV: i32 = 7;
 
     /// The signal, `si_code` and `si_addr` Linux gives `exception`, from `BADV` for the faults
@@ -270,7 +270,9 @@ pub mod fault {
         let reported = match exception.kind {
             ExceptionKind::DataFault | ExceptionKind::InstructionFault => segv(address),
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, address),
-            ExceptionKind::Breakpoint | ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            ExceptionKind::Breakpoint | ExceptionKind::Debug => {
+                (signal::SIGTRAP, code::TRAP_BRKPT, pc)
+            }
             ExceptionKind::Arithmetic => (signal::SIGFPE, FPE_FLTINV, pc),
             ExceptionKind::IllegalInstruction
             | ExceptionKind::Segment
@@ -372,8 +374,13 @@ pub mod test_support {
         };
         [count, address, code, resume]
     }
-    pub const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] =
-        [176 + 8 + 25 * 8, 176 + 8 + 26 * 8, 176 + 8 + 27 * 8, 176 + 8 + 28 * 8, 176];
+    pub const FAULT_REGISTERS_IN_UCONTEXT: [u64; 5] = [
+        176 + 8 + 25 * 8,
+        176 + 8 + 26 * 8,
+        176 + 8 + 27 * 8,
+        176 + 8 + 28 * 8,
+        176,
+    ];
 
     /// The machine context reports nothing of a fault.
     pub fn reports_fault(_word: impl Fn(u64) -> u64, _address: u64) -> bool {

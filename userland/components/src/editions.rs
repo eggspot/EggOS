@@ -56,7 +56,10 @@ pub fn current_preferring<'a>(
 ) -> Option<&'static Edition> {
     let matches = |edition: &Edition| {
         let mut names = installed.clone();
-        edition.components.iter().all(|wanted| installed.clone().any(|name| name == *wanted))
+        edition
+            .components
+            .iter()
+            .all(|wanted| installed.clone().any(|name| name == *wanted))
             && names.all(|name| edition.components.contains(&name))
     };
     recorded
@@ -70,7 +73,10 @@ pub fn current_preferring<'a>(
 pub fn current<'a>(installed: impl Iterator<Item = &'a str> + Clone) -> Option<&'static Edition> {
     EDITIONS.iter().rev().find(|edition| {
         let mut names = installed.clone();
-        edition.components.iter().all(|wanted| installed.clone().any(|name| name == *wanted))
+        edition
+            .components
+            .iter()
+            .all(|wanted| installed.clone().any(|name| name == *wanted))
             && names.all(|name| edition.components.contains(&name))
     })
 }

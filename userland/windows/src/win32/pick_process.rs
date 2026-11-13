@@ -99,7 +99,8 @@ fn pump_messages() -> bool {
 pub(super) fn run(arguments: &Arguments, out: &mut [u8]) -> Result<Picked, u32> {
     let (read_end, write_end) = linux::pipe_with(O_CLOEXEC).map_err(super::error_for)?;
     let pointers = arguments.pointers();
-    let started = super::processes::spawn_with_output(PICK, &pointers[..arguments.count + 1], write_end);
+    let started =
+        super::processes::spawn_with_output(PICK, &pointers[..arguments.count + 1], write_end);
     let _ = linux::close(write_end);
     let id = match started {
         Ok(id) => id,

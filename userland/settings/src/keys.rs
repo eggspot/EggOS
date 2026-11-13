@@ -478,8 +478,12 @@ impl Key {
                 write_choices(&mut choices, &names);
             }
             Self::KeyboardSwitchKey => write_choices(&mut choices, &SwitchKey::NAMES),
-            Self::KeyboardOnScreen => write_choices(&mut choices, &eggos_settings_file::KEYBOARD_ON_SCREEN_MODES),
-            Self::DisplayRotation => write_choices(&mut choices, &eggos_settings_file::DISPLAY_ROTATIONS),
+            Self::KeyboardOnScreen => {
+                write_choices(&mut choices, &eggos_settings_file::KEYBOARD_ON_SCREEN_MODES)
+            }
+            Self::DisplayRotation => {
+                write_choices(&mut choices, &eggos_settings_file::DISPLAY_ROTATIONS)
+            }
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
             }
@@ -534,10 +538,13 @@ impl Key {
         let _ = match self {
             Self::ShellProfile => value.write_str(PROFILES[facts.profile.min(PROFILES.len() - 1)]),
             Self::ShellForm => value.write_str(
-                crate::facts::FORM_SETTINGS[facts.form_setting.min(crate::facts::FORM_SETTINGS.len() - 1)],
+                crate::facts::FORM_SETTINGS[facts
+                    .form_setting
+                    .min(crate::facts::FORM_SETTINGS.len() - 1)],
             ),
             Self::ShellFormInUse => value.write_str(
-                crate::facts::FORMS_IN_USE[facts.form_in_use.min(crate::facts::FORMS_IN_USE.len() - 1)],
+                crate::facts::FORMS_IN_USE
+                    [facts.form_in_use.min(crate::facts::FORMS_IN_USE.len() - 1)],
             ),
             Self::InputPresent => {
                 let mut first = true;
@@ -563,10 +570,12 @@ impl Key {
                 None => value.write_str("auto"),
             },
             Self::DisplaySize => write!(value, "{}x{}", facts.resolution.0, facts.resolution.1),
-            Self::DisplayResolutionChangeable => value.write_str(match facts.resolution_changeable {
-                true => "yes",
-                false => "no",
-            }),
+            Self::DisplayResolutionChangeable => {
+                value.write_str(match facts.resolution_changeable {
+                    true => "yes",
+                    false => "no",
+                })
+            }
             Self::DisplayPointer => value.write_str("software"),
             Self::KeyboardLayout => value.write_str(
                 KEYBOARD_LAYOUTS[facts.keyboard_layout.min(KEYBOARD_LAYOUTS.len() - 1)].name,
@@ -579,9 +588,9 @@ impl Key {
             Self::KeyboardOnScreen => value.write_str(
                 eggos_settings_file::KEYBOARD_ON_SCREEN_MODES[facts.on_screen_keyboard.min(2)],
             ),
-            Self::DisplayRotation => value.write_str(
-                eggos_settings_file::DISPLAY_ROTATIONS[facts.rotation.min(4)],
-            ),
+            Self::DisplayRotation => {
+                value.write_str(eggos_settings_file::DISPLAY_ROTATIONS[facts.rotation.min(4)])
+            }
             Self::TimeZone => value.write_str(
                 eggos_calendar::zone::ZONES
                     .get(facts.time_zone)

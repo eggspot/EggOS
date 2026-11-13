@@ -122,9 +122,14 @@ pub struct Transfer {
 pub enum ThreeDCommand<'a> {
     /// The capability set with this index (below the device's count): its id, newest version
     /// and size.
-    CapsetInfo { index: u32 },
+    CapsetInfo {
+        index: u32,
+    },
     /// Capability set `id` at `version`, its bytes.
-    Capset { id: u32, version: u32 },
+    Capset {
+        id: u32,
+        version: u32,
+    },
     /// A rendering context, for capability set `capset` (0 for the device's default) when the
     /// device takes `VIRTIO_GPU_F_CONTEXT_INIT`, named `name` for the host's debugging.
     CreateContext {
@@ -132,10 +137,21 @@ pub enum ThreeDCommand<'a> {
         capset: u32,
         name: &'a [u8],
     },
-    DestroyContext { context: u32 },
-    AttachResource { context: u32, resource: u32 },
-    DetachResource { context: u32, resource: u32 },
-    CreateResource { resource: u32, shape: ResourceShape },
+    DestroyContext {
+        context: u32,
+    },
+    AttachResource {
+        context: u32,
+        resource: u32,
+    },
+    DetachResource {
+        context: u32,
+        resource: u32,
+    },
+    CreateResource {
+        resource: u32,
+        shape: ResourceShape,
+    },
     /// A blob of `size` bytes in guest memory at `address` (one entry, its backing), for
     /// `context`, with `flags` ([`BLOB_FLAG_MAPPABLE`], [`BLOB_FLAG_SHAREABLE`]).
     CreateGuestBlob {
@@ -154,18 +170,42 @@ pub enum ThreeDCommand<'a> {
         size: u64,
     },
     /// Host blob `resource` mapped at `offset` in the host-visible shared memory.
-    MapBlob { context: u32, resource: u32, offset: u64 },
+    MapBlob {
+        context: u32,
+        resource: u32,
+        offset: u64,
+    },
     /// Host blob `resource` taken out of the shared memory.
-    UnmapBlob { context: u32, resource: u32 },
+    UnmapBlob {
+        context: u32,
+        resource: u32,
+    },
     /// Guest memory at `address` (a device address), `length` bytes, as the resource's backing.
-    AttachBacking { resource: u32, address: u64, length: u32 },
-    DetachBacking { resource: u32 },
-    Unref { resource: u32 },
-    TransferToHost { context: u32, transfer: Transfer },
-    TransferFromHost { context: u32, transfer: Transfer },
+    AttachBacking {
+        resource: u32,
+        address: u64,
+        length: u32,
+    },
+    DetachBacking {
+        resource: u32,
+    },
+    Unref {
+        resource: u32,
+    },
+    TransferToHost {
+        context: u32,
+        transfer: Transfer,
+    },
+    TransferFromHost {
+        context: u32,
+        transfer: Transfer,
+    },
     /// `length` bytes of the context's command stream, which follow the request in a
     /// descriptor of their own.
-    Submit { context: u32, length: u32 },
+    Submit {
+        context: u32,
+        length: u32,
+    },
 }
 
 /// A capability set the device has ([`ThreeDCommand::CapsetInfo`]'s answer).
@@ -466,7 +506,9 @@ mod tests {
         });
         assert_eq!(length, 72);
         assert_eq!(get32(&out, 16), Some(0));
-        let fields: Vec<u32> = (0..11).filter_map(|index| get32(&out, 24 + 4 * index)).collect();
+        let fields: Vec<u32> = (0..11)
+            .filter_map(|index| get32(&out, 24 + 4 * index))
+            .collect();
         assert_eq!(fields, [0x100, 2, 1, 0x8, 640, 480, 1, 1, 0, 0, 0]);
     }
 
@@ -561,6 +603,9 @@ mod tests {
     #[test]
     fn a_short_buffer_gets_nothing() {
         let mut out = [0u8; 16];
-        assert_eq!(encode(&ThreeDCommand::DestroyContext { context: 1 }, 1, &mut out), 0);
+        assert_eq!(
+            encode(&ThreeDCommand::DestroyContext { context: 1 }, 1, &mut out),
+            0
+        );
     }
 }

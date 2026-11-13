@@ -25,12 +25,15 @@ const SCROLLING: [&str; 2] = ["Traditional", "Natural"];
 const SCALE_HINT: &str = "Takes effect at the next restart";
 const RESOLUTION_WIDTH: i32 = 160;
 const LAYOUT_TOP: i32 = 356;
-/// The Rotation row (docs/ux/display-rotation-v0.5.md, D333).
 const ROTATION_TOP: i32 = 236;
 const POINTER_TOP: i32 = 316;
-/// The Rotation dropdown's options, in `DISPLAY_ROTATIONS`' order.
-const ROTATION_OPTIONS: [&str; 5] = ["Automatic", "Upright", "90° clockwise", "Upside down", "90° counter-clockwise"];
-/// The Rotation dropdown's width.
+const ROTATION_OPTIONS: [&str; 5] = [
+    "Automatic",
+    "Upright",
+    "90° clockwise",
+    "Upside down",
+    "90° counter-clockwise",
+];
 const ROTATION_WIDTH: i32 = 160;
 const LAYOUT_OPTIONS: [&str; 5] = ["Automatic", "Desktop", "Tablet", "Phone", "TV"];
 const AUTOMATIC: &str = "Automatic";
@@ -64,7 +67,8 @@ const RESOLUTION_OPTIONS_AT_2X: [&str; 10] = [
     "3840 \u{d7} 2160",
 ];
 const FIXED_SIZE: &str = "This display's size is set by the computer and cannot be changed.";
-const NO_DISK_FOR_RESOLUTION: &str = "No disk attached: the resolution cannot be saved for a restart.";
+const NO_DISK_FOR_RESOLUTION: &str =
+    "No disk attached: the resolution cannot be saved for a restart.";
 const RESTING: &str = "Automatic uses the display's own size.";
 const SMALL_SIZES_LEFT_OUT: &str = "Scale 2x leaves out the smallest sizes. Choose 1x to use them.";
 const NO_DISK_FOR_SCALE: &str = "No disk attached: the scale cannot be saved for a restart.";
@@ -199,7 +203,9 @@ pub fn offered(size: (u32, u32), scale: u32) -> bool {
 }
 
 fn sizes_offered(scale: u32) -> impl Iterator<Item = (u32, u32)> {
-    eggos_settings_file::RESOLUTIONS.into_iter().filter(move |size| offered(*size, scale))
+    eggos_settings_file::RESOLUTIONS
+        .into_iter()
+        .filter(move |size| offered(*size, scale))
 }
 
 fn options_for(scale: u32) -> &'static [&'static str] {
@@ -232,8 +238,13 @@ pub fn resolution_line(facts: &Facts) -> (Text<96>, bool) {
         let _ = text.write_str(".");
         return (text, true);
     }
-    let left_out = facts.scale == 2 && sizes_offered(2).count() < eggos_settings_file::RESOLUTIONS.len();
-    let _ = text.write_str(if left_out { SMALL_SIZES_LEFT_OUT } else { RESTING });
+    let left_out =
+        facts.scale == 2 && sizes_offered(2).count() < eggos_settings_file::RESOLUTIONS.len();
+    let _ = text.write_str(if left_out {
+        SMALL_SIZES_LEFT_OUT
+    } else {
+        RESTING
+    });
     (text, false)
 }
 
@@ -388,9 +399,22 @@ impl DisplayPane {
     /// Moves the pane to one column `content` wide on a narrow page (display-rotation-v0.5.md
     /// section 5's phone places, R2 for the rows above them), or back to the desktop's; returns
     /// the narrow pane's height.
-    pub fn reflow(&mut self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>, facts: &Facts) -> i32 {
+    pub fn reflow(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        content: Option<i32>,
+        facts: &Facts,
+    ) -> i32 {
         self.narrow = content;
-        let [resolution, scale, hint, rotation, pointer_label, pointer, layout] = self.labels;
+        let [
+            resolution,
+            scale,
+            hint,
+            rotation,
+            pointer_label,
+            pointer,
+            layout,
+        ] = self.labels;
         let line = |y: i32| Place::at(PADDING, y, Length::Content, Length::Content);
         let height = match content {
             None => {
@@ -422,12 +446,16 @@ impl DisplayPane {
                 0
             }
             Some(c) => {
-                let control = |y: i32| Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL));
+                let control =
+                    |y: i32| Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL));
                 tree.set_place(resolution, line(64));
                 tree.set_place(self.choice, control(88));
                 tree.set_place(self.resolution_status, line(144));
                 tree.set_place(scale, line(176));
-                tree.set_place(self.scales, Place::at(PADDING, 200, Length::Content, Length::Content));
+                tree.set_place(
+                    self.scales,
+                    Place::at(PADDING, 200, Length::Content, Length::Content),
+                );
                 tree.set_place(hint, line(232));
                 tree.set_place(self.status, line(256));
                 tree.set_place(rotation, line(296));
@@ -452,7 +480,8 @@ impl DisplayPane {
         tree.set_text(self.resolution, size.as_str());
         self.show_resolution(tree, facts);
         let next = size_at_next_restart(facts);
-        let choosable = facts.on_disk && halvable(facts.resolution) && (facts.scale == 2 || offered(next, 2));
+        let choosable =
+            facts.on_disk && halvable(facts.resolution) && (facts.scale == 2 || offered(next, 2));
         let shown = match choosable {
             true => facts.scale,
             false => facts.scale_in_force,
@@ -469,12 +498,16 @@ impl DisplayPane {
         self.show_layout(tree, facts);
     }
 
-    /// The Rotation row: the saved value and its state line (the design's section 3).
     fn show_rotation(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
-        tree.set_selected(self.rotation, facts.rotation.min(ROTATION_OPTIONS.len() - 1));
+        tree.set_selected(
+            self.rotation,
+            facts.rotation.min(ROTATION_OPTIONS.len() - 1),
+        );
         let line = match (facts.on_disk, facts.rotation) {
             (false, _) => "No disk attached: the rotation lasts until power-off.",
-            (_, 0) => "Automatic follows the device's orientation; with no sensor it stays upright.",
+            (_, 0) => {
+                "Automatic follows the device's orientation; with no sensor it stays upright."
+            }
             (_, 1) => "The screen is upright.",
             (_, 2) => "The screen is turned 90° clockwise.",
             (_, 3) => "The screen is upside down.",
@@ -493,9 +526,13 @@ impl DisplayPane {
     ) {
         self.show_rotation(tree, facts);
         let refusal = match (saved, applied) {
-            (Err(Errno::EPERM | Errno::EACCES), _) => "Not allowed: this user may not turn the screen.",
+            (Err(Errno::EPERM | Errno::EACCES), _) => {
+                "Not allowed: this user may not turn the screen."
+            }
             (Err(_), _) => "No disk attached: the rotation could not be saved.",
-            (Ok(()), Err(Errno::ENOMEM)) => "Saved, but there is not enough memory to turn the screen now.",
+            (Ok(()), Err(Errno::ENOMEM)) => {
+                "Saved, but there is not enough memory to turn the screen now."
+            }
             (Ok(()), Err(_)) => "Saved for the next boot, but the window server did not take it.",
             (Ok(()), Ok(())) => return,
         };
@@ -503,7 +540,10 @@ impl DisplayPane {
     }
 
     fn show_layout(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts) {
-        tree.set_selected(self.layout, facts.form_setting.min(LAYOUT_OPTIONS.len() - 1));
+        tree.set_selected(
+            self.layout,
+            facts.form_setting.min(LAYOUT_OPTIONS.len() - 1),
+        );
         let shown = crate::facts::FORMS_IN_USE
             .get(facts.form_in_use)
             .copied()
@@ -519,7 +559,12 @@ impl DisplayPane {
     }
 
     /// How setting `shell.form` went: the form now shown, or why it did not change (D303).
-    pub fn layout_saved(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts, saved: Result<(), Errno>) {
+    pub fn layout_saved(
+        &self,
+        tree: &mut WidgetTree<CAPACITY>,
+        facts: &Facts,
+        saved: Result<(), Errno>,
+    ) {
         self.show_layout(tree, facts);
         let refusal = match saved {
             Ok(()) => return,
@@ -550,7 +595,9 @@ impl DisplayPane {
             }
         });
         let selected = match facts.resolution_choice {
-            Some(size) if offered(size, scale) => sizes_offered(scale).position(|offered| offered == size).map_or(0, |index| index + 1),
+            Some(size) if offered(size, scale) => sizes_offered(scale)
+                .position(|offered| offered == size)
+                .map_or(0, |index| index + 1),
             _ => 0,
         };
         tree.set_selected(self.choice, selected);
@@ -564,11 +611,18 @@ impl DisplayPane {
     }
 
     /// How saving the size went: `facts` hold the saved size when it worked.
-    pub fn resolution_saved(&self, tree: &mut WidgetTree<CAPACITY>, facts: &Facts, saved: Result<(), Errno>) {
+    pub fn resolution_saved(
+        &self,
+        tree: &mut WidgetTree<CAPACITY>,
+        facts: &Facts,
+        saved: Result<(), Errno>,
+    ) {
         self.show(tree, facts);
         let refusal = match saved {
             Ok(()) => return,
-            Err(Errno::EPERM | Errno::EACCES) => "Not allowed: this user may not set the resolution.",
+            Err(Errno::EPERM | Errno::EACCES) => {
+                "Not allowed: this user may not set the resolution."
+            }
             Err(Errno::EINVAL) => "This size cannot be used with the scale chosen below.",
             Err(_) => "No disk attached: the resolution could not be saved.",
         };
@@ -603,9 +657,9 @@ impl DisplayPane {
                 let scale = if choice == 1 { 2 } else { 1 };
                 Reply::Done((scale != facts.scale).then_some(Request::SetDisplayScale(scale)))
             }
-            Response::Chosen(id, choice) if id == self.rotation => {
-                Reply::Done((choice != facts.rotation).then_some(Request::SetDisplayRotation(choice)))
-            }
+            Response::Chosen(id, choice) if id == self.rotation => Reply::Done(
+                (choice != facts.rotation).then_some(Request::SetDisplayRotation(choice)),
+            ),
             Response::Chosen(id, choice) if id == self.layout => {
                 Reply::Done((choice != facts.form_setting).then_some(Request::SetShellForm(choice)))
             }
@@ -614,7 +668,10 @@ impl DisplayPane {
                     0 => None,
                     index => sizes_offered(facts.scale.max(1)).nth(index - 1),
                 };
-                Reply::Done((size != facts.resolution_choice).then_some(Request::SetDisplayResolution(size)))
+                Reply::Done(
+                    (size != facts.resolution_choice)
+                        .then_some(Request::SetDisplayResolution(size)),
+                )
             }
             _ => Reply::NotMine,
         }
@@ -666,7 +723,13 @@ impl InputPanes {
         let rate_label = label(tree, keyboard, 240, 228, "Repeat rate");
         let rate = slider(tree, keyboard, 228, RATE, input.repeat_rate);
         let panes = Self {
-            labels: [buttons_label, scrolling_label, speed_label, delay_label, rate_label],
+            labels: [
+                buttons_label,
+                scrolling_label,
+                speed_label,
+                delay_label,
+                rate_label,
+            ],
             hands,
             scrolling,
             speed,
@@ -698,12 +761,21 @@ impl InputPanes {
             tree.set_place(scrolling, line(PADDING, 116));
             tree.set_place(self.scrolling, Place::right(PADDING, 110));
             tree.set_place(speed, line(PADDING, 156));
-            tree.set_place(self.speed, from_right(PADDING, 150, SLIDER_WIDTH, CONTROL_HEIGHT));
+            tree.set_place(
+                self.speed,
+                from_right(PADDING, 150, SLIDER_WIDTH, CONTROL_HEIGHT),
+            );
             tree.set_place(self.mouse_status, line(PADDING, STATUS_LINE));
             tree.set_place(delay, line(240, 188));
-            tree.set_place(self.delay, from_right(PADDING, 182, SLIDER_WIDTH, CONTROL_HEIGHT));
+            tree.set_place(
+                self.delay,
+                from_right(PADDING, 182, SLIDER_WIDTH, CONTROL_HEIGHT),
+            );
             tree.set_place(rate, line(240, 228));
-            tree.set_place(self.rate, from_right(PADDING, 222, SLIDER_WIDTH, CONTROL_HEIGHT));
+            tree.set_place(
+                self.rate,
+                from_right(PADDING, 222, SLIDER_WIDTH, CONTROL_HEIGHT),
+            );
             return (0, 0);
         };
         let control = |y: i32| Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL));

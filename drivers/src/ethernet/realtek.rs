@@ -2,8 +2,8 @@
 //! rings of `OWN`-flagged descriptors (D240).
 
 use super::{
-    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS, TRANSMIT_RING,
-    buffer_address, is_valid_mac, put_frame, take_frame,
+    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS,
+    TRANSMIT_RING, buffer_address, is_valid_mac, put_frame, take_frame,
 };
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
@@ -85,14 +85,26 @@ pub struct Realtek<R: RegisterIo, M: DmaMemory> {
 }
 
 fn end_of_ring(index: usize) -> u32 {
-    if index == RING_ENTRIES - 1 { END_OF_RING } else { 0 }
+    if index == RING_ENTRIES - 1 {
+        END_OF_RING
+    } else {
+        0
+    }
 }
 
 impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
     /// Resets the chip at `regs` and starts it with its rings in `memory`.
-    pub fn new(regs: R, memory: M, generation: Generation, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Self, (Error, M)> {
+    pub fn new(
+        regs: R,
+        memory: M,
+        generation: Generation,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, (Error, M)> {
         if memory.len() < super::MEMORY_BYTES {
-            return Err((Error::Unsupported("too little DMA memory for a network adapter"), memory));
+            return Err((
+                Error::Unsupported("too little DMA memory for a network adapter"),
+                memory,
+            ));
         }
         let mut mac = [0u8; 6];
         for (index, byte) in mac.iter_mut().enumerate() {
@@ -138,7 +150,11 @@ impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
     }
 
     fn start(&mut self) {
-        zero(&self.memory, RECEIVE_RING, TRANSMIT_RING + RING_ENTRIES * DESCRIPTOR_BYTES - RECEIVE_RING);
+        zero(
+            &self.memory,
+            RECEIVE_RING,
+            TRANSMIT_RING + RING_ENTRIES * DESCRIPTOR_BYTES - RECEIVE_RING,
+        );
         for index in 0..RING_ENTRIES {
             self.give_receive_buffer(index);
         }
@@ -146,23 +162,31 @@ impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
         self.regs.write8(CONFIGURATION_LOCK, UNLOCK);
         self.regs.write16(C_PLUS_COMMAND, C_PLUS_DEFAULT);
         self.regs.write16(RECEIVE_MAX_SIZE, MAX_FRAME_WITH_CRC);
-        self.regs.write8(TRANSMIT_MAX_SIZE, (BUFFER_BYTES / 128) as u8);
+        self.regs
+            .write8(TRANSMIT_MAX_SIZE, (BUFFER_BYTES / 128) as u8);
         let transmit = base + TRANSMIT_RING as u64;
         let receive = base + RECEIVE_RING as u64;
         self.regs.write32(TRANSMIT_DESCRIPTORS, transmit as u32);
-        self.regs.write32(TRANSMIT_DESCRIPTORS + 4, (transmit >> 32) as u32);
+        self.regs
+            .write32(TRANSMIT_DESCRIPTORS + 4, (transmit >> 32) as u32);
         self.regs.write32(RECEIVE_DESCRIPTORS, receive as u32);
-        self.regs.write32(RECEIVE_DESCRIPTORS + 4, (receive >> 32) as u32);
+        self.regs
+            .write32(RECEIVE_DESCRIPTORS + 4, (receive >> 32) as u32);
         self.regs.write32(MULTICAST, u32::MAX);
         self.regs.write32(MULTICAST + 4, u32::MAX);
-        self.regs.write8(COMMAND, COMMAND_RECEIVE | COMMAND_TRANSMIT);
+        self.regs
+            .write8(COMMAND, COMMAND_RECEIVE | COMMAND_TRANSMIT);
         let fetch = match self.generation {
             Generation::Rtl8168 => 0,
             Generation::Rtl8125 => RECEIVE_FETCH_8125,
         };
         self.regs.write32(
             RECEIVE_CONFIGURATION,
-            ACCEPT_OWN | ACCEPT_MULTICAST | ACCEPT_BROADCAST | RECEIVE_NO_THRESHOLD_UNLIMITED_DMA | fetch,
+            ACCEPT_OWN
+                | ACCEPT_MULTICAST
+                | ACCEPT_BROADCAST
+                | RECEIVE_NO_THRESHOLD_UNLIMITED_DMA
+                | fetch,
         );
         self.regs.write32(TRANSMIT_CONFIGURATION, TRANSMIT_DEFAULT);
         self.regs.write8(CONFIGURATION_LOCK, LOCK);
@@ -170,10 +194,18 @@ impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
 
     fn give_receive_buffer(&self, index: usize) {
         let descriptor = RECEIVE_RING + index * DESCRIPTOR_BYTES;
-        write64(&self.memory, descriptor + 8, buffer_address(&self.memory, RECEIVE_BUFFERS, index));
+        write64(
+            &self.memory,
+            descriptor + 8,
+            buffer_address(&self.memory, RECEIVE_BUFFERS, index),
+        );
         write32(&self.memory, descriptor + 4, 0);
         fence(Ordering::SeqCst);
-        write32(&self.memory, descriptor, OWN | end_of_ring(index) | BUFFER_BYTES as u32);
+        write32(
+            &self.memory,
+            descriptor,
+            OWN | end_of_ring(index) | BUFFER_BYTES as u32,
+        );
     }
 
     pub fn mac(&self) -> [u8; 6] {
@@ -214,7 +246,11 @@ impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
         }
         put_frame(&self.memory, index, frame)?;
         let length = frame.len().max(60) as u32;
-        write64(&self.memory, descriptor + 8, buffer_address(&self.memory, TRANSMIT_BUFFERS, index));
+        write64(
+            &self.memory,
+            descriptor + 8,
+            buffer_address(&self.memory, TRANSMIT_BUFFERS, index),
+        );
         write32(&self.memory, descriptor + 4, 0);
         fence(Ordering::SeqCst);
         write32(
@@ -226,7 +262,9 @@ impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
         fence(Ordering::SeqCst);
         match self.generation {
             Generation::Rtl8168 => self.regs.write8(TRANSMIT_POLL_8168, POLL_NORMAL_QUEUE_8168),
-            Generation::Rtl8125 => self.regs.write16(TRANSMIT_POLL_8125, POLL_NORMAL_QUEUE_8125),
+            Generation::Rtl8125 => self
+                .regs
+                .write16(TRANSMIT_POLL_8125, POLL_NORMAL_QUEUE_8125),
         }
         Ok(())
     }

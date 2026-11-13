@@ -365,7 +365,13 @@ fn clipped(rect: Rect, clip: Option<Rect>) -> Rect {
 
 type Visit<'v> = dyn FnMut(u32, u32, Target, Rect) -> bool + 'v;
 
-fn walk_table(table: Id, id: u32, next: &mut u32, clip: Option<Rect>, visit: &mut Visit<'_>) -> bool {
+fn walk_table(
+    table: Id,
+    id: u32,
+    next: &mut u32,
+    clip: Option<Rect>,
+    visit: &mut Visit<'_>,
+) -> bool {
     let (x, y) = table_view::origin_pixel(table);
     let in_window = |rect: Rect| clipped(rect.offset(x, y), clip);
     let mut going = table_view::header_cells(table, &mut |shown, _, rect| {
@@ -380,7 +386,12 @@ fn walk_table(table: Id, id: u32, next: &mut u32, clip: Option<Rect>, visit: &mu
         }
         let element = *next;
         *next += 1;
-        going = visit(element, id, Target::Row(table, row), in_window(table_view::row_rect(table, row)));
+        going = visit(
+            element,
+            id,
+            Target::Row(table, row),
+            in_window(table_view::row_rect(table, row)),
+        );
     }
     going
 }
@@ -425,44 +436,53 @@ fn walk(
 fn push_view(window: Id, content: Id, tree: &mut TreeWriter<'_>) {
     let mut next = FIRST_VIEW_ELEMENT;
     let mut joined = [0u8; MAX_LABEL_BYTES];
-    let _ = walk(window, content, (ROOT_ELEMENT, 0), &mut next, None, &mut |id, parent, target, rect| {
-        let described = match target {
-            Target::View(view) => classify(window, view),
-            Target::Column(_, _) => Described::new(Role::ColumnHeader),
-            Target::Row(table, row) => table_view::with_row_text(table, row, &mut joined, |name, value| {
-                let mut described = Described::new(Role::Row).named(name).valued(value);
-                if table_view::summary(table).0 == row as isize {
-                    described.flags |= flags::SELECTED;
+    let _ = walk(
+        window,
+        content,
+        (ROOT_ELEMENT, 0),
+        &mut next,
+        None,
+        &mut |id, parent, target, rect| {
+            let described = match target {
+                Target::View(view) => classify(window, view),
+                Target::Column(_, _) => Described::new(Role::ColumnHeader),
+                Target::Row(table, row) => {
+                    table_view::with_row_text(table, row, &mut joined, |name, value| {
+                        let mut described = Described::new(Role::Row).named(name).valued(value);
+                        if table_view::summary(table).0 == row as isize {
+                            described.flags |= flags::SELECTED;
+                        }
+                        described
+                    })
                 }
-                described
-            }),
-        };
-        let described = match target {
-            Target::Column(table, shown) => {
-                let mut title = Described::new(Role::ColumnHeader);
-                let _ = table_view::header_cells(table, &mut |index, column, _| {
-                    if index == shown {
-                        title = with_text(table_view::column_title(column), |text| {
-                            Described::new(Role::ColumnHeader).named(text)
-                        });
-                    }
-                    true
-                });
-                title
-            }
-            _ => described,
-        };
-        let element = Element::new(
-            id,
-            parent,
-            described.role,
-            Bounds::new(rect.x, rect.y, rect.width, rect.height),
-        )
-        .named(&described.name[..described.name_length])
-        .valued(&described.value[..described.value_length])
-        .flagged(described.flags);
-        tree.push(&element)
-    });
+            };
+            let described = match target {
+                Target::Column(table, shown) => {
+                    let mut title = Described::new(Role::ColumnHeader);
+                    let _ = table_view::header_cells(table, &mut |index, column, _| {
+                        if index == shown {
+                            title = with_text(table_view::column_title(column), |text| {
+                                Described::new(Role::ColumnHeader).named(text)
+                            });
+                        }
+                        true
+                    });
+                    title
+                }
+                _ => described,
+            };
+            let element = Element::new(
+                id,
+                parent,
+                described.role,
+                Bounds::new(rect.x, rect.y, rect.width, rect.height),
+            )
+            .named(&described.name[..described.name_length])
+            .valued(&described.value[..described.value_length])
+            .flagged(described.flags);
+            tree.push(&element)
+        },
+    );
 }
 
 fn target_with_id(window: Id, element: u32) -> Option<Target> {
@@ -472,13 +492,20 @@ fn target_with_id(window: Id, element: u32) -> Option<Target> {
     }
     let mut next = FIRST_VIEW_ELEMENT;
     let mut found = None;
-    let _ = walk(window, content, (ROOT_ELEMENT, 0), &mut next, None, &mut |id, _, target, _| {
-        if id == element {
-            found = Some(target);
-            return false;
-        }
-        true
-    });
+    let _ = walk(
+        window,
+        content,
+        (ROOT_ELEMENT, 0),
+        &mut next,
+        None,
+        &mut |id, _, target, _| {
+            if id == element {
+                found = Some(target);
+                return false;
+            }
+            true
+        },
+    );
     found
 }
 
@@ -502,20 +529,28 @@ fn act_on_extra(serial: u32, window: Id, target: Target, action: Action) -> Outc
             }
         }
         (Target::Column(table, shown), Action::SetText) => match query_number(serial) {
-            Some((width, None)) if table_view::agent_resize(table, shown, width.clamp(0, i64::from(i32::MAX)) as i32) => {
+            Some((width, None))
+                if table_view::agent_resize(
+                    table,
+                    shown,
+                    width.clamp(0, i64::from(i32::MAX)) as i32,
+                ) =>
+            {
                 Outcome::Done
             }
             _ => Outcome::NotSupported,
         },
-        (Target::View(view), Action::SetText) if is(view, &NSSCROLLVIEW) => match query_number(serial) {
-            Some((x, Some(y))) => {
-                let clip = scroll_view::clip_of_scroll_view(view);
-                let clamp = |value: i64| value.clamp(0, i64::from(i32::MAX)) as i32;
-                scroll_view::scroll_clip(clip, (clamp(x), clamp(y)));
-                Outcome::Done
+        (Target::View(view), Action::SetText) if is(view, &NSSCROLLVIEW) => {
+            match query_number(serial) {
+                Some((x, Some(y))) => {
+                    let clip = scroll_view::clip_of_scroll_view(view);
+                    let clamp = |value: i64| value.clamp(0, i64::from(i32::MAX)) as i32;
+                    scroll_view::scroll_clip(clip, (clamp(x), clamp(y)));
+                    Outcome::Done
+                }
+                _ => Outcome::NotSupported,
             }
-            _ => Outcome::NotSupported,
-        },
+        }
         (Target::View(view), Action::SetText) if is(view, &NSTABLEVIEW) => {
             let (_, rows, disabled) = table_view::summary(view);
             match query_number(serial) {

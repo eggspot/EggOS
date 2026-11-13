@@ -48,7 +48,9 @@ fn has_8042() -> bool {
     let revision = fadt.get(FADT_REVISION).copied().unwrap_or(0);
     let flags = fadt
         .get(FADT_IA_PC_BOOT_ARCH..FADT_IA_PC_BOOT_ARCH + 2)
-        .map_or(BOOT_ARCH_8042, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+        .map_or(BOOT_ARCH_8042, |bytes| {
+            u16::from_le_bytes([bytes[0], bytes[1]])
+        });
     revision < 3 || flags & BOOT_ARCH_8042 != 0
 }
 
@@ -69,9 +71,15 @@ pub(super) fn start() -> Found {
 }
 
 pub(super) fn poll(budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
-    CONTROLLER.with(|slot| slot.as_mut().map_or(0, |controller| controller.poll(budget, event)))
+    CONTROLLER.with(|slot| {
+        slot.as_mut()
+            .map_or(0, |controller| controller.poll(budget, event))
+    })
 }
 
 pub(super) fn set_lights(lights: LockLights) -> bool {
-    CONTROLLER.with(|slot| slot.as_mut().is_none_or(|controller| controller.set_lights(lights)))
+    CONTROLLER.with(|slot| {
+        slot.as_mut()
+            .is_none_or(|controller| controller.set_lights(lights))
+    })
 }

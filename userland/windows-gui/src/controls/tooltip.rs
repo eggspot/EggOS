@@ -139,7 +139,10 @@ pub fn layout(tip: &TipText<'_>) -> TipLayout {
             2 * PADDING + title_width.max(widest * CELL_WIDTH),
             2 * TEXT_TOP + CELL_HEIGHT + TITLE_GAP + text_height,
         ),
-        false => (2 * PADDING + widest * CELL_WIDTH, 2 * TEXT_TOP + text_height),
+        false => (
+            2 * PADDING + widest * CELL_WIDTH,
+            2 * TEXT_TOP + text_height,
+        ),
     };
     TipLayout {
         width: width.max(MINIMUM_WIDTH),
@@ -272,7 +275,11 @@ pub fn paint(
     if titled {
         let mut left = rect.left + PADDING;
         if tip.icon != TipIcon::None {
-            let glyph = if palette.rounded { 0x000b_0e13 } else { 0x00ff_ffff };
+            let glyph = if palette.rounded {
+                0x000b_0e13
+            } else {
+                0x00ff_ffff
+            };
             draw_icon(surface, (left, top), tip.icon, glyph);
             left += ICON_BOX + ICON_GAP;
         }
@@ -281,7 +288,12 @@ pub fn paint(
     }
     for (row, &(start, end)) in layout.lines().iter().enumerate() {
         let y = top + row as i32 * CELL_HEIGHT;
-        draw_units(surface, (rect.left + PADDING, y), &tip.text[start..end], ink);
+        draw_units(
+            surface,
+            (rect.left + PADDING, y),
+            &tip.text[start..end],
+            ink,
+        );
     }
     surface.set_clip(saved);
 }
@@ -341,7 +353,10 @@ mod tests {
             tool,
             above_first: true,
         };
-        assert_eq!(place(balloon, (40, 24), (200, 200)), Rect::sized(40, 22, 40, 24));
+        assert_eq!(
+            place(balloon, (40, 24), (200, 200)),
+            Rect::sized(40, 22, 40, 24)
+        );
         let exact = place(Placement::Absolute((-5, 3)), (40, 24), (200, 200));
         assert_eq!(exact, Rect::sized(-5, 3, 40, 24));
     }
@@ -365,7 +380,14 @@ mod tests {
         let laid = layout(&tip);
         let mut pixels = vec![0u32; 64 * 32];
         let mut surface = Surface::new(&mut pixels, 64, 32).unwrap();
-        paint(&mut surface, Rect::sized(0, 0, 48, 24), &tip, &laid, false, &LIGHT);
+        paint(
+            &mut surface,
+            Rect::sized(0, 0, 48, 24),
+            &tip,
+            &laid,
+            false,
+            &LIGHT,
+        );
         assert_eq!(surface.get(0, 0), Some(LIGHT_BORDER));
         assert_eq!(surface.get(47, 12), Some(LIGHT_BORDER));
         assert_eq!(surface.get(4, 12), Some(LIGHT_FILL));

@@ -39,8 +39,6 @@ const FIRST_SHARED_ADDRESS: u64 = 0x1_0000;
 const BYTES_PER_PIXEL: u32 = 4;
 const FIRMWARE_VERSION: &[u8] = b"asahi,os-fw-version";
 
-/// Table memory for a DART: 16 KiB regions from the frame allocator, reached through the
-/// direct map, and the firmware's own tables there too.
 struct KernelTables {
     regions: Vec<DmaRegion>,
 }
@@ -58,12 +56,14 @@ unsafe impl DartMemory for KernelTables {
     }
 
     fn table_at(&mut self, physical: u64) -> Option<usize> {
-        let offset = crate::memory::FRAMES.lock().as_ref()?.physical_memory_offset();
+        let offset = crate::memory::FRAMES
+            .lock()
+            .as_ref()?
+            .physical_memory_offset();
         Some((physical as usize).wrapping_add(offset))
     }
 }
 
-/// Memory the DCP shares with the kernel: regions mapped into its DART.
 struct DcpMemory {
     dart: Dart<Mmio, KernelTables>,
     regions: Vec<DmaRegion>,
@@ -90,12 +90,11 @@ impl DcpMemory {
 
 impl SharedMemory for DcpMemory {
     fn shared_memory(&mut self, _endpoint: u8, bytes: u64, address: u64) -> Option<u64> {
-        self.share(bytes, address).map(|buffer| buffer.device_address)
+        self.share(bytes, address)
+            .map(|buffer| buffer.device_address)
     }
 }
 
-/// RTKit and the DCP's shared memory as EPIC's link, with the messages for other endpoints
-/// kept until asked for.
 struct DcpLink<'a> {
     rtkit: &'a mut Rtkit<Mmio>,
     memory: &'a mut DcpMemory,
@@ -111,7 +110,9 @@ impl DcpLink<'_> {
             waiting,
             ..
         } = self;
-        rtkit.poll(*memory, &mut |endpoint, payload| waiting.push_back((endpoint, payload)))
+        rtkit.poll(*memory, &mut |endpoint, payload| {
+            waiting.push_back((endpoint, payload))
+        })
     }
 
     fn until_running(&mut self) -> Result<(), RtkitError> {
@@ -150,7 +151,6 @@ unsafe impl Link for DcpLink<'_> {
     }
 }
 
-/// The framebuffer the DCP shows: written by the CPU through a write-combining window.
 struct AppleScanout {
     pixels: *mut u32,
     mode: Mode,
@@ -182,7 +182,6 @@ impl Scanout for AppleScanout {
     }
 }
 
-/// A node's first phandle reference in `cells` and the cell after it, if any.
 fn reference(cells: &[u8]) -> Option<(u32, Option<u32>)> {
     let word = |at: usize| Some(u32::from_be_bytes(cells.get(at..at + 4)?.try_into().ok()?));
     Some((word(0)?, word(4)))
@@ -231,7 +230,10 @@ fn firmware_of(tree: &'static [u8]) -> Firmware {
         let text = text.split(|&byte| byte == 0).next()?;
         let mut parts = text.split(|&byte| byte == b'.');
         let number = |part: &[u8]| core::str::from_utf8(part).ok()?.parse::<u32>().ok();
-        Some((number(parts.next()?)?, parts.next().and_then(number).unwrap_or(0)))
+        Some((
+            number(parts.next()?)?,
+            parts.next().and_then(number).unwrap_or(0),
+        ))
     });
     match major_minor {
         Some(version) if version >= (13, 3) => Firmware::From13_3,
@@ -250,10 +252,12 @@ fn probe(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let coprocessor = map_registers(probe, &node, COPROCESSOR_BYTES)?;
     let (mailbox_phandle, _) =
         reference(node.mboxes).ok_or(ProbeError::Refused("the DCP names no mailbox"))?;
-    let mailbox_node = fdt::node_with_phandle(tree, mailbox_phandle)
-        .ok_or(ProbeError::Refused("the DCP's mailbox is not in the device tree"))?;
-    let layout = mailbox::Layout::of_compatible(mailbox_node.compatible_strings())
-        .ok_or(ProbeError::Refused("a mailbox of a kind EggOS does not know"))?;
+    let mailbox_node = fdt::node_with_phandle(tree, mailbox_phandle).ok_or(ProbeError::Refused(
+        "the DCP's mailbox is not in the device tree",
+    ))?;
+    let layout = mailbox::Layout::of_compatible(mailbox_node.compatible_strings()).ok_or(
+        ProbeError::Refused("a mailbox of a kind EggOS does not know"),
+    )?;
     let mailbox = Mailbox::new(map_registers(probe, &mailbox_node, MAILBOX_BYTES)?, layout);
     let dcp_dart = dart_of(probe, tree, &node)?;
     let mut display_dart = dart_of(probe, tree, &subsystem)?;
@@ -275,7 +279,9 @@ fn probe(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         deadline: probe.deadline(BOOT_TIMEOUT_MS),
     };
     link.until_running().map_err(rtkit_refused)?;
-    link.rtkit.start_endpoint(dcp::ENDPOINT).map_err(rtkit_refused)?;
+    link.rtkit
+        .start_endpoint(dcp::ENDPOINT)
+        .map_err(rtkit_refused)?;
     let mut service = DisplayService::start(&mut link, firmware).map_err(refused)?;
     service.set_power(&mut link, true).map_err(refused)?;
     if service.hot_plug(&mut link).map_err(refused)?.is_none() {

@@ -370,8 +370,14 @@ mod tests {
     fn a_write_alone_ends_with_a_stop_on_its_last_byte() {
         let simulated = Simulated::new();
         let mut bus = controller(&simulated);
-        bus.transfer(TARGET_ADDRESS, false, &[0x05, 0xaa, 0xbb], &mut [], &mut polls(100))
-            .unwrap();
+        bus.transfer(
+            TARGET_ADDRESS,
+            false,
+            &[0x05, 0xaa, 0xbb],
+            &mut [],
+            &mut polls(100),
+        )
+        .unwrap();
         assert_eq!(simulated.memory.borrow()[5..7], [0xaa, 0xbb]);
         assert_eq!(simulated.commands.borrow().last(), Some(&(0xbb | STOP)));
     }

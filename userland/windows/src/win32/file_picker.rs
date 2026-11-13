@@ -731,7 +731,9 @@ fn push_filters(request: &OpenFileName, arguments: &mut pick_process::Arguments)
             break;
         }
     }
-    let mut pieces = units[..length].split(|unit| *unit == 0).filter(|piece| !piece.is_empty());
+    let mut pieces = units[..length]
+        .split(|unit| *unit == 0)
+        .filter(|piece| !piece.is_empty());
     let mut any = false;
     while let (Some(description), Some(patterns)) = (pieces.next(), pieces.next()) {
         let mut joined = [0u8; PATTERN_BYTES * 2];
@@ -758,9 +760,6 @@ fn push_number(arguments: &mut pick_process::Arguments, name: &[u8], value: u32)
     let _ = arguments.option(name, &digits[at..]);
 }
 
-/// The dialog as the system file picker (D392, file-picker-v0.3.md section 14): `pick` with
-/// the request's title, folder, filters, name, extension and overwrite question; `Err` when
-/// `pick` could not show, so the layer's own picker serves instead.
 fn show_with_pick(
     request: &OpenFileName,
     kind: PickerKind,

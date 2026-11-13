@@ -33,7 +33,6 @@ pub fn sets_modes(device: u16) -> bool {
     is_display_9(device) || is_display_11(device) || is_display_12(device) || is_display_14(device)
 }
 
-/// The display engine's generation, for the registers that moved between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Generation {
     Display9,
@@ -211,7 +210,9 @@ const GTT_SIZE_SHIFT: u16 = 6;
 const GTT_SIZE_MASK: u16 = 0x3;
 const GTT_ENTRY_BYTES: u64 = 8;
 
-const DISPLAY_9_TO_14: [u8; 13] = [0x19, 0x31, 0x3e, 0x46, 0x4c, 0x4e, 0x59, 0x7d, 0x87, 0x8a, 0x9a, 0x9b, 0xa7];
+const DISPLAY_9_TO_14: [u8; 13] = [
+    0x19, 0x31, 0x3e, 0x46, 0x4c, 0x4e, 0x59, 0x7d, 0x87, 0x8a, 0x9a, 0x9b, 0xa7,
+];
 /// Why the display engine is not taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -280,7 +281,11 @@ pub fn stride_for(width: u32) -> u32 {
 pub fn cursor_position(x: i32, y: i32) -> u32 {
     let field = |value: i32| {
         let magnitude = value.unsigned_abs().min(CURSOR_FIELD);
-        if value < 0 { magnitude | CURSOR_NEGATIVE } else { magnitude }
+        if value < 0 {
+            magnitude | CURSOR_NEGATIVE
+        } else {
+            magnitude
+        }
     };
     field(x) | (field(y) << 16)
 }
@@ -363,9 +368,13 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.regs.write32(PIPE_INTERRUPT_IDENTITY + at, PIPE_VBLANK);
         self.regs.write32(PIPE_INTERRUPT_MASK + at, !PIPE_VBLANK);
         self.regs.write32(PIPE_INTERRUPT_ENABLE + at, PIPE_VBLANK);
-        self.regs.write32(MASTER_INTERRUPT, MASTER_ENABLE | 1 << (MASTER_PIPE_SHIFT + self.pipe as u32));
+        self.regs.write32(
+            MASTER_INTERRUPT,
+            MASTER_ENABLE | 1 << (MASTER_PIPE_SHIFT + self.pipe as u32),
+        );
         if DISPLAY_11_AND_LATER.contains(&((device >> 8) as u8)) {
-            self.regs.write32(GFX_MASTER_INTERRUPT, MASTER_ENABLE | GFX_MASTER_DISPLAY);
+            self.regs
+                .write32(GFX_MASTER_INTERRUPT, MASTER_ENABLE | GFX_MASTER_DISPLAY);
         }
     }
 
@@ -386,7 +395,10 @@ impl<R: RegisterIo> DisplayEngine<R> {
         &self,
         port: usize,
         keep_waiting: &mut dyn FnMut() -> bool,
-    ) -> (Option<super::intel_aux::LinkCapabilities>, Option<crate::edid::Edid>) {
+    ) -> (
+        Option<super::intel_aux::LinkCapabilities>,
+        Option<crate::edid::Edid>,
+    ) {
         let mut dpcd = [0u8; super::intel_aux::MOST_READ];
         let channel = self.aux_channel(port);
         let link = super::intel_aux::read_dpcd(
@@ -405,8 +417,6 @@ impl<R: RegisterIo> DisplayEngine<R> {
         (link, edid)
     }
 
-    /// The AUX channel of digital port `port`: display 14's Type-C ports have theirs in the
-    /// Type-C block (D528).
     fn aux_channel(&self, port: usize) -> super::intel_aux::Channel {
         use super::intel_aux::Channel;
         match self.generation {
@@ -439,7 +449,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
         index: usize,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<super::intel_type_c::Connected, super::intel_type_c::TypeCError> {
-        use super::intel_type_c::{connect, power_aux, Flavour, TypeCError};
+        use super::intel_type_c::{Flavour, TypeCError, connect, power_aux};
         let flavour = self.type_c.ok_or(TypeCError::NotConnected)?;
         if flavour == Flavour::Meteor {
             let channel = super::intel_aux::Channel::meteor_type_c(index);
@@ -516,7 +526,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
         stride_bytes: u32,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), ModeError> {
-        use super::intel_modeset::{m_n, symbol_clock_khz, timing_registers, TRANSFER_UNIT};
+        use super::intel_modeset::{TRANSFER_UNIT, m_n, symbol_clock_khz, timing_registers};
         if pipe >= MAX_PIPES - 1 {
             return Err(ModeError::Unsupported);
         }
@@ -539,13 +549,18 @@ impl<R: RegisterIo> DisplayEngine<R> {
             };
             self.regs.write32(transcoder + at, *value);
         }
-        let ((data_m, data_n), (link_m, link_n)) = m_n(timing.clock_khz, BITS_PER_PIXEL, symbol_khz, lanes as u32);
-        self.regs.write32(transcoder + DATA_M, (TRANSFER_UNIT - 1) << TU_SHIFT | data_m);
+        let ((data_m, data_n), (link_m, link_n)) =
+            m_n(timing.clock_khz, BITS_PER_PIXEL, symbol_khz, lanes as u32);
+        self.regs.write32(
+            transcoder + DATA_M,
+            (TRANSFER_UNIT - 1) << TU_SHIFT | data_m,
+        );
         self.regs.write32(transcoder + DATA_N, data_n);
         self.regs.write32(transcoder + LINK_M, link_m);
         self.regs.write32(transcoder + LINK_N, link_n);
         let clock_shift = self.generation.transcoder_clock_shift();
-        self.regs.write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << clock_shift);
+        self.regs
+            .write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << clock_shift);
         let mut function = DDI_FUNC_ENABLE
             | self.generation.port_select(port)
             | DDI_MODE_DP_SST
@@ -556,14 +571,23 @@ impl<R: RegisterIo> DisplayEngine<R> {
         if timing.horizontal_sync_positive {
             function |= DDI_SYNC_HORIZONTAL_HIGH;
         }
-        self.regs.write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
+        self.regs
+            .write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
         self.train_port(port, pipe, lanes, rate, keep_waiting)
             .map_err(|_| ModeError::LinkTraining)?;
-        self.regs.write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
+        self.regs
+            .write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
         let at = |register: usize| register + pipe * PIPE_STRIDE;
-        self.regs.write32(at(PLANE_SIZE), (timing.height - 1) << 16 | (timing.width - 1));
-        self.regs.write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
-        self.regs.write32(at(PLANE_CTL), PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
+        self.regs.write32(
+            at(PLANE_SIZE),
+            (timing.height - 1) << 16 | (timing.width - 1),
+        );
+        self.regs
+            .write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
+        self.regs.write32(
+            at(PLANE_CTL),
+            PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT,
+        );
         self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
         Ok(())
     }
@@ -608,10 +632,14 @@ impl<R: RegisterIo> DisplayEngine<R> {
             .ok_or(ModeError::Unsupported)?;
         let field = 6 * pll as u32;
         let control = self.regs.read32(DPLL_CTRL1) & !(0x3f << field);
-        self.regs.write32(DPLL_CTRL1, control | (DPLL_OVERRIDE | DPLL_HDMI_MODE) << field);
+        self.regs.write32(
+            DPLL_CTRL1,
+            control | (DPLL_OVERRIDE | DPLL_HDMI_MODE) << field,
+        );
         let configuration = DPLL_CONFIGURATION + (pll - 1) * DPLL_CONFIGURATION_STRIDE;
         self.regs.write32(configuration, settings.configuration_1());
-        self.regs.write32(configuration + 4, settings.configuration_2());
+        self.regs
+            .write32(configuration + 4, settings.configuration_2());
         self.regs.write32(DPLL_ENABLES[pll], PLL_ENABLE);
         while self.regs.read32(DPLL_STATUS) & 1 << (8 * pll) == 0 {
             if !keep_waiting() {
@@ -620,16 +648,25 @@ impl<R: RegisterIo> DisplayEngine<R> {
         }
         let route = 3 * port as u32;
         let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
-        self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
+        self.regs.write32(
+            DPLL_CTRL2,
+            routing | 1 << route | (pll as u32) << (route + 1),
+        );
         let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
-        for (index, value) in super::intel_modeset::timing_registers(timing).iter().enumerate() {
+        for (index, value) in super::intel_modeset::timing_registers(timing)
+            .iter()
+            .enumerate()
+        {
             let at = match index {
                 6 => PIPE_SOURCE,
                 index => 4 * index,
             };
             self.regs.write32(transcoder + at, *value);
         }
-        self.regs.write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << TRANS_CLK_PORT_SHIFT);
+        self.regs.write32(
+            TRANS_CLK_SEL + 4 * pipe,
+            (port as u32 + 1) << TRANS_CLK_PORT_SHIFT,
+        );
         let mut function = DDI_FUNC_ENABLE | (port as u32) << DDI_PORT_SHIFT | DDI_MODE_HDMI;
         if timing.vertical_sync_positive {
             function |= DDI_SYNC_VERTICAL_HIGH;
@@ -637,12 +674,19 @@ impl<R: RegisterIo> DisplayEngine<R> {
         if timing.horizontal_sync_positive {
             function |= DDI_SYNC_HORIZONTAL_HIGH;
         }
-        self.regs.write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
-        self.regs.write32(DDI_BUF_CTL + port * PORT_REGISTER_STRIDE, DDI_BUF_ENABLE);
-        self.regs.write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
+        self.regs
+            .write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
+        self.regs
+            .write32(DDI_BUF_CTL + port * PORT_REGISTER_STRIDE, DDI_BUF_ENABLE);
+        self.regs
+            .write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
         let at = |register: usize| register + pipe * PIPE_STRIDE;
-        self.regs.write32(at(PLANE_SIZE), (timing.height - 1) << 16 | (timing.width - 1));
-        self.regs.write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
+        self.regs.write32(
+            at(PLANE_SIZE),
+            (timing.height - 1) << 16 | (timing.width - 1),
+        );
+        self.regs
+            .write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
         self.regs.write32(
             at(PLANE_CTL),
             PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT,
@@ -664,7 +708,8 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let pll = DPLL_FOR_PORTS;
         let field = 6 * pll as u32;
         let control = self.regs.read32(DPLL_CTRL1) & !(0x3f << field);
-        self.regs.write32(DPLL_CTRL1, control | 1 << field | code << (field + 1));
+        self.regs
+            .write32(DPLL_CTRL1, control | 1 << field | code << (field + 1));
         self.regs.write32(DPLL_ENABLES[pll], PLL_ENABLE);
         while self.regs.read32(DPLL_STATUS) & 1 << (8 * pll) == 0 {
             if !keep_waiting() {
@@ -673,12 +718,13 @@ impl<R: RegisterIo> DisplayEngine<R> {
         }
         let route = 3 * port as u32;
         let routing = self.regs.read32(DPLL_CTRL2) & !(0x7 << route | 1 << (15 + port as u32));
-        self.regs.write32(DPLL_CTRL2, routing | 1 << route | (pll as u32) << (route + 1));
+        self.regs.write32(
+            DPLL_CTRL2,
+            routing | 1 << route | (pll as u32) << (route + 1),
+        );
         Ok(())
     }
 
-    /// Display 14's port A or B (D527) or Type-C port (D528): its C10 or C20 PHY brought up for
-    /// the link and its PLL locked, and the port's width set.
     fn clock_cx0_port(
         &self,
         port: usize,
@@ -697,9 +743,6 @@ impl<R: RegisterIo> DisplayEngine<R> {
         Ok(())
     }
 
-    /// A Type-C port in DisplayPort alternate mode (D526): its Dekel PLL powered, set for the
-    /// link's `link_khz` from the reference clock and enabled, the DDI clocked from it and
-    /// ungated, the FIA told the lanes and the PHY's lane pairs set up for them.
     fn clock_type_c_port(
         &self,
         port: usize,
@@ -708,7 +751,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), ModeError> {
         use super::intel_combo_phy::reference_khz;
-        use super::intel_type_c::{pll_enable, set_lane_count, ungate_clock, FIRST_PORT};
+        use super::intel_type_c::{FIRST_PORT, pll_enable, set_lane_count, ungate_clock};
         let flavour = self.type_c.ok_or(ModeError::Unsupported)?;
         let index = port - FIRST_PORT;
         let reference = reference_khz(self.regs.read32(STRAPS) >> REFERENCE_SHIFT & 0x7)
@@ -730,16 +773,14 @@ impl<R: RegisterIo> DisplayEngine<R> {
         dekel.program_pll(&setting);
         self.regs.write32(enable, PLL_POWER_ENABLE | PLL_ENABLE);
         wait_for(PLL_LOCKED, keep_waiting)?;
-        self.regs.write32(DDI_CLOCK_SELECT + 4 * port, DDI_CLOCK_TYPE_C_PLL);
+        self.regs
+            .write32(DDI_CLOCK_SELECT + 4 * port, DDI_CLOCK_TYPE_C_PLL);
         ungate_clock(&self.regs, index);
         set_lane_count(&self.regs, flavour, index, lanes).map_err(|_| ModeError::Unsupported)?;
         dekel.set_lane_mode(lanes);
         Ok(())
     }
 
-    /// Display 11's combo ports A and B (D465): a combo PLL the firmware left off is powered,
-    /// set to the rate from the reference clock the straps name, enabled until it locks, then
-    /// routed to the port and the port's clock turned on.
     fn clock_combo_port(
         &self,
         port: usize,
@@ -769,12 +810,14 @@ impl<R: RegisterIo> DisplayEngine<R> {
         wait_for(PLL_POWER_STATE, keep_waiting)?;
         let configuration = self.generation.combo_pll_configuration() + pll * COMBO_PLL_STRIDE;
         self.regs.write32(configuration, settings.configuration_0());
-        self.regs.write32(configuration + 4, settings.configuration_1());
+        self.regs
+            .write32(configuration + 4, settings.configuration_1());
         self.regs.write32(enable, PLL_POWER_ENABLE | PLL_ENABLE);
         wait_for(PLL_LOCKED, keep_waiting)?;
         let field = 2 * port as u32;
         let routing = self.regs.read32(PORT_CLOCK_ROUTING) & !(0x3 << field);
-        self.regs.write32(PORT_CLOCK_ROUTING, routing | (pll as u32) << field);
+        self.regs
+            .write32(PORT_CLOCK_ROUTING, routing | (pll as u32) << field);
         let routed = self.regs.read32(PORT_CLOCK_ROUTING);
         self.regs.write32(
             PORT_CLOCK_ROUTING,
@@ -788,7 +831,8 @@ impl<R: RegisterIo> DisplayEngine<R> {
     pub fn load_dmc(&self, dmc: &super::intel_dmc::Dmc<'_>) {
         for (index, word) in dmc.program.chunks_exact(4).enumerate() {
             let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
-            self.regs.write32(dmc.program_base as usize + 4 * index, value);
+            self.regs
+                .write32(dmc.program_base as usize + 4 * index, value);
         }
         for &(register, value) in &dmc.writes[..dmc.count] {
             self.regs.write32(register as usize, value);
@@ -801,7 +845,8 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let shown = |pipe: &usize| *pipe == self.pipe || self.mirrors & 1 << *pipe != 0;
         for pipe in (0..MAX_PIPES).filter(shown) {
             let at = |register: usize| register + pipe * PIPE_STRIDE;
-            self.regs.write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
+            self.regs
+                .write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
             self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
         }
     }
@@ -831,12 +876,21 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let (size, at) = super::intel_modeset::fitted(source, (timing.width, timing.height));
         let pair = |high: u32, low: u32| (high & 0x1fff) << 16 | (low & 0x1fff);
         let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
-        self.regs.write32(transcoder + PIPE_SOURCE, pair(source.0 - 1, source.1 - 1));
-        self.regs.write32(PLANE_SIZE + pipe * PIPE_STRIDE, pair(source.1 - 1, source.0 - 1));
+        self.regs
+            .write32(transcoder + PIPE_SOURCE, pair(source.0 - 1, source.1 - 1));
+        self.regs.write32(
+            PLANE_SIZE + pipe * PIPE_STRIDE,
+            pair(source.1 - 1, source.0 - 1),
+        );
         let scaler = pipe * SCALER_PIPE_STRIDE;
-        self.regs.write32(SCALER_WINDOW_POSITION + scaler, at.0 << 16 | at.1);
-        self.regs.write32(SCALER_WINDOW_SIZE + scaler, size.0 << 16 | size.1);
-        self.regs.write32(SCALER_CONTROL + scaler, SCALER_ENABLE | SCALER_FILTER_BILINEAR);
+        self.regs
+            .write32(SCALER_WINDOW_POSITION + scaler, at.0 << 16 | at.1);
+        self.regs
+            .write32(SCALER_WINDOW_SIZE + scaler, size.0 << 16 | size.1);
+        self.regs.write32(
+            SCALER_CONTROL + scaler,
+            SCALER_ENABLE | SCALER_FILTER_BILINEAR,
+        );
         self.mirrors |= 1 << pipe;
     }
 
@@ -902,7 +956,9 @@ mod tests {
     #[test]
     fn the_lit_plane_is_found_with_its_size_stride_and_surface() {
         let control = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
-        let (_, plane) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20, SKYLAKE).ok().unwrap();
+        let (_, plane) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20, SKYLAKE)
+            .ok()
+            .unwrap();
         assert_eq!(
             plane,
             LitPlane {
@@ -919,7 +975,12 @@ mod tests {
     fn tiled_or_rgb_ordered_planes_and_dark_engines_are_refused() {
         let xrgb = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
         assert_eq!(
-            DisplayEngine::take(lit_on_pipe_b(xrgb | (1 << PLANE_TILING_SHIFT)), 16 << 20, SKYLAKE).err(),
+            DisplayEngine::take(
+                lit_on_pipe_b(xrgb | (1 << PLANE_TILING_SHIFT)),
+                16 << 20,
+                SKYLAKE
+            )
+            .err(),
             Some(Refusal::UnsupportedPlane)
         );
         assert_eq!(
@@ -935,7 +996,9 @@ mod tests {
     #[test]
     fn a_flip_writes_the_stride_before_the_surface_and_maps_pages_into_the_gtt() {
         let control = PLANE_ENABLE | (PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT);
-        let (engine, _) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20, SKYLAKE).ok().unwrap();
+        let (engine, _) = DisplayEngine::take(lit_on_pipe_b(control), 16 << 20, SKYLAKE)
+            .ok()
+            .unwrap();
         engine.flip(0x3fc0_0000, stride_for(1366));
         assert_eq!(engine.regs.read32(PLANE_STRIDE + PIPE_STRIDE), 5504 / 64);
         assert_eq!(engine.regs.read32(PLANE_SURF + PIPE_STRIDE), 0x3fc0_0000);
@@ -956,7 +1019,10 @@ mod tests {
         assert_eq!(gtt_span(3 << GTT_SIZE_SHIFT), 4 << 30);
         assert!(is_supported(0x9a49));
         assert!(is_display_12(0x9a49) && sets_modes(0x9a49) && !is_display_9(0x9a49));
-        assert_eq!(Generation::of(0x9a49).port_select(1), 2 << DDI_PORT_SHIFT_12);
+        assert_eq!(
+            Generation::of(0x9a49).port_select(1),
+            2 << DDI_PORT_SHIFT_12
+        );
         assert_eq!(Generation::of(0x8a52).port_select(1), 1 << DDI_PORT_SHIFT);
         assert_eq!(Generation::of(0x9a49).pattern_register(1, 2), 0x62540);
         assert_eq!(Generation::of(0x5916).pattern_register(1, 2), 0x64140);
@@ -1016,7 +1082,8 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
                 type_c.high_rate,
                 type_c.alder,
             );
-            self.regs.write32(buffer, DDI_BUF_ENABLE | width | self.kept);
+            self.regs
+                .write32(buffer, DDI_BUF_ENABLE | width | self.kept);
             return;
         }
         if let Some(link_khz) = self.c10 {
@@ -1032,7 +1099,10 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
             return;
         }
         let level = u32::from(drive.swing) * 4 + u32::from(drive.pre_emphasis);
-        self.regs.write32(buffer, DDI_BUF_ENABLE | width | level << DDI_BUF_SWING_SHIFT);
+        self.regs.write32(
+            buffer,
+            DDI_BUF_ENABLE | width | level << DDI_BUF_SWING_SHIFT,
+        );
     }
 
     fn pause(&mut self, microseconds: u32) {

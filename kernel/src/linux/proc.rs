@@ -118,13 +118,10 @@ const MOUNTS: u64 = 20;
 const DRIVER_DEVICES: u64 = 21;
 
 const DRIVER_DISKS: u64 = 22;
-/// `driver/boot`, `driver/boot-kernel`, `driver/boot-loader` (D241).
 const DRIVER_BOOT: u64 = 27;
 const DRIVER_BOOT_KERNEL: u64 = 28;
 const DRIVER_BOOT_LOADER: u64 = 29;
-/// `driver/wifi` (D274).
 const DRIVER_WIFI: u64 = 30;
-/// `driver/display` (D287).
 const DRIVER_DISPLAY: u64 = 31;
 
 const SYS_EGGOS: u64 = 23;
@@ -1495,9 +1492,6 @@ mod tests {
     }
 }
 
-/// `/proc/driver/boot`'s text (D241): `partition <GUID as 32 hex digits, in GPT byte order>`,
-/// `kernel <bytes>` and `loader <bytes>`, each line only when known; empty when the kernel was
-/// not started by EggOS's UEFI loader.
 fn boot_text<P: Platform>() -> Option<Vec<u8>> {
     let mut text = Vec::new();
     text.try_reserve(128).ok()?;

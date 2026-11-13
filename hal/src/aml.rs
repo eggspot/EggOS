@@ -74,7 +74,10 @@ impl Path {
             if index > 0 {
                 put(b'.');
             }
-            let trimmed = segment.iter().rposition(|&byte| byte != b'_').map_or(1, |last| last + 1);
+            let trimmed = segment
+                .iter()
+                .rposition(|&byte| byte != b'_')
+                .map_or(1, |last| last + 1);
             for &byte in &segment[..trimmed.max(1)] {
                 put(byte);
             }
@@ -163,7 +166,10 @@ pub fn i2c_connection(bytes: &[u8]) -> Option<I2cConnection<'_>> {
         if bytes[at] != SERIAL_BUS_TAG {
             return None;
         }
-        let length = usize::from(u16::from_le_bytes([*bytes.get(at + 1)?, *bytes.get(at + 2)?]));
+        let length = usize::from(u16::from_le_bytes([
+            *bytes.get(at + 1)?,
+            *bytes.get(at + 2)?,
+        ]));
         let body = bytes.get(at + 3..at + 3 + length)?;
         if *body.get(2)? != SERIAL_BUS_I2C {
             return None;
@@ -194,7 +200,9 @@ pub fn i2c_connection(bytes: &[u8]) -> Option<I2cConnection<'_>> {
 /// The HID over I2C descriptor's register a `_DSM` method's `body` returns: the first constant
 /// a `Return` gives after the HID over I2C UUID.
 pub fn hid_descriptor_register(body: &[u8]) -> Option<u16> {
-    let uuid = body.windows(HID_I2C_UUID.len()).position(|window| window == HID_I2C_UUID)?;
+    let uuid = body
+        .windows(HID_I2C_UUID.len())
+        .position(|window| window == HID_I2C_UUID)?;
     let after = &body[uuid + HID_I2C_UUID.len()..];
     (0..after.len()).find_map(|at| {
         if after[at] != RETURN_OP {
@@ -203,7 +211,10 @@ pub fn hid_descriptor_register(body: &[u8]) -> Option<u16> {
         match *after.get(at + 1)? {
             ONE_OP => Some(1),
             BYTE_PREFIX => after.get(at + 2).map(|&value| u16::from(value)),
-            WORD_PREFIX => Some(u16::from_le_bytes([*after.get(at + 2)?, *after.get(at + 3)?])),
+            WORD_PREFIX => Some(u16::from_le_bytes([
+                *after.get(at + 2)?,
+                *after.get(at + 3)?,
+            ])),
             _ => None,
         }
     })
@@ -214,7 +225,9 @@ pub fn hid_descriptor_register(body: &[u8]) -> Option<u16> {
 /// its last segments.
 pub fn names_path(named: &[u8], path: &Path) -> bool {
     let absolute = named.first() == Some(&ROOT_CHAR);
-    let text = named.iter().position(|&byte| byte != ROOT_CHAR && byte != PARENT_PREFIX);
+    let text = named
+        .iter()
+        .position(|&byte| byte != ROOT_CHAR && byte != PARENT_PREFIX);
     let Some(text) = text.map(|start| &named[start..]) else {
         return false;
     };
@@ -229,11 +242,13 @@ pub fn names_path(named: &[u8], path: &Path) -> bool {
 }
 
 fn unpadded(segment: &[u8]) -> &[u8] {
-    let length = segment.iter().rposition(|&byte| byte != b'_').map_or(1, |last| last + 1);
+    let length = segment
+        .iter()
+        .rposition(|&byte| byte != b'_')
+        .map_or(1, |last| last + 1);
     &segment[..length.min(segment.len())]
 }
 
-/// A value a `Name` gives, as far as the walk reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Value<'a> {
     Integer(u64),
@@ -266,7 +281,11 @@ impl<'a> Reader<'a> {
 
     fn integer(&mut self, bytes: usize) -> Option<u64> {
         let raw = self.bytes(bytes)?;
-        Some(raw.iter().rev().fold(0u64, |value, &byte| (value << 8) | u64::from(byte)))
+        Some(
+            raw.iter()
+                .rev()
+                .fold(0u64, |value, &byte| (value << 8) | u64::from(byte)),
+        )
     }
 
     fn package_end(&mut self) -> Option<usize> {
@@ -360,7 +379,9 @@ impl<'a> Reader<'a> {
 }
 
 fn last_segment(path: &Path) -> [u8; 4] {
-    path.depth.checked_sub(1).map_or([0; 4], |last| path.segments[last])
+    path.depth
+        .checked_sub(1)
+        .map_or([0; 4], |last| path.segments[last])
 }
 
 fn id_of(value: Value<'_>) -> Option<Id> {
@@ -371,8 +392,6 @@ fn id_of(value: Value<'_>) -> Option<Id> {
     }
 }
 
-/// Walks the term list `reader` holds up to `end` in scope `scope`; `device` is the device being
-/// walked, which its names fill.
 fn walk<'a>(
     reader: &mut Reader<'a>,
     end: usize,
@@ -399,9 +418,27 @@ fn walk<'a>(
                         match &last_segment(&path) {
                             b"_HID" => device.hid = id_of(value),
                             b"_CID" => device.cid = id_of(value),
-                            b"_UID" => device.uid = if let Value::Integer(uid) = value { Some(uid) } else { None },
-                            b"_ADR" => device.address = if let Value::Integer(address) = value { Some(address) } else { None },
-                            b"_CRS" => device.resources = if let Value::Buffer(bytes) = value { Some(bytes) } else { None },
+                            b"_UID" => {
+                                device.uid = if let Value::Integer(uid) = value {
+                                    Some(uid)
+                                } else {
+                                    None
+                                }
+                            }
+                            b"_ADR" => {
+                                device.address = if let Value::Integer(address) = value {
+                                    Some(address)
+                                } else {
+                                    None
+                                }
+                            }
+                            b"_CRS" => {
+                                device.resources = if let Value::Buffer(bytes) = value {
+                                    Some(bytes)
+                                } else {
+                                    None
+                                }
+                            }
                             _ => {}
                         }
                         if let Value::Buffer(bytes) = value
@@ -461,7 +498,9 @@ fn walk<'a>(
                         }
                         reader.at = inner_end;
                     }
-                    FIELD_OP | INDEX_FIELD_OP | BANK_FIELD_OP => reader.at = reader.package_end()?,
+                    FIELD_OP | INDEX_FIELD_OP | BANK_FIELD_OP => {
+                        reader.at = reader.package_end()?
+                    }
                     MUTEX_OP => {
                         reader.name(scope)?;
                         reader.bytes(1)?;
@@ -472,8 +511,12 @@ fn walk<'a>(
                     REGION_OP => {
                         reader.name(scope)?;
                         reader.bytes(1)?;
-                        let Value::Integer(_) = reader.value()? else { return None };
-                        let Value::Integer(_) = reader.value()? else { return None };
+                        let Value::Integer(_) = reader.value()? else {
+                            return None;
+                        };
+                        let Value::Integer(_) = reader.value()? else {
+                            return None;
+                        };
                     }
                     _ => return None,
                 },
@@ -513,19 +556,30 @@ pub fn memory_resources(template: &[u8], range: &mut dyn FnMut(u64, u64)) {
             at += 1 + usize::from(tag & 0x07);
             continue;
         }
-        let Some(length) = template.get(at + 1..at + 3).map(|bytes| usize::from(u16::from_le_bytes([bytes[0], bytes[1]]))) else {
+        let Some(length) = template
+            .get(at + 1..at + 3)
+            .map(|bytes| usize::from(u16::from_le_bytes([bytes[0], bytes[1]])))
+        else {
             return;
         };
         let Some(body) = template.get(at + 3..at + 3 + length) else {
             return;
         };
         let read = |from: usize, bytes: usize| -> u64 {
-            body.get(from..from + bytes).map_or(0, |raw| raw.iter().rev().fold(0, |value, &byte| (value << 8) | u64::from(byte)))
+            body.get(from..from + bytes).map_or(0, |raw| {
+                raw.iter()
+                    .rev()
+                    .fold(0, |value, &byte| (value << 8) | u64::from(byte))
+            })
         };
         match tag {
             MEMORY32_FIXED if length >= 9 => range(read(1, 4), read(5, 4)),
-            DWORD_ADDRESS if length >= 23 && body[0] == MEMORY_SPACE => range(read(7, 4), read(19, 4)),
-            QWORD_ADDRESS if length >= 43 && body[0] == MEMORY_SPACE => range(read(11, 8), read(35, 8)),
+            DWORD_ADDRESS if length >= 23 && body[0] == MEMORY_SPACE => {
+                range(read(7, 4), read(19, 4))
+            }
+            QWORD_ADDRESS if length >= 43 && body[0] == MEMORY_SPACE => {
+                range(read(11, 8), read(35, 8))
+            }
             _ => {}
         }
         at += 3 + length;
@@ -685,7 +739,9 @@ mod tests {
 
     #[test]
     fn fixed_memory_resources_are_read() {
-        let template = [0x86, 9, 0, 1, 0x00, 0x00, 0xd1, 0xfe, 0x00, 0x10, 0x00, 0x00, 0x79, 0];
+        let template = [
+            0x86, 9, 0, 1, 0x00, 0x00, 0xd1, 0xfe, 0x00, 0x10, 0x00, 0x00, 0x79, 0,
+        ];
         let mut ranges = Vec::new();
         memory_resources(&template, &mut |start, length| ranges.push((start, length)));
         assert_eq!(ranges, vec![(0xfed1_0000, 0x1000)]);

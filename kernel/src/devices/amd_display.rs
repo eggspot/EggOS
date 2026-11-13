@@ -21,9 +21,9 @@ use crate::display::{Mode, Rect, Scanout};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use eggos_drivers::edid::Timing;
 use eggos_drivers::gpu::amd_dcn::{self, DisplayEngine, Refusal};
 use eggos_drivers::gpu::amd_discovery::{dmcub_file_name, dmcub_firmware};
-use eggos_drivers::edid::Timing;
 use eggos_drivers::gpu::amd_dmcub::{self, Dmcub};
 use eggos_drivers::io::Mmio;
 use eggos_hal::PhysicalRange;
@@ -215,13 +215,17 @@ impl Scanout for AmdDisplay {
             .ok_or(Refusal::UnfitTiming.description())?;
         let pitch = mode.width.next_multiple_of(amd_dcn::PITCH_ALIGNMENT_PIXELS);
         let stride = pitch as usize * 4;
-        let bytes = stride.checked_mul(mode.height as usize).ok_or("the mode is too large")?;
+        let bytes = stride
+            .checked_mul(mode.height as usize)
+            .ok_or("the mode is too large")?;
         if bytes > self.surface_bytes {
             return Err("the mode does not fit the display's surfaces");
         }
         let pixels = mode.width as usize * mode.height as usize;
         let mut frame = Vec::new();
-        frame.try_reserve_exact(pixels).map_err(|_| "no memory for the display's frame")?;
+        frame
+            .try_reserve_exact(pixels)
+            .map_err(|_| "no memory for the display's frame")?;
         frame.resize(pixels, 0);
         for surface in &self.surfaces {
             // SAFETY: each surface maps `surface_bytes` of video memory write-combining for
@@ -230,7 +234,9 @@ impl Scanout for AmdDisplay {
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         self.engine
-            .set_mode(&timing, self.surfaces[0].address, pitch, &mut || deadline.keep_waiting())
+            .set_mode(&timing, self.surfaces[0].address, pitch, &mut || {
+                deadline.keep_waiting()
+            })
             .map_err(Refusal::description)?;
         self.mode = mode;
         self.stride = stride;
@@ -302,14 +308,18 @@ pub fn take(
         .boot_framebuffer()
         .ok_or(ProbeError::Refused("the firmware left no framebuffer"))?;
     if framebuffer.format != pixel_format::BGRX {
-        return Err(ProbeError::Refused("the firmware's framebuffer is not in BGRX order"));
+        return Err(ProbeError::Refused(
+            "the firmware's framebuffer is not in BGRX order",
+        ));
     }
     let stride = u64::from(framebuffer.stride_pixels) * 4;
     let bytes = stride * u64::from(framebuffer.height);
     let (second, cursor, dmcub) = placement(bytes);
     let end = dmcub + DMCUB_BYTES;
     if framebuffer.address < aperture.start || framebuffer.address + end > aperture.end {
-        return Err(ProbeError::Refused("no room in the aperture after the firmware's framebuffer"));
+        return Err(ProbeError::Refused(
+            "no room in the aperture after the firmware's framebuffer",
+        ));
     }
     let length = usize::try_from(registers.len())
         .map_err(|_| ProbeError::Refused("the register block is too large"))?;
@@ -328,7 +338,9 @@ pub fn take(
     )
     .map_err(|refusal| ProbeError::Refused(refusal.description()))?;
     if u64::from(lit.pitch_pixels) != u64::from(framebuffer.stride_pixels) {
-        return Err(ProbeError::Refused("the pipe's pitch is not the framebuffer's"));
+        return Err(ProbeError::Refused(
+            "the pipe's pitch is not the framebuffer's",
+        ));
     }
     let surfaces = PhysicalRange::from_start_length(framebuffer.address, end);
     let mapped = probe.map_write_combining(surfaces)?;
@@ -387,7 +399,10 @@ mod tests {
 
     #[test]
     fn the_second_surface_and_the_cursor_follow_the_firmware_s_aligned() {
-        assert_eq!(placement(1920 * 4 * 1080), (0x7f_0000, 0xfe_0000, 0x100_0000));
+        assert_eq!(
+            placement(1920 * 4 * 1080),
+            (0x7f_0000, 0xfe_0000, 0x100_0000)
+        );
         assert_eq!(placement(0x10000), (0x10000, 0x20000, 0x10_0000));
     }
 }

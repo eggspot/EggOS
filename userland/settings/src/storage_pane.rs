@@ -7,11 +7,12 @@ use crate::settings_window::{CAPACITY, Request};
 use alloc::vec::Vec;
 use eggos_eggfs::{CheckMode, DiskCheck, Outcome};
 use eggos_files::storage::{
-    self, DEVICES, DiskRecord, NO_DISKS, NOTHING_TO_DO, StorageError, allowed, confirm_placeholder,
-    confirm_text, contents_text, erases_text, finding_line, format_question, formatted_text,
-    formatting_text, headline, idle_text, install_allowed, install_idle_text, install_question,
-    install_writes_lines, installed_text, installing_text, label_fits, more_findings_text,
-    place_text, running_text, sizes_text, used_permille, INSTALLED_NOTE, NO_DISK_TO_INSTALL_ON,
+    self, DEVICES, DiskRecord, INSTALLED_NOTE, NO_DISK_TO_INSTALL_ON, NO_DISKS, NOTHING_TO_DO,
+    StorageError, allowed, confirm_placeholder, confirm_text, contents_text, erases_text,
+    finding_line, format_question, formatted_text, formatting_text, headline, idle_text,
+    install_allowed, install_idle_text, install_question, install_writes_lines, installed_text,
+    installing_text, label_fits, more_findings_text, place_text, running_text, sizes_text,
+    used_permille,
 };
 use eggos_toolkit::canvas::{Canvas, INSET_R6};
 use eggos_toolkit::geometry::Rect;
@@ -205,20 +206,36 @@ impl StoragePane {
         let w = self.widgets;
         let facts = [w.contents, w.sizes, w.place, w.read_only];
         let Some(c) = content else {
-            tree.set_place(w.list, at(DISK_LIST.0, DISK_LIST.1, DISK_LIST.2, DISK_LIST.3));
+            tree.set_place(
+                w.list,
+                at(DISK_LIST.0, DISK_LIST.1, DISK_LIST.2, DISK_LIST.3),
+            );
             tree.set_row_height(w.list, DISK_ROW);
             for (id, y) in facts.iter().zip([CONTENTS_LINE, SIZES_LINE, PLACE_LINE]) {
-                tree.set_place(*id, Place::at(FACTS_X, y, Length::Px(FACTS_WIDTH), Length::Content));
+                tree.set_place(
+                    *id,
+                    Place::at(FACTS_X, y, Length::Px(FACTS_WIDTH), Length::Content),
+                );
             }
             tree.set_place(
                 w.read_only,
                 Place::at(FACTS_X, READ_ONLY_LINE, Length::Content, Length::Content),
             );
-            tree.set_place(w.usage, at(USAGE_BAR.0, USAGE_BAR.1, USAGE_BAR.2, USAGE_BAR.3));
-            for (id, x) in [(w.check, CHECK_X), (w.repair, REPAIR_X), (w.format, FORMAT_X)] {
+            tree.set_place(
+                w.usage,
+                at(USAGE_BAR.0, USAGE_BAR.1, USAGE_BAR.2, USAGE_BAR.3),
+            );
+            for (id, x) in [
+                (w.check, CHECK_X),
+                (w.repair, REPAIR_X),
+                (w.format, FORMAT_X),
+            ] {
                 tree.set_place(id, at(x, BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1));
             }
-            tree.set_place(w.install, at(INSTALL_X, BUTTONS_TOP, INSTALL_WIDTH, BUTTON_SIZE.1));
+            tree.set_place(
+                w.install,
+                at(INSTALL_X, BUTTONS_TOP, INSTALL_WIDTH, BUTTON_SIZE.1),
+            );
             self.place_lines(tree, STATUS_LINE, LINE_WIDTH);
             return 0;
         };
@@ -228,7 +245,12 @@ impl StoragePane {
         for (index, id) in facts.iter().enumerate() {
             tree.set_place(
                 *id,
-                Place::at(PADDING, 176 + LINE_PITCH * index as i32, Length::Px(c), Length::Content),
+                Place::at(
+                    PADDING,
+                    176 + LINE_PITCH * index as i32,
+                    Length::Px(c),
+                    Length::Content,
+                ),
             );
         }
         tree.set_place(w.usage, at(PADDING, 260, c, USAGE_BAR.3));
@@ -241,32 +263,59 @@ impl StoragePane {
         396 + LINE_PITCH * (1 + REPORT_LINES as i32) + PADDING
     }
 
-    /// The format and install panels on a narrow page (settings-forms-v0.5.md 2, R10): bottom
-    /// sheets the window's full width (D463), their fields the column's width and 48 tall,
-    /// `Cancel` and the primary button an equal pair on the last row; on the desktop as built,
-    /// inside the pane.
     fn reflow_panels(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) {
         let w = self.widgets;
         let panel_width = FORMAT_PANEL.2 - 2 * PADDING;
         let Some(c) = content else {
             tree.set_sheet(w.panel, None);
             tree.set_sheet(w.install_panel, None);
-            let panel = at(FORMAT_PANEL.0, FORMAT_PANEL.1, FORMAT_PANEL.2, FORMAT_PANEL.3);
+            let panel = at(
+                FORMAT_PANEL.0,
+                FORMAT_PANEL.1,
+                FORMAT_PANEL.2,
+                FORMAT_PANEL.3,
+            );
             tree.set_place(w.panel, panel);
             tree.set_place(w.install_panel, panel);
-            for (id, y) in [w.question, w.erases, w.confirm].into_iter().zip(PANEL_TEXT_LINES) {
-                tree.set_place(id, Place::at(PADDING, y, Length::Px(panel_width), Length::Content));
+            for (id, y) in [w.question, w.erases, w.confirm]
+                .into_iter()
+                .zip(PANEL_TEXT_LINES)
+            {
+                tree.set_place(
+                    id,
+                    Place::at(PADDING, y, Length::Px(panel_width), Length::Content),
+                );
             }
             for (id, y) in w.install_lines.into_iter().zip(INSTALL_TEXT_LINES) {
-                tree.set_place(id, Place::at(PADDING, y, Length::Px(panel_width), Length::Content));
+                tree.set_place(
+                    id,
+                    Place::at(PADDING, y, Length::Px(panel_width), Length::Content),
+                );
             }
-            tree.set_place(w.label_field, at(PADDING, LABEL_FIELD_TOP, PANEL_FIELD_WIDTH, BUTTON_SIZE.1));
+            tree.set_place(
+                w.label_field,
+                at(PADDING, LABEL_FIELD_TOP, PANEL_FIELD_WIDTH, BUTTON_SIZE.1),
+            );
             for field in [w.confirm_field, w.install_field] {
-                tree.set_place(field, at(PADDING, CONFIRM_FIELD_TOP, PANEL_FIELD_WIDTH, BUTTON_SIZE.1));
+                tree.set_place(
+                    field,
+                    at(PADDING, CONFIRM_FIELD_TOP, PANEL_FIELD_WIDTH, BUTTON_SIZE.1),
+                );
             }
             for (cancel, primary) in [(w.cancel, w.format_now), (w.install_cancel, w.install_now)] {
-                tree.set_place(cancel, at(CANCEL_X, PANEL_BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1));
-                tree.set_place(primary, at(FORMAT_NOW_X, PANEL_BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1));
+                tree.set_place(
+                    cancel,
+                    at(CANCEL_X, PANEL_BUTTONS_TOP, BUTTON_SIZE.0, BUTTON_SIZE.1),
+                );
+                tree.set_place(
+                    primary,
+                    at(
+                        FORMAT_NOW_X,
+                        PANEL_BUTTONS_TOP,
+                        BUTTON_SIZE.0,
+                        BUTTON_SIZE.1,
+                    ),
+                );
             }
             return;
         };
@@ -274,7 +323,10 @@ impl StoragePane {
         let half = (c - 8) / 2;
         tree.set_sheet(w.panel, Some(196 + row + PADDING));
         tree.set_sheet(w.install_panel, Some(176 + row + PADDING));
-        for (id, y) in [w.question, w.erases, w.confirm].into_iter().zip(PANEL_TEXT_LINES) {
+        for (id, y) in [w.question, w.erases, w.confirm]
+            .into_iter()
+            .zip(PANEL_TEXT_LINES)
+        {
             tree.set_place(id, Place::at(PADDING, y, Length::Px(c), Length::Content));
         }
         for (id, y) in w.install_lines.into_iter().zip(INSTALL_TEXT_LINES) {
@@ -283,7 +335,10 @@ impl StoragePane {
         tree.set_place(w.label_field, at(PADDING, LABEL_FIELD_TOP, c, row));
         tree.set_place(w.confirm_field, at(PADDING, LABEL_FIELD_TOP + 56, c, row));
         tree.set_place(w.install_field, at(PADDING, 120, c, row));
-        for (cancel, primary, top) in [(w.cancel, w.format_now, 196), (w.install_cancel, w.install_now, 176)] {
+        for (cancel, primary, top) in [
+            (w.cancel, w.format_now, 196),
+            (w.install_cancel, w.install_now, 176),
+        ] {
             tree.set_place(cancel, at(PADDING, top, half, row));
             tree.set_place(primary, at(PADDING + half + 8, top, half, row));
         }
@@ -291,7 +346,10 @@ impl StoragePane {
 
     fn place_lines(&self, tree: &mut WidgetTree<CAPACITY>, status: i32, width: i32) {
         let w = self.widgets;
-        tree.set_place(w.status, Place::at(PADDING, status, Length::Px(width), Length::Content));
+        tree.set_place(
+            w.status,
+            Place::at(PADDING, status, Length::Px(width), Length::Content),
+        );
         let report = status + LINE_PITCH;
         tree.set_place(
             w.install_line,
@@ -438,7 +496,8 @@ impl StoragePane {
                 data: 0,
             },
         );
-        let install_lines = INSTALL_TEXT_LINES.map(|y| line(tree, install_panel, PADDING, y, panel_width));
+        let install_lines =
+            INSTALL_TEXT_LINES.map(|y| line(tree, install_panel, PADDING, y, panel_width));
         let install_field = add(
             tree,
             install_panel,
@@ -666,7 +725,12 @@ impl StoragePane {
         }
         let Some(record) = record else {
             let no_disk_line = self.boot_files && self.list_error.is_none();
-            show_line(tree, widgets.install_line, NO_DISK_TO_INSTALL_ON, Token::TextDim);
+            show_line(
+                tree,
+                widgets.install_line,
+                NO_DISK_TO_INSTALL_ON,
+                Token::TextDim,
+            );
             tree.set_shown(widgets.install_line, no_disk_line);
             tree.set_shown(widgets.read_only, false);
             tree.set_shown(widgets.usage, false);
@@ -734,7 +798,12 @@ impl StoragePane {
         self.install_open
     }
 
-    fn open_install_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, record: &DiskRecord, now_ms: u32) {
+    fn open_install_panel(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        record: &DiskRecord,
+        now_ms: u32,
+    ) {
         let widgets = self.widgets;
         let [first, second] = install_writes_lines(record);
         let lines = [
@@ -796,7 +865,12 @@ impl StoragePane {
         };
         let typed = trimmed_text(tree, widgets.install_field) == record.short_name();
         tree.set_enabled(widgets.install_now, typed && !self.busy);
-        show_line(tree, widgets.install_lines[4], &confirm_text(record), Token::TextDim);
+        show_line(
+            tree,
+            widgets.install_lines[4],
+            &confirm_text(record),
+            Token::TextDim,
+        );
     }
 
     fn install_now(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
@@ -806,10 +880,19 @@ impl StoragePane {
             return None;
         }
         self.busy = true;
-        for id in [widgets.install_field, widgets.install_cancel, widgets.install_now] {
+        for id in [
+            widgets.install_field,
+            widgets.install_cancel,
+            widgets.install_now,
+        ] {
             tree.set_enabled(id, false);
         }
-        show_line(tree, widgets.install_lines[4], &installing_text(device), Token::Text);
+        show_line(
+            tree,
+            widgets.install_lines[4],
+            &installing_text(device),
+            Token::Text,
+        );
         Some(Request::InstallDisk(device))
     }
 
@@ -839,9 +922,19 @@ impl StoragePane {
                 }
                 self.update_install_now(tree);
                 if let Some(record) = self.selected(tree).cloned() {
-                    show_line(tree, widgets.install_lines[1], &erases_text(&record), Token::TextDim);
+                    show_line(
+                        tree,
+                        widgets.install_lines[1],
+                        &erases_text(&record),
+                        Token::TextDim,
+                    );
                 }
-                show_line(tree, widgets.install_lines[4], &error.sentence(), Token::Text);
+                show_line(
+                    tree,
+                    widgets.install_lines[4],
+                    &error.sentence(),
+                    Token::Text,
+                );
             }
         }
         self.refresh(tree);

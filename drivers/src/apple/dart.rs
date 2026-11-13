@@ -101,9 +101,7 @@ impl Kind {
     fn physical_of(self, entry: u64) -> u64 {
         match self {
             Self::T8020 => entry & T8020_ADDRESS,
-            Self::T6000 | Self::T8110 => {
-                (entry & WIDE_ADDRESS) >> WIDE_ADDRESS_SHIFT << PAGE_SHIFT
-            }
+            Self::T6000 | Self::T8110 => (entry & WIDE_ADDRESS) >> WIDE_ADDRESS_SHIFT << PAGE_SHIFT,
         }
     }
 
@@ -290,7 +288,6 @@ impl<R: RegisterIo, M: DartMemory> Dart<R, M> {
         Ok((base, first, second))
     }
 
-    /// The second-level table under `first` of table base `base`, made when `create`.
     fn second_level(
         &mut self,
         base: usize,
@@ -399,8 +396,10 @@ impl<R: RegisterIo, M: DartMemory> Dart<R, M> {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         let (command, busy) = match self.kind {
             Kind::T8020 | Kind::T6000 => {
-                self.regs.write32(T8020_STREAM_SELECT, 1 << (self.stream % 32));
-                self.regs.write32(T8020_STREAM_COMMAND, T8020_COMMAND_INVALIDATE);
+                self.regs
+                    .write32(T8020_STREAM_SELECT, 1 << (self.stream % 32));
+                self.regs
+                    .write32(T8020_STREAM_COMMAND, T8020_COMMAND_INVALIDATE);
                 (T8020_STREAM_COMMAND, T8020_COMMAND_BUSY)
             }
             Kind::T8110 => {
@@ -461,7 +460,10 @@ mod tests {
             dart.map(0x10_4000, 0x9_0000_0000, PAGE_BYTES),
             Err(DartError::AlreadyMapped)
         );
-        assert_eq!(dart.map(0x10_0001, 0, PAGE_BYTES), Err(DartError::Unaligned));
+        assert_eq!(
+            dart.map(0x10_0001, 0, PAGE_BYTES),
+            Err(DartError::Unaligned)
+        );
         assert_eq!(dart.find_free(0x10_0000, PAGE_BYTES), Some(0x10_8000));
         dart.unmap(0x10_0000, 2 * PAGE_BYTES).unwrap();
         assert_eq!(dart.translate(0x10_0000), None);
@@ -469,8 +471,14 @@ mod tests {
 
     #[test]
     fn wide_entries_hold_addresses_past_40_bits_shifted() {
-        assert_eq!(Kind::T6000.entry_address(0xab_cdef_4000), 0xab_cdef_4000 >> 14 << 10);
-        assert_eq!(Kind::T6000.physical_of(0xab_cdef_4000 >> 14 << 10), 0xab_cdef_4000);
+        assert_eq!(
+            Kind::T6000.entry_address(0xab_cdef_4000),
+            0xab_cdef_4000 >> 14 << 10
+        );
+        assert_eq!(
+            Kind::T6000.physical_of(0xab_cdef_4000 >> 14 << 10),
+            0xab_cdef_4000
+        );
         assert_eq!(Kind::T8020.entry_address(0xab_cdef_4000), 0xab_cdef_4000);
     }
 

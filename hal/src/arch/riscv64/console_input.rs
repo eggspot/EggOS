@@ -14,20 +14,16 @@
 use super::DIRECT_MAP_OFFSET;
 use crate::interrupt::SourceLines;
 use crate::memory::PhysicalRange;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_drivers::interrupt::{Aplic, Plic, aplic, plic};
 use eggos_drivers::io::Mmio;
 
-/// QEMU `virt`: the PLIC's registers. Device-tree discovery replaces it in M5.
 const PLIC_BASE: usize = 0x0c00_0000;
-/// QEMU `virt`: UART0's PLIC source.
 const UART0_SOURCE: u32 = 10;
 const UART0_PRIORITY: u32 = 1;
 const EVERY_PRIORITY_ABOVE_ZERO: u32 = 0;
-/// The PLIC contexts whose registers the kernel maps: 16 harts' worth, two contexts each.
 const MAPPED_CONTEXTS: usize = 32;
-/// `sie` bit 9: supervisor external interrupt enable.
 const SIE_SEIE: u64 = 1 << 9;
 const NO_CONTEXT: usize = usize::MAX;
 
@@ -95,7 +91,6 @@ fn enable_identity(identity: u32, enable: bool) {
     set_indirect_bits(select, 1 << (identity % ENABLE_BITS), enable);
 }
 
-/// Claims and clears the highest-priority pending identity of this hart's IMSIC; 0 for none.
 fn claim_identity() -> u32 {
     let top: u64;
     // SAFETY: swapping `stopei` with zero claims the identity it reports, which the caller
@@ -205,7 +200,9 @@ pub(super) fn steer_device(
     hart: u64,
     context: Option<usize>,
 ) -> Result<(), &'static str> {
-    let source = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+    let source = DEVICE_LINES
+        .source_of(line)
+        .ok_or("the line is not routed")?;
     if let Some(aplic) = aplic() {
         if source >= PREPARED_IDENTITIES {
             return Err("the source's identity is past the ones every hart enables");

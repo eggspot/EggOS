@@ -5,7 +5,6 @@
 use crate::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
-/// `TICK_COMPARE`'s interrupt-disable bit: the comparator raises nothing while it is set.
 const COMPARE_DISABLED: u64 = 1 << 63;
 /// `SOFTINT.TICK_INT`.
 pub(super) const TICK_INTERRUPT: u64 = 1;

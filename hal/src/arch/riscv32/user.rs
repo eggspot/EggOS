@@ -201,12 +201,24 @@ fn decode(scause: u32, stval: u32, pc: u64) -> Exception {
     let (kind, name, has_address) = match (scause & INTERRUPT != 0, code) {
         (true, _) => (ExceptionKind::Interrupt, "interrupt", false),
         (false, 0 | 4 | 6) => (ExceptionKind::Alignment, "misaligned address", true),
-        (false, 1) => (ExceptionKind::InstructionFault, "instruction access fault", true),
-        (false, 2) => (ExceptionKind::IllegalInstruction, "illegal instruction", false),
+        (false, 1) => (
+            ExceptionKind::InstructionFault,
+            "instruction access fault",
+            true,
+        ),
+        (false, 2) => (
+            ExceptionKind::IllegalInstruction,
+            "illegal instruction",
+            false,
+        ),
         (false, 3) => (ExceptionKind::Breakpoint, "breakpoint (ebreak)", false),
         (false, 5) => (ExceptionKind::DataFault, "load access fault", true),
         (false, 7) => (ExceptionKind::DataFault, "store access fault", true),
-        (false, 12) => (ExceptionKind::InstructionFault, "instruction page fault", true),
+        (false, 12) => (
+            ExceptionKind::InstructionFault,
+            "instruction page fault",
+            true,
+        ),
         (false, 13) => (ExceptionKind::DataFault, "load page fault", true),
         (false, 15) => (ExceptionKind::DataFault, "store page fault", true),
         _ => (ExceptionKind::Other, "exception", false),

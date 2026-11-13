@@ -27,13 +27,8 @@ use eggos_toolkit::widget::{Kind, Length, Place};
 pub const ROWS: usize = MAX_COMPONENTS;
 /// The widgets the pane adds to its container.
 pub const WIDGETS: usize = 4 + 7 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1 + PLAN_LINES;
-/// The plan lines the edition confirmation shows, one a component (docs/ux/components-v0.5.md
-/// section 4, D331); a longer plan's last line says how many more.
 const PLAN_LINES: usize = 6;
-/// The pitch of the plan lines.
 const PLAN_LINE_PITCH: i32 = 20;
-/// The Updates band's widgets (docs/ux/components-v0.5.md section 1): panel, line, checkbox,
-/// button.
 const UPDATES_WIDGETS: usize = 4;
 const UPDATES_BAND: (i32, i32, i32, i32) = (16, 124, 432, 48);
 const UPDATES_LINE: (i32, i32, i32) = (24, 6, 296);
@@ -46,15 +41,14 @@ const STORE_NOTE_TOP: i32 = 116;
 const OFFLINE: &str = "The network is offline.";
 const OFFLINE_RETRY: &str = "Connect or attach the store disk, then try again.";
 const UPDATING: &str = "updating";
-/// The edition band's widgets (docs/ux/editions-v0.4.md section 1): panel, label, dropdown,
-/// summary.
 const EDITION_WIDGETS: usize = 4;
 const EDITION_BAND: (i32, i32, i32, i32) = (16, 180, 432, 64);
 const EDITION_LABEL: (i32, i32) = (24, 10);
 const EDITION_DROPDOWN: (i32, i32, i32, i32) = (272, 4, 160, 28);
 const EDITION_SUMMARY: (i32, i32, i32) = (24, 38, 408);
 const EDITION_TITLES: [&str; 4] = ["Server", "Personal", "Professional", "Enterprise"];
-const EDITION_TITLES_WITH_CUSTOM: [&str; 5] = ["Custom", "Server", "Personal", "Professional", "Enterprise"];
+const EDITION_TITLES_WITH_CUSTOM: [&str; 5] =
+    ["Custom", "Server", "Personal", "Professional", "Enterprise"];
 const CUSTOM_SUMMARY: &str = "Your own set of components: no edition matches it exactly.";
 /// Row `r`'s top in the pane, with no note open above it: `ROWS_TOP + ROW_HEIGHT * r`.
 pub const ROWS_TOP: i32 = 252;
@@ -166,7 +160,10 @@ impl ComponentJob {
 
     /// Whether the pane waits for it to end.
     pub fn is_awaited(&self) -> bool {
-        matches!(self, Self::Check | Self::Update(_) | Self::Download | Self::Install(_) | Self::Remove(_))
+        matches!(
+            self,
+            Self::Check | Self::Update(_) | Self::Download | Self::Install(_) | Self::Remove(_)
+        )
     }
 }
 
@@ -229,7 +226,6 @@ enum Note {
     Install {
         name: String,
         plan: Vec<String>,
-        /// The edition's title when the plan is an edition's, confirmed under its band.
         edition: Option<&'static str>,
     },
     Band {
@@ -247,7 +243,6 @@ enum Note {
 enum Anchor {
     Store,
     Band,
-    /// Under the Edition band: its confirmation (D331).
     Edition,
     Row(usize),
 }
@@ -328,7 +323,9 @@ pub enum Layout {
     #[default]
     Desktop,
     Tablet,
-    Phone { width: i32 },
+    Phone {
+        width: i32,
+    },
 }
 
 type Box4 = (i32, i32, i32, i32);
@@ -467,11 +464,20 @@ impl ComponentsPane {
         let updates_band = add(
             tree,
             pane,
-            at(UPDATES_BAND.0, UPDATES_BAND.1, UPDATES_BAND.2, UPDATES_BAND.3),
+            at(
+                UPDATES_BAND.0,
+                UPDATES_BAND.1,
+                UPDATES_BAND.2,
+                UPDATES_BAND.3,
+            ),
             Kind::panel(Token::Menu),
         );
         tree.set_accessible_name(updates_band, "Updates");
-        let updates_line = label(tree, updates_band, line_at(UPDATES_LINE.0, UPDATES_LINE.1, UPDATES_LINE.2));
+        let updates_line = label(
+            tree,
+            updates_band,
+            line_at(UPDATES_LINE.0, UPDATES_LINE.1, UPDATES_LINE.2),
+        );
         let daily = add(
             tree,
             updates_band,
@@ -481,13 +487,23 @@ impl ComponentsPane {
         let updates_button = add(
             tree,
             updates_band,
-            at(UPDATES_BUTTON.0, UPDATES_BUTTON.1, UPDATES_BUTTON.2, UPDATES_BUTTON.3),
+            at(
+                UPDATES_BUTTON.0,
+                UPDATES_BUTTON.1,
+                UPDATES_BUTTON.2,
+                UPDATES_BUTTON.3,
+            ),
             Kind::button("Check now", false),
         );
         let band = add(
             tree,
             pane,
-            at(EDITION_BAND.0, EDITION_BAND.1, EDITION_BAND.2, EDITION_BAND.3),
+            at(
+                EDITION_BAND.0,
+                EDITION_BAND.1,
+                EDITION_BAND.2,
+                EDITION_BAND.3,
+            ),
             Kind::panel(Token::Menu),
         );
         let edition_label = add(
@@ -499,7 +515,12 @@ impl ComponentsPane {
         let edition = add(
             tree,
             band,
-            at(EDITION_DROPDOWN.0, EDITION_DROPDOWN.1, EDITION_DROPDOWN.2, EDITION_DROPDOWN.3),
+            at(
+                EDITION_DROPDOWN.0,
+                EDITION_DROPDOWN.1,
+                EDITION_DROPDOWN.2,
+                EDITION_DROPDOWN.3,
+            ),
             Kind::dropdown("Edition", &EDITION_TITLES, 0),
         );
         let edition_summary = add(
@@ -589,7 +610,8 @@ impl ComponentsPane {
             Kind::button("Download", false),
         );
         tree.set_accessible_name(download, "Download the component store");
-        let plan_lines = core::array::from_fn(|_| label(tree, pane, line_at(NOTE_X, 0, NOTE_WIDTH)));
+        let plan_lines =
+            core::array::from_fn(|_| label(tree, pane, line_at(NOTE_X, 0, NOTE_WIDTH)));
         let mut components = Self {
             widgets: Widgets {
                 pane,
@@ -642,7 +664,12 @@ impl ComponentsPane {
         tree.set_place(widgets.updates_line, line_at(x, y, w));
         tree.set_place(
             widgets.daily,
-            Place::at(metrics.daily.0, metrics.daily.1, Length::Content, Length::Content),
+            Place::at(
+                metrics.daily.0,
+                metrics.daily.1,
+                Length::Content,
+                Length::Content,
+            ),
         );
         place(tree, widgets.updates_button, metrics.updates_button);
         tree.set_place(
@@ -700,7 +727,12 @@ impl ComponentsPane {
         let Some(job) = self.read.job.clone() else {
             return;
         };
-        if let Work::Installing { plan, received, total, .. } = &mut self.work
+        if let Work::Installing {
+            plan,
+            received,
+            total,
+            ..
+        } = &mut self.work
             && job.kind == INSTALLING
             && plan.first() == Some(&job.name)
         {
@@ -733,7 +765,12 @@ impl ComponentsPane {
     }
 
     /// Shows how the job the pane waited for ended, with what was read after.
-    pub fn show_job_ended(&mut self, tree: &mut WidgetTree<CAPACITY>, succeeded: bool, read: ComponentsRead) -> Option<Request> {
+    pub fn show_job_ended(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        succeeded: bool,
+        read: ComponentsRead,
+    ) -> Option<Request> {
         if let Work::Removing(name) = &self.work {
             let result = match succeeded {
                 true => Ok(()),
@@ -745,7 +782,10 @@ impl ComponentsPane {
             self.show_removed(tree, result, read);
             return None;
         }
-        if let Work::Installing { plan, cancelled, .. } = &self.work {
+        if let Work::Installing {
+            plan, cancelled, ..
+        } = &self.work
+        {
             let name = plan.first().cloned().unwrap_or_default();
             let result = match (succeeded, *cancelled) {
                 (true, _) => Ok(()),
@@ -1001,7 +1041,9 @@ impl ComponentsPane {
         let row_of = |id: WidgetId| widgets.rows.iter().position(|row| row.button == id);
         let update_of = |id: WidgetId| widgets.rows.iter().position(|row| row.update == id);
         let request = match response {
-            Response::Chosen(id, option) if id == widgets.edition => self.choose_edition(tree, option, now_ms),
+            Response::Chosen(id, option) if id == widgets.edition => {
+                self.choose_edition(tree, option, now_ms)
+            }
             Response::Activated(id) if id == widgets.updates_button => self.press_updates(tree),
             Response::Toggled(id, on) if id == widgets.daily => {
                 self.read.daily = on;
@@ -1017,7 +1059,9 @@ impl ComponentsPane {
             }
             Response::Unused { code, .. }
                 if matches!(code, key::LEFT | key::RIGHT)
-                    && tree.focus().is_some_and(|id| row_of(id).is_some() || update_of(id).is_some()) =>
+                    && tree
+                        .focus()
+                        .is_some_and(|id| row_of(id).is_some() || update_of(id).is_some()) =>
             {
                 let focus = tree.focus().unwrap_or(widgets.pane);
                 let row = row_of(focus).or_else(|| update_of(focus)).unwrap_or(0);
@@ -1032,7 +1076,13 @@ impl ComponentsPane {
             }
             Response::Unused {
                 code: key::DELETE, ..
-            } if tree.focus().and_then(update_of).is_some_and(|row| self.updating_row(row)) => self.cancel_job(tree),
+            } if tree
+                .focus()
+                .and_then(update_of)
+                .is_some_and(|row| self.updating_row(row)) =>
+            {
+                self.cancel_job(tree)
+            }
             Response::Activated(id) if row_of(id).is_some() => {
                 self.press_row(tree, row_of(id).unwrap_or(0), now_ms)
             }
@@ -1099,14 +1149,30 @@ impl ComponentsPane {
         let summary = current.map_or(CUSTOM_SUMMARY, |edition| edition.summary);
         show_line(tree, widgets.edition_summary, summary, Token::TextDim);
         tree.set_enabled(widgets.edition, !self.busy() && !self.confirming());
-        tree.set_accessible_value(widgets.edition, current.map_or("none", |edition| edition.name));
+        tree.set_accessible_value(
+            widgets.edition,
+            current.map_or("none", |edition| edition.name),
+        );
     }
 
-    fn choose_edition(&mut self, tree: &mut WidgetTree<CAPACITY>, option: usize, now_ms: u32) -> Option<Request> {
+    fn choose_edition(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        option: usize,
+        now_ms: u32,
+    ) -> Option<Request> {
         let custom_shown = self.current_edition().is_none();
-        let index = if custom_shown { option.checked_sub(1)? } else { option };
+        let index = if custom_shown {
+            option.checked_sub(1)?
+        } else {
+            option
+        };
         let edition = eggos_components::editions::EDITIONS.get(index)?;
-        if self.current_edition().is_some_and(|current| current.name == edition.name) || self.others_busy() {
+        if self
+            .current_edition()
+            .is_some_and(|current| current.name == edition.name)
+            || self.others_busy()
+        {
             return None;
         }
         let Some(store) = self.read.store.clone() else {
@@ -1122,7 +1188,11 @@ impl ComponentsPane {
         let mut plan: Vec<String> = Vec::new();
         for wanted in edition.components {
             if installed.iter().any(|component| component.name == *wanted)
-                || !store.index.components.iter().any(|offered| offered.name == *wanted)
+                || !store
+                    .index
+                    .components
+                    .iter()
+                    .any(|offered| offered.name == *wanted)
             {
                 continue;
             }
@@ -1144,13 +1214,30 @@ impl ComponentsPane {
         }
         let first = plan.first().cloned().unwrap_or_default();
         let line = format!("Would install for {}:", edition.title);
-        let components: Vec<Component> = plan.iter().filter_map(|name| self.component(name)).collect();
+        let components: Vec<Component> = plan
+            .iter()
+            .filter_map(|name| self.component(name))
+            .collect();
         let parts: Vec<&Component> = components.iter().collect();
         show_line(tree, self.widgets.first, &line, Token::Text);
-        show_line(tree, self.widgets.second, &messages::in_all(&parts), Token::TextDim);
+        show_line(
+            tree,
+            self.widgets.second,
+            &messages::in_all(&parts),
+            Token::TextDim,
+        );
         self.chosen_edition = Some(edition.name);
         let edition = Some(edition.title);
-        self.open_confirmation(tree, Note::Install { name: first, plan, edition }, "Install", now_ms);
+        self.open_confirmation(
+            tree,
+            Note::Install {
+                name: first,
+                plan,
+                edition,
+            },
+            "Install",
+            now_ms,
+        );
         None
     }
 
@@ -1183,7 +1270,9 @@ impl ComponentsPane {
             .collect();
         let job = match plan.first().cloned() {
             Some(current) => {
-                self.note = Note::Progress { name: current.clone() };
+                self.note = Note::Progress {
+                    name: current.clone(),
+                };
                 self.work = Work::Updating {
                     plan,
                     current,
@@ -1243,9 +1332,15 @@ impl ComponentsPane {
     }
 
     fn cancel_job(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
-        let swapping = self.read.job.as_ref().is_some_and(|job| job.phase == "swapping");
+        let swapping = self
+            .read
+            .job
+            .as_ref()
+            .is_some_and(|job| job.phase == "swapping");
         match &mut self.work {
-            Work::Updating { cancelling, .. } | Work::DownloadingStore { cancelling } if !*cancelling && !swapping => {
+            Work::Updating { cancelling, .. } | Work::DownloadingStore { cancelling }
+                if !*cancelling && !swapping =>
+            {
                 *cancelling = true;
             }
             _ => return None,
@@ -1264,15 +1359,31 @@ impl ComponentsPane {
             .filter_map(|row| row.update.as_ref())
             .map(|update| update.fetch_bytes)
             .sum();
-        let from_disk = self.read.checked.as_ref().is_some_and(|checked| checked.source == "disk");
+        let from_disk = self
+            .read
+            .checked
+            .as_ref()
+            .is_some_and(|checked| checked.source == "disk");
         let (line, button, enabled) = match (&self.work, &self.read.checked) {
-            _ if self.installed().is_empty() => (String::from(messages::NOTHING_TO_UPDATE), "Check now", false),
+            _ if self.installed().is_empty() => (
+                String::from(messages::NOTHING_TO_UPDATE),
+                "Check now",
+                false,
+            ),
             (Work::CheckingUpdates, _) => (String::from(messages::CHECKING), "Check now", false),
             (Work::Updating { plan, current, .. }, _) if plan.len() > 1 => {
                 let at = plan.iter().position(|name| name == current).unwrap_or(0) + 1;
-                (messages::updating_all(at, plan.len(), &self.title_of(current)), "Update all", false)
+                (
+                    messages::updating_all(at, plan.len(), &self.title_of(current)),
+                    "Update all",
+                    false,
+                )
             }
-            (_, None) => (String::from(messages::NOT_CHECKED), "Check now", !others_busy),
+            (_, None) => (
+                String::from(messages::NOT_CHECKED),
+                "Check now",
+                !others_busy,
+            ),
             _ if !with_updates.is_empty() => (
                 messages::updates_line(with_updates.len(), bytes, from_disk),
                 "Update all",
@@ -1342,11 +1453,9 @@ impl ComponentsPane {
     fn others_busy(&self) -> bool {
         self.busy()
             || self.read.job.is_some()
-            || self
-                .read
-                .rows
-                .iter()
-                .any(|row| row.state == INSTALLING || row.state == REMOVING || row.state == UPDATING)
+            || self.read.rows.iter().any(|row| {
+                row.state == INSTALLING || row.state == REMOVING || row.state == UPDATING
+            })
     }
 
     fn press_row(
@@ -1396,7 +1505,16 @@ impl ComponentsPane {
                 };
                 show_line(tree, self.widgets.first, &also, Token::Text);
                 show_line(tree, self.widgets.second, &in_all, Token::TextDim);
-                self.open_confirmation(tree, Note::Install { name, plan: names, edition: None }, confirm, now_ms);
+                self.open_confirmation(
+                    tree,
+                    Note::Install {
+                        name,
+                        plan: names,
+                        edition: None,
+                    },
+                    confirm,
+                    now_ms,
+                );
                 None
             }
             Ok(plan) if plan.is_empty() => {
@@ -1521,7 +1639,9 @@ impl ComponentsPane {
             Note::Closed => return None,
             Note::Store { .. } | Note::StoreProgress => return Some(Anchor::Store),
             Note::Band { .. } => return Some(Anchor::Band),
-            Note::Install { edition: Some(_), .. } => return Some(Anchor::Edition),
+            Note::Install {
+                edition: Some(_), ..
+            } => return Some(Anchor::Edition),
             Note::Message { name, .. }
             | Note::Progress { name }
             | Note::Remove { name }
@@ -1538,23 +1658,31 @@ impl ComponentsPane {
     fn note_height(&self) -> i32 {
         match &self.note {
             Note::Closed => 0,
-            Note::Message { second, .. } | Note::Band { second, .. } | Note::Store { second, .. }
+            Note::Message { second, .. }
+            | Note::Band { second, .. }
+            | Note::Store { second, .. }
                 if second.is_empty() =>
             {
                 MESSAGE_HEIGHT
             }
             Note::Message { .. } | Note::Band { .. } | Note::Store { .. } => TWO_LINE_HEIGHT,
             Note::Progress { .. } => PROGRESS_HEIGHT,
-            Note::Install { edition: Some(_), plan, .. } => {
-                CONFIRMATION_HEIGHT + PLAN_LINE_PITCH * plan.len().min(PLAN_LINES) as i32 + self.stacked_buttons()
+            Note::Install {
+                edition: Some(_),
+                plan,
+                ..
+            } => {
+                CONFIRMATION_HEIGHT
+                    + PLAN_LINE_PITCH * plan.len().min(PLAN_LINES) as i32
+                    + self.stacked_buttons()
             }
-            Note::Remove { .. } | Note::Install { .. } => CONFIRMATION_HEIGHT + self.stacked_buttons(),
+            Note::Remove { .. } | Note::Install { .. } => {
+                CONFIRMATION_HEIGHT + self.stacked_buttons()
+            }
             Note::StoreProgress => CONFIRMATION_HEIGHT,
         }
     }
 
-    /// Where a note's lines and bar go: at x 24 and the pane's width less 48 on a phone
-    /// (components-v0.5.md section 10), as built elsewhere.
     fn note_column(&self) -> (i32, i32) {
         match self.metrics.stacked {
             true => (NOTE_X_PHONE, self.metrics.width + 2 * PADDING - 48),
@@ -1562,17 +1690,13 @@ impl ComponentsPane {
         }
     }
 
-    /// Whether the install the pane waits for is moving its checked copy into place, when
-    /// it can no longer be cancelled (components-v0.5.md section 6).
     fn install_finishing(&self) -> bool {
         matches!(&self.work, Work::Installing { plan, .. }
-            if self.read.job.as_ref().is_some_and(|job| {
-                job.kind == INSTALLING && job.phase == FINISHING && plan.first() == Some(&job.name)
-            }))
+        if self.read.job.as_ref().is_some_and(|job| {
+            job.kind == INSTALLING && job.phase == FINISHING && plan.first() == Some(&job.name)
+        }))
     }
 
-    /// What a confirmation's buttons add to its note on a phone, where they stack full width
-    /// (components-v0.5.md section 10): two 48 px buttons 8 apart in place of one 28 px row.
     fn stacked_buttons(&self) -> i32 {
         match self.metrics.stacked {
             true => 2 * TOUCH_BUTTON + 8 - BUTTON_HEIGHT,
@@ -1624,11 +1748,18 @@ impl ComponentsPane {
                 update: None,
             };
         }
-        let updating_here = matches!(&self.work, Work::Updating { current, .. } if *current == component.name);
+        let updating_here =
+            matches!(&self.work, Work::Updating { current, .. } if *current == component.name);
         let job_here = row.job.as_ref().filter(|job| job.kind == UPDATING);
         if updating_here || job_here.is_some() || row.state == UPDATING {
             let percent = job_here.map_or(0, Job::percent);
-            let cancelling = matches!(&self.work, Work::Updating { cancelling: true, .. });
+            let cancelling = matches!(
+                &self.work,
+                Work::Updating {
+                    cancelling: true,
+                    ..
+                }
+            );
             let swapping = job_here.is_some_and(|job| job.phase == "swapping");
             return Look {
                 state: messages::installed_state(size),
@@ -1646,7 +1777,11 @@ impl ComponentsPane {
             };
         }
         if row.state == INSTALLED {
-            let from_disk = self.read.checked.as_ref().is_some_and(|checked| checked.source == "disk");
+            let from_disk = self
+                .read
+                .checked
+                .as_ref()
+                .is_some_and(|checked| checked.source == "disk");
             let update = row.update.as_ref().map(|update| UpdateLook {
                 line: messages::update_row_line(update.fetch_bytes, from_disk),
                 button: "Update",
@@ -1656,7 +1791,11 @@ impl ComponentsPane {
             return Look {
                 state: messages::installed_state(size),
                 word: match &row.update {
-                    Some(update) => format!("{INSTALLED} {} update {}", messages::size_text(size), messages::size_text(update.fetch_bytes)),
+                    Some(update) => format!(
+                        "{INSTALLED} {} update {}",
+                        messages::size_text(size),
+                        messages::size_text(update.fetch_bytes)
+                    ),
                     None => String::from(INSTALLED),
                 },
                 button: "Remove",
@@ -1685,8 +1824,8 @@ impl ComponentsPane {
     }
 
     fn busy_reason(&self) -> &'static str {
-        let removing = self.to_remove().is_some()
-            || self.read.rows.iter().any(|row| row.state == REMOVING);
+        let removing =
+            self.to_remove().is_some() || self.read.rows.iter().any(|row| row.state == REMOVING);
         let updating = matches!(self.work, Work::Updating { .. })
             || self.read.rows.iter().any(|row| row.state == UPDATING);
         match (removing, updating) {
@@ -1740,7 +1879,10 @@ impl ComponentsPane {
                 }
             }
         }
-        tree.set_shown(widgets.download, self.read.store.is_none() && self.note != Note::StoreProgress);
+        tree.set_shown(
+            widgets.download,
+            self.read.store.is_none() && self.note != Note::StoreProgress,
+        );
         tree.set_enabled(widgets.download, !self.others_busy());
         self.show_updates_band(tree);
         let shown = self.read.rows.len().min(ROWS);
@@ -1749,7 +1891,11 @@ impl ComponentsPane {
             Some(_) => self.note_height(),
             None => 0,
         };
-        let below_store = if anchor == Some(Anchor::Store) { note_height } else { 0 };
+        let below_store = if anchor == Some(Anchor::Store) {
+            note_height
+        } else {
+            0
+        };
         let below_band = match anchor {
             Some(Anchor::Store | Anchor::Band) => note_height,
             _ => 0,
@@ -1844,7 +1990,12 @@ impl ComponentsPane {
                             line_at(ROW_TEXT_X, SUMMARY_TOP, STATE_END - ROW_TEXT_X),
                         );
                     }
-                    show_line(tree, row_widgets.summary, &component.summary, Token::TextDim);
+                    show_line(
+                        tree,
+                        row_widgets.summary,
+                        &component.summary,
+                        Token::TextDim,
+                    );
                 }
             }
             tree.set_shown(row_widgets.update, look.update.is_some());
@@ -1913,11 +2064,20 @@ impl ComponentsPane {
                 (true, !second.is_empty(), false, false)
             }
             Note::StoreProgress => {
-                let (done, total) = self.read.job.as_ref().map_or((0, 0), |job| (job.done, job.total));
+                let (done, total) = self
+                    .read
+                    .job
+                    .as_ref()
+                    .map_or((0, 0), |job| (job.done, job.total));
                 let permille = done.saturating_mul(PERMILLE) / total.max(1);
                 tree.set_progress(widgets.bar, permille.min(PERMILLE) as u16);
                 tree.set_accessible_name(widgets.bar, "Downloading the component store");
-                show_line(tree, widgets.first, &messages::downloading_store(done, total), Token::Text);
+                show_line(
+                    tree,
+                    widgets.first,
+                    &messages::downloading_store(done, total),
+                    Token::Text,
+                );
                 let cancelling = matches!(self.work, Work::DownloadingStore { cancelling: true });
                 tree.set_text(widgets.cancel, "Cancel");
                 tree.set_enabled(widgets.cancel, !cancelling);
@@ -1926,7 +2086,9 @@ impl ComponentsPane {
             }
             Note::Progress { name } if matches!(self.work, Work::Updating { .. }) => {
                 let job = self.read.job.as_ref().filter(|job| job.name == *name);
-                let (phase, done, total) = job.map_or(("copying", 0, 0), |job| (job.phase.as_str(), job.done, job.total));
+                let (phase, done, total) = job.map_or(("copying", 0, 0), |job| {
+                    (job.phase.as_str(), job.done, job.total)
+                });
                 let total = match (job, self.component(name)) {
                     (None, Some(component)) => component.size_bytes(),
                     _ => total,
@@ -1934,7 +2096,12 @@ impl ComponentsPane {
                 let permille = done.saturating_mul(PERMILLE) / total.max(1);
                 tree.set_progress(widgets.bar, permille.min(PERMILLE) as u16);
                 tree.set_accessible_name(widgets.bar, &format!("Updating {}", self.title_of(name)));
-                show_line(tree, widgets.first, &messages::job_phase_line(phase, done, total), Token::Text);
+                show_line(
+                    tree,
+                    widgets.first,
+                    &messages::job_phase_line(phase, done, total),
+                    Token::Text,
+                );
                 (true, false, true, false)
             }
             Note::Progress { name } => {
@@ -1981,7 +2148,10 @@ impl ComponentsPane {
         match self.metrics.stacked {
             true => {
                 let width = self.metrics.width;
-                tree.set_place(widgets.cancel, at(PADDING, buttons_top, width, TOUCH_BUTTON));
+                tree.set_place(
+                    widgets.cancel,
+                    at(PADDING, buttons_top, width, TOUCH_BUTTON),
+                );
                 tree.set_place(
                     widgets.confirm,
                     at(PADDING, buttons_top + TOUCH_BUTTON + 8, width, TOUCH_BUTTON),
@@ -2005,12 +2175,16 @@ impl ComponentsPane {
         tree.set_shown(widgets.confirm, buttons_shown);
     }
 
-    /// The edition confirmation's plan lines under its first line, from `top`: one a
-    /// component, `Windows apps · 1.8 MB`, the last saying how many more when they do not fit.
-    /// How many show.
     fn show_plan_lines(&self, tree: &mut WidgetTree<CAPACITY>, top: Option<i32>) -> usize {
         let plan = match (&self.note, top) {
-            (Note::Install { edition: Some(_), plan, .. }, Some(_)) => plan.as_slice(),
+            (
+                Note::Install {
+                    edition: Some(_),
+                    plan,
+                    ..
+                },
+                Some(_),
+            ) => plan.as_slice(),
             _ => &[],
         };
         let shown = plan.len().min(PLAN_LINES);
@@ -2023,7 +2197,11 @@ impl ComponentsPane {
             let line = match (index + 1 == shown, more) {
                 (true, 1..) => format!("and {} more", more + 1),
                 _ => match self.component(name) {
-                    Some(component) => format!("{} · {}", component.title, messages::size_text(component.size_bytes())),
+                    Some(component) => format!(
+                        "{} · {}",
+                        component.title,
+                        messages::size_text(component.size_bytes())
+                    ),
                     None => self.title_of(name),
                 },
             };

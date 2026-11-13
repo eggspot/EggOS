@@ -34,7 +34,11 @@ impl Ranges<'_> {
     /// `address` of a child of the bus, in the bus's parent's addresses; `None` when no range
     /// covers it.
     pub fn translate(&self, address: u64) -> Option<u64> {
-        let (child, parent, size) = (self.child_cells as usize, self.parent_cells as usize, self.size_cells as usize);
+        let (child, parent, size) = (
+            self.child_cells as usize,
+            self.parent_cells as usize,
+            self.size_cells as usize,
+        );
         let entry = (child + parent + size) * 4;
         if entry == 0 || child > 2 || parent > 2 || size > 2 {
             return None;
@@ -43,7 +47,9 @@ impl Ranges<'_> {
             let (from, rest) = triple.split_at(child * 4);
             let (to, length) = rest.split_at(parent * 4);
             let (from, to, length) = (cells_value(from)?, cells_value(to)?, cells_value(length)?);
-            let offset = address.checked_sub(from).filter(|&offset| offset < length)?;
+            let offset = address
+                .checked_sub(from)
+                .filter(|&offset| offset < length)?;
             to.checked_add(offset)
         })
     }
@@ -171,14 +177,15 @@ impl<'a> Node<'a> {
     /// skipped.
     pub fn reg_entries(&self) -> impl Iterator<Item = (u64, u64)> + 'a {
         let translations = self.translations;
-        self.untranslated_reg_entries().filter_map(move |(address, size)| {
-            let address = translations
-                .iter()
-                .rev()
-                .flatten()
-                .try_fold(address, |address, ranges| ranges.translate(address))?;
-            Some((address, size))
-        })
+        self.untranslated_reg_entries()
+            .filter_map(move |(address, size)| {
+                let address = translations
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .try_fold(address, |address, ranges| ranges.translate(address))?;
+                Some((address, size))
+            })
     }
 
     /// The (address, size) pairs of `reg` in the parent bus's own addresses.
@@ -305,7 +312,10 @@ fn children_context<'a>(node: &Node<'a>, own: &mut Level<'a>, ranges: Option<&'a
         Some([]) => node.cpu_addressable,
         Some(raw) => {
             let free = own.translations.iter().position(Option::is_none);
-            match (free, node.cpu_addressable && own.address_cells != PCI_ADDRESS_CELLS) {
+            match (
+                free,
+                node.cpu_addressable && own.address_cells != PCI_ADDRESS_CELLS,
+            ) {
                 (Some(free), true) => {
                     own.translations[free] = Some(Ranges {
                         raw,
@@ -716,7 +726,10 @@ mod tests {
         let child = nodes.iter().find(|node| node.name == b"child@0").unwrap();
         assert!(child.cpu_addressable);
         assert_eq!(child.reg_entries().collect::<Vec<_>>(), [(0x8000, 0x10)]);
-        assert_eq!(child.untranslated_reg_entries().collect::<Vec<_>>(), [(0, 0x10)]);
+        assert_eq!(
+            child.untranslated_reg_entries().collect::<Vec<_>>(),
+            [(0, 0x10)]
+        );
         let i2c = nodes
             .iter()
             .find(|node| node.name == b"i2c-device@50")

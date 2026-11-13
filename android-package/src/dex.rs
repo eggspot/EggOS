@@ -182,7 +182,12 @@ impl<'a> Dex<'a> {
         if size > bytes.len() {
             return Err(DexError::Truncated);
         }
-        let pair = |at: usize| (word(bytes, at).unwrap_or(0), word(bytes, at + 4).unwrap_or(0));
+        let pair = |at: usize| {
+            (
+                word(bytes, at).unwrap_or(0),
+                word(bytes, at + 4).unwrap_or(0),
+            )
+        };
         Ok(Self {
             bytes: &bytes[..size],
             version,
@@ -244,7 +249,10 @@ impl<'a> Dex<'a> {
         if index >= count {
             return None;
         }
-        half(self.bytes, offset as usize + METHOD_ID_BYTES * index as usize + METHOD_PROTOTYPE)
+        half(
+            self.bytes,
+            offset as usize + METHOD_ID_BYTES * index as usize + METHOD_PROTOTYPE,
+        )
     }
 
     /// Method `index`'s short signature: the return type's letter, then each parameter's
@@ -255,7 +263,10 @@ impl<'a> Dex<'a> {
         if prototype >= count {
             return None;
         }
-        self.string(word(self.bytes, offset as usize + PROTOTYPE_ID_BYTES * prototype as usize)?)
+        self.string(word(
+            self.bytes,
+            offset as usize + PROTOTYPE_ID_BYTES * prototype as usize,
+        )?)
     }
 
     /// The descriptor of the class field `index` belongs to.
@@ -399,7 +410,9 @@ mod tests {
         let mut file = vec![0u8; 0x100];
         file[..8].copy_from_slice(b"dex\n035\0");
         file[0x28..0x2c].copy_from_slice(&ENDIAN_TAG.to_le_bytes());
-        let put = |file: &mut Vec<u8>, at: usize, value: u32| file[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        let put = |file: &mut Vec<u8>, at: usize, value: u32| {
+            file[at..at + 4].copy_from_slice(&value.to_le_bytes())
+        };
         put(&mut file, 0x20, 0x100);
         put(&mut file, 0x38, 1);
         put(&mut file, 0x3c, 0x70);

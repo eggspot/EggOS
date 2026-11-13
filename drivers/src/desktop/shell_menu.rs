@@ -83,8 +83,6 @@ pub(super) struct ShellMenu {
     anchor: Rect,
 }
 
-/// The entries `bytes` encodes, each a flags byte, a length byte and that many bytes of
-/// UTF-8, and how many; `None` when they are malformed or too many.
 fn parse(bytes: &[u8]) -> Option<([Entry; SHELL_MENU_ENTRIES], usize)> {
     let mut entries = [Entry::EMPTY; SHELL_MENU_ENTRIES];
     let mut count = 0;
@@ -126,12 +124,10 @@ impl Desktop {
             .tray_last_pressed()
             .filter(|&(_, owner)| self.window_at(owner).client == client)
             .map(|(at, _)| at);
-        let anchor = icon
-            .and_then(|at| self.tray_target(at))
-            .unwrap_or_else(|| {
-                let (x, y) = self.pointer;
-                Rect::new(x, y, 1, 1)
-            });
+        let anchor = icon.and_then(|at| self.tray_target(at)).unwrap_or_else(|| {
+            let (x, y) = self.pointer;
+            Rect::new(x, y, 1, 1)
+        });
         self.shell_menu = Some(ShellMenu {
             slot,
             entries: parsed,
@@ -182,7 +178,10 @@ impl Desktop {
                 (top, height.min(screen.bottom().saturating_sub(top)))
             }
             (None, None) => {
-                let top = menu.anchor.bottom().min(screen.bottom().saturating_sub(height));
+                let top = menu
+                    .anchor
+                    .bottom()
+                    .min(screen.bottom().saturating_sub(height));
                 (top, height.min(screen.height))
             }
         };
@@ -265,7 +264,9 @@ impl Desktop {
     ) -> Option<Action> {
         let menu = self.shell_menu?;
         let row = self.shell_menu_row_at(x, y);
-        let on_menu = self.shell_menu_rect().is_some_and(|rect| contains(rect, x, y));
+        let on_menu = self
+            .shell_menu_rect()
+            .is_some_and(|rect| contains(rect, x, y));
         let on_anchor = contains(menu.anchor, x, y);
         if on_menu && row.is_none() {
             return Some(Action::None);
@@ -280,7 +281,9 @@ impl Desktop {
             return;
         };
         let hover = self.shell_menu_row_at(x, y);
-        let on_menu = self.shell_menu_rect().is_some_and(|rect| contains(rect, x, y));
+        let on_menu = self
+            .shell_menu_rect()
+            .is_some_and(|rect| contains(rect, x, y));
         if (hover.is_some() || on_menu) && hover != menu.hover {
             if let Some(open) = self.shell_menu.as_mut() {
                 open.hover = hover;

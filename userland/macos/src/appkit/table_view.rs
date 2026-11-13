@@ -6,9 +6,9 @@
 //! grid lines and column resizing from the header.
 
 use super::{
-    NSINDEXSET, NSINDEXSET_META, NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW,
-    NSTABLEVIEW_META, NSVIEW, application, drawing, event, responds, scroll_view, store,
-    store_copy, string, view, window, with_text,
+    NSINDEXSET, NSINDEXSET_META, NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META,
+    NSVIEW, application, drawing, event, responds, scroll_view, store, store_copy, string, view,
+    window, with_text,
 };
 use crate::foundation::{NSARRAY, class_pointer, new_instance, notification_with_name, post};
 use crate::objc::abi::{Id, Sel};
@@ -735,10 +735,15 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
     let lefts: [i32; MOST_COLUMNS] = geometry::column_lefts(&widths[..count], 0);
     let (lefts, widths, which) = (&lefts[..count], &widths[..count], &which[..count]);
     let width = round(frame.width).max(clip_width);
-    let (first, last) = geometry::shown_rows(rows, clip_height - geometry::body_top(header), offset);
+    let (first, last) =
+        geometry::shown_rows(rows, clip_height - geometry::body_top(header), offset);
     let fields = table(this);
-    let (selected, alternating, grid, disabled) =
-        (fields.selected, fields.alternating, fields.grid, fields.disabled);
+    let (selected, alternating, grid, disabled) = (
+        fields.selected,
+        fields.alternating,
+        fields.grid,
+        fields.disabled,
+    );
     let focused = {
         let window = view::fields(this).window;
         !window.is_null() && window::first_responder(window) == this
@@ -749,11 +754,19 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
         false => colour::TEXT,
     };
     drawing::with_canvas(|canvas, height, origin, _, _| {
-        let outer = pixel_rect(Frame::new(origin.x, origin.y, frame.width, frame.height), height);
+        let outer = pixel_rect(
+            Frame::new(origin.x, origin.y, frame.width, frame.height),
+            height,
+        );
         let place = |rect: Rect| rect.offset(outer.x, outer.y);
         canvas.fill(place(Rect::new(0, 0, width, round(frame.height))), surface);
         for row in first..last {
-            let rect = Rect::new(0, geometry::body_top(header) + row as i32 * TABLE_ROW_HEIGHT, width, TABLE_ROW_HEIGHT);
+            let rect = Rect::new(
+                0,
+                geometry::body_top(header) + row as i32 * TABLE_ROW_HEIGHT,
+                width,
+                TABLE_ROW_HEIGHT,
+            );
             let fill = if row as isize == selected {
                 colour::SELECTION
             } else if alternating && geometry::is_alternate(row) {
@@ -763,28 +776,56 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
             };
             canvas.fill(place(rect), fill);
             if grid & (HORIZONTAL_GRID | DASHED_HORIZONTAL_GRID) != 0 {
-                canvas.fill(place(Rect::new(0, rect.bottom() - 1, width, 1)), colour::MENU_BORDER);
+                canvas.fill(
+                    place(Rect::new(0, rect.bottom() - 1, width, 1)),
+                    colour::MENU_BORDER,
+                );
             }
             if grid & VERTICAL_GRID != 0 {
                 for (&left, &column_width) in lefts.iter().zip(widths) {
-                    canvas.fill(place(Rect::new(left + column_width - 1, rect.y, 1, TABLE_ROW_HEIGHT)), colour::MENU_BORDER);
+                    canvas.fill(
+                        place(Rect::new(
+                            left + column_width - 1,
+                            rect.y,
+                            1,
+                            TABLE_ROW_HEIGHT,
+                        )),
+                        colour::MENU_BORDER,
+                    );
                 }
             }
             if row as isize == selected && !disabled {
                 let at = place(Rect::new(TABLE_MARK_X, rect.y + TEXT_TOP, 8, 16));
                 let _ = canvas.text(at.x, at.y, MARK, colour::ACCENT, 1);
                 if focused {
-                    focus_ring(canvas, place(Rect::new(0, rect.y, clip_width, TABLE_ROW_HEIGHT)), 0);
+                    focus_ring(
+                        canvas,
+                        place(Rect::new(0, rect.y, clip_width, TABLE_ROW_HEIGHT)),
+                        0,
+                    );
                 }
             }
-            draw_cells(this, canvas, &place, (row, rect), (lefts, widths, which), text);
+            draw_cells(
+                this,
+                canvas,
+                &place,
+                (row, rect),
+                (lefts, widths, which),
+                text,
+            );
         }
         if !header {
             return;
         }
         let top = offset;
-        canvas.fill(place(Rect::new(0, top, width, TABLE_HEADER_HEIGHT)), colour::MENU);
-        canvas.fill(place(Rect::new(0, top + TABLE_HEADER_HEIGHT - 1, width, 1)), colour::MENU_BORDER);
+        canvas.fill(
+            place(Rect::new(0, top, width, TABLE_HEADER_HEIGHT)),
+            colour::MENU,
+        );
+        canvas.fill(
+            place(Rect::new(0, top + TABLE_HEADER_HEIGHT - 1, width, 1)),
+            colour::MENU_BORDER,
+        );
         for (shown, (&left, &column_width)) in lefts.iter().zip(widths).enumerate() {
             let separator = Rect::new(
                 left + column_width - 1,
@@ -796,7 +837,12 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
             let each = columns(this)[which[shown]];
             let space = column_width - 2 * TABLE_CELL_PADDING;
             with_text(column(each).title, |title| {
-                let at = place(Rect::new(left + TABLE_CELL_PADDING, top + HEADER_TEXT_TOP, space, 16));
+                let at = place(Rect::new(
+                    left + TABLE_CELL_PADDING,
+                    top + HEADER_TEXT_TOP,
+                    space,
+                    16,
+                ));
                 let x = match column(each).alignment == RIGHT_ALIGNED {
                     true => at.x + (space - title.chars().count() as i32 * 8).max(0),
                     false => at.x,
@@ -1015,12 +1061,20 @@ pub fn origin_pixel(this: Id) -> (i32, i32) {
         true => 0,
         false => window::fields(window).buffer.height as i32,
     };
-    let rect = pixel_rect(Frame::new(origin.x, origin.y, frame.width, frame.height), height);
+    let rect = pixel_rect(
+        Frame::new(origin.x, origin.y, frame.width, frame.height),
+        height,
+    );
     (rect.x, rect.y)
 }
 
 /// Runs `work` with row `row`'s first cell and every cell joined by tabs, into `joined`.
-pub fn with_row_text<R>(this: Id, row: usize, joined: &mut [u8], work: impl FnOnce(&str, &str) -> R) -> R {
+pub fn with_row_text<R>(
+    this: Id,
+    row: usize,
+    joined: &mut [u8],
+    work: impl FnOnce(&str, &str) -> R,
+) -> R {
     let (_, which, count) = shown_widths(this);
     let mut length = 0;
     let mut first_end = 0;

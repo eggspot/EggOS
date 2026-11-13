@@ -142,7 +142,9 @@ impl Modal {
             // freed below.
             let bytes = unsafe { core::slice::from_raw_parts_mut(block, MAX_TREE_BYTES) };
             let mut tree = TreeWriter::new(&mut *bytes);
-            let _ = self.alert.describe(super::app_name(), self.focused, &mut tree);
+            let _ = self
+                .alert
+                .describe(super::app_name(), self.focused, &mut tree);
             let length = tree.bytes().len();
             server::answer_query(query.serial, tree_answer::TREE, &bytes[..length]);
             crate::libsystem::heap::release(block);

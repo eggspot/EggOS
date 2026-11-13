@@ -363,9 +363,7 @@ pub fn act(
     ours: bool,
 ) -> Outcome {
     match kind {
-        CommonKind::StatusBar | CommonKind::Progress | CommonKind::Tooltip => {
-            Outcome::NotSupported
-        }
+        CommonKind::StatusBar | CommonKind::Progress | CommonKind::Tooltip => Outcome::NotSupported,
         CommonKind::TabControl => tab_control::act(window, item, action, ours),
         CommonKind::ListView => list_view::act(window, item, action, ours),
         CommonKind::Header => header::act(window, item, action, ours),

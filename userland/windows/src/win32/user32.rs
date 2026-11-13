@@ -247,9 +247,7 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
         // SAFETY: the window name is the caller's NUL-terminated string.
         false => unsafe { super::file::wide_string(window_name) },
     };
-    if program_class.is_err()
-        && system_class == Some(ControlKind::Common(CommonKind::Tooltip))
-    {
+    if program_class.is_err() && system_class == Some(ControlKind::Common(CommonKind::Tooltip)) {
         let owner = match parent {
             0 => with(|gui| gui.active_root).unwrap_or(0),
             owner => owner,

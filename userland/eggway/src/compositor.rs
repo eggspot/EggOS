@@ -26,9 +26,9 @@ use eggos_wayland::keymap;
 use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
-    fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat,
-    server_decoration, shm, subsurface, surface, viewport, xdg_popup, xdg_positioner,
-    xdg_surface, xdg_toplevel, xdg_wm_base,
+    fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat, server_decoration,
+    shm, subsurface, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
+    xdg_wm_base,
 };
 use eggos_wayland::wire::{self, Header, MAX_ARGUMENTS, MAX_MESSAGE_SIZE, Value};
 
@@ -870,16 +870,17 @@ fn dmabuf_request(client: &mut ClientSlot, message: &Message) {
         client.protocol_error(id, display::NO_MEMORY, b"too many buffer params");
         return;
     };
-    if new_object(client, id, Interface::LinuxBufferParams, message.version, free as u16) {
+    if new_object(
+        client,
+        id,
+        Interface::LinuxBufferParams,
+        message.version,
+        free as u16,
+    ) {
         client.dmabuf_params[free] = Some(crate::client::DmabufParams::default());
     }
 }
 
-/// `zwp_linux_buffer_params_v1` (D459): one plane added with its `dma-buf`, then
-/// `create_immed` makes a `wl_buffer` over the descriptor's mapping, a pool of its own that
-/// goes with the buffer, so a GPU's frame commits like a `wl_shm` buffer. `create` (the
-/// asynchronous form) answers `failed`; other formats than `XRGB8888` and `ARGB8888`, other
-/// planes and modifiers are refused.
 fn dmabuf_params_request<S: System>(
     client: &mut ClientSlot,
     shared: &mut Shared,
@@ -900,9 +901,14 @@ fn dmabuf_params_request<S: System>(
         1 => {
             let descriptor = message.descriptors[0];
             let (plane, offset, stride) = (message.uint(1), message.uint(2), message.uint(3));
-            if plane != 0 || params.plane.is_some() || message.uint(4) != 0 || message.uint(5) != 0 {
+            if plane != 0 || params.plane.is_some() || message.uint(4) != 0 || message.uint(5) != 0
+            {
                 system.close(descriptor);
-                client.protocol_error(message.object, linux_dmabuf::PLANE_IDX, b"one linear plane only");
+                client.protocol_error(
+                    message.object,
+                    linux_dmabuf::PLANE_IDX,
+                    b"one linear plane only",
+                );
                 return;
             }
             params.plane = Some((descriptor, offset, stride));
@@ -910,8 +916,12 @@ fn dmabuf_params_request<S: System>(
         }
         2 => client.post(message.object, message.version, linux_dmabuf::FAILED, &[]),
         3 => {
-            let (id, width, height, format) =
-                (message.uint(0), message.int(1), message.int(2), message.uint(3));
+            let (id, width, height, format) = (
+                message.uint(0),
+                message.int(1),
+                message.int(2),
+                message.uint(3),
+            );
             if params.used {
                 client.protocol_error(message.object, linux_dmabuf::ALREADY_USED, b"params used");
                 return;
@@ -959,7 +969,13 @@ fn dmabuf_params_request<S: System>(
             });
             client.pool_bytes += length;
             shared.pool_bytes += length;
-            if new_object(client, id, Interface::Buffer, message.version, buffer as u16) {
+            if new_object(
+                client,
+                id,
+                Interface::Buffer,
+                message.version,
+                buffer as u16,
+            ) {
                 client.buffers[buffer] = Some(Buffer {
                     id,
                     pool: pool as u8,

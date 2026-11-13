@@ -14,12 +14,12 @@
 //! the HAL; a message-signalled one by writing the HAL's new message into its device's MSI-X
 //! entry ([`MessageTable`]). A line that cannot move stays where it is.
 
-use eggos_hal::atomic::AtomicU64;
 use crate::thread::Parker;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci::msix::MsixTable;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::{DeviceLine, Platform};
 
 /// What a device line's interrupt does.
@@ -81,14 +81,21 @@ fn connect_with(
         .ok_or("no such device interrupt line")?;
     let handler = Box::into_raw(Box::new(handler));
     let taken = slot
-        .compare_exchange(core::ptr::null_mut(), handler, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(
+            core::ptr::null_mut(),
+            handler,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
         .is_err();
     if taken {
         // SAFETY: made just above by `Box::into_raw` and never shared.
         drop(unsafe { Box::from_raw(handler) });
         return Err("the device interrupt line is in use");
     }
-    let table = table.map_or(core::ptr::null_mut(), |table| Box::into_raw(Box::new(table)));
+    let table = table.map_or(core::ptr::null_mut(), |table| {
+        Box::into_raw(Box::new(table))
+    });
     MESSAGE_TABLES[line.index()].store(table, Ordering::Release);
     Ok(())
 }

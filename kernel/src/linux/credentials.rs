@@ -288,7 +288,14 @@ impl Credentials {
         for (kind, id) in [(Kind::User, user), (Kind::Group, group)] {
             if let Some(id) = id.filter(|&id| id != self.ids(kind).effective) {
                 let ids = self.ids(kind);
-                self.set_ids(kind, Ids { effective: id, filesystem: id, ..ids })?;
+                self.set_ids(
+                    kind,
+                    Ids {
+                        effective: id,
+                        filesystem: id,
+                        ..ids
+                    },
+                )?;
             }
         }
         Ok(())

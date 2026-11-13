@@ -173,7 +173,14 @@ pub fn write_header(
     header: &Header,
     data_bytes: usize,
 ) -> Option<usize> {
-    write_header_with(out, source, destination, header, data_bytes, Completion::Full)
+    write_header_with(
+        out,
+        source,
+        destination,
+        header,
+        data_bytes,
+        Completion::Full,
+    )
 }
 
 /// [`write_header`], with the checksum written whole or left `completion` says.

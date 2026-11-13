@@ -111,8 +111,6 @@ pub fn open<P: Platform>() -> Result<FileKind, Errno> {
         .map_err(errno)
 }
 
-/// An `ioctl`'s argument: up to [`LONGEST_ARGUMENT`] bytes as the request's size field says,
-/// read from and written back to the program.
 struct Argument {
     bytes: [u8; LONGEST_ARGUMENT],
     size: usize,
@@ -320,7 +318,10 @@ fn version<P: Platform>(
     let wide = argument.size >= 64;
     for (index, text) in texts.into_iter().enumerate() {
         let (room, target) = match wide {
-            true => (argument.u64_at(16 + 16 * index), argument.u64_at(24 + 16 * index)),
+            true => (
+                argument.u64_at(16 + 16 * index),
+                argument.u64_at(24 + 16 * index),
+            ),
             false => (
                 u64::from(argument.u32_at(12 + 8 * index)),
                 u64::from(argument.u32_at(16 + 8 * index)),
@@ -347,7 +348,8 @@ fn parameter_value<P: Platform>(parameter: u64) -> Result<i32, Errno> {
             .map_err(errno)?
             .iter()
             .filter(|info| info.id < 32)
-            .fold(0u32, |mask, info| mask | 1 << info.id) as i32,
+            .fold(0u32, |mask, info| mask | 1 << info.id)
+            as i32,
         _ => return Err(Errno::EINVAL),
     })
 }
@@ -383,8 +385,6 @@ const BLOB_MEM_GUEST: u32 = 1;
 const BLOB_MEM_HOST3D: u32 = 2;
 const BLOB_FLAGS_KNOWN: u32 = 0x7;
 
-/// `VIRTGPU_RESOURCE_CREATE_BLOB`: a guest-memory blob (D439), or a host blob made by the
-/// command stream the call carries and mapped in the GPU's host-visible memory (D440).
 fn create_blob<P: Platform>(
     process: &Process<P>,
     context: &Context,
@@ -442,7 +442,9 @@ fn execbuffer<P: Platform>(
     let handles = argument.u32_at(24) as usize;
     let handle_list = argument.u64_at(16);
     let mut buffers = Vec::new();
-    buffers.try_reserve_exact(handles).map_err(|_| Errno::ENOMEM)?;
+    buffers
+        .try_reserve_exact(handles)
+        .map_err(|_| Errno::ENOMEM)?;
     for index in 0..handles {
         let mut word = [0u8; 4];
         process
@@ -471,7 +473,11 @@ fn execbuffer<P: Platform>(
         .read_user_memory(argument.u64_at(8), &mut stream)
         .map_err(|_| Errno::EFAULT)?;
     let fence = match length {
-        0 => buffers.iter().map(|buffer| buffer.last_fence()).max().unwrap_or(0),
+        0 => buffers
+            .iter()
+            .map(|buffer| buffer.last_fence())
+            .max()
+            .unwrap_or(0),
         _ => context.submit::<P>(&stream, &buffers).map_err(errno)?,
     };
     if flags & execbuffer_flag::FENCE_FD_OUT == 0 {
@@ -623,6 +629,9 @@ mod tests {
     #[test]
     fn map_offsets_name_the_handle() {
         assert_eq!(3u64 << MAP_OFFSET_SHIFT >> MAP_OFFSET_SHIFT, 3);
-        assert_eq!((3u64 << MAP_OFFSET_SHIFT) & ((1 << MAP_OFFSET_SHIFT) - 1), 0);
+        assert_eq!(
+            (3u64 << MAP_OFFSET_SHIFT) & ((1 << MAP_OFFSET_SHIFT) - 1),
+            0
+        );
     }
 }

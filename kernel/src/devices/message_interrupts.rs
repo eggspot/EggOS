@@ -42,7 +42,13 @@ pub fn connect(
         return connect_pin(probe, id, function.address, events);
     }
     let (line, message) = probe.message_interrupt()?;
-    let enabled = enable_message(probe, node, function.address, (found_msix, found_msi), message);
+    let enabled = enable_message(
+        probe,
+        node,
+        function.address,
+        (found_msix, found_msi),
+        message,
+    );
     let table = match enabled {
         Ok(table) => table,
         Err(refused) => {
@@ -93,14 +99,18 @@ fn enable_message(
         return Ok(Some(kept));
     }
     let Some(capability) = found_msi else {
-        return Err(ProbeError::Refused("the function has neither MSI-X nor MSI"));
+        return Err(ProbeError::Refused(
+            "the function has neither MSI-X nor MSI",
+        ));
     };
     let config = probe
         .pci_config()
         .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     match capability.enable(config, address, message.address, message.data as u16) {
         true => Ok(None),
-        false => Err(ProbeError::Refused("the function's MSI takes only 32-bit addresses")),
+        false => Err(ProbeError::Refused(
+            "the function's MSI takes only 32-bit addresses",
+        )),
     }
 }
 

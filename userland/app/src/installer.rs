@@ -1115,8 +1115,10 @@ fn ios_program(
 }
 
 fn is_ios_bundle_entry(name: &[u8]) -> bool {
-    name.strip_prefix(IPA_PAYLOAD)
-        .is_some_and(|rest| rest.windows(APP_FOLDER.len()).any(|window| window == APP_FOLDER))
+    name.strip_prefix(IPA_PAYLOAD).is_some_and(|rest| {
+        rest.windows(APP_FOLDER.len())
+            .any(|window| window == APP_FOLDER)
+    })
 }
 
 fn scan(

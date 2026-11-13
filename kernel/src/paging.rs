@@ -196,15 +196,13 @@ impl<F: Format> PageTables<F> {
         frames: &mut FrameAllocator,
         leaf: &mut impl FnMut(&mut FrameAllocator, u64, usize),
     ) {
-        self.for_each_used_entry(table, level, 0..F::entries(level), |entry| {
-            match F::decode(entry, level) {
-                Entry::Table(next) if level > 0 => {
-                    self.free_table_tree(next, level - 1, frames, leaf)
-                }
-                Entry::Leaf(phys, _) => leaf(frames, phys, level),
-                Entry::Kept(phys) => leaf(frames, phys, 0),
-                _ => {}
-            }
+        self.for_each_used_entry(table, level, 0..F::entries(level), |entry| match F::decode(
+            entry, level,
+        ) {
+            Entry::Table(next) if level > 0 => self.free_table_tree(next, level - 1, frames, leaf),
+            Entry::Leaf(phys, _) => leaf(frames, phys, level),
+            Entry::Kept(phys) => leaf(frames, phys, 0),
+            _ => {}
         });
         // SAFETY: a table of the low half, allocated from `frames` by `map_leaf`, reached once
         // (a table hangs from one entry), and walked by nothing any more (see `free_user_half`).
@@ -782,7 +780,8 @@ pub fn device_window<P: Platform>() -> core::ops::Range<u64> {
         return window;
     }
     let image = P::kernel_image();
-    let size = <P::PageTableFormat as Format>::leaf_bytes(<P::PageTableFormat as Format>::LEVELS - 1);
+    let size =
+        <P::PageTableFormat as Format>::leaf_bytes(<P::PageTableFormat as Format>::LEVELS - 1);
     let image_entry = image.virtual_address(image.start) & !(size - 1);
     let start = image_entry.wrapping_sub(size);
     start..image_entry

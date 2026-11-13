@@ -17,26 +17,18 @@ use super::{Attributes, Entry, Format, MemoryType};
 pub struct Powerpc64;
 
 const VALID: u64 = 1 << 63;
-/// A leaf: the entry maps a page; without it, it points at the next level.
 const LEAF: u64 = 1 << 62;
-/// Bits 55:12 of a leaf: the page's physical address; of a directory entry, the next table's.
 const ADDRESS: u64 = ((1 << 56) - 1) & !0xfff;
-/// A directory entry's next-level size: log2 of its entries.
 const NEXT_LEVEL_SIZE: u64 = 9;
 const EXECUTE: u64 = 1 << 0;
 const WRITE: u64 = 1 << 1;
 const READ: u64 = 1 << 2;
-/// Only the kernel may reach the page.
 const PRIVILEGED: u64 = 1 << 3;
-/// The attribute field, bits 5:4: 0 cacheable memory, 2 non-idempotent I/O (device
-/// registers).
 const ATTRIBUTE_SHIFT: u32 = 4;
 const ATTRIBUTE_MASK: u64 = 3 << ATTRIBUTE_SHIFT;
 const ATTRIBUTE_IO: u64 = 2 << ATTRIBUTE_SHIFT;
-/// Changed and referenced, set from the start so no access faults to set them.
 const CHANGED: u64 = 1 << 7;
 const REFERENCED: u64 = 1 << 8;
-/// In an entry without [`VALID`], which the hardware ignores: [`Format::kept`]'s mark.
 const KEPT: u64 = 1 << 58;
 
 /// The process table entry's root size: 4 index bits at the root.
@@ -56,7 +48,6 @@ impl Format for Powerpc64 {
     const ROOTS: usize = 2;
     const MAX_LEAF_LEVEL: usize = 2;
     const ENCODES_MEMORY_TYPE: bool = true;
-    /// 128 TiB, as Linux gives a 64-bit program by default.
     const USER_END: u64 = 1 << 47;
 
     fn root(virt: u64) -> Option<usize> {

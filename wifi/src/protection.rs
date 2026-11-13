@@ -47,7 +47,11 @@ fn header_length(frame: &[u8]) -> Option<usize> {
 fn aad(header: &[u8], out: &mut [u8; MAX_AAD_BYTES]) -> usize {
     let management = is_management(header);
     let qos = !management && header[0] & QOS_SUBTYPE_BIT != 0;
-    out[0] = if management { header[0] } else { header[0] & 0x8f };
+    out[0] = if management {
+        header[0]
+    } else {
+        header[0] & 0x8f
+    };
     out[1] = (header[1] & !0x38 & if qos { 0x7f } else { 0xff }) | PROTECTED;
     out[2..20].copy_from_slice(&header[4..22]);
     out[20] = header[22] & 0x0f;
@@ -83,7 +87,9 @@ pub fn encrypt(
     payload: &[u8],
     out: &mut [u8],
 ) -> Result<usize, ProtectionError> {
-    let length = header_length(header).filter(|&length| length <= header.len()).ok_or(ProtectionError::NotCcmp)?;
+    let length = header_length(header)
+        .filter(|&length| length <= header.len())
+        .ok_or(ProtectionError::NotCcmp)?;
     let total = length + CCMP_HEADER_BYTES + payload.len() + TAG_BYTES;
     if out.len() < total {
         return Err(ProtectionError::TooSmall);
@@ -92,19 +98,37 @@ pub fn encrypt(
     out[..length].copy_from_slice(&header[..length]);
     out[1] |= PROTECTED;
     let pn = packet_number.to_le_bytes();
-    out[length..length + CCMP_HEADER_BYTES].copy_from_slice(&[pn[0], pn[1], 0, EXTENDED_IV | (key_id << 6), pn[2], pn[3], pn[4], pn[5]]);
+    out[length..length + CCMP_HEADER_BYTES].copy_from_slice(&[
+        pn[0],
+        pn[1],
+        0,
+        EXTENDED_IV | (key_id << 6),
+        pn[2],
+        pn[3],
+        pn[4],
+        pn[5],
+    ]);
     let body = length + CCMP_HEADER_BYTES;
     out[body..body + payload.len()].copy_from_slice(payload);
     let mut associated = [0u8; MAX_AAD_BYTES];
     let associated_length = aad(&out[..length], &mut associated);
-    let tag = ccm::seal(&cipher, &nonce(&out[..length], packet_number), &associated[..associated_length], &mut out[body..body + payload.len()]);
+    let tag = ccm::seal(
+        &cipher,
+        &nonce(&out[..length], packet_number),
+        &associated[..associated_length],
+        &mut out[body..body + payload.len()],
+    );
     out[body + payload.len()..total].copy_from_slice(&tag);
     Ok(total)
 }
 
 /// Decrypts a protected data frame into `out`: the payload's length and its packet number, for
 /// the caller's replay check.
-pub fn decrypt(tk: &[u8; 16], frame: &[u8], out: &mut [u8]) -> Result<(usize, u64), ProtectionError> {
+pub fn decrypt(
+    tk: &[u8; 16],
+    frame: &[u8],
+    out: &mut [u8],
+) -> Result<(usize, u64), ProtectionError> {
     let length = header_length(frame).ok_or(ProtectionError::NotCcmp)?;
     if frame[1] & PROTECTED == 0 || frame.len() < length + CCMP_HEADER_BYTES + TAG_BYTES {
         return Err(ProtectionError::NotCcmp);
@@ -113,16 +137,25 @@ pub fn decrypt(tk: &[u8; 16], frame: &[u8], out: &mut [u8]) -> Result<(usize, u6
     if ccmp[3] & EXTENDED_IV == 0 {
         return Err(ProtectionError::NotCcmp);
     }
-    let packet_number = u64::from_le_bytes([ccmp[0], ccmp[1], ccmp[4], ccmp[5], ccmp[6], ccmp[7], 0, 0]);
+    let packet_number =
+        u64::from_le_bytes([ccmp[0], ccmp[1], ccmp[4], ccmp[5], ccmp[6], ccmp[7], 0, 0]);
     let body = &frame[length + CCMP_HEADER_BYTES..frame.len() - TAG_BYTES];
-    let tag: [u8; TAG_BYTES] = frame[frame.len() - TAG_BYTES..].try_into().map_err(|_| ProtectionError::NotCcmp)?;
+    let tag: [u8; TAG_BYTES] = frame[frame.len() - TAG_BYTES..]
+        .try_into()
+        .map_err(|_| ProtectionError::NotCcmp)?;
     let plain = out.get_mut(..body.len()).ok_or(ProtectionError::TooSmall)?;
     plain.copy_from_slice(body);
     let cipher = Aes::new(tk).map_err(|_| ProtectionError::NotCcmp)?;
     let mut associated = [0u8; MAX_AAD_BYTES];
     let associated_length = aad(&frame[..length], &mut associated);
-    ccm::open(&cipher, &nonce(&frame[..length], packet_number), &associated[..associated_length], plain, &tag)
-        .map_err(|_| ProtectionError::Forged)?;
+    ccm::open(
+        &cipher,
+        &nonce(&frame[..length], packet_number),
+        &associated[..associated_length],
+        plain,
+        &tag,
+    )
+    .map_err(|_| ProtectionError::Forged)?;
     Ok((body.len(), packet_number))
 }
 
@@ -144,7 +177,15 @@ mod tests {
     fn a_protected_frame_decrypts_to_its_payload_and_number() {
         let tk = [0x11u8; 16];
         let mut frame = [0u8; 128];
-        let length = encrypt(&tk, &data_header(), 0x0102_0304_0506, 0, b"hello, network", &mut frame).unwrap();
+        let length = encrypt(
+            &tk,
+            &data_header(),
+            0x0102_0304_0506,
+            0,
+            b"hello, network",
+            &mut frame,
+        )
+        .unwrap();
         assert_eq!(frame[1] & PROTECTED, PROTECTED);
         let mut payload = [0u8; 64];
         let (bytes, number) = decrypt(&tk, &frame[..length], &mut payload).unwrap();
@@ -160,9 +201,15 @@ mod tests {
         let mut payload = [0u8; 64];
         let mut changed = frame;
         changed[10] ^= 1;
-        assert_eq!(decrypt(&tk, &changed[..length], &mut payload), Err(ProtectionError::Forged));
+        assert_eq!(
+            decrypt(&tk, &changed[..length], &mut payload),
+            Err(ProtectionError::Forged)
+        );
         let mut changed = frame;
         changed[length - 9] ^= 1;
-        assert_eq!(decrypt(&tk, &changed[..length], &mut payload), Err(ProtectionError::Forged));
+        assert_eq!(
+            decrypt(&tk, &changed[..length], &mut payload),
+            Err(ProtectionError::Forged)
+        );
     }
 }

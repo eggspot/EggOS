@@ -4,9 +4,7 @@
 
 /// POWER9's time-base frequency.
 pub(super) const FREQUENCY: u64 = 512_000_000;
-/// The longest count the decrementer holds.
 const LONGEST_COUNT: u64 = 0x7fff_ffff;
-/// `msgsnd`'s message type for a hypervisor doorbell.
 const HYPERVISOR_DOORBELL: u64 = 5 << 27;
 
 /// The time base.

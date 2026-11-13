@@ -24,8 +24,7 @@ const DESTINATION_ID_SHIFT: u32 = 12;
 const NO_PIN: u32 = u32::MAX;
 
 static TAKEN: AtomicU32 = AtomicU32::new(0);
-static PINS: [AtomicU32; DeviceLine::COUNT] =
-    [const { AtomicU32::new(NO_PIN) }; DeviceLine::COUNT];
+static PINS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(NO_PIN) }; DeviceLine::COUNT];
 
 fn take_line() -> Result<DeviceLine, &'static str> {
     let taken = TAKEN
@@ -77,16 +76,15 @@ pub(super) fn steer(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
         return Err("the line is message-signalled: its device takes a new message");
     }
     let apic_id = apic_id_of(cpu)?;
-    with_input(global, |input, controller| controller.set_destination(input, apic_id))
-        .ok_or("no I/O APIC receives that interrupt")
+    with_input(global, |input, controller| {
+        controller.set_destination(input, apic_id)
+    })
+    .ok_or("no I/O APIC receives that interrupt")
 }
 
 type Controller = eggos_drivers::interrupt::IoApic<eggos_drivers::io::Mmio>;
 
-pub(super) fn with_input<R>(
-    global: u32,
-    work: impl FnOnce(u32, &Controller) -> R,
-) -> Option<R> {
+pub(super) fn with_input<R>(global: u32, work: impl FnOnce(u32, &Controller) -> R) -> Option<R> {
     let madt = acpi_table(b"APIC")?;
     let (apic, controller) = acpi::madt_io_apics(madt)
         .map(|apic| (apic, console_input::io_apic(apic)))
@@ -117,7 +115,9 @@ pub(super) fn take_pin(global: u32, signal: LineSignal) -> Result<DeviceLine, &'
 pub(super) fn release(line: DeviceLine) {
     let global = PINS[line.index()].swap(NO_PIN, Ordering::AcqRel);
     if global != NO_PIN {
-        with_input(global, |input, controller| controller.set_masked(input, true));
+        with_input(global, |input, controller| {
+            controller.set_masked(input, true)
+        });
     }
     TAKEN.fetch_and(!(1 << line.index()), Ordering::AcqRel);
 }
@@ -127,7 +127,9 @@ pub(super) fn release(line: DeviceLine) {
 pub(super) fn unmask(line: DeviceLine) {
     let global = PINS[line.index()].load(Ordering::Acquire);
     if global != NO_PIN {
-        with_input(global, |input, controller| controller.set_masked(input, false));
+        with_input(global, |input, controller| {
+            controller.set_masked(input, false)
+        });
     }
 }
 
@@ -144,7 +146,9 @@ pub(super) fn interrupt(vector: u64) {
     {
         let global = PINS[index].load(Ordering::Acquire);
         if global != NO_PIN {
-            with_input(global, |input, controller| controller.set_masked(input, true));
+            with_input(global, |input, controller| {
+                controller.set_masked(input, true)
+            });
         }
         crate::interrupt::deliver(Interrupt::Device(line));
     }

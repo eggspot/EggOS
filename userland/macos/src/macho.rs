@@ -743,12 +743,13 @@ impl<'a> MachO<'a> {
         if !self.pie && text.vmaddr < SEGMENT_ALIGNMENT {
             return Err(invalid("a fixed-address program at address 0"));
         }
-        let entry_in_code = self.library || segments.iter().any(|segment| {
-            segment.initprot & VM_PROT_EXECUTE != 0
-                && self.entry >= segment.fileoff
-                && self.entry < segment.fileoff + segment.filesize
-                && segment.fileoff == segment.vmaddr - text.vmaddr
-        });
+        let entry_in_code = self.library
+            || segments.iter().any(|segment| {
+                segment.initprot & VM_PROT_EXECUTE != 0
+                    && self.entry >= segment.fileoff
+                    && self.entry < segment.fileoff + segment.filesize
+                    && segment.fileoff == segment.vmaddr - text.vmaddr
+            });
         if !entry_in_code {
             return Err(invalid("the entry point is not in executable code"));
         }

@@ -162,7 +162,11 @@ impl SplitQueue {
     /// driver that polls. The spec makes it a hint the device should follow.
     pub fn disable_used_notifications(&mut self) {
         // SAFETY: the available ring's flags field, which only the driver writes.
-        unsafe { self.ring.avail(0).write_volatile(AVAIL_NO_INTERRUPT.to_le()) };
+        unsafe {
+            self.ring
+                .avail(0)
+                .write_volatile(AVAIL_NO_INTERRUPT.to_le())
+        };
     }
 
     /// Asks the device to notify the driver (an interrupt) when it uses buffers again: for a
@@ -220,7 +224,11 @@ impl SplitQueue {
         let descriptor = self.ring.descriptor(index);
         // SAFETY: the address field of a descriptor in the table, 8-byte aligned (16-byte
         // entries in a table `new`'s caller aligned to 16 bytes).
-        unsafe { descriptor.cast::<u64>().write_volatile(buffer.addr.get().to_le()) };
+        unsafe {
+            descriptor
+                .cast::<u64>()
+                .write_volatile(buffer.addr.get().to_le())
+        };
         // SAFETY: the length field of the same descriptor.
         unsafe {
             descriptor
@@ -311,9 +319,11 @@ impl SplitQueue {
             }
             let descriptor = self.ring.descriptor(index);
             // SAFETY: the flags field of a descriptor the device handed back.
-            let flags = u16::from_le(unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() });
+            let flags =
+                u16::from_le(unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() });
             // SAFETY: the next field of the same descriptor.
-            let next = u16::from_le(unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() });
+            let next =
+                u16::from_le(unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() });
             self.release(index);
             if flags & DESCRIPTOR_NEXT == 0 {
                 return;
@@ -374,9 +384,11 @@ impl DeviceSide {
         // SAFETY: the length field of the same descriptor.
         let len = u32::from_le(unsafe { descriptor.wrapping_add(8).cast::<u32>().read_volatile() });
         // SAFETY: the flags field of the same descriptor.
-        let flags = u16::from_le(unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() });
+        let flags =
+            u16::from_le(unsafe { descriptor.wrapping_add(12).cast::<u16>().read_volatile() });
         // SAFETY: the next field of the same descriptor.
-        let next = u16::from_le(unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() });
+        let next =
+            u16::from_le(unsafe { descriptor.wrapping_add(14).cast::<u16>().read_volatile() });
         (DmaAddr::new(addr), len, flags, next)
     }
 

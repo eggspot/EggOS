@@ -173,9 +173,6 @@ pub struct Raised {
     cxx: CxxThrown,
 }
 
-/// What a C++ `throw` adds (D380): the thrown type's `type_info`, its destructor, how many
-/// handlers hold it and the address the matching `catch` receives. `type_info` 0 for an
-/// Objective-C exception.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CxxThrown {

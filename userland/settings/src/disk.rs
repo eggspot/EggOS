@@ -333,7 +333,12 @@ fn install_on(
         return refuse(console, false, record.device, &StorageError::ReadOnly);
     }
     if storage::installation_layout(record.size_bytes / 512).is_none() {
-        return refuse(console, false, record.device, &StorageError::TooSmallToInstall);
+        return refuse(
+            console,
+            false,
+            record.device,
+            &StorageError::TooSmallToInstall,
+        );
     }
     let files = match storage::boot_files(disks) {
         Ok(files) => files,

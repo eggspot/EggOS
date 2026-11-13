@@ -76,9 +76,6 @@ pub mod command {
     pub const SETLKW64: u32 = 14;
 }
 
-/// `fcntl`'s lock command as this module takes it: on the 32-bit ports the `*64` commands are
-/// the record-lock ones and the plain ones, with a 32-bit `struct flock`, are not answered
-/// (D491); elsewhere as given.
 fn record_command(command: u64) -> Option<u32> {
     let command = command as u32;
     match (super::abi::WORD_BYTES, command) {

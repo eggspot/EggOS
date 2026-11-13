@@ -466,7 +466,11 @@ pub const TOOLS: [Tool; 83] = [
         Kind::AppActions,
         twin("/bin/app", &["actions", "--json"], Operand::Name),
     ),
-    tool(&registry::APP_DO, Kind::AppDo, twin("/bin/app", &["do"], Operand::Name)),
+    tool(
+        &registry::APP_DO,
+        Kind::AppDo,
+        twin("/bin/app", &["do"], Operand::Name),
+    ),
     tool(
         &registry::APP_DO_CONFIRMED,
         Kind::AppDoConfirmed,
@@ -627,11 +631,31 @@ pub const TOOLS: [Tool; 83] = [
     tool(&registry::WM_SHOW, Kind::WmShow, window_twin(&["show"])),
     tool(&registry::WM_ACT, Kind::WmAct, window_twin(&["act"])),
     tool(&registry::WM_DRAG, Kind::WmDrag, window_twin(&["drag"])),
-    tool(&registry::WM_HOME, Kind::WmHome, twin("/bin/wm", &["home"], Operand::None)),
-    tool(&registry::WM_BACK, Kind::WmBack, twin("/bin/wm", &["back"], Operand::None)),
-    tool(&registry::WM_KEYBOARD, Kind::WmKeyboard, twin("/bin/wm", &["keyboard"], Operand::None)),
-    tool(&registry::WM_KEYBOARD_SHOW, Kind::WmKeyboardShow, twin("/bin/wm", &["keyboard", "show"], Operand::None)),
-    tool(&registry::WM_KEYBOARD_HIDE, Kind::WmKeyboardHide, twin("/bin/wm", &["keyboard", "hide"], Operand::None)),
+    tool(
+        &registry::WM_HOME,
+        Kind::WmHome,
+        twin("/bin/wm", &["home"], Operand::None),
+    ),
+    tool(
+        &registry::WM_BACK,
+        Kind::WmBack,
+        twin("/bin/wm", &["back"], Operand::None),
+    ),
+    tool(
+        &registry::WM_KEYBOARD,
+        Kind::WmKeyboard,
+        twin("/bin/wm", &["keyboard"], Operand::None),
+    ),
+    tool(
+        &registry::WM_KEYBOARD_SHOW,
+        Kind::WmKeyboardShow,
+        twin("/bin/wm", &["keyboard", "show"], Operand::None),
+    ),
+    tool(
+        &registry::WM_KEYBOARD_HIDE,
+        Kind::WmKeyboardHide,
+        twin("/bin/wm", &["keyboard", "hide"], Operand::None),
+    ),
     tool(
         &registry::SETTINGS_LIST,
         Kind::SettingsList,

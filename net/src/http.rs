@@ -183,7 +183,9 @@ impl ByteRange {
             if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
                 return None;
             }
-            digits.iter().try_fold(0u64, |value, &digit| value.checked_mul(10)?.checked_add(u64::from(digit - b'0')))
+            digits.iter().try_fold(0u64, |value, &digit| {
+                value.checked_mul(10)?.checked_add(u64::from(digit - b'0'))
+            })
         };
         let range = Self {
             first: number(&text[..dash])?,
@@ -199,7 +201,12 @@ impl ByteRange {
 }
 
 /// [`write_request`] asking for only `range` of the resource when one is given.
-pub fn write_ranged_request(out: &mut [u8], url: &Url<'_>, user_agent: &[u8], range: Option<ByteRange>) -> Option<usize> {
+pub fn write_ranged_request(
+    out: &mut [u8],
+    url: &Url<'_>,
+    user_agent: &[u8],
+    range: Option<ByteRange>,
+) -> Option<usize> {
     let mut writer = Writer { out, length: 0 };
     writer.put(b"GET ")?;
     writer.put(url.target)?;

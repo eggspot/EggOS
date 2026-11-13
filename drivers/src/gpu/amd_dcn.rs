@@ -182,8 +182,6 @@ pub struct LitOutput {
     pub link_pixel_hz: u32,
 }
 
-/// A timing as the timing generator and the stream's attributes count it: totals, the blank's
-/// start and end within the line and the frame, and the syncs' widths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GeneratorTiming {
     width: u32,
@@ -359,7 +357,10 @@ impl<R: RegisterIo> DisplayEngine<R> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Refusal> {
         let output = self.output.ok_or(Refusal::NoDisplayPortOutput)?;
-        let pixel_hz = timing.clock_khz.checked_mul(1000).ok_or(Refusal::BeyondLink)?;
+        let pixel_hz = timing
+            .clock_khz
+            .checked_mul(1000)
+            .ok_or(Refusal::BeyondLink)?;
         if pixel_hz == 0 || pixel_hz > output.link_pixel_hz {
             return Err(Refusal::BeyondLink);
         }
@@ -373,21 +374,32 @@ impl<R: RegisterIo> DisplayEngine<R> {
         }
         let (generator, stream) = (output.timing_generator, output.stream);
         let stream_control = self.read_at(DP_STREAM_CONTROL, STREAM_STRIDE, stream);
-        self.write_at(DP_STREAM_CONTROL, STREAM_STRIDE, stream, stream_control & !STREAM_ENABLE);
+        self.write_at(
+            DP_STREAM_CONTROL,
+            STREAM_STRIDE,
+            stream,
+            stream_control & !STREAM_ENABLE,
+        );
         let stream_status = (DP_STREAM_CONTROL, STREAM_STRIDE, stream);
         self.wait_for(stream_status, STREAM_RUNNING, false, keep_waiting)?;
         let control = self.read_at(OTG_CONTROL, OTG_STRIDE, generator);
         self.write_at(OTG_CONTROL, OTG_STRIDE, generator, control & !MASTER_ENABLE);
         let generator_status = (OTG_CONTROL, OTG_STRIDE, generator);
         self.wait_for(generator_status, MASTER_ENABLED, false, keep_waiting)?;
-        self.regs.write32(self.clock_offset(DP_DTO_PHASE, generator), pixel_hz);
+        self.regs
+            .write32(self.clock_offset(DP_DTO_PHASE, generator), pixel_hz);
         self.program_generator(generator, &shape);
         self.program_hub(&shape, surface, pitch_pixels, pixel_hz);
         self.program_scaler(&shape);
         self.program_stream_attributes(stream, &shape);
         self.write_at(OTG_CONTROL, OTG_STRIDE, generator, control | MASTER_ENABLE);
         self.wait_for(generator_status, MASTER_ENABLED, true, keep_waiting)?;
-        self.write_at(DP_STREAM_CONTROL, STREAM_STRIDE, stream, stream_control | STREAM_ENABLE);
+        self.write_at(
+            DP_STREAM_CONTROL,
+            STREAM_STRIDE,
+            stream,
+            stream_control | STREAM_ENABLE,
+        );
         self.wait_for(stream_status, STREAM_RUNNING, true, keep_waiting)?;
         self.pixel_hz = pixel_hz;
         Ok(())
@@ -417,7 +429,11 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let cycles = |pixels: u32, fraction_bits: u32| {
             ((ratio * u64::from(pixels)) >> (RATIO_FRACTION_BITS - fraction_bits)) as u32
         };
-        self.write(REF_FREQ_TO_PIX_FREQ, HUBP_STRIDE, ratio as u32 & CYCLES_MASK);
+        self.write(
+            REF_FREQ_TO_PIX_FREQ,
+            HUBP_STRIDE,
+            ratio as u32 & CYCLES_MASK,
+        );
         self.write(
             DST_DIMENSIONS,
             HUBP_STRIDE,
@@ -426,7 +442,10 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.write(
             BLANK_OFFSET_0,
             HUBP_STRIDE,
-            pair(cycles(shape.h_blank_end, 0) & H_BLANK_END_CYCLES_MASK, shape.v_blank_end),
+            pair(
+                cycles(shape.h_blank_end, 0) & H_BLANK_END_CYCLES_MASK,
+                shape.v_blank_end,
+            ),
         );
         self.write(
             BLANK_OFFSET_1,
@@ -434,7 +453,11 @@ impl<R: RegisterIo> DisplayEngine<R> {
             (shape.v_blank_start << NEXT_START_FRACTION_BITS) & NEXT_START_MASK,
         );
         self.write(VIEWPORT_START, HUBP_STRIDE, 0);
-        self.write(VIEWPORT_DIMENSION, HUBP_STRIDE, pair(shape.width, shape.height));
+        self.write(
+            VIEWPORT_DIMENSION,
+            HUBP_STRIDE,
+            pair(shape.width, shape.height),
+        );
         let pitch = self.read(SURFACE_PITCH, HUBP_STRIDE) & !PITCH_MASK;
         self.write(SURFACE_PITCH, HUBP_STRIDE, pitch | (pitch_pixels - 1));
         self.flip(surface);
@@ -452,8 +475,16 @@ impl<R: RegisterIo> DisplayEngine<R> {
 
     fn program_stream_attributes(&self, stream: usize, shape: &GeneratorTiming) {
         let write = |place, value| self.write_at(place, STREAM_STRIDE, stream, value);
-        let h_sync_negative = if shape.h_sync_negative { MSA_H_SYNC_NEGATIVE } else { 0 };
-        let v_sync_negative = if shape.v_sync_negative { MSA_V_SYNC_NEGATIVE } else { 0 };
+        let h_sync_negative = if shape.h_sync_negative {
+            MSA_H_SYNC_NEGATIVE
+        } else {
+            0
+        };
+        let v_sync_negative = if shape.v_sync_negative {
+            MSA_V_SYNC_NEGATIVE
+        } else {
+            0
+        };
         write(DP_MSA_TOTALS, pair(shape.v_total, shape.h_total));
         write(DP_MSA_STARTS, pair(shape.v_blank_end, shape.h_blank_end));
         write(
@@ -472,7 +503,8 @@ impl<R: RegisterIo> DisplayEngine<R> {
     }
 
     fn write(&self, place: u32, stride: u32, value: u32) {
-        self.regs.write32(self.offset(place, stride, self.pipe), value);
+        self.regs
+            .write32(self.offset(place, stride, self.pipe), value);
     }
 
     fn surface_of(&self, pipe: usize) -> LitSurface {
@@ -490,7 +522,11 @@ impl<R: RegisterIo> DisplayEngine<R> {
 
     /// Shows the surface at GPU address `address` from the next vertical update.
     pub fn flip(&self, address: u64) {
-        self.write(PRIMARY_ADDRESS_HIGH, HUBP_STRIDE, (address >> 32) as u32 & ADDRESS_HIGH_MASK);
+        self.write(
+            PRIMARY_ADDRESS_HIGH,
+            HUBP_STRIDE,
+            (address >> 32) as u32 & ADDRESS_HIGH_MASK,
+        );
         self.write(PRIMARY_ADDRESS, HUBP_STRIDE, address as u32);
     }
 
@@ -506,10 +542,22 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let hot_x = x.min(0).unsigned_abs().min(CURSOR_SIDE - 1);
         let hot_y = y.min(0).unsigned_abs().min(CURSOR_SIDE - 1);
         let (x, y) = (x.max(0) as u32, y.max(0) as u32);
-        self.write(CURSOR_ADDRESS_HIGH, HUBP_STRIDE, (image >> 32) as u32 & ADDRESS_HIGH_MASK);
+        self.write(
+            CURSOR_ADDRESS_HIGH,
+            HUBP_STRIDE,
+            (image >> 32) as u32 & ADDRESS_HIGH_MASK,
+        );
         self.write(CURSOR_ADDRESS, HUBP_STRIDE, image as u32);
-        self.write(CURSOR_SIZE, HUBP_STRIDE, CURSOR_SIDE << SIZE_WIDTH_SHIFT | CURSOR_SIDE);
-        self.write(CURSOR_HOT_SPOT, HUBP_STRIDE, hot_x << POSITION_X_SHIFT | hot_y);
+        self.write(
+            CURSOR_SIZE,
+            HUBP_STRIDE,
+            CURSOR_SIDE << SIZE_WIDTH_SHIFT | CURSOR_SIDE,
+        );
+        self.write(
+            CURSOR_HOT_SPOT,
+            HUBP_STRIDE,
+            hot_x << POSITION_X_SHIFT | hot_y,
+        );
         self.write(CURSOR_POSITION, HUBP_STRIDE, x << POSITION_X_SHIFT | y);
         self.write(
             CURSOR_CONTROL,
@@ -606,7 +654,10 @@ mod tests {
                 height: 1080,
             }
         );
-        assert_eq!(regs.get(at(FLIP_CONTROL, HUBP_STRIDE, 2)) & FLIP_TYPE_IMMEDIATE, 0);
+        assert_eq!(
+            regs.get(at(FLIP_CONTROL, HUBP_STRIDE, 2)) & FLIP_TYPE_IMMEDIATE,
+            0
+        );
         engine.flip(0xf4_0080_0000);
         assert_eq!(regs.get(at(PRIMARY_ADDRESS, HUBP_STRIDE, 2)), 0x0080_0000);
         assert_eq!(regs.get(at(PRIMARY_ADDRESS_HIGH, HUBP_STRIDE, 2)), 0xf4);
@@ -622,21 +673,36 @@ mod tests {
         regs.set(otg(OTG_CONTROL), MASTER_ENABLE | MASTER_ENABLED);
         regs.set(otg(OTG_H_BLANK), pair(2120, 200));
         regs.set(otg(OTG_V_BLANK), pair(1121, 41));
-        regs.set(at(DIG_FRONT_END_CONTROL, STREAM_STRIDE, stream), generator as u32);
-        regs.set(at(DP_STREAM_CONTROL, STREAM_STRIDE, stream), STREAM_ENABLE | STREAM_RUNNING);
+        regs.set(
+            at(DIG_FRONT_END_CONTROL, STREAM_STRIDE, stream),
+            generator as u32,
+        );
+        regs.set(
+            at(DP_STREAM_CONTROL, STREAM_STRIDE, stream),
+            STREAM_ENABLE | STREAM_RUNNING,
+        );
         regs.set(clock_at(PIXEL_RATE_CONTROL, generator), DP_DTO_ENABLE);
         regs.set(clock_at(DP_DTO_PHASE, generator), 148_500_000);
         regs.set(clock_at(DP_DTO_MODULO, generator), 600_000_000);
-        regs.set(at(REF_FREQ_TO_PIX_FREQ, HUBP_STRIDE, 0), 1 << RATIO_FRACTION_BITS);
+        regs.set(
+            at(REF_FREQ_TO_PIX_FREQ, HUBP_STRIDE, 0),
+            1 << RATIO_FRACTION_BITS,
+        );
     }
 
     fn follow_enables(regs: &Registers, generator: usize, stream: usize) {
         let otg = at(OTG_CONTROL, OTG_STRIDE, generator);
         let enabled = regs.get(otg) & MASTER_ENABLE;
-        regs.set(otg, regs.get(otg) & !MASTER_ENABLED | enabled * MASTER_ENABLED);
+        regs.set(
+            otg,
+            regs.get(otg) & !MASTER_ENABLED | enabled * MASTER_ENABLED,
+        );
         let dp = at(DP_STREAM_CONTROL, STREAM_STRIDE, stream);
         let running = regs.get(dp) & STREAM_ENABLE;
-        regs.set(dp, regs.get(dp) & !STREAM_RUNNING | running * STREAM_RUNNING);
+        regs.set(
+            dp,
+            regs.get(dp) & !STREAM_RUNNING | running * STREAM_RUNNING,
+        );
     }
 
     #[test]
@@ -668,7 +734,10 @@ mod tests {
         assert_eq!(otg(OTG_V_SYNC_CONTROL) & SYNC_NEGATIVE, SYNC_NEGATIVE);
         assert_eq!(otg(OTG_CONTROL) & MASTER_ENABLE, MASTER_ENABLE);
         assert_eq!(regs.get(clock_at(DP_DTO_PHASE, 0)), timing.clock_khz * 1000);
-        assert_eq!(regs.get(at(VIEWPORT_DIMENSION, HUBP_STRIDE, 0)), pair(1280, 720));
+        assert_eq!(
+            regs.get(at(VIEWPORT_DIMENSION, HUBP_STRIDE, 0)),
+            pair(1280, 720)
+        );
         assert_eq!(regs.get(at(SURFACE_PITCH, HUBP_STRIDE, 0)), 1279);
         assert_eq!(regs.get(at(RECOUT_SIZE, DPP_STRIDE, 0)), pair(1280, 720));
         let msa = |place| regs.get(at(place, STREAM_STRIDE, 3));
@@ -725,10 +794,22 @@ mod tests {
         engine.show_cursor(0xf4_0100_0000, -10, 20);
         assert_eq!(regs.get(at(CURSOR_HOT_SPOT, HUBP_STRIDE, 0)), 10 << 16);
         assert_eq!(regs.get(at(CURSOR_POSITION, HUBP_STRIDE, 0)), 20);
-        assert_eq!(regs.get(at(CURSOR_CONTROL, HUBP_STRIDE, 0)) & CURSOR_ENABLE, 1);
-        assert_eq!(regs.get(at(DPP_CURSOR_CONTROL, DPP_STRIDE, 0)) & CURSOR_ENABLE, 1);
+        assert_eq!(
+            regs.get(at(CURSOR_CONTROL, HUBP_STRIDE, 0)) & CURSOR_ENABLE,
+            1
+        );
+        assert_eq!(
+            regs.get(at(DPP_CURSOR_CONTROL, DPP_STRIDE, 0)) & CURSOR_ENABLE,
+            1
+        );
         engine.hide_cursor();
-        assert_eq!(regs.get(at(CURSOR_CONTROL, HUBP_STRIDE, 0)) & CURSOR_ENABLE, 0);
-        assert_eq!(regs.get(at(DPP_CURSOR_CONTROL, DPP_STRIDE, 0)) & CURSOR_ENABLE, 0);
+        assert_eq!(
+            regs.get(at(CURSOR_CONTROL, HUBP_STRIDE, 0)) & CURSOR_ENABLE,
+            0
+        );
+        assert_eq!(
+            regs.get(at(DPP_CURSOR_CONTROL, DPP_STRIDE, 0)) & CURSOR_ENABLE,
+            0
+        );
     }
 }

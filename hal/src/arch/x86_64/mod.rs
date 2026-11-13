@@ -21,9 +21,9 @@ mod random;
 mod thread;
 mod timer;
 
-use crate::atomic::AtomicU64;
 use crate::acpi::{self, RootTable};
 use crate::arch::boot_memory;
+use crate::atomic::AtomicU64;
 use crate::command_line::{self, CommandLineCopy};
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::{MemoryMap, PhysicalRange};
@@ -391,30 +391,20 @@ pub(crate) fn doorbell_barrier() {
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
-/// Physical address of the PVH `hvm_start_info`, stored by the entry code. PVH loads the
-/// kernel below 4 GiB and passes a 32-bit address.
 static PVH_START_INFO: AtomicU32 = AtomicU32::new(0);
 
-/// `hvm_start_info` (start_info.h): `magic` (u32) at 0, then `version`, `flags`, `nr_modules`
-/// (u32 each), `modlist_paddr` and `cmdline_paddr` (u64 each), and `rsdp_paddr` (u64) at 32.
 const PVH_START_MAGIC: u32 = 0x336e_c578;
 const PVH_CMDLINE_PADDR: usize = 24;
 const PVH_RSDP_PADDR: usize = 32;
-/// Bytes of `hvm_start_info` read: up to and including `rsdp_paddr` (present since version 0).
 const PVH_START_INFO_READ_LENGTH: usize = PVH_RSDP_PADDR + 8;
-/// Version 1 adds `memmap_paddr` (u64) at 40 and `memmap_entries` (u32) at 48: the memory map,
-/// an array of `hvm_memmap_table_entry` (`addr`, `size` as u64, `type`, `reserved` as u32).
 const PVH_VERSION: usize = 4;
 const PVH_MEMMAP_PADDR: usize = 40;
 const PVH_MEMMAP_ENTRIES: usize = 48;
 const PVH_START_INFO_V1_LENGTH: usize = 56;
 const PVH_MEMMAP_ENTRY_LENGTH: usize = 24;
-/// `XEN_HVM_MEMMAP_TYPE_RAM`: usable RAM (the E820 type 1 encoding).
 const PVH_MEMMAP_TYPE_RAM: u32 = 1;
-/// More entries than any real memory map, against a corrupt count.
 const PVH_MAX_MEMMAP_ENTRIES: usize = 1024;
 
-/// The direct map: the start of the high half (PML4 entry 256, D29).
 const DIRECT_MAP_OFFSET: usize = 0xffff_8000_0000_0000;
 
 const RESET_CONTROL_PORT: u16 = 0xcf9;
@@ -423,43 +413,28 @@ const RESET_CONTROL_FULL_RESET: u8 = 0x06;
 const KEYBOARD_CONTROLLER_COMMAND_PORT: u16 = 0x64;
 const KEYBOARD_CONTROLLER_PULSE_RESET: u8 = 0xfe;
 
-/// `IA32_EFER` and its no-execute enable bit; `CR0.WP`, which makes read-only pages read-only
-/// for the kernel too.
 const EFER: u32 = 0xc000_0080;
 const IA32_PAT: u32 = 0x277;
 const EFER_NXE: u32 = 1 << 11;
 const CR0_WP: u64 = 1 << 16;
 
-/// Memory below 1 MiB stays out of the allocator: it holds the real-mode IVT, the BIOS data
-/// areas, the EBDA and the legacy BIOS area (where the RSDP is found), and the trampoline that
-/// starts the other CPUs ([`TRAMPOLINE`]).
 const LOW_MEMORY: PhysicalRange = PhysicalRange {
     start: 0,
     end: 0x10_0000,
 };
 
-/// Where the trampoline that starts the secondary CPUs is copied (D40): a page of RAM below
-/// 1 MiB, as the start-up interrupt's 8-bit page number requires, inside [`LOW_MEMORY`], which
-/// the allocator never hands out. `start_cpu` checks the loader's memory map says it is RAM and
-/// holds none of the loader's data.
 const TRAMPOLINE: usize = 0x8000;
 const TRAMPOLINE_PAGE_SIZE: usize = 4096;
 
-/// Set once the trampoline is copied and the other CPUs are reset with INIT.
 static TRAMPOLINE_READY: AtomicBool = AtomicBool::new(false);
 
-/// How long to wait after INIT before the first start-up interrupt (SDM vol. 3A, 9.4.4.1),
-/// before a second start-up interrupt, and in all for a CPU to read its `CpuStart`.
 const INIT_DELAY_US: u64 = 10_000;
 const STARTUP_RETRY_US: u64 = 200;
 const STARTUP_TIMEOUT_US: u64 = 100_000;
 
-/// `IA32_GS_BASE`: the GS segment's base in 64-bit mode, the per-CPU block pointer (D40).
 const IA32_GS_BASE: u32 = 0xc000_0101;
 
 unsafe extern "C" {
-    /// The trampoline in `.rodata`, and the three words in it the boot CPU writes in the copy
-    /// (see the boot code above).
     static eggos_trampoline_start: u8;
     static eggos_trampoline_start_slot: u8;
     static eggos_trampoline_page_table_root: u8;
@@ -467,9 +442,6 @@ unsafe extern "C" {
     static eggos_trampoline_end: u8;
 }
 
-/// Called by `secondary_start64` on the `CpuStart`'s stack with the kernel's page tables and the
-/// IDT loaded: activates the tables as the boot CPU did (write protection, the root), sets this
-/// CPU's local APIC and timer up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
@@ -479,16 +451,10 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     (start.entry)(start.argument)
 }
 
-/// The trampoline's offset of `symbol`, one of the symbols inside it.
 fn trampoline_offset(symbol: *const u8) -> usize {
     symbol as usize - &raw const eggos_trampoline_start as usize
 }
 
-/// The atomic word in the trampoline's copy at the offset `symbol` has in the original.
-///
-/// # Safety
-/// `symbol` must be one of the trampoline's words, aligned and sized for `T`, and the copy must
-/// be in place ([`prepare_trampoline`]).
 unsafe fn trampoline_word<T>(symbol: *const u8) -> &'static T {
     let address = DIRECT_MAP_OFFSET + TRAMPOLINE + trampoline_offset(symbol);
     // SAFETY: the copy is in the trampoline page, which the direct map maps and the allocator
@@ -497,7 +463,6 @@ unsafe fn trampoline_word<T>(symbol: *const u8) -> &'static T {
     unsafe { &*(address as *const T) }
 }
 
-/// Whether the trampoline page is RAM in the loader's memory map and holds none of its data.
 fn trampoline_page_is_free() -> bool {
     let page = PhysicalRange::from_start_length(TRAMPOLINE as u64, TRAMPOLINE_PAGE_SIZE as u64);
     let Some(pvh) = PvhMemoryMap::read() else {
@@ -510,8 +475,6 @@ fn trampoline_page_is_free() -> bool {
     in_ram && !pvh.boot_data().into_iter().any(overlaps)
 }
 
-/// Copies the trampoline to [`TRAMPOLINE`] and sends INIT to every other CPU, then waits as
-/// the SDM asks, once for all of them; afterwards each CPU only needs its start-up interrupts.
 fn prepare_trampoline() -> Result<(), StartCpuError> {
     if TRAMPOLINE_READY.load(Ordering::Acquire) {
         return Ok(());
@@ -536,7 +499,6 @@ fn prepare_trampoline() -> Result<(), StartCpuError> {
     Ok(())
 }
 
-/// Busy-waits `microseconds` on the clock.
 fn delay_us(microseconds: u64) {
     let end = timer::now() + crate::time::mul_div_ceil(microseconds, timer::frequency(), 1_000_000);
     while timer::now() < end {
@@ -544,7 +506,6 @@ fn delay_us(microseconds: u64) {
     }
 }
 
-/// Waits up to `microseconds` for the CPU being started to set the trampoline's taken flag.
 fn wait_until_taken(microseconds: u64) -> bool {
     // SAFETY: the flag is the trampoline's u32, and the copy is in place (`start_cpu` waits
     // only after `prepare_trampoline`).
@@ -561,7 +522,6 @@ fn wait_until_taken(microseconds: u64) -> bool {
     }
 }
 
-/// COM1's I/O ports.
 const COM1_PORT: u16 = 0x3f8;
 
 const CMOS_CLOCK_PORT: u16 = 0x70;
@@ -582,22 +542,14 @@ fn cmos_clock() -> acpi::CmosClock {
     found
 }
 
-/// The legacy BIOS area the ACPI spec says to search for the RSDP when the loader does not
-/// pass its address.
 const BIOS_AREA: core::ops::Range<usize> = 0xe_0000..0x10_0000;
 
-/// End of the boot direct map, which covers 0 .. 4 GiB: the most the kernel reaches before its
-/// own page tables are active, and where the firmware's tables are.
 const BOOT_DIRECT_MAP_END: u64 = 1 << 32;
 
-/// Upper bound on any ACPI table we map as a slice, against corrupt length fields.
 const MAX_TABLE_LENGTH: usize = 1 << 20;
 
-/// How long to wait for the firmware to switch to ACPI mode, in polls of the PM1 control
-/// register.
 const ACPI_ENABLE_POLLS: u32 = 1_000_000;
 
-/// The early console, COM1.
 #[inline]
 fn com1() -> Ns16550<PortIo> {
     // SAFETY: COM1's ports are the PC's first serial port by platform convention; only the early
@@ -645,7 +597,10 @@ impl Platform for X86_64 {
         legacy_input::start()
     }
 
-    fn poll_legacy_input(budget: usize, event: &mut dyn FnMut(eggos_drivers::input::RawEvent)) -> usize {
+    fn poll_legacy_input(
+        budget: usize,
+        event: &mut dyn FnMut(eggos_drivers::input::RawEvent),
+    ) -> usize {
         legacy_input::poll(budget, event)
     }
 
@@ -685,8 +640,6 @@ impl Platform for X86_64 {
     }
 
     fn exit(_status: ExitStatus) -> ! {
-        // ACPI S5 has no exit status; the QEMU runner reads the verdict from the console. If
-        // the tables are missing or malformed we fall through and halt.
         if let Some(target) = s5_target() {
             enter_s5(target);
         }
@@ -778,8 +731,6 @@ impl Platform for X86_64 {
         let Some(pvh) = PvhMemoryMap::read() else {
             return map;
         };
-        // All RAM first, then every other type as reserved: where a loader reports
-        // overlapping entries, the more restrictive type wins.
         for (range, kind) in pvh.entries() {
             if kind == PVH_MEMMAP_TYPE_RAM {
                 map.add_ram(range);
@@ -792,8 +743,6 @@ impl Platform for X86_64 {
         }
         map.reserve(LOW_MEMORY);
         map.reserve(boot_memory::kernel_image());
-        // The start info and its memory map are read again (the start info at power-off, for
-        // the RSDP).
         for range in pvh.boot_data() {
             map.reserve(range);
         }
@@ -820,9 +769,6 @@ impl Platform for X86_64 {
     }
 
     fn physical_memory() -> MemoryMap {
-        // Every entry of the loader's memory map, whatever its type (the ACPI tables are in
-        // reserved or ACPI entries), the low 1 MiB (where the RSDP is searched for) and the
-        // start info. Partial frames at the ends count whole.
         let mut map = MemoryMap::new();
         map.add_ram(LOW_MEMORY);
         if let Some(pvh) = PvhMemoryMap::read() {
@@ -921,8 +867,6 @@ impl Platform for X86_64 {
         let [root] = roots else {
             panic!("x86_64 page tables have one root");
         };
-        // No-execute bits are reserved until EFER.NXE is set: set it before loading tables
-        // that use them.
         // SAFETY: EFER is architectural on every x86_64 CPU, and reading and writing it back
         // with NXE set changes only how page-table bit 63 is read. Every x86_64 CPU QEMU
         // emulates, and every 64-bit CPU sold since 2004, has NX.
@@ -1034,10 +978,7 @@ impl Platform for X86_64 {
         [u64::from(features), 0]
     }
 
-    fn make_instructions_visible(_start: usize, _length: usize) {
-        // x86 keeps instruction fetch coherent with stores to the same memory, and a program
-        // is first entered through `iretq`, which serializes: nothing to do.
-    }
+    fn make_instructions_visible(_start: usize, _length: usize) {}
 
     fn page_fault(kind: crate::ExceptionKind, code: u64) -> Option<paging::PageFault> {
         exception::page_fault(kind, code)
@@ -1134,12 +1075,8 @@ impl Platform for X86_64 {
         slot.store(core::ptr::from_ref(start) as u64, Ordering::Relaxed);
         root.store(start.page_table_roots[0], Ordering::Relaxed);
         taken.store(0, Ordering::Release);
-        // Keep the stores above, and the caller's writes to `*start`, before the start-up
-        // interrupt's ICR write, which a release store alone would not order (x86 itself keeps
-        // stores in order).
         core::sync::atomic::fence(Ordering::SeqCst);
         let page = (TRAMPOLINE >> 12) as u8;
-        // A second start-up interrupt only if the first was missed (SDM 9.4.4.1 sends two).
         timer::send_startup(apic_id, page);
         if wait_until_taken(STARTUP_RETRY_US) {
             return Ok(());
@@ -1196,13 +1133,10 @@ impl Platform for X86_64 {
     }
 
     fn wake_cpu(cpu: u64) {
-        // `cpus` lists xAPIC ids only, which fit in a byte.
         timer::wake(cpu as u8);
     }
 }
 
-/// Reads model-specific register `msr`, which must be an architectural one every x86_64 CPU has
-/// (reading one has no side effects).
 fn read_msr(msr: u32) -> u64 {
     let (low, high): (u32, u32);
     // SAFETY: `rdmsr` of an architectural MSR, which every x86_64 CPU has (the caller's duty), at
@@ -1214,10 +1148,6 @@ fn read_msr(msr: u32) -> u64 {
     u64::from(high) << 32 | u64::from(low)
 }
 
-/// Writes `value` to model-specific register `msr`.
-///
-/// # Safety
-/// The MSR must exist and the write must keep the machine in a state the kernel expects.
 unsafe fn write_msr(msr: u32, value: u64) {
     // SAFETY: guaranteed by the caller.
     unsafe {
@@ -1231,7 +1161,6 @@ unsafe fn write_msr(msr: u32, value: u64) {
     }
 }
 
-/// The PVH loader's memory map (start info version 1 and later).
 struct PvhMemoryMap {
     start_info: u64,
     table_address: u64,
@@ -1273,7 +1202,6 @@ impl PvhMemoryMap {
         })
     }
 
-    /// Each entry's range and type.
     fn entries(&self) -> impl Iterator<Item = (PhysicalRange, u32)> + '_ {
         self.table
             .as_chunks::<PVH_MEMMAP_ENTRY_LENGTH>()
@@ -1290,7 +1218,6 @@ impl PvhMemoryMap {
             })
     }
 
-    /// The start info and the memory map table themselves.
     fn boot_data(&self) -> [PhysicalRange; 2] {
         [
             PhysicalRange::from_start_length(self.start_info, PVH_START_INFO_V1_LENGTH as u64),
@@ -1299,13 +1226,11 @@ impl PvhMemoryMap {
     }
 }
 
-/// Everything needed to enter S5.
 struct S5Target {
     fadt: acpi::Fadt,
     sleep_type: acpi::S5SleepType,
 }
 
-/// The validated ACPI table with `signature` that the root table lists.
 fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
     let root = pvh_rsdp()
         .and_then(acpi::parse_rsdp)
@@ -1315,10 +1240,8 @@ fn acpi_table(signature: &[u8; 4]) -> Option<&'static [u8]> {
     acpi::root_table_entries(root_table, root).find_map(|address| table(address, signature))
 }
 
-/// What `\_PIC` is given for the APIC interrupt model (ACPI 6.5, 5.8.1).
 const ACPI_APIC_MODEL: u64 = 1;
 
-/// Every validated ACPI table with `signature` that the root table lists, in its order.
 fn acpi_tables(signature: &[u8; 4], each: &mut dyn FnMut(&'static [u8])) {
     let Some(root) = pvh_rsdp()
         .and_then(acpi::parse_rsdp)
@@ -1337,7 +1260,6 @@ fn acpi_tables(signature: &[u8; 4], each: &mut dyn FnMut(&'static [u8])) {
     }
 }
 
-/// Reads the ACPI tables for the S5 sleep type and the PM1 control ports.
 fn s5_target() -> Option<S5Target> {
     let fadt = acpi_table(b"FACP").and_then(acpi::parse_fadt)?;
     let sleep_type = table(fadt.dsdt, b"DSDT")
@@ -1396,11 +1318,7 @@ fn pvh_command_line() -> Option<&'static [u8]> {
     Some(command_line::prefix(bytes))
 }
 
-/// The RSDP's bytes, at the address the PVH loader passed in `hvm_start_info`, if any.
-/// QEMU 10's loader passes 0 (no address), so on QEMU the BIOS-area search finds the RSDP.
 fn pvh_rsdp() -> Option<&'static [u8]> {
-    // `mapped`, not `in_boot_direct_map`: only a version 1 start info, which `PvhMemoryMap`
-    // reads, is part of `physical_memory`.
     let start_info = mapped(
         PVH_START_INFO.load(Ordering::Relaxed).into(),
         PVH_START_INFO_READ_LENGTH,
@@ -1420,7 +1338,6 @@ fn pvh_rsdp() -> Option<&'static [u8]> {
     Some(unsafe { physical_slice(rsdp, acpi::RSDP_V2_LENGTH) })
 }
 
-/// The RSDP found by the ACPI spec's search of the legacy BIOS area.
 fn bios_area_rsdp() -> Option<RootTable> {
     // SAFETY: the legacy BIOS area is in the direct map, readable ROM/RAM on PCs, and nothing
     // writes it.
@@ -1429,7 +1346,6 @@ fn bios_area_rsdp() -> Option<RootTable> {
     acpi::parse_rsdp(&area[offset..])
 }
 
-/// The validated ACPI table with `signature` at physical `address`.
 fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     let header_address = mapped(address, acpi::TABLE_HEADER_LENGTH)?;
     // SAFETY: firmware table addresses point at ACPI memory, which nothing writes; `mapped`
@@ -1448,14 +1364,8 @@ fn table(address: u64, signature: &[u8; 4]) -> Option<&'static [u8]> {
     acpi::table_ok(table, signature).then_some(table)
 }
 
-/// `address` as a pointer-sized value if `address..address + length` lies inside one range of
-/// [`Platform::physical_memory`], where the firmware's tables are: the boot direct map covers
-/// the first 4 GiB, the kernel's every range of `physical_memory` (early device pages as device
-/// memory, D33). A table in a hole of the loader's map, or in a range a full map dropped, is
-/// refused rather than read through an unmapped address. Address 0 is rejected as "no table".
 fn mapped(address: u64, length: usize) -> Option<usize> {
     let pointer = in_boot_direct_map(address, length)?;
-    // No overflow: `in_boot_direct_map` checked the end.
     let end = address + length as u64;
     X86_64::physical_memory()
         .ranges()
@@ -1464,11 +1374,6 @@ fn mapped(address: u64, length: usize) -> Option<usize> {
         .then_some(pointer)
 }
 
-/// `address` as a pointer-sized value if `address..address + length` is inside the first 4 GiB,
-/// which the boot direct map covers; address 0 is rejected as "none". Enough for the loader's
-/// own data, the start info and its memory map, which [`Platform::physical_memory`] always
-/// includes, so the kernel's direct map covers them too; firmware tables need [`mapped`] (which
-/// reads the memory map through this).
 fn in_boot_direct_map(address: u64, length: usize) -> Option<usize> {
     let end = address.checked_add(u64::try_from(length).ok()?)?;
     if address == 0 || end > BOOT_DIRECT_MAP_END {
@@ -1477,18 +1382,12 @@ fn in_boot_direct_map(address: u64, length: usize) -> Option<usize> {
     usize::try_from(address).ok()
 }
 
-/// # Safety
-/// Physical `address..address + length` must be memory the kernel reaches through the physical
-/// memory offset (the direct map), that nothing writes while the
-/// returned slice is used.
 unsafe fn physical_slice(address: usize, length: usize) -> &'static [u8] {
     let virt = address.wrapping_add(DIRECT_MAP_OFFSET);
     // SAFETY: guaranteed by the caller.
     unsafe { core::slice::from_raw_parts(virt as *const u8, length) }
 }
 
-/// Switches to ACPI mode if needed, then sets `SLP_TYP` and `SLP_EN` in the PM1 control
-/// registers (ACPI 6.5, 16.1.7). Returns only if the machine did not power off.
 fn enter_s5(target: S5Target) {
     let fadt = target.fadt;
     let (Ok(pm1a), Ok(pm1b), Ok(smi_command)) = (
@@ -1501,9 +1400,6 @@ fn enter_s5(target: S5Target) {
     if pm1a == 0 {
         return;
     }
-    // The only ports touched below are the FADT's PM1 control and SMI command ports. They come
-    // from the validated FADT, the firmware's description of the ACPI fixed hardware; the
-    // kernel is powering off and nothing else drives these registers.
     let read16 = |p: u16| {
         // SAFETY: `p` is one of the FADT ports above, which are safe to read.
         unsafe { port::in16(p) }
@@ -1524,8 +1420,6 @@ fn enter_s5(target: S5Target) {
             core::hint::spin_loop();
         }
     }
-    // Set SLP_TYP first, then SLP_EN in a second write, as the spec's sleep sequence does;
-    // every other bit (SCI_EN included) keeps its value.
     let pm1a_value = acpi::pm1_control_sleep(read16(pm1a), target.sleep_type.a);
     let pm1b_value =
         (pm1b != 0).then(|| acpi::pm1_control_sleep(read16(pm1b), target.sleep_type.b));

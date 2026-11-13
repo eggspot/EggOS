@@ -15,12 +15,10 @@ const EIOINTC_BOUNCE: u64 = 0x1680;
 const EIOINTC_ISR: u64 = 0x1800;
 const EIOINTC_ROUTE: u64 = 0x1c00;
 const VECTORS: u64 = 256;
-/// The CPU interrupt pin EIOINTC raises: hardware interrupt 1, `ESTAT` bit 3.
 const PIN: u32 = 1;
 /// `ESTAT`'s and `ECFG.LIE`'s bit for that pin.
 pub(super) const PIN_INTERRUPT: u64 = 1 << (2 + PIN);
 
-/// QEMU `virt`'s PCH-PIC registers and the line its UART uses.
 const PCH_PIC_BASE: usize = 0x1000_0000;
 const PCH_PIC_MASK: usize = 0x20;
 const PCH_PIC_EDGE: usize = 0x60;
@@ -30,7 +28,6 @@ const PCH_PIC_POLARITY: usize = 0x3e0;
 const PCH_PIC_LINES: u32 = 64;
 pub(super) const UART_LINE: u32 = 2;
 
-/// QEMU `virt`'s PCH-MSI doorbell and the vectors it may raise.
 const PCH_MSI_DOORBELL: u64 = 0x2ff0_0000;
 const MSI_FIRST: u32 = 32;
 const MSI_LAST: u32 = 255;
@@ -43,13 +40,17 @@ static CONSOLE_VECTOR: AtomicU32 = AtomicU32::new(u32::MAX);
 fn iocsr_read64(address: u64) -> u64 {
     let value: u64;
     // SAFETY: reading this core's EIOINTC registers has no side effects.
-    unsafe { core::arch::asm!("iocsrrd.d {0}, {1}", out(reg) value, in(reg) address, options(nostack)) };
+    unsafe {
+        core::arch::asm!("iocsrrd.d {0}, {1}", out(reg) value, in(reg) address, options(nostack))
+    };
     value
 }
 
 fn iocsr_write64(address: u64, value: u64) {
     // SAFETY: the callers write EIOINTC registers as the controller defines them.
-    unsafe { core::arch::asm!("iocsrwr.d {0}, {1}", in(reg) value, in(reg) address, options(nostack)) };
+    unsafe {
+        core::arch::asm!("iocsrwr.d {0}, {1}", in(reg) value, in(reg) address, options(nostack))
+    };
 }
 
 fn pch_pic(offset: usize) -> *mut u8 {
@@ -87,8 +88,6 @@ pub(super) fn start() {
     };
 }
 
-/// Makes PCH-PIC line `line` raise EIOINTC vector `line`, level-triggered, active high, and
-/// unmasks it.
 fn route_wired(line: u32) -> Result<u32, &'static str> {
     if line >= PCH_PIC_LINES {
         return Err("no such PCH-PIC line");
@@ -122,7 +121,10 @@ pub(super) fn enable_console() -> Result<(), &'static str> {
 pub(super) fn route_device(cells: &[u32]) -> Result<DeviceLine, &'static str> {
     let line = *cells.first().ok_or("an empty interrupt specifier")?;
     let vector = route_wired(line)?;
-    DEVICE_LINES.claim(vector).map(|(line, _)| line).ok_or("every device line is taken")
+    DEVICE_LINES
+        .claim(vector)
+        .map(|(line, _)| line)
+        .ok_or("every device line is taken")
 }
 
 /// [`crate::Platform::message_interrupt`]: the next free vector of PCH-MSI's, raised by writing
@@ -133,7 +135,9 @@ pub(super) fn message() -> Result<(DeviceLine, InterruptMessage), &'static str> 
     if vector > MSI_LAST {
         return Err("every MSI vector is taken");
     }
-    let (line, _) = DEVICE_LINES.claim(vector).ok_or("every device line is taken")?;
+    let (line, _) = DEVICE_LINES
+        .claim(vector)
+        .ok_or("every device line is taken")?;
     Ok((
         line,
         InterruptMessage {

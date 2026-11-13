@@ -741,7 +741,10 @@ fn a_slot_in_flight_is_neither_written_nor_posted_again() {
     post_stream(&mut gpu, 1, &[1; 8]);
     assert!(gpu.stream(0).is_none());
     assert_eq!(gpu.start_stream(0, 1, 8), Err(Error::QueueFull));
-    assert_eq!(gpu.start_stream(STREAM_SLOTS, 1, 8), Err(Error::QueueUnavailable));
+    assert_eq!(
+        gpu.start_stream(STREAM_SLOTS, 1, 8),
+        Err(Error::QueueUnavailable)
+    );
 }
 
 #[test]

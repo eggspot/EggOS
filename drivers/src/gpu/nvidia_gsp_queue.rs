@@ -23,8 +23,11 @@ pub const CALL_HEADER_BYTES: usize = 32;
 pub const SYSTEM_INFO_BYTES: usize = 664;
 /// The registry every boot sets: PCIe resets allowed, the configuration space saved, and the
 /// device id check skipped.
-pub const DEFAULT_REGISTRY: [(&str, u32); 3] =
-    [("RMSecBusResetEnable", 1), ("RMForcePcieConfigSave", 1), ("RMDevidCheckIgnore", 1)];
+pub const DEFAULT_REGISTRY: [(&str, u32); 3] = [
+    ("RMSecBusResetEnable", 1),
+    ("RMForcePcieConfigSave", 1),
+    ("RMDevidCheckIgnore", 1),
+];
 
 /// The remote calls the driver sends.
 pub mod function {
@@ -87,7 +90,11 @@ pub fn element(function: u32, payload: &[u8], sequence: u32) -> Vec<u8> {
     let call = ELEMENT_HEADER_BYTES;
     put(&mut element, call, CALL_VERSION);
     put(&mut element, call + 4, CALL_SIGNATURE);
-    put(&mut element, call + CALL_LENGTH, (CALL_HEADER_BYTES + payload.len()) as u32);
+    put(
+        &mut element,
+        call + CALL_LENGTH,
+        (CALL_HEADER_BYTES + payload.len()) as u32,
+    );
     put(&mut element, call + CALL_FUNCTION, function);
     put(&mut element, call + CALL_RESULT, NO_RESULT);
     put(&mut element, call + CALL_RESULT_PRIVATE, NO_RESULT);
@@ -97,7 +104,11 @@ pub fn element(function: u32, payload: &[u8], sequence: u32) -> Vec<u8> {
         word.copy_from_slice(chunk);
         folded ^ u64::from_le_bytes(word)
     });
-    put(&mut element, CHECKSUM, (folded >> 32) as u32 ^ folded as u32);
+    put(
+        &mut element,
+        CHECKSUM,
+        (folded >> 32) as u32 ^ folded as u32,
+    );
     element
 }
 
@@ -188,7 +199,10 @@ impl<R: RegisterIo> Queues<R> {
             self.write_page(self.command() + PAGE + slot * PAGE, page);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        self.memory.write32(self.command() + WRITE_POINTER, ((write + pages) % ENTRIES) as u32);
+        self.memory.write32(
+            self.command() + WRITE_POINTER,
+            ((write + pages) % ENTRIES) as u32,
+        );
         self.sequence = self.sequence.wrapping_add(1);
         Ok(())
     }
@@ -226,7 +240,10 @@ impl<R: RegisterIo> Queues<R> {
             payload: call[CALL_HEADER_BYTES..].to_vec(),
         };
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        self.memory.write32(self.command() + READ_POINTER, ((read + pages) % ENTRIES) as u32);
+        self.memory.write32(
+            self.command() + READ_POINTER,
+            ((read + pages) % ENTRIES) as u32,
+        );
         Ok(Some(message))
     }
 }
@@ -282,11 +299,28 @@ pub fn registry(entries: &[(&str, u32)]) -> Vec<u8> {
 /// One operation of the CPU sequencer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SequencerStep {
-    Write { address: u32, value: u32 },
-    Modify { address: u32, mask: u32, value: u32 },
-    Poll { address: u32, mask: u32, value: u32, timeout_us: u32 },
-    Delay { microseconds: u32 },
-    Store { address: u32, slot: u32 },
+    Write {
+        address: u32,
+        value: u32,
+    },
+    Modify {
+        address: u32,
+        mask: u32,
+        value: u32,
+    },
+    Poll {
+        address: u32,
+        mask: u32,
+        value: u32,
+        timeout_us: u32,
+    },
+    Delay {
+        microseconds: u32,
+    },
+    Store {
+        address: u32,
+        slot: u32,
+    },
     CoreReset,
     CoreStart,
     CoreWaitForHalt,
@@ -307,7 +341,13 @@ pub fn sequencer_steps(payload: &[u8]) -> Option<Vec<SequencerStep>> {
         let operation = dword(at)?;
         let argument = |index: usize| dword(at + 1 + index);
         let (step, arguments) = match operation {
-            0 => (SequencerStep::Write { address: argument(0)?, value: argument(1)? }, 2),
+            0 => (
+                SequencerStep::Write {
+                    address: argument(0)?,
+                    value: argument(1)?,
+                },
+                2,
+            ),
             1 => (
                 SequencerStep::Modify {
                     address: argument(0)?,
@@ -325,8 +365,19 @@ pub fn sequencer_steps(payload: &[u8]) -> Option<Vec<SequencerStep>> {
                 },
                 5,
             ),
-            3 => (SequencerStep::Delay { microseconds: argument(0)? }, 1),
-            4 => (SequencerStep::Store { address: argument(0)?, slot: argument(1)? }, 2),
+            3 => (
+                SequencerStep::Delay {
+                    microseconds: argument(0)?,
+                },
+                1,
+            ),
+            4 => (
+                SequencerStep::Store {
+                    address: argument(0)?,
+                    slot: argument(1)?,
+                },
+                2,
+            ),
             5 => (SequencerStep::CoreReset, 0),
             6 => (SequencerStep::CoreStart, 0),
             7 => (SequencerStep::CoreWaitForHalt, 0),
@@ -371,11 +422,14 @@ mod tests {
     fn an_element_folds_to_zero_and_names_its_call() {
         let element = element(function::SET_REGISTRY, &[1, 2, 3], 7);
         assert_eq!(element.len(), PAGE);
-        let folded = element
-            .chunks_exact(8)
-            .fold(0u64, |folded, chunk| folded ^ u64::from_le_bytes(chunk.try_into().unwrap()));
+        let folded = element.chunks_exact(8).fold(0u64, |folded, chunk| {
+            folded ^ u64::from_le_bytes(chunk.try_into().unwrap())
+        });
         assert_eq!((folded >> 32) as u32 ^ folded as u32, 0);
-        assert_eq!(word(&element, ELEMENT_HEADER_BYTES + 4), Some(CALL_SIGNATURE));
+        assert_eq!(
+            word(&element, ELEMENT_HEADER_BYTES + 4),
+            Some(CALL_SIGNATURE)
+        );
         assert_eq!(word(&element, ELEMENT_HEADER_BYTES + CALL_LENGTH), Some(35));
         assert_eq!(word(&element, SEQUENCE), Some(7));
     }
@@ -388,7 +442,10 @@ mod tests {
         queues.send(function::SET_SYSTEM_INFO, &[9; 16]).unwrap();
         let command = layout.command_queue as usize;
         assert_eq!((&memory).read32(command + WRITE_POINTER), 1);
-        assert_eq!((&memory).read32(command + PAGE + ELEMENT_HEADER_BYTES + CALL_FUNCTION), 72);
+        assert_eq!(
+            (&memory).read32(command + PAGE + ELEMENT_HEADER_BYTES + CALL_FUNCTION),
+            72
+        );
         let status = layout.status_queue as usize;
         let reply = element(event::INIT_DONE, &[5, 6], 0);
         for (index, chunk) in reply.chunks_exact(4).enumerate() {
@@ -411,7 +468,10 @@ mod tests {
         (&memory).write32(layout.command_queue as usize + WRITE_POINTER, 4);
         (&memory).write32(layout.status_queue as usize + READ_POINTER, 5);
         let mut queues = Queues::new(&memory, layout);
-        assert_eq!(queues.send(function::SET_REGISTRY, &[]), Err(QueueError::Full));
+        assert_eq!(
+            queues.send(function::SET_REGISTRY, &[]),
+            Err(QueueError::Full)
+        );
     }
 
     #[test]
@@ -434,8 +494,16 @@ mod tests {
         assert_eq!(
             sequencer_steps(&payload),
             Some(vec![
-                SequencerStep::Write { address: 0x100, value: 7 },
-                SequencerStep::Poll { address: 0x200, mask: 1, value: 1, timeout_us: 50 },
+                SequencerStep::Write {
+                    address: 0x100,
+                    value: 7
+                },
+                SequencerStep::Poll {
+                    address: 0x200,
+                    mask: 1,
+                    value: 1,
+                    timeout_us: 50
+                },
                 SequencerStep::CoreStart,
             ])
         );

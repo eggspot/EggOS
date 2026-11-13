@@ -137,16 +137,10 @@ pub struct BootServices {
     pub header: TableHeader,
     pub raise_tpl: Unused,
     pub restore_tpl: Unused,
-    pub allocate_pages:
-        unsafe extern "efiapi" fn(u32, u32, usize, *mut PhysicalAddress) -> Status,
+    pub allocate_pages: unsafe extern "efiapi" fn(u32, u32, usize, *mut PhysicalAddress) -> Status,
     pub free_pages: unsafe extern "efiapi" fn(PhysicalAddress, usize) -> Status,
-    pub get_memory_map: unsafe extern "efiapi" fn(
-        *mut usize,
-        *mut u8,
-        *mut usize,
-        *mut usize,
-        *mut u32,
-    ) -> Status,
+    pub get_memory_map:
+        unsafe extern "efiapi" fn(*mut usize, *mut u8, *mut usize, *mut usize, *mut u32) -> Status,
     pub allocate_pool: Unused,
     pub free_pool: Unused,
     pub create_event: Unused,
@@ -233,7 +227,8 @@ pub struct File {
     pub write: Unused,
     pub get_position: Unused,
     pub set_position: Unused,
-    pub get_info: unsafe extern "efiapi" fn(*mut File, *const Guid, *mut usize, *mut c_void) -> Status,
+    pub get_info:
+        unsafe extern "efiapi" fn(*mut File, *const Guid, *mut usize, *mut c_void) -> Status,
 }
 
 pub const PIXEL_RGB_RESERVED: u32 = 0;

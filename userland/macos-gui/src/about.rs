@@ -286,7 +286,11 @@ pub fn cut_credits(text: &str) -> &str {
     &text[..end]
 }
 
-fn push_line(lines: &mut [(usize, usize); MAX_CREDIT_LINES], count: &mut usize, line: (usize, usize)) {
+fn push_line(
+    lines: &mut [(usize, usize); MAX_CREDIT_LINES],
+    count: &mut usize,
+    line: (usize, usize),
+) {
     if *count < MAX_CREDIT_LINES {
         lines[*count] = line;
         *count += 1;
@@ -311,7 +315,9 @@ pub fn wrap_credits(text: &str, lines: &mut [(usize, usize); MAX_CREDIT_LINES]) 
         let mut line_end = 0;
         let mut at = 0;
         while at < paragraph.len() {
-            let word_end = paragraph[at..].find(' ').map_or(paragraph.len(), |space| at + space);
+            let word_end = paragraph[at..]
+                .find(' ')
+                .map_or(paragraph.len(), |space| at + space);
             let candidate = &paragraph[line_start..word_end];
             if text::width(candidate) <= CREDITS_WRAP {
                 line_end = word_end;
@@ -324,7 +330,10 @@ pub fn wrap_credits(text: &str, lines: &mut [(usize, usize); MAX_CREDIT_LINES]) 
                 line_end = at;
                 continue;
             }
-            let (fits, _) = text::fit(&paragraph[line_start..word_end], CREDITS_WRAP + text::width(text::ELLIPSIS));
+            let (fits, _) = text::fit(
+                &paragraph[line_start..word_end],
+                CREDITS_WRAP + text::width(text::ELLIPSIS),
+            );
             let mut cut = line_start + fits.max(1);
             while !paragraph.is_char_boundary(cut) {
                 cut += 1;
@@ -335,7 +344,11 @@ pub fn wrap_credits(text: &str, lines: &mut [(usize, usize); MAX_CREDIT_LINES]) 
             at = cut;
         }
         if line_end > line_start || line_start == 0 {
-            push_line(lines, &mut count, (base + line_start, base + line_end.max(line_start)));
+            push_line(
+                lines,
+                &mut count,
+                (base + line_start, base + line_end.max(line_start)),
+            );
         }
     }
     count
@@ -348,7 +361,12 @@ pub fn credits_top(body_lines: i32) -> i32 {
 
 /// The credits region.
 pub fn credits_region(body_lines: i32) -> Rect {
-    Rect::new(CREDITS_LEFT, credits_top(body_lines), CREDITS_SIZE.0, CREDITS_SIZE.1)
+    Rect::new(
+        CREDITS_LEFT,
+        credits_top(body_lines),
+        CREDITS_SIZE.0,
+        CREDITS_SIZE.1,
+    )
 }
 
 /// The panel's height with credits below `body_lines` lines.
@@ -382,7 +400,12 @@ pub fn credits_track(region: Rect, lines: usize) -> Option<Rect> {
 
 /// The thumb's start and length in the track.
 pub fn credits_thumb(lines: usize, offset: i32) -> Option<(i32, i32)> {
-    crate::scroll_view::thumb(inner_height(), inner_height(), credits_content(lines), offset)
+    crate::scroll_view::thumb(
+        inner_height(),
+        inner_height(),
+        credits_content(lines),
+        offset,
+    )
 }
 
 /// The offset after a press `along` pixels down the track: a page of 82 towards the press.
@@ -426,7 +449,13 @@ pub fn credits_offset_for_line(index: usize, lines: usize) -> i32 {
 
 /// Draws the credits `text`, wrapped into `lines`, in the region below `body_lines` lines at
 /// `offset`.
-pub fn paint_credits(canvas: &mut Canvas<'_>, text: &str, lines: &[(usize, usize)], body_lines: i32, offset: i32) {
+pub fn paint_credits(
+    canvas: &mut Canvas<'_>,
+    text: &str,
+    lines: &[(usize, usize)],
+    body_lines: i32,
+    offset: i32,
+) {
     let region = credits_region(body_lines);
     let inner = region.inset(1);
     canvas.fill(region, token::BUTTON_BORDER);
@@ -440,9 +469,16 @@ pub fn paint_credits(canvas: &mut Canvas<'_>, text: &str, lines: &[(usize, usize
         canvas.text(cell.x, cell.y, &text[start..end], token::TEXT, 1);
     }
     canvas.restore(kept);
-    if let (Some(track), Some((start, length))) = (credits_track(region, lines.len()), credits_thumb(lines.len(), offset)) {
+    if let (Some(track), Some((start, length))) = (
+        credits_track(region, lines.len()),
+        credits_thumb(lines.len(), offset),
+    ) {
         canvas.fill(track, token::PROGRESS_TRACK);
-        canvas.rounded(Rect::new(track.x, track.y + start, track.width, length), &INSET_R4, token::BAR_PRESSED);
+        canvas.rounded(
+            Rect::new(track.x, track.y + start, track.width, length),
+            &INSET_R4,
+            token::BAR_PRESSED,
+        );
     }
 }
 
@@ -467,9 +503,15 @@ pub fn fit_icon(pixels: &[u32], width: usize, height: usize, out: &mut [u32; ICO
     let left = (side - drawn_width) / 2;
     let top = (side - drawn_height) / 2;
     for row in 0..drawn_height {
-        let (from_y, to_y) = (row * height / drawn_height, ((row + 1) * height).div_ceil(drawn_height));
+        let (from_y, to_y) = (
+            row * height / drawn_height,
+            ((row + 1) * height).div_ceil(drawn_height),
+        );
         for column in 0..drawn_width {
-            let (from_x, to_x) = (column * width / drawn_width, ((column + 1) * width).div_ceil(drawn_width));
+            let (from_x, to_x) = (
+                column * width / drawn_width,
+                ((column + 1) * width).div_ceil(drawn_width),
+            );
             let mut sums = [0u64; 4];
             let mut count = 0u64;
             for y in from_y..to_y.max(from_y + 1).min(height) {
@@ -484,7 +526,9 @@ pub fn fit_icon(pixels: &[u32], width: usize, height: usize, out: &mut [u32; ICO
             let value = [24u32, 16, 8, 0]
                 .into_iter()
                 .zip(sums)
-                .fold(0, |mixed, (shift, sum)| mixed | (((sum + count / 2) / count.max(1)) as u32) << shift);
+                .fold(0, |mixed, (shift, sum)| {
+                    mixed | (((sum + count / 2) / count.max(1)) as u32) << shift
+                });
             out[(top + row) * side + left + column] = value;
         }
     }

@@ -4,18 +4,14 @@ use eggos_drivers::pci::{self, BarKind, ConfigSpace, mcfg};
 use eggos_hal::fdt::Fdt;
 use eggos_hal::{PhysicalRange, Platform};
 
-/// The compatible string of a generic ECAM PCI host in a device tree (QEMU's `virt` boards).
 const ECAM_HOST: &[u8] = b"pci-host-ecam-generic";
-/// A PCI address's space code in `ranges`' first cell: 32-bit and 64-bit memory.
 const SPACE_MEMORY32: u32 = 2 << 24;
 const SPACE_MEMORY64: u32 = 3 << 24;
 const SPACE_MASK: u32 = 3 << 24;
 const PREFETCHABLE: u32 = 1 << 30;
 const MAX_WINDOWS: usize = 4;
-/// The compatible strings of PCI hosts whose configuration space the firmware serves.
 const FIRMWARE_HOSTS: [&[u8]; 2] = [b"ibm,ioda3-phb", b"ibm,ioda2-phb"];
 
-/// A memory window of a PCI host the kernel hands BAR addresses out of (D291).
 #[derive(Debug, Clone, Copy, Default)]
 struct BarWindow {
     bus: u64,
@@ -45,13 +41,24 @@ pub(super) fn discover_device_tree<P: Platform>(
 ) -> Result<(), &'static str> {
     let tree = Fdt::new(blob).map_err(|_| "the device tree's header is not valid")?;
     let host = tree.nodes().flatten().find(|node| {
-        node.enabled && node.compatible.split(|&byte| byte == 0).any(|name| name == ECAM_HOST)
+        node.enabled
+            && node
+                .compatible
+                .split(|&byte| byte == 0)
+                .any(|name| name == ECAM_HOST)
     });
     let Some(host) = host else {
         return Ok(());
     };
-    let (window_start, window_size) = host.reg_entries().next().ok_or("the PCI host has no `reg`")?;
-    let cell = |bytes: &[u8], at: usize| bytes.get(at * 4..at * 4 + 4).map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]));
+    let (window_start, window_size) = host
+        .reg_entries()
+        .next()
+        .ok_or("the PCI host has no `reg`")?;
+    let cell = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at * 4..at * 4 + 4)
+            .map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]))
+    };
     let largest_bus = (window_size >> 20).saturating_sub(1).min(255) as u8;
     let (start_bus, end_bus) = match (cell(host.bus_range, 0), cell(host.bus_range, 1)) {
         (Some(first), Some(last)) => (first.min(255) as u8, (last.min(255) as u8).min(largest_bus)),
@@ -72,8 +79,6 @@ pub(super) fn discover_device_tree<P: Platform>(
     Ok(())
 }
 
-/// Enumerates the functions of a PCI host whose node is `host`, through `config`, giving every
-/// memory BAR firmware left at 0 an address from the host's `ranges` (D291).
 fn add_host_functions<C: ConfigSpace + ?Sized>(
     config: &C,
     start_bus: u8,
@@ -81,7 +86,11 @@ fn add_host_functions<C: ConfigSpace + ?Sized>(
     host: &eggos_hal::fdt::Node<'_>,
     table: &mut DeviceTable,
 ) {
-    let cell = |bytes: &[u8], at: usize| bytes.get(at * 4..at * 4 + 4).map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]));
+    let cell = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at * 4..at * 4 + 4)
+            .map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]))
+    };
     let mut windows = [BarWindow::default(); MAX_WINDOWS];
     let mut count = 0;
     let parent_cells = host.address_cells as usize;
@@ -138,7 +147,8 @@ fn add_host_functions<C: ConfigSpace + ?Sized>(
                     .find(|window| assigned >= window.bus && assigned - window.bus < window.size)
                     .map_or(assigned, |window| window.cpu + (assigned - window.bus)),
             };
-            device.regions[usize::from(bar.index)] = PhysicalRange::from_start_length(address, bar.size);
+            device.regions[usize::from(bar.index)] =
+                PhysicalRange::from_start_length(address, bar.size);
         }
         table.add(device);
     });
@@ -160,7 +170,11 @@ pub(super) fn discover_firmware<P: Platform>(
         .map_while(Result::ok)
         .find(|node| node.enabled && FIRMWARE_HOSTS.iter().any(|name| node.is_compatible(name)))
         .ok_or("the firmware's PCI host has no device tree node")?;
-    let cell = |bytes: &[u8], at: usize| bytes.get(at * 4..at * 4 + 4).map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]));
+    let cell = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at * 4..at * 4 + 4)
+            .map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]))
+    };
     let (start_bus, end_bus) = match (cell(host.bus_range, 0), cell(host.bus_range, 1)) {
         (Some(first), Some(last)) => (first.min(255) as u8, last.min(255) as u8),
         _ => (0, 255),

@@ -254,7 +254,8 @@ const SC: u32 = 0x4400_0002;
 const NOP: u32 = 0x6000_0000;
 /// The kernel's `rt_sigreturn` trampoline: `li r0, 172`, `sc` and a `nop` that fills the
 /// three words.
-pub const SIGRETURN_TRAMPOLINE: Option<&[u8]> = Some(&super::code_bytes([LI_R0_RT_SIGRETURN, SC, NOP]));
+pub const SIGRETURN_TRAMPOLINE: Option<&[u8]> =
+    Some(&super::code_bytes([LI_R0_RT_SIGRETURN, SC, NOP]));
 
 /// Linux's `stat` here: the same 144 bytes as x86_64's.
 pub mod stat {
@@ -380,8 +381,12 @@ pub mod signal_frame {
             state.vsr_mut()[32 + index] = u128::from_ne_bytes(bytes);
         }
         state.set_fpscr(word(part, 32 * 8));
-        state.set_vscr(u32::from_ne_bytes(part[VECTOR_PART + 32 * 16..][..4].try_into().unwrap()));
-        state.set_vrsave(u32::from_ne_bytes(part[VECTOR_PART + 33 * 16..][..4].try_into().unwrap()));
+        state.set_vscr(u32::from_ne_bytes(
+            part[VECTOR_PART + 32 * 16..][..4].try_into().unwrap(),
+        ));
+        state.set_vrsave(u32::from_ne_bytes(
+            part[VECTOR_PART + 33 * 16..][..4].try_into().unwrap(),
+        ));
         Ok(())
     }
 
@@ -515,7 +520,6 @@ pub mod fault {
     use crate::linux::signal;
     use eggos_hal::{Exception, ExceptionKind};
 
-    /// `FPE_FLTINV`: an invalid floating-point operation.
     const FPE_FLTINV: i32 = 7;
 
     /// The signal, `si_code` and `si_addr` Linux gives `exception`; the frame's `trap` is the
@@ -531,7 +535,9 @@ pub mod fault {
         let reported = match exception.kind {
             ExceptionKind::DataFault | ExceptionKind::InstructionFault => segv(address),
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, address),
-            ExceptionKind::Breakpoint | ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            ExceptionKind::Breakpoint | ExceptionKind::Debug => {
+                (signal::SIGTRAP, code::TRAP_BRKPT, pc)
+            }
             ExceptionKind::Arithmetic => (signal::SIGFPE, FPE_FLTINV, pc),
             ExceptionKind::IllegalInstruction
             | ExceptionKind::Segment

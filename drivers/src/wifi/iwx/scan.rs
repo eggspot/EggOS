@@ -66,12 +66,9 @@ const CHANNELS: usize = GENERAL + 36;
 const PERIODIC: usize = CHANNELS + 4 + MAX_SCAN_CHANNEL_ENTRIES * 8;
 const PROBE: usize = PERIODIC + 12;
 const PROBE_BUFFER: usize = PROBE + 20;
-/// The probe parameters' directed SSIDs, after the 532-byte probe template and four bytes of
-/// counts: element id, length, 32 bytes of name each (D298).
 const DIRECT_SSIDS: usize = PROBE + 532 + 4;
 const SSID_ELEMENT: u8 = 0;
 const MAX_SSID_BYTES: usize = 32;
-/// A channel's flag asking the firmware to probe for directed SSID 0 there.
 const PROBE_DIRECT_SSID_0: u32 = 1 << 0;
 
 const RATES_2_4: [u8; 8] = [0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24];
@@ -132,12 +129,20 @@ pub fn configure<R: RegisterIo, M: DmaMemory>(
     transport.send_command(LEGACY_GROUP, BT_CONFIG, &pair(BT_COEX_WIFI, 0), wait)?;
     let flags = match adapter.integrated {
         false => SOC_DISCRETE,
-        true => match (adapter.low_latency_xtal, firmware.command_version(LONG_GROUP, SCAN_REQUEST)) {
+        true => match (
+            adapter.low_latency_xtal,
+            firmware.command_version(LONG_GROUP, SCAN_REQUEST),
+        ) {
             (true, Some(version)) if version >= 2 => SOC_LOW_LATENCY,
             _ => 0,
         },
     };
-    transport.send_command(SYSTEM_GROUP, SOC_CONFIGURATION, &pair(flags, adapter.xtal_latency), wait)?;
+    transport.send_command(
+        SYSTEM_GROUP,
+        SOC_CONFIGURATION,
+        &pair(flags, adapter.xtal_latency),
+        wait,
+    )?;
     if firmware.has_capability(CAPABILITY_DQA) {
         transport.send_command(DATA_PATH_GROUP, DQA_ENABLE, &0u32.to_le_bytes(), wait)?;
     }
@@ -145,7 +150,9 @@ pub fn configure<R: RegisterIo, M: DmaMemory>(
     if nvm.location_aware {
         let mut mcc = [0u8; 28];
         mcc[..2].copy_from_slice(&MCC_WORLD.to_le_bytes());
-        mcc[2] = match firmware.has_api(API_WIFI_MCC_UPDATE) || firmware.has_capability(CAPABILITY_LAR_MULTI_MCC) {
+        mcc[2] = match firmware.has_api(API_WIFI_MCC_UPDATE)
+            || firmware.has_capability(CAPABILITY_LAR_MULTI_MCC)
+        {
             true => MCC_SOURCE_GET_CURRENT,
             false => MCC_SOURCE_OLD_FIRMWARE,
         };
@@ -155,7 +162,10 @@ pub fn configure<R: RegisterIo, M: DmaMemory>(
         return Err(TransportError::BadFirmware);
     }
     let mut scan = [0u8; 12];
-    if firmware.command_version(LONG_GROUP, SCAN_CONFIG).is_none_or(|version| version < 5) {
+    if firmware
+        .command_version(LONG_GROUP, SCAN_CONFIG)
+        .is_none_or(|version| version < 5)
+    {
         scan[2] = 0xff;
     }
     scan[4..8].copy_from_slice(&tx.to_le_bytes());
@@ -207,7 +217,12 @@ fn probe_request(request: &mut [u8], address: [u8; 6], five: bool) {
 /// The `SCAN_REQ_UMAC` version 14 request for a scan of `nvm`'s channels, at most
 /// `channel_limit` of them: passive, or active with probe requests naming `hidden` (a network
 /// whose beacons hide its name, D298).
-pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool, hidden: Option<&[u8]>) -> Vec<u8> {
+pub fn scan_request(
+    nvm: &Nvm,
+    channel_limit: usize,
+    extended_channels: bool,
+    hidden: Option<&[u8]>,
+) -> Vec<u8> {
     let mut request = vec![0u8; SCAN_REQUEST_BYTES];
     put32(&mut request, 4, SCAN_PRIORITY_EXT_6);
     let hidden = hidden.filter(|ssid| !ssid.is_empty() && ssid.len() <= MAX_SSID_BYTES);
@@ -226,7 +241,11 @@ pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool, hi
     request[GENERAL + 32] = DWELL_PASSIVE;
     request[GENERAL + 33] = DWELL_PASSIVE;
     request[CHANNELS] = CHANNEL_ORDER;
-    let channels: Vec<_> = nvm.channels.iter().take(channel_limit.min(MAX_SCAN_CHANNEL_ENTRIES)).collect();
+    let channels: Vec<_> = nvm
+        .channels
+        .iter()
+        .take(channel_limit.min(MAX_SCAN_CHANNEL_ENTRIES))
+        .collect();
     request[CHANNELS + 1] = channels.len() as u8;
     request[CHANNELS + 2] = APS_GO_FRIENDLY;
     request[CHANNELS + 3] = APS_SOCIAL;
@@ -248,7 +267,10 @@ pub fn scan_request(nvm: &Nvm, channel_limit: usize, extended_channels: bool, hi
         }
     }
     request[PERIODIC + 2] = 1;
-    let five = nvm.channels.iter().any(|channel| channel.band == Band::Five);
+    let five = nvm
+        .channels
+        .iter()
+        .any(|channel| channel.band == Band::Five);
     probe_request(&mut request, nvm.address, five);
     if let Some(ssid) = hidden {
         request[DIRECT_SSIDS] = SSID_ELEMENT;
@@ -268,7 +290,10 @@ pub fn received_frame(payload: &[u8], ax210: bool) -> Option<Heard> {
     let length = usize::from(u16::from_le_bytes(payload.get(..2)?.try_into().ok()?));
     let flags = *payload.get(3)?;
     let status = u32::from_le_bytes(payload.get(12..16)?.try_into().ok()?);
-    if status & MPDU_STATUS_CRC_OK == 0 || status & MPDU_STATUS_OVERRUN_OK == 0 || length < MANAGEMENT_HEADER_BYTES {
+    if status & MPDU_STATUS_CRC_OK == 0
+        || status & MPDU_STATUS_OVERRUN_OK == 0
+        || length < MANAGEMENT_HEADER_BYTES
+    {
         return None;
     }
     let (energy, channel) = match ax210 {
@@ -276,7 +301,12 @@ pub fn received_frame(payload: &[u8], ax210: bool) -> Option<Heard> {
         false => (32, 34),
     };
     let energies = [*payload.get(energy)?, *payload.get(energy + 1)?];
-    let strongest = energies.iter().filter(|&&value| value != 0).min().copied().unwrap_or(127);
+    let strongest = energies
+        .iter()
+        .filter(|&&value| value != 0)
+        .min()
+        .copied()
+        .unwrap_or(127);
     let mut frame = payload.get(descriptor..descriptor + length)?.to_vec();
     if flags & MPDU_PADDED != 0 {
         frame.drain(MANAGEMENT_HEADER_BYTES..MANAGEMENT_HEADER_BYTES + 2);
@@ -298,7 +328,12 @@ pub fn scan<R: RegisterIo, M: DmaMemory>(
     hidden: Option<&[u8]>,
     wait: &mut dyn Wait,
 ) -> Result<Vec<Heard>, TransportError> {
-    let request = scan_request(nvm, firmware.scan_channels as usize, firmware.has_api(API_SCAN_EXTENDED_CHANNEL), hidden);
+    let request = scan_request(
+        nvm,
+        firmware.scan_channels as usize,
+        firmware.has_api(API_SCAN_EXTENDED_CHANNEL),
+        hidden,
+    );
     transport.send_command(LONG_GROUP, SCAN_REQUEST, &request, wait)?;
     let ax210 = adapter.family == Family::Ax210;
     let mut frames = Vec::new();
@@ -341,8 +376,18 @@ mod tests {
             rx_chains: 3,
             location_aware: false,
             channels: vec![
-                Channel { number: 1, band: Band::TwoPointFour, active: true, radar: false },
-                Channel { number: 36, band: Band::Five, active: true, radar: false },
+                Channel {
+                    number: 1,
+                    band: Band::TwoPointFour,
+                    active: true,
+                    radar: false,
+                },
+                Channel {
+                    number: 36,
+                    band: Band::Five,
+                    active: true,
+                    radar: false,
+                },
             ],
         }
     }
@@ -352,10 +397,19 @@ mod tests {
         let request = scan_request(&nvm(), 67, true, None);
         assert_eq!(request.len(), SCAN_REQUEST_BYTES);
         assert_eq!(request[CHANNELS + 1], 2);
-        assert_eq!(&request[CHANNELS + 4 + 4..CHANNELS + 4 + 7], &[1, PHY_BAND_2_4, 1]);
-        assert_eq!(&request[CHANNELS + 12 + 4..CHANNELS + 12 + 6], &[36, PHY_BAND_5]);
+        assert_eq!(
+            &request[CHANNELS + 4 + 4..CHANNELS + 4 + 7],
+            &[1, PHY_BAND_2_4, 1]
+        );
+        assert_eq!(
+            &request[CHANNELS + 12 + 4..CHANNELS + 12 + 6],
+            &[36, PHY_BAND_5]
+        );
         assert_eq!(request[PROBE_BUFFER], 0x40);
-        assert_eq!(&request[PROBE_BUFFER + 10..PROBE_BUFFER + 16], &nvm().address);
+        assert_eq!(
+            &request[PROBE_BUFFER + 10..PROBE_BUFFER + 16],
+            &nvm().address
+        );
         let flags = u16::from_le_bytes([request[GENERAL], request[GENERAL + 1]]);
         assert_ne!(flags & SCAN_FLAG_FORCE_PASSIVE, 0);
         assert_eq!(scan_request(&nvm(), 1, false, None)[CHANNELS + 1], 1);
@@ -366,7 +420,8 @@ mod tests {
         let mut payload = vec![0u8; DESCRIPTOR_V1_BYTES];
         let frame: Vec<u8> = (0..30u8).collect();
         payload[..2].copy_from_slice(&(frame.len() as u16).to_le_bytes());
-        payload[12..16].copy_from_slice(&(MPDU_STATUS_CRC_OK | MPDU_STATUS_OVERRUN_OK).to_le_bytes());
+        payload[12..16]
+            .copy_from_slice(&(MPDU_STATUS_CRC_OK | MPDU_STATUS_OVERRUN_OK).to_le_bytes());
         payload[32] = 55;
         payload[33] = 0;
         payload[34] = 11;

@@ -49,7 +49,6 @@ eggos_thread_start:
     frame_size = const FRAME_WORDS * 4,
 );
 
-/// `ra`, `s0` to `s11` and three words of padding, which keep `sp` 16-byte aligned.
 const FRAME_WORDS: usize = 16;
 
 unsafe extern "C" {

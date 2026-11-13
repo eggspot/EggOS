@@ -39,8 +39,6 @@ const FEEDBACK_PREDIVIDER: u32 = 2;
 const FRACTION_BITS: u32 = 22;
 const SPREAD_STEPS_LOG: u32 = 4;
 
-/// The swing, pre-shoot and de-emphasis for each DisplayPort drive level (swing, then
-/// pre-emphasis, in the DisplayPort specification's order), for rates up to HBR and above.
 const DRIVE_TABLE: [(u32, u32, u32); 10] = [
     (0x7, 0x0, 0x00),
     (0x5, 0x0, 0x05),
@@ -56,7 +54,6 @@ const DRIVE_TABLE: [(u32, u32, u32); 10] = [
 const DRIVE_TABLE_HIGH_RATE_LEVEL_3: u32 = 0x19;
 const LEVELS_BEFORE_SWING: [usize; 4] = [0, 4, 7, 9];
 
-/// One register's value, and the bits of it the PLL setting owns.
 type Field = (u32, u32);
 
 /// A Dekel PLL setting: each register's value and mask.
@@ -107,7 +104,11 @@ pub fn pll_setting(link_khz: u32, reference_khz: u32) -> Option<PllSetting> {
         0 => 0,
         _ => FEEDBACK_PREDIVIDER * 1_000_000 * 100 / (DCO_KHZ * 3 / 10),
     };
-    let (proportional, integral) = if DCO_KHZ >= 9_000_000 { (5, 10) } else { (4, 8) };
+    let (proportional, integral) = if DCO_KHZ >= 9_000_000 {
+        (5, 10)
+    } else {
+        (4, 8)
+    };
     Some(PllSetting {
         reference_input: (1 << 8, 0x7 << 8),
         core_clock: (core_ratio << 8, 0xff << 8),
@@ -259,7 +260,10 @@ mod tests {
         assert_eq!(setting.bias.0 >> 8 & 0x3f_ffff, 1_966_080);
         assert_eq!(setting.divider_1.0 & 0xff, 39);
         assert_eq!(setting.cold_start.0, 82);
-        assert_eq!(pll_setting(810_000, 38_400).unwrap().high_speed_clock.0 >> 8 & 0xf, 1);
+        assert_eq!(
+            pll_setting(810_000, 38_400).unwrap().high_speed_clock.0 >> 8 & 0xf,
+            1
+        );
         assert_eq!(pll_setting(250_000, 38_400), None);
         assert_eq!(pll_setting(270_000, 25_000), None);
     }

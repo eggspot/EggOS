@@ -360,7 +360,6 @@ pub enum Kind {
         card: (i32, i32),
         gap: i32,
         art: CardArt,
-        /// The cards stand in a column, each the widget's width, instead of in a row.
         column: bool,
     },
     /// A list of rows.
@@ -777,7 +776,12 @@ pub fn card_rect(kind: &Kind, rect: Rect, index: usize) -> Rect {
         return Rect::default();
     };
     if *column {
-        return Rect::new(rect.x, rect.y + (card.1 + gap) * index as i32, rect.width, card.1);
+        return Rect::new(
+            rect.x,
+            rect.y + (card.1 + gap) * index as i32,
+            rect.width,
+            card.1,
+        );
     }
     Rect::new(
         rect.x + (card.0 + gap) * index as i32,

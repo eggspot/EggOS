@@ -21,14 +21,12 @@ use super::{Attributes, Entry, Format, MemoryType};
 #[derive(Debug)]
 pub struct S390x;
 
-/// Region and segment entries: invalid, the table type and the table length.
 const INVALID_REGION: u64 = 1 << 5;
 const TABLE_TYPE_SHIFT: u32 = 2;
 const TYPE_REGION_SECOND: u64 = 2;
 const TYPE_REGION_THIRD: u64 = 1;
 const TYPE_SEGMENT: u64 = 0;
 const TABLE_LENGTH_FULL: u64 = 3;
-/// A segment entry's format control: a 1 MiB frame (EDAT-1), not a page table.
 const LARGE: u64 = 1 << 10;
 const SEGMENT_PROTECT: u64 = 1 << 9;
 const SEGMENT_NO_EXECUTE: u64 = 1 << 8;
@@ -52,7 +50,6 @@ impl Format for S390x {
     const ROOTS: usize = 1;
     const MAX_LEAF_LEVEL: usize = 1;
     const ENCODES_MEMORY_TYPE: bool = false;
-    /// The low half of the 53 bits.
     const USER_END: u64 = 1 << 52;
 
     fn root(virt: u64) -> Option<usize> {
@@ -192,10 +189,19 @@ mod tests {
     #[test]
     fn pages_tables_and_kept_pages_decode_as_written() {
         let page = S390x::leaf(0x1234_5000, 0, Attributes::USER_READ_WRITE);
-        assert_eq!(S390x::decode(page, 0), Entry::Leaf(0x1234_5000, Attributes::USER_READ_WRITE));
+        assert_eq!(
+            S390x::decode(page, 0),
+            Entry::Leaf(0x1234_5000, Attributes::USER_READ_WRITE)
+        );
         assert_eq!(S390x::decode(S390x::kept(0x7000), 0), Entry::Kept(0x7000));
-        assert_eq!(S390x::decode(S390x::table(0x8000, 1, true), 1), Entry::Table(0x8000));
-        assert_eq!(S390x::decode(S390x::table(0x10_0000, 3, false), 3), Entry::Table(0x10_0000));
+        assert_eq!(
+            S390x::decode(S390x::table(0x8000, 1, true), 1),
+            Entry::Table(0x8000)
+        );
+        assert_eq!(
+            S390x::decode(S390x::table(0x10_0000, 3, false), 3),
+            Entry::Table(0x10_0000)
+        );
         assert_eq!(S390x::decode(0, 2), Entry::Empty);
         assert_eq!(S390x::decode(S390x::empty(0), 0), Entry::Empty);
         assert_eq!(S390x::decode(S390x::empty(3), 3), Entry::Empty);

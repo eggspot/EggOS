@@ -47,7 +47,6 @@ eggos_fp_restore:
 const _: () = assert!(core::mem::offset_of!(crate::fp::Loongarch64State, fcc) == 256);
 const _: () = assert!(core::mem::offset_of!(crate::fp::Loongarch64State, fcsr) == 264);
 
-/// `EUEN.FPE`: the FP unit is on.
 const EUEN_FPE: u64 = 1;
 
 unsafe extern "C" {

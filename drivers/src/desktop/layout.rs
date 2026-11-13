@@ -289,7 +289,10 @@ mod tests {
             assert_eq!(phone.status_bar, Some(Rect::new(0, 0, 390, 44)));
             assert_eq!(phone.work_area, Rect::new(0, 44, 390, 752));
             assert_eq!(phone.navigation_bar, Some(Rect::new(0, 796, 390, 48)));
-            assert_eq!(layout_in_form(1280, 800, 1, profile, Form::Desktop), layout(1280, 800, 1, profile));
+            assert_eq!(
+                layout_in_form(1280, 800, 1, profile, Form::Desktop),
+                layout(1280, 800, 1, profile)
+            );
         }
         let doubled = layout_in_form(780, 1688, 2, Profile::Windows, Form::Phone);
         assert_eq!(doubled.status_bar, Some(Rect::new(0, 0, 780, 88)));

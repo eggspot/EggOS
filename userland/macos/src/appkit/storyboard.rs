@@ -17,7 +17,7 @@ use crate::foundation::{autoreleased, string_from_utf8};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
-use crate::objc::{Runtime, methods, send, send1, sel};
+use crate::objc::{Runtime, methods, sel, send, send1};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const SUFFIX: &str = ".storyboardc";
@@ -119,7 +119,9 @@ fn is_controller(object: Id) -> bool {
 fn load_scene(this: Id, nib_name: Id) -> Option<nib::Loaded> {
     let folder = fields(this).folder;
     let path = with_text(folder, |folder| {
-        with_text(nib_name, |name| path_string(&[folder, "/", name, NIB_SUFFIX]))
+        with_text(nib_name, |name| {
+            path_string(&[folder, "/", name, NIB_SUFFIX])
+        })
     });
     let previous = CURRENT.swap(this as usize, Ordering::AcqRel);
     let loaded = with_text(path, |path| nib::load_file(path.as_bytes(), this));
@@ -221,7 +223,11 @@ pub fn run_main(name: &[u8], application: Id) -> bool {
             send1(held, sel!("showWindow:"), 0);
         }
         false => {
-            send1(held, sel!("presentViewControllerAsModalWindow:"), held as usize);
+            send1(
+                held,
+                sel!("presentViewControllerAsModalWindow:"),
+                held as usize,
+            );
         }
     }
     true

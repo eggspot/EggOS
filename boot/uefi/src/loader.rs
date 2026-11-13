@@ -150,7 +150,12 @@ impl Firmware {
     fn allocate(&self, kind: u32, pages: usize, address: &mut u64) -> Result<(), Status> {
         // SAFETY: a firmware call with an out pointer to a live `u64`.
         let status = unsafe {
-            (self.services().allocate_pages)(kind, handoff::uefi_memory_type::LOADER_DATA, pages, address)
+            (self.services().allocate_pages)(
+                kind,
+                handoff::uefi_memory_type::LOADER_DATA,
+                pages,
+                address,
+            )
         };
         if efi::is_error(status) {
             Err(status)
@@ -159,7 +164,11 @@ impl Firmware {
         }
     }
 
-    fn allocate_bytes(&self, bytes: usize, below: Option<u64>) -> Result<&'static mut [u8], &'static str> {
+    fn allocate_bytes(
+        &self,
+        bytes: usize,
+        below: Option<u64>,
+    ) -> Result<&'static mut [u8], &'static str> {
         let pages = bytes.div_ceil(PAGE as usize).max(1);
         let mut address = below.unwrap_or(0);
         let kind = if below.is_some() {
@@ -171,7 +180,8 @@ impl Firmware {
             .map_err(|_| "the firmware has no memory for the loader")?;
         // SAFETY: the firmware just gave these pages to the loader, identity-mapped as UEFI
         // requires, and nothing else uses them.
-        let memory = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, pages * PAGE as usize) };
+        let memory =
+            unsafe { core::slice::from_raw_parts_mut(address as *mut u8, pages * PAGE as usize) };
         memory.fill(0);
         Ok(memory)
     }
@@ -181,7 +191,10 @@ impl Firmware {
         let system = unsafe { &*self.system };
         // SAFETY: the firmware's configuration table holds this many entries.
         let tables = unsafe {
-            core::slice::from_raw_parts(system.configuration_table, system.configuration_table_entries)
+            core::slice::from_raw_parts(
+                system.configuration_table,
+                system.configuration_table_entries,
+            )
         };
         tables
             .iter()
@@ -205,7 +218,12 @@ fn read_file(
     let mut info_bytes = core::mem::size_of_val(&info);
     // SAFETY: `file` is open and `info` is writable for `info_bytes`.
     let status = unsafe {
-        ((*file).get_info)(file, &efi::FILE_INFO, &mut info_bytes, info.as_mut_ptr().cast())
+        ((*file).get_info)(
+            file,
+            &efi::FILE_INFO,
+            &mut info_bytes,
+            info.as_mut_ptr().cast(),
+        )
     };
     if efi::is_error(status) {
         // SAFETY: `file` is open.
@@ -219,7 +237,8 @@ fn read_file(
     while read < size {
         let mut chunk = size - read;
         // SAFETY: `file` is open and `buffer[read..]` is writable for `chunk` bytes.
-        let status = unsafe { ((*file).read)(file, &mut chunk, buffer[read..].as_mut_ptr().cast()) };
+        let status =
+            unsafe { ((*file).read)(file, &mut chunk, buffer[read..].as_mut_ptr().cast()) };
         if efi::is_error(status) || chunk == 0 {
             // SAFETY: `file` is open.
             unsafe { ((*file).close)(file) };
@@ -233,7 +252,8 @@ fn read_file(
 }
 
 fn boot_partition(firmware: &Firmware, device: Handle) -> [u8; 16] {
-    let Ok(mut node) = firmware.protocol::<efi::DevicePath>(device, &efi::DEVICE_PATH_PROTOCOL) else {
+    let Ok(mut node) = firmware.protocol::<efi::DevicePath>(device, &efi::DEVICE_PATH_PROTOCOL)
+    else {
         return [0; 16];
     };
     for _ in 0..64 {
@@ -241,12 +261,19 @@ fn boot_partition(firmware: &Firmware, device: Handle) -> [u8; 16] {
         // node; each node's length says where the next one starts.
         let (kind, subtype, length) = unsafe {
             let header = &*node;
-            (header.kind, header.subtype, usize::from(u16::from_le_bytes(header.length)))
+            (
+                header.kind,
+                header.subtype,
+                usize::from(u16::from_le_bytes(header.length)),
+            )
         };
         if kind == efi::DEVICE_PATH_END && subtype == 0xff || length < 4 {
             break;
         }
-        if kind == efi::DEVICE_PATH_MEDIA && subtype == efi::DEVICE_PATH_MEDIA_HARD_DRIVE && length >= 42 {
+        if kind == efi::DEVICE_PATH_MEDIA
+            && subtype == efi::DEVICE_PATH_MEDIA_HARD_DRIVE
+            && length >= 42
+        {
             // SAFETY: a hard drive node is `length` bytes long, at least 42.
             let bytes = unsafe { core::slice::from_raw_parts(node.cast::<u8>(), length) };
             if bytes[efi::HARD_DRIVE_SIGNATURE_TYPE_OFFSET] == efi::HARD_DRIVE_SIGNATURE_GUID {
@@ -281,14 +308,16 @@ fn mode_score(info: &efi::GraphicsModeInformation) -> Option<u64> {
 }
 
 fn framebuffer(firmware: &Firmware) -> Framebuffer {
-    let Some(output) = firmware.locate::<efi::GraphicsOutput>(&efi::GRAPHICS_OUTPUT_PROTOCOL) else {
+    let Some(output) = firmware.locate::<efi::GraphicsOutput>(&efi::GRAPHICS_OUTPUT_PROTOCOL)
+    else {
         return Framebuffer::default();
     };
     // SAFETY: the firmware's graphics output protocol and its mode, valid while boot services run.
     let mode = unsafe { &*(*output).mode };
     // SAFETY: the current mode's information, valid while boot services run.
     let current = unsafe { &*mode.info };
-    let keep_current = is_bgrx(current) && current.pixels_per_scan_line == current.horizontal_resolution;
+    let keep_current =
+        is_bgrx(current) && current.pixels_per_scan_line == current.horizontal_resolution;
     if !keep_current {
         let mut best: Option<(u64, u32)> = None;
         for number in 0..mode.max_mode {
@@ -345,7 +374,13 @@ impl RawMemoryMap {
         let mut version = 0u32;
         // SAFETY: asking for the size only: a null buffer of size 0.
         unsafe {
-            (firmware.services().get_memory_map)(&mut size, null_mut(), &mut key, &mut descriptor_size, &mut version)
+            (firmware.services().get_memory_map)(
+                &mut size,
+                null_mut(),
+                &mut key,
+                &mut descriptor_size,
+                &mut version,
+            )
         };
         if descriptor_size == 0 {
             descriptor_size = core::mem::size_of::<efi::MemoryDescriptor>();
@@ -373,7 +408,9 @@ impl RawMemoryMap {
                 &mut version,
             )
         };
-        if efi::is_error(status) || self.descriptor_size < core::mem::size_of::<efi::MemoryDescriptor>() {
+        if efi::is_error(status)
+            || self.descriptor_size < core::mem::size_of::<efi::MemoryDescriptor>()
+        {
             return Err("the firmware could not give its memory map");
         }
         self.size = size;
@@ -386,7 +423,12 @@ impl RawMemoryMap {
             .map(|bytes| {
                 // SAFETY: each chunk is at least a descriptor's size (checked in `refresh`), and
                 // `read_unaligned` takes any alignment.
-                unsafe { bytes.as_ptr().cast::<efi::MemoryDescriptor>().read_unaligned() }
+                unsafe {
+                    bytes
+                        .as_ptr()
+                        .cast::<efi::MemoryDescriptor>()
+                        .read_unaligned()
+                }
             })
     }
 }
@@ -405,8 +447,15 @@ fn place_kernel(firmware: &Firmware, image: &Image<'_>) -> Result<Placement, &'s
     let end = placement::page_ceiling(high).ok_or("the kernel image is out of reach")?;
     let pages = ((end - start) / PAGE) as usize;
     let mut address = start;
-    if firmware.allocate(efi::ALLOCATE_ADDRESS, pages, &mut address).is_ok() {
-        return Ok(Placement { delta: 0, start, end });
+    if firmware
+        .allocate(efi::ALLOCATE_ADDRESS, pages, &mut address)
+        .is_ok()
+    {
+        return Ok(Placement {
+            delta: 0,
+            start,
+            end,
+        });
     }
     if cfg!(target_arch = "x86_64") {
         return Err("the firmware uses the memory the kernel loads at (1 MiB)");
@@ -421,9 +470,13 @@ fn place_kernel(firmware: &Firmware, image: &Image<'_>) -> Result<Placement, &'s
             start: descriptor.physical_start,
             end: descriptor.physical_start + descriptor.pages * PAGE,
         };
-        for candidate in placement::candidates_in_gigabytes(start, end - start, free, KERNEL_BELOW) {
+        for candidate in placement::candidates_in_gigabytes(start, end - start, free, KERNEL_BELOW)
+        {
             let mut address = candidate;
-            if firmware.allocate(efi::ALLOCATE_ADDRESS, pages, &mut address).is_ok() {
+            if firmware
+                .allocate(efi::ALLOCATE_ADDRESS, pages, &mut address)
+                .is_ok()
+            {
                 return Ok(Placement {
                     delta: candidate - start,
                     start: candidate,
@@ -438,7 +491,10 @@ fn place_kernel(firmware: &Firmware, image: &Image<'_>) -> Result<Placement, &'s
 fn copy_kernel(image: &Image<'_>, placement: &Placement) -> Result<(), &'static str> {
     // SAFETY: the loader owns the kernel's pages, which the firmware identity-maps.
     let target = unsafe {
-        core::slice::from_raw_parts_mut(placement.start as *mut u8, (placement.end - placement.start) as usize)
+        core::slice::from_raw_parts_mut(
+            placement.start as *mut u8,
+            (placement.end - placement.start) as usize,
+        )
     };
     target.fill(0);
     for segment in image.loads() {
@@ -477,7 +533,9 @@ fn boot_data(firmware: &Firmware) -> Result<BootData, &'static str> {
         let base = first_page.as_mut_ptr();
         (
             &mut *base.cast::<Handoff>(),
-            &mut *base.add(handoff::HANDOFF_BYTES.next_multiple_of(8)).cast::<PvhStartInfo>(),
+            &mut *base
+                .add(handoff::HANDOFF_BYTES.next_multiple_of(8))
+                .cast::<PvhStartInfo>(),
         )
     };
     // SAFETY: `rest` starts 8-aligned and holds at least `MAX_MEMORY_RANGES` ranges' bytes,
@@ -499,10 +557,12 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
     // SAFETY: disabling the watchdog, a firmware call with no pointers of ours.
     unsafe { (firmware.services().set_watchdog_timer)(0, 0, 0, null()) };
     check_paging()?;
-    let loaded = firmware.protocol::<efi::LoadedImage>(firmware.image, &efi::LOADED_IMAGE_PROTOCOL)?;
+    let loaded =
+        firmware.protocol::<efi::LoadedImage>(firmware.image, &efi::LOADED_IMAGE_PROTOCOL)?;
     // SAFETY: the firmware's loaded image protocol for this image.
     let device = unsafe { (*loaded).device_handle };
-    let file_system = firmware.protocol::<efi::SimpleFileSystem>(device, &efi::SIMPLE_FILE_SYSTEM_PROTOCOL)?;
+    let file_system =
+        firmware.protocol::<efi::SimpleFileSystem>(device, &efi::SIMPLE_FILE_SYSTEM_PROTOCOL)?;
     let mut root: *mut efi::File = null_mut();
     // SAFETY: the firmware's file system protocol on the boot device.
     let status = unsafe { ((*file_system).open_volume)(file_system, &mut root) };
@@ -517,7 +577,9 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
         return Err("the kernel on the boot partition is for another kind of CPU");
     }
     let entry = if cfg!(target_arch = "x86_64") {
-        image.uefi_entry().ok_or("the kernel has no UEFI entry point")?
+        image
+            .uefi_entry()
+            .ok_or("the kernel has no UEFI entry point")?
     } else {
         image.entry
     };
@@ -571,7 +633,8 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
     for file in [kernel_file, loader_file] {
         if !file.is_empty() {
             let start = placement::page_floor(file.as_ptr() as u64);
-            let end = placement::page_ceiling(file.as_ptr() as u64 + file.len() as u64).unwrap_or(start);
+            let end =
+                placement::page_ceiling(file.as_ptr() as u64 + file.len() as u64).unwrap_or(start);
             writer.mark(start, end, memory_kind::BOOT_DATA);
         }
     }
@@ -603,7 +666,9 @@ fn check_paging() -> Result<(), &'static str> {
     const CR4_LA57: u64 = 1 << 12;
     let cr4: u64;
     // SAFETY: reading CR4 has no side effects.
-    unsafe { core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags)) };
+    unsafe {
+        core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags))
+    };
     if cr4 & CR4_LA57 != 0 {
         return Err("the firmware runs with 5-level paging, which the kernel does not take yet");
     }
@@ -615,8 +680,6 @@ fn check_paging() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// # Safety
-/// Boot services must be gone and the kernel placed at `placement` with `entry` inside it.
 #[cfg(target_arch = "x86_64")]
 unsafe fn enter_kernel(
     entry: u64,
@@ -639,8 +702,6 @@ unsafe fn enter_kernel(
     }
 }
 
-/// # Safety
-/// As for the x86_64 version.
 #[cfg(target_arch = "aarch64")]
 unsafe fn enter_kernel(
     entry: u64,

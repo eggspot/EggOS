@@ -23,8 +23,8 @@ mod liointc;
 mod thread;
 mod timer;
 
-use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
+use crate::atomic::AtomicU64;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::fdt::writer::Writer;
 use crate::memory::PhysicalRange;
@@ -110,34 +110,20 @@ eggos_secondary_start:
 /// same value and checks it against this one.
 pub(crate) const KERNEL_VIRTUAL_OFFSET: u64 = 0xffff_ffff_8000_0000;
 
-/// `Status` for the kernel: 64-bit kernel, supervisor and user segments (`KX`, `SX`, `UX`),
-/// 64-bit FP registers (`FR`), kernel mode, interrupts masked, the exception base from `EBase`
-/// (`BEV` clear), the timer, IPI and device interrupt lines unmasked for when `IE` is set.
 const STATUS_KERNEL: u64 = (1 << 26) | (1 << 7) | (1 << 6) | (1 << 5) | INTERRUPT_LINES;
 /// `Status.IM` bits: the PCI and UART interrupts on `IP2`, IPIs on `IP6` and the timer on `IP7`.
 pub(super) const INTERRUPT_LINES: u64 = (1 << 10) | (1 << 14) | (1 << 15);
-/// `HWREna`: programs may read the CPU number, the SYNCI step, the counter, its resolution and
-/// `UserLocal`.
 const HWRENA: u64 = 0xf | (1 << 29);
-/// `PageGrain`: `RI` and `XI` in `EntryLo` take effect.
 const PAGE_GRAIN: u64 = (1 << 31) | (1 << 30);
 
 /// The cached `XKPHYS` window, the direct map (D29): all physical memory, untranslated.
 pub(super) const CACHED_WINDOW: u64 = paging::mips64::CACHED_WINDOW;
-/// The uncached `XKPHYS` window, for the board's registers the HAL reaches itself.
 const UNCACHED_WINDOW: u64 = 0x9000_0000_0000_0000;
 const DIRECT_MAP_OFFSET: usize = CACHED_WINDOW as usize;
-/// The physical memory the direct map covers: `XKPHYS` reaches 48 bits.
 const DIRECT_MAP_END: u64 = 1 << 48;
-/// The device window (D110): one root entry of `XKSEG`, below the one the image's addresses
-/// index (the low 48 bits of `CKSEG0` addresses select root entry 511).
 const DEVICE_WINDOW: core::ops::Range<u64> = 0xc000_ff00_0000_0000..0xc000_ff80_0000_0000;
-/// The kernel's load address.
 const KERNEL_LOAD_ADDRESS: u64 = 0x20_0000;
 
-/// QEMU `loongson3-virt`'s board (`hw/mips/loongson3_virt.c`): the UART, the power-management
-/// block, the inter-processor interrupt block, PCI Express configuration space, I/O and memory
-/// windows.
 const UART_BASE: u64 = 0x1fe0_01e0;
 const UART_REG_SHIFT: u32 = 0;
 const UART_CLOCK: u32 = 100_000_000;
@@ -150,13 +136,9 @@ const PCI_ECAM: (u64, u64) = (0x1a00_0000, 0x0200_0000);
 const PCI_IO: (u64, u64) = (0x1800_0000, 0x1_0000);
 const PCI_MEMORY: (u64, u64) = (0x4000_0000, 0x4000_0000);
 const PCI_LAST_BUS: u32 = 0x1f;
-/// RAM without boot parameters: the low 256 MiB.
 const DEFAULT_RAM: (u64, u64) = (0, 256 << 20);
-/// The boot information QEMU keeps at the top of the low 256 MiB, which its memory map leaves
-/// out: kept out here too when the map is the default.
 const DEFAULT_RAM_KEPT: u64 = 16 << 20;
 
-/// Each CPU's boot mailboxes in its IPI block: the entry address, the stack, `gp` and `a1`.
 mod mailbox {
     pub const ENTRY: u64 = 0x20;
     pub const STACK: u64 = 0x28;
@@ -164,7 +146,6 @@ mod mailbox {
     pub const ARGUMENT: u64 = 0x38;
 }
 
-/// What `_start` found in `a1` and `a2`.
 static BOOT_ARGUMENTS: AtomicU64 = AtomicU64::new(0);
 static BOOT_PARAMETERS: AtomicU64 = AtomicU64::new(0);
 
@@ -173,7 +154,6 @@ const DEVICE_TREE_BYTES: usize = 4096;
 #[repr(C, align(8))]
 struct DeviceTreeBuffer([u8; DEVICE_TREE_BYTES]);
 
-/// The device tree [`describe_machine`] writes, once.
 static mut DEVICE_TREE_BLOB: DeviceTreeBuffer = DeviceTreeBuffer([0; DEVICE_TREE_BYTES]);
 static DEVICE_TREE_STATE: AtomicU8 = AtomicU8::new(UNWRITTEN);
 static DEVICE_TREE_LENGTH: AtomicUsize = AtomicUsize::new(0);
@@ -183,11 +163,9 @@ const FAILED: u8 = 2;
 
 const COMMAND_LINE_BYTES: usize = 512;
 
-/// The command line, copied from the argument table when the device tree is written.
 static mut COMMAND_LINE: [u8; COMMAND_LINE_BYTES] = [0; COMMAND_LINE_BYTES];
 static COMMAND_LINE_LENGTH: AtomicUsize = AtomicUsize::new(0);
 
-/// A kernel address the firmware passed, as a physical address in the low 4 GiB, if it is one.
 fn firmware_physical(address: u64) -> Option<u64> {
     match address >> 32 {
         0xffff_ffff => Some(address & 0x1fff_ffff),
@@ -198,8 +176,6 @@ fn firmware_physical(address: u64) -> Option<u64> {
     .filter(|&physical| physical < 1 << 32)
 }
 
-/// Copies the command line, the second argument (`argv[1]`, a 32-bit pointer), into
-/// [`COMMAND_LINE`].
 fn copy_command_line() {
     let arguments = BOOT_ARGUMENTS.load(Ordering::Relaxed);
     let Some(table) = firmware_physical(arguments) else {
@@ -216,7 +192,9 @@ fn copy_command_line() {
     let mut length = 0;
     while length < COMMAND_LINE_BYTES - 1 {
         // SAFETY: as for the table above.
-        let byte = unsafe { core::ptr::read_volatile((CACHED_WINDOW + line + length as u64) as *const u8) };
+        let byte = unsafe {
+            core::ptr::read_volatile((CACHED_WINDOW + line + length as u64) as *const u8)
+        };
         if byte == 0 {
             break;
         }
@@ -226,8 +204,6 @@ fn copy_command_line() {
     COMMAND_LINE_LENGTH.store(length, Ordering::Relaxed);
 }
 
-/// Writes the machine's device tree from the boot parameters and QEMU's board layout, once, on
-/// the boot CPU; its physical address, or 0 when it did not fit.
 fn describe_machine() -> usize {
     let address = || ((&raw const DEVICE_TREE_BLOB) as u64 - KERNEL_VIRTUAL_OFFSET) as usize;
     match DEVICE_TREE_STATE.load(Ordering::Acquire) {
@@ -263,7 +239,8 @@ fn describe_machine() -> usize {
     // starts and before anything reads it (the state says when it is written).
     let buffer = unsafe { &mut (*(&raw mut DEVICE_TREE_BLOB)).0 };
     // SAFETY: as for the command line in `copy_command_line`.
-    let command_line = unsafe { &(*(&raw const COMMAND_LINE))[..COMMAND_LINE_LENGTH.load(Ordering::Relaxed)] };
+    let command_line =
+        unsafe { &(*(&raw const COMMAND_LINE))[..COMMAND_LINE_LENGTH.load(Ordering::Relaxed)] };
     let mut writer = Writer::new(buffer);
     writer
         .begin(b"")
@@ -271,8 +248,14 @@ fn describe_machine() -> usize {
         .cells(b"#size-cells", &[2])
         .string(b"compatible", b"eggos,loongson3-virt")
         .string(b"model", b"QEMU loongson3-virt");
-    writer.begin(b"chosen").string(b"bootargs", command_line).end();
-    writer.begin(b"cpus").cells(b"#address-cells", &[1]).cells(b"#size-cells", &[0]);
+    writer
+        .begin(b"chosen")
+        .string(b"bootargs", command_line)
+        .end();
+    writer
+        .begin(b"cpus")
+        .cells(b"#address-cells", &[1])
+        .cells(b"#size-cells", &[0]);
     for cpu in 0..cpus {
         let mut name = *b"cpu@00";
         let length = match cpu {
@@ -349,8 +332,6 @@ fn describe_machine() -> usize {
     }
 }
 
-/// Called by `eggos_secondary_start` on the `CpuStart`'s stack: switches to the kernel's
-/// tables, sets this CPU's timer up (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own; interrupts are
     // masked (`Status.IE` is clear since the entry).
@@ -372,7 +353,6 @@ pub(super) fn ipi_register(cpu: u64, offset: u64) -> u64 {
     UNCACHED_WINDOW + IPI_BLOCK + cpu * IPI_CORE_STRIDE + offset
 }
 
-/// The early console, the UART through the uncached window.
 #[inline]
 fn uart() -> Ns16550<Mmio> {
     // SAFETY: on QEMU `loongson3-virt` the UART's register block is at `UART_BASE`, which the
@@ -420,7 +400,8 @@ impl Platform for Mips64 {
         liointc::route_device(specifier.cells())
     }
 
-    fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
+    fn message_interrupt()
+    -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         Err("loongson3-virt's PCI Express has no MSI controller: its devices use INTx (D325)")
     }
 
@@ -533,7 +514,10 @@ impl Platform for Mips64 {
             address @ 1.. => unsafe { boot_memory::device_tree_ram(address) },
             0 => {
                 let mut map = MemoryMap::new();
-                map.add_ram(PhysicalRange::from_start_length(DEFAULT_RAM.0, DEFAULT_RAM.1));
+                map.add_ram(PhysicalRange::from_start_length(
+                    DEFAULT_RAM.0,
+                    DEFAULT_RAM.1,
+                ));
                 map
             }
         };
@@ -554,7 +538,8 @@ impl Platform for Mips64 {
     fn command_line(line: &mut dyn FnMut(&[u8])) {
         describe_machine();
         // SAFETY: written once by `describe_machine` before any reader, read-only after.
-        let bytes = unsafe { &(*(&raw const COMMAND_LINE))[..COMMAND_LINE_LENGTH.load(Ordering::Relaxed)] };
+        let bytes =
+            unsafe { &(*(&raw const COMMAND_LINE))[..COMMAND_LINE_LENGTH.load(Ordering::Relaxed)] };
         line(bytes);
     }
 
@@ -600,7 +585,9 @@ impl Platform for Mips64 {
     fn make_instructions_visible(start: usize, length: usize) {
         let step: usize;
         // SAFETY: `rdhwr $1` reads the SYNCI step, which kernel mode may always read.
-        unsafe { core::arch::asm!(".set push", ".set noat", "rdhwr $1, $1", "move {0}, $1", ".set pop", out(reg) step, out("$1") _, options(nomem, nostack)) };
+        unsafe {
+            core::arch::asm!(".set push", ".set noat", "rdhwr $1, $1", "move {0}, $1", ".set pop", out(reg) step, out("$1") _, options(nomem, nostack))
+        };
         if step != 0 {
             let mut line = start & !(step - 1);
             while line < start + length {
@@ -673,7 +660,6 @@ impl Platform for Mips64 {
 
     unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
         unsafe extern "C" {
-            /// The secondary entry point in the boot code above.
             fn eggos_secondary_start();
         }
         if cpu >= 64 {

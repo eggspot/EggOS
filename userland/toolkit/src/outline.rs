@@ -7,8 +7,7 @@ use crate::canvas::Canvas;
 use crate::geometry::Rect;
 use crate::text::Text;
 use crate::widget::{
-    LINE_HEIGHT, Look, ScrollBars, THUMB, chevron, clipped_text, focus_ring, scroll_bars,
-    viewport,
+    LINE_HEIGHT, Look, ScrollBars, THUMB, chevron, clipped_text, focus_ring, scroll_bars, viewport,
 };
 
 /// A row's height.
@@ -215,7 +214,9 @@ impl Outline {
     /// The row above `row` one level up, if any.
     pub fn parent_of(&self, row: usize) -> Option<usize> {
         let depth = self.row_of(row).depth;
-        (0..row).rev().find(|&above| self.row_of(above).depth < depth)
+        (0..row)
+            .rev()
+            .find(|&above| self.row_of(above).depth < depth)
     }
 
     /// The next row after the selected one, cycling, whose text starts with `typed`, ignoring
@@ -306,7 +307,10 @@ impl Outline {
             let chosen = row == self.selected;
             if chosen {
                 canvas.fill(row_rect, palette.selection);
-            } else if [ROW_HIT + row, GLYPH_HIT + row].map(Some).contains(&look.hovered) {
+            } else if [ROW_HIT + row, GLYPH_HIT + row]
+                .map(Some)
+                .contains(&look.hovered)
+            {
                 canvas.fill(row_rect, palette.menu_hover);
             }
             let shown = self.row_of(row);
@@ -403,7 +407,10 @@ mod tests {
         assert_eq!(outline(2).step_for(key::LEFT, 5, false), Step::Select(0));
         assert_eq!(outline(3).step_for(key::LEFT, 5, false), Step::Stay);
         assert_eq!(outline(3).step_for(key::LEFT, 5, true), Step::Leave);
-        assert_eq!(outline(2).step_for(key::BACKSPACE, 5, false), Step::Select(0));
+        assert_eq!(
+            outline(2).step_for(key::BACKSPACE, 5, false),
+            Step::Select(0)
+        );
     }
 
     #[test]

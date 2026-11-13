@@ -31,7 +31,6 @@
 //! HAL's test program ([`Process::with_test_program`]) serves the boot self-tests and
 //! benchmarks. Reading images from files comes with the file system (M7).
 
-use eggos_hal::atomic::AtomicU64;
 use crate::address_space::{self, AddressSpace, ForkPage};
 use crate::cpu;
 use crate::linux::credentials::Credentials;
@@ -53,15 +52,14 @@ use core::num::{NonZeroU32, NonZeroU64};
 use core::ops::ControlFlow;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format, MemoryType, PageFault};
 use eggos_hal::user::{TestProgram, UserContext, UserExit};
 use eggos_hal::{ExceptionKind, Platform};
 
-/// The bytes of a pair of pages where the MMU maps them in pairs ([`Format::PAIRED_PAGES`]).
 const PAIR_BYTES: u64 = 2 * FRAME_SIZE;
 
-/// [`Process::first_thread_status`] before the first thread has ended: no status, which is 8 bits.
 const NO_STATUS: u32 = u32::MAX;
 
 /// Where [`Process::with_test_program`] maps the HAL's test program: its first page.
@@ -155,10 +153,6 @@ pub enum Remap {
     Replace(u64),
 }
 
-/// The program break (Linux's `brk`): where the heap a program grows with `brk` begins, and
-/// where it ends now. The heap is a region of its own from `start`, page-aligned, to `end`
-/// rounded up to a page, joined with the data segment below it as any touching region with
-/// the same attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProgramBreak {
     start: NonZeroU64,
@@ -1073,7 +1067,6 @@ impl<P: Platform> Process<P> {
         {
             return end;
         }
-        // Cannot wrap: both are below `USER_END`.
         let (old, new) = (
             end.next_multiple_of(FRAME_SIZE),
             requested.next_multiple_of(FRAME_SIZE),
@@ -1263,7 +1256,6 @@ impl<P: Platform> Process<P> {
         let mapped = Self::map_frame(memory, start, attributes, contents);
         drop(regions);
         if mapped.is_err() {
-            // The region alone: nothing is mapped in it.
             let _ = self.unmap_range(start, start + FRAME_SIZE);
             return None;
         }
@@ -1280,7 +1272,6 @@ impl<P: Platform> Process<P> {
         Self::unmap_locked(memory, &mut regions, start, end)
     }
 
-    /// [`Self::unmap_range`], with the regions' lock held (`regions`).
     fn unmap_locked(
         memory: &Memory<P>,
         regions: &mut Regions,
@@ -1304,9 +1295,6 @@ impl<P: Platform> Process<P> {
         Self::free_pages(memory, start, end).map_err(|_| RegionError::Invalid)
     }
 
-    /// Unmaps every page of user addresses `start..end`, page-aligned, freeing the frames, as
-    /// [`Self::unmap_range`] does with the regions there: with the regions' lock held. Every
-    /// page, not only those in regions: the HAL's test program has none.
     #[inline(always)]
     fn free_pages(memory: &Memory<P>, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
@@ -1702,7 +1690,6 @@ impl<P: Platform> Process<P> {
                         None => PageChange::Inaccessible,
                         Some(new) => {
                             if new.executable && !old.is_some_and(|old| old.executable) {
-                                // The program may have written it as data.
                                 let page = (frame as usize).wrapping_add(frame_offset);
                                 P::make_instructions_visible(page, FRAME_SIZE as usize);
                             }
@@ -1722,11 +1709,6 @@ impl<P: Platform> Process<P> {
         result
     }
 
-    /// Maps a frame of its own at user address `virt` with `attributes`, holding `contents`
-    /// (at most a page) and zero after them; an executable page is made visible to
-    /// instruction fetch. Allowed while the process is shared: the caller holds its regions'
-    /// lock (or `&mut`), so nothing else maps the page meanwhile. Returns the frame; if the
-    /// page is mapped already, or kept ([`MapError::AlreadyMapped`]), the frame goes back.
     fn map_frame(
         memory: &Memory<P>,
         virt: u64,
@@ -1751,8 +1733,6 @@ impl<P: Platform> Process<P> {
             )
         };
         if attributes.executable {
-            // The whole page: its zeroed rest too, or instruction fetch past the contents could
-            // see the frame's old data.
             P::make_instructions_visible(page as usize, FRAME_SIZE as usize);
         }
         match memory.space.map(virt, frame, FRAME_SIZE, attributes) {
@@ -1784,12 +1764,13 @@ impl<P: Platform> Process<P> {
         self.resolve_page(address & !(FRAME_SIZE - 1), fault)
     }
 
-    /// [`Self::resolve_page_fault`] where the MMU maps pages in pairs ([`Format::PAIRED_PAGES`],
-    /// D328): the fault names the pair, whose pages are each resolved, then given one
-    /// contiguous block. Resolved when either page was.
     #[cold]
     #[inline(never)]
-    fn resolve_paired_page_fault(&self, address: u64, fault: PageFault) -> Result<(), UnresolvedFault> {
+    fn resolve_paired_page_fault(
+        &self,
+        address: u64,
+        fault: PageFault,
+    ) -> Result<(), UnresolvedFault> {
         let pair = address & !(PAIR_BYTES - 1);
         let first = self.resolve_page(pair, fault);
         let second = self.resolve_page(pair + FRAME_SIZE, fault);
@@ -1805,14 +1786,11 @@ impl<P: Platform> Process<P> {
         Ok(())
     }
 
-    /// Moves the two pages of the pair at `pair` into one 8 KiB-aligned block, when both are
-    /// mapped alike and their frames are not already such a block: copies both, maps the block,
-    /// and lets the old frames go as copy-on-write does. With the regions' lock held. Pages a
-    /// `MAP_SHARED` mapping shares with others become private copies (D328's known gap).
     fn join_pair(memory: &Memory<P>, pair: u64) {
-        let (Some((first, attributes)), Some((second, second_attributes))) =
-            (memory.space.translate(pair), memory.space.translate(pair + FRAME_SIZE))
-        else {
+        let (Some((first, attributes)), Some((second, second_attributes))) = (
+            memory.space.translate(pair),
+            memory.space.translate(pair + FRAME_SIZE),
+        ) else {
             return;
         };
         if attributes != second_attributes
@@ -1822,7 +1800,10 @@ impl<P: Platform> Process<P> {
         }
         let block = {
             let mut frames = memory::FRAMES.lock();
-            match frames.as_mut().and_then(|frames| frames.allocate_contiguous_for_user(1)) {
+            match frames
+                .as_mut()
+                .and_then(|frames| frames.allocate_contiguous_for_user(1))
+            {
                 Some(block) => block,
                 None => return,
             }
@@ -1838,10 +1819,16 @@ impl<P: Platform> Process<P> {
         if attributes.executable {
             P::make_instructions_visible(at(block) as usize, PAIR_BYTES as usize);
         }
-        let unmapped = memory
-            .space
-            .change_pages(pair, PAIR_BYTES, |_, _| PageChange::Unmap, |_| ());
-        if unmapped.is_err() || memory.space.map(pair, block, PAIR_BYTES, attributes).is_err() {
+        let unmapped =
+            memory
+                .space
+                .change_pages(pair, PAIR_BYTES, |_, _| PageChange::Unmap, |_| ());
+        if unmapped.is_err()
+            || memory
+                .space
+                .map(pair, block, PAIR_BYTES, attributes)
+                .is_err()
+        {
             free_frame(block);
             free_frame(block + FRAME_SIZE);
             return;
@@ -1853,7 +1840,6 @@ impl<P: Platform> Process<P> {
         }
     }
 
-    /// Resolves the fault on the one page `page` ([`Self::resolve_page_fault`]).
     fn resolve_page(&self, page: u64, fault: PageFault) -> Result<(), UnresolvedFault> {
         let memory = &*self.memory;
         let regions = memory.regions.lock();
@@ -1900,16 +1886,6 @@ impl<P: Platform> Process<P> {
         }
     }
 
-    /// Makes user page `page` ready for `access`, with the regions' lock held (`regions`):
-    /// maps a zeroed frame there if its region allows the access and it is not mapped yet.
-    /// A page already mapped for the access is ready. Returns the frame and the attributes.
-    ///
-    /// When `likely_unmapped` (a fault that may be stale, a first touch, or a kernel copy),
-    /// the page is mapped first and looked up only if that finds it
-    /// mapped: one walk of the tables, not two (D53). The frame zeroed for a page that turns
-    /// out to be mapped, a stale fault's, goes back; with no frame to try with, the page is
-    /// looked up all the same, so a stale fault on a mapped page resumes the program even
-    /// when memory is out.
     fn populate<const MAY_MAP_FILES: bool>(
         memory: &Memory<P>,
         regions: &Regions,
@@ -2079,10 +2055,6 @@ impl<P: Platform> Process<P> {
         }
     }
 
-    /// For [`Self::populate`], when there was no frame to map page `page` with: the page's
-    /// frame and attributes if it is mapped for `access` already (a stale fault, which then
-    /// resumes), else [`UnresolvedFault::OutOfMemory`]. Cold and out of line, so the fault
-    /// path stays as it was.
     #[cold]
     #[inline(never)]
     fn mapped_or_out_of_memory(
@@ -2311,10 +2283,6 @@ impl<P: Platform> Process<P> {
         Ok(access(word))
     }
 
-    /// Where the kernel reaches user address `virt` through the direct map, with the regions'
-    /// lock held (`regions`): its page must be a user page of normal memory (and writable, if
-    /// `write`); a page in a region the program has not touched yet is mapped first, zeroed,
-    /// as the program's own access would (D52). See `copy_user_pages`.
     #[inline]
     fn in_direct_map(
         memory: &Memory<P>,
@@ -2342,19 +2310,6 @@ impl<P: Platform> Process<P> {
         Ok((phys as usize).wrapping_add(memory.frame_offset) as *mut u8)
     }
 
-    /// Walks `length` bytes of user memory from `address` a page at a time and hands each
-    /// piece to `copy` as (its address in the kernel's direct map, bytes done so far, its
-    /// length), after checking that the page is a user page of normal memory (and writable, if
-    /// `write`). A page in a region the program has not touched yet is mapped first, zeroed, as
-    /// the program's own access would (D52). No user-access window is opened and the address
-    /// space need not be loaded on this CPU: the copy goes through the direct map (the
-    /// process's `frame_offset`), so it can never fault (D50, decided by research). That is
-    /// sound because the process owns every frame its pages map and the regions' lock, held
-    /// throughout, keeps any from being unmapped or freed meanwhile. Another thread of the
-    /// process may write the same bytes on another CPU meanwhile: the bytes copied are then
-    /// unspecified, as on Linux, and the kernel reads each once, into its own buffer, and
-    /// reaches user memory only through raw pointers (decided by research, D94). Words other
-    /// threads use as atomics go through [`Self::with_user_word`].
     fn copy_user_pages(
         memory: &Memory<P>,
         address: u64,
@@ -2504,8 +2459,6 @@ impl<P: Platform> Process<P> {
         self.sent_signals_waiting.load(Ordering::Relaxed)
     }
 
-    /// For [`run`], after the scheduler looked: `Break` if the process has ended; otherwise
-    /// [`Self::interrupt_here_if_sent_signals_wait`].
     #[inline]
     fn after_look(&self) -> ControlFlow<()> {
         if self.has_ended() {
@@ -2590,9 +2543,6 @@ impl<P: Platform> core::fmt::Debug for Process<P> {
     }
 }
 
-/// Where `length` bytes, page-aligned, go within `floor..top`: at `hint` if it is given,
-/// page-aligned and the range there is free; otherwise as high as a free range fits
-/// ([`RegionError::NoRoom`] if none does), as Linux places a mapping top-down.
 #[inline]
 fn free_range(
     regions: &Regions,
@@ -2736,8 +2686,6 @@ where
     thread::spawn_user::<P, _>(move || run::<P, H>(process, context, handler), account)
 }
 
-/// A user thread's loop (see [`spawn`]). A thread that starts after its process has ended
-/// (started by a thread as another ended it) never runs the program.
 fn run<P: Platform, H>(process: Arc<Process<P>>, mut context: UserContext, mut handler: H)
 where
     H: FnMut(&Arc<Process<P>>, &mut UserContext, UserExit) -> ControlFlow<()>,
@@ -2759,7 +2707,6 @@ where
 {
     let mut ended = process.has_ended();
     while !ended {
-        // First, as it may switch threads: nothing may between loading and running.
         if thread::preemption_point_before_user_mode::<P>() && process.after_look().is_break() {
             break;
         }
@@ -2792,17 +2739,16 @@ fn leave_program<P: Platform>(
 }
 
 impl<P: Platform> Process<P> {
-    /// Interrupts the other CPUs that have the process's address space loaded (D295): only
-    /// they can be running its program, so a thread there comes back to the kernel to see an
-    /// exit or a signal; a CPU that loads it later looks before it runs the program
-    /// ([`Self::after_look`]). The rest of the machine is left alone.
     #[cold]
     #[inline(never)]
     fn interrupt_cpus_running_it(&self) {
         let root = self.memory.space.root();
         let here = cpu::current::<P>();
         for &other in cpu::CPUS.all() {
-            if !core::ptr::eq(other, here) && other.is_online() && other.active_address_space() == root {
+            if !core::ptr::eq(other, here)
+                && other.is_online()
+                && other.active_address_space() == root
+            {
                 other.request_reschedule();
                 cpu::wake::<P>(other);
             }
@@ -2828,11 +2774,10 @@ mod tests {
     use crate::tests::{TestPlatform as P, active_root, dropped_translations, set_active_root};
     use crate::thread::host::frames_for_test;
     use alloc::vec::Vec;
-    use eggos_hal::atomic::AtomicU64;
     use core::sync::atomic::Ordering;
+    use eggos_hal::atomic::AtomicU64;
     use eggos_hal::{Exception, ExceptionKind};
 
-    /// Kernel tables, active (frozen) as the kernel's are.
     fn kernel_tables() -> PageTables<<P as Platform>::PageTableFormat> {
         let mut frames = memory::FRAMES.lock();
         let mut tables = PageTables::new(frames.as_mut().unwrap()).unwrap();
@@ -2844,7 +2789,6 @@ mod tests {
         memory::FRAMES.lock().as_ref().unwrap().free_frames()
     }
 
-    /// The first root of `process`'s tables, as the test platform records it.
     fn root(process: &Process<P>) -> u64 {
         process.address_space().with_active(active_root)
     }
@@ -2899,7 +2843,6 @@ mod tests {
             .map_new_page(DATA + FRAME_SIZE, Attributes::USER_READ_ONLY, b"abc")
             .unwrap();
 
-        // Across the two pages, both ways where the program may write.
         let mut read = [0u8; 6];
         assert_eq!(
             process.write_user_memory(DATA + FRAME_SIZE - 3, b"xyz"),
@@ -2912,9 +2855,6 @@ mod tests {
         process.read_user_memory(DATA + 2, &mut read).unwrap();
         assert_eq!(&read, b"234567");
 
-        // Read-only, unmapped, kernel, past user space, wrapping: refused. (The kernel half is
-        // refused by the user-space bound before the walk; the user and memory-type checks
-        // stand behind it.)
         assert_eq!(
             process.write_user_memory(DATA + FRAME_SIZE - 1, b"no"),
             Err(InvalidUserAddress)
@@ -2927,13 +2867,11 @@ mod tests {
                 "{address:#x}"
             );
         }
-        // Nothing to copy needs no check.
         assert_eq!(process.read_user_memory(0, &mut []), Ok(()));
     }
 
     const DATA: u64 = 0x50_0000;
 
-    /// A page fault of `kind` at `address`, a write if `write`.
     fn fault(kind: ExceptionKind, address: Option<u64>, write: bool) -> Exception {
         Exception {
             kind,
@@ -2944,7 +2882,6 @@ mod tests {
         }
     }
 
-    /// What a thread's handler does with `exception`: resolves it if it is a page fault.
     fn resolve(process: &Process<P>, exception: &Exception) -> Result<(), UnresolvedFault> {
         match (
             P::page_fault(exception.kind, exception.code),
@@ -2955,7 +2892,6 @@ mod tests {
         }
     }
 
-    /// The page's bytes, through the test allocator's offset.
     fn page_bytes(process: &Process<P>, virt: u64) -> Vec<u8> {
         let (phys, _) = process.address_space().translate(virt).unwrap();
         let mut bytes = alloc::vec![0; FRAME_SIZE as usize];
@@ -2984,13 +2920,10 @@ mod tests {
             assert_eq!(attributes, Attributes::USER_READ_WRITE);
             assert!(page_bytes(&process, DATA).iter().all(|&byte| byte == 0));
             assert_eq!(process.address_space().translate(DATA + FRAME_SIZE), None);
-            // Again, as a hart with a stale invalid entry would: no new frame, the
-            // translation dropped again.
             let used = free();
             assert_eq!(resolve(&process, &write), Ok(()));
             assert_eq!(free(), used);
             assert_eq!(dropped_translations(), [(DATA, FRAME_SIZE)]);
-            // A read maps the second page.
             let read = fault(
                 ExceptionKind::DataFault,
                 Some(DATA + 2 * FRAME_SIZE - 1),
@@ -3033,11 +2966,9 @@ mod tests {
             .unwrap();
         let used = free();
         for exception in [
-            // Outside every region, below, between and above them.
             fault(ExceptionKind::DataFault, Some(DATA - 1), false),
             fault(ExceptionKind::DataFault, Some(DATA + 3 * FRAME_SIZE), false),
             fault(ExceptionKind::DataFault, Some(text + FRAME_SIZE), true),
-            // A write to read-only memory, code fetched from data, a write to code.
             fault(ExceptionKind::DataFault, Some(DATA), true),
             fault(
                 ExceptionKind::InstructionFault,
@@ -3045,7 +2976,6 @@ mod tests {
                 false,
             ),
             fault(ExceptionKind::DataFault, Some(text), true),
-            // No address, and not a page fault.
             fault(ExceptionKind::DataFault, None, false),
             fault(ExceptionKind::Alignment, Some(DATA + FRAME_SIZE), true),
         ] {
@@ -3056,7 +2986,6 @@ mod tests {
             );
         }
         assert_eq!(free(), used, "nothing was mapped");
-        // A read of read-only memory and a fetch from code are allowed.
         let fetch = fault(ExceptionKind::InstructionFault, Some(text + 8), false);
         assert_eq!(resolve(&process, &fetch), Ok(()));
         assert_eq!(
@@ -3082,7 +3011,6 @@ mod tests {
                 "a write to read-only memory is never resolved"
             );
         }
-        // Regions outside user space or overlapping are refused.
         let user_end = <<P as Platform>::PageTableFormat as Format>::USER_END;
         assert_eq!(
             process.add_region(
@@ -3152,7 +3080,6 @@ mod tests {
                 Attributes::USER_READ_ONLY,
             )
             .unwrap();
-        // A write across the two writable pages maps both.
         assert_eq!(
             process.write_user_memory(DATA + FRAME_SIZE - 2, b"abcd"),
             Ok(())
@@ -3162,14 +3089,12 @@ mod tests {
             .read_user_memory(DATA + FRAME_SIZE - 3, &mut read)
             .unwrap();
         assert_eq!(&read, b"\0abcd\0");
-        // An untouched read-only page reads as zero; it is never written.
         process.read_user_memory(read_only, &mut read).unwrap();
         assert_eq!(read, [0; 6]);
         assert_eq!(
             process.write_user_memory(read_only + FRAME_SIZE - 1, b"x"),
             Err(InvalidUserAddress)
         );
-        // Past the regions: refused, and nothing mapped.
         let used = free();
         assert_eq!(
             process.read_user_memory(read_only + FRAME_SIZE, &mut read),
@@ -3196,7 +3121,6 @@ mod tests {
                     .map_new_page(0x50_0000, Attributes::USER_READ_WRITE, &too_big)
                     .is_err()
             );
-            // Not a user address: the frame is given back.
             assert!(
                 process
                     .map_new_page(!0xfff, Attributes::USER_READ_WRITE, &[1])
@@ -3222,8 +3146,6 @@ mod tests {
         first.load_here();
         assert_eq!(active_root(), first_root);
         assert!(first.address_space().is_loaded_here());
-        // Already loaded: no switch (the record would show one to the same root, so move it
-        // away to see).
         set_active_root(0);
         first.load_here();
         assert_eq!(
@@ -3233,21 +3155,17 @@ mod tests {
         );
         set_active_root(first_root);
 
-        // The CPU keeps the first alive after its last owner is gone...
         let first_tables = free();
         drop(first);
         assert_eq!(free(), first_tables);
-        // ...until another process needs the CPU, which frees it.
         second.load_here();
         assert_eq!(active_root(), second_root);
         assert!(free() > first_tables);
 
-        // `with_active` puts the lazily loaded one away first and leaves the kernel's tables.
         second.with_active(|| assert_eq!(active_root(), second_root));
         assert_eq!(here.active_address_space(), cpu::NO_ADDRESS_SPACE);
         assert!(here.lazily_loaded.lock().is_none());
 
-        // Idle release: only once the CPU holds the last reference.
         second.load_here();
         address_space::release_unused::<P>(here);
         assert!(second.address_space().is_loaded_here());
@@ -3448,7 +3366,6 @@ mod tests {
         let _frames = frames_for_test();
         let kernel = kernel_tables();
         let here = cpu::current::<P>();
-        // The idle thread's stack, taken once, is not the process's.
         thread::start::<P>().unwrap();
         let before = free();
         static SYSCALLS: AtomicU64 = AtomicU64::new(0);
@@ -3470,7 +3387,6 @@ mod tests {
         .unwrap();
         thread.join::<P>();
         assert_eq!(SYSCALLS.load(Ordering::Relaxed), 3);
-        // The thread held the last reference: its CPU let the process go.
         assert_eq!(here.active_address_space(), cpu::NO_ADDRESS_SPACE);
         assert_eq!(free(), before);
     }
@@ -3574,7 +3490,6 @@ mod tests {
             };
             taken.push(frame);
         }
-        // Mapped already: the stale fault resumes; untouched: out of memory.
         assert_eq!(resolve(&process, &read), Ok(()));
         let untouched = fault(ExceptionKind::DataFault, Some(DATA + FRAME_SIZE), true);
         assert_eq!(

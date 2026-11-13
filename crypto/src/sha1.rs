@@ -29,7 +29,13 @@ impl Default for Sha1 {
 impl Sha1 {
     pub const fn new() -> Self {
         Self {
-            state: [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0],
+            state: [
+                0x6745_2301,
+                0xefcd_ab89,
+                0x98ba_dcfe,
+                0x1032_5476,
+                0xc3d2_e1f0,
+            ],
             block: [0; BLOCK_BYTES],
             filled: 0,
             length: 0,
@@ -39,10 +45,16 @@ impl Sha1 {
     fn compress(&mut self) {
         let mut words = [0u32; 80];
         for (index, word) in words.iter_mut().take(16).enumerate() {
-            *word = u32::from_be_bytes(self.block[index * 4..index * 4 + 4].try_into().unwrap_or_default());
+            *word = u32::from_be_bytes(
+                self.block[index * 4..index * 4 + 4]
+                    .try_into()
+                    .unwrap_or_default(),
+            );
         }
         for index in 16..80 {
-            words[index] = (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16]).rotate_left(1);
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
         }
         let [mut a, mut b, mut c, mut d, mut e] = self.state;
         for (index, &word) in words.iter().enumerate() {
@@ -151,14 +163,20 @@ mod tests {
 
     #[test]
     fn sha1_matches_fips_180_examples() {
-        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(
+            hex(&sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
         assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
     }
 
     #[test]
     fn hmac_sha1_matches_rfc_2202() {
         let key = [0x0bu8; 20];
-        assert_eq!(hex(&hmac_sha1(&key, &[b"Hi There"])), "b617318655057264e28bc0b6fb378c8ef146be00");
+        assert_eq!(
+            hex(&hmac_sha1(&key, &[b"Hi There"])),
+            "b617318655057264e28bc0b6fb378c8ef146be00"
+        );
     }
 
     #[test]
@@ -168,6 +186,9 @@ mod tests {
         assert_eq!(hex(&out), "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957");
         let mut psk = [0u8; 32];
         pbkdf2_hmac_sha1(b"password", b"IEEE", 4096, &mut psk);
-        assert_eq!(hex(&psk), "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e");
+        assert_eq!(
+            hex(&psk),
+            "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"
+        );
     }
 }

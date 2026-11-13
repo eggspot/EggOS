@@ -106,8 +106,6 @@ impl HidDescriptor {
     }
 }
 
-/// The bytes that send `opcode` for report `report_id` of `kind` to the command register,
-/// followed by the data register when `with_data`: how many of `out` it wrote.
 fn command(
     descriptor: &HidDescriptor,
     kind: u8,
@@ -166,8 +164,14 @@ impl I2cHid {
             .chain(LIKELY_DESCRIPTOR_REGISTERS)
             .find_map(|register| {
                 let mut bytes = [0u8; DESCRIPTOR_BYTES];
-                bus.transfer(address, ten_bit, &register.to_le_bytes(), &mut bytes, keep_waiting)
-                    .ok()?;
+                bus.transfer(
+                    address,
+                    ten_bit,
+                    &register.to_le_bytes(),
+                    &mut bytes,
+                    keep_waiting,
+                )
+                .ok()?;
                 HidDescriptor::parse(&bytes)
             })
             .ok_or(I2cHidError::NoDescriptor)?;
@@ -209,8 +213,21 @@ impl I2cHid {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), I2cHidError> {
         let mut bytes = [0u8; 8];
-        let length = command(&self.descriptor, 0, POWER_ON, opcode::SET_POWER, false, &mut bytes);
-        bus.transfer(self.address, self.ten_bit, &bytes[..length], &mut [], keep_waiting)?;
+        let length = command(
+            &self.descriptor,
+            0,
+            POWER_ON,
+            opcode::SET_POWER,
+            false,
+            &mut bytes,
+        );
+        bus.transfer(
+            self.address,
+            self.ten_bit,
+            &bytes[..length],
+            &mut [],
+            keep_waiting,
+        )?;
         Ok(())
     }
 
@@ -239,8 +256,8 @@ impl I2cHid {
     ) -> Result<usize, I2cHidError> {
         let mut sent = 0;
         let mut answer = [0u8; LENGTH_BYTES + LONGEST_REPORT];
-        let room = usize::from(self.descriptor.max_input_length)
-            .clamp(LENGTH_BYTES + 1, answer.len());
+        let room =
+            usize::from(self.descriptor.max_input_length).clamp(LENGTH_BYTES + 1, answer.len());
         for &report_id in &self.polled[..self.polled_count] {
             let mut request = [0u8; 8];
             let length = command(
@@ -278,9 +295,8 @@ mod tests {
     const ADDRESS: u16 = 0x15;
 
     const ACCELEROMETER: &[u8] = &[
-        0x05, 0x20, 0x09, 0x73, 0xa1, 0x00, 0x85, 0x02, 0x0a, 0x53, 0x04, 0x0a, 0x54, 0x04,
-        0x0a, 0x55, 0x04, 0x16, 0x00, 0x80, 0x26, 0xff, 0x7f, 0x75, 0x10, 0x95, 0x03, 0x81,
-        0x02, 0xc0,
+        0x05, 0x20, 0x09, 0x73, 0xa1, 0x00, 0x85, 0x02, 0x0a, 0x53, 0x04, 0x0a, 0x54, 0x04, 0x0a,
+        0x55, 0x04, 0x16, 0x00, 0x80, 0x26, 0xff, 0x7f, 0x75, 0x10, 0x95, 0x03, 0x81, 0x02, 0xc0,
     ];
 
     #[derive(Debug, Default)]
@@ -309,9 +325,15 @@ mod tests {
             let register = u16::from_le_bytes([write[0], write[1]]);
             let source = match write.len() > 2 {
                 true => &self.answer_at_data,
-                false => self.registers.get(&register).ok_or(I2cError::NotAcknowledged(2))?,
+                false => self
+                    .registers
+                    .get(&register)
+                    .ok_or(I2cError::NotAcknowledged(2))?,
             };
-            for (place, byte) in read.iter_mut().zip(source.iter().chain(core::iter::repeat(&0))) {
+            for (place, byte) in read
+                .iter_mut()
+                .zip(source.iter().chain(core::iter::repeat(&0)))
+            {
                 *place = *byte;
             }
             Ok(())
@@ -341,7 +363,8 @@ mod tests {
 
     fn sensor_at(descriptor_register: u16) -> FakeBus {
         let mut bus = FakeBus::default();
-        bus.registers.insert(descriptor_register, descriptor_bytes());
+        bus.registers
+            .insert(descriptor_register, descriptor_bytes());
         bus.registers.insert(0x0002, ACCELEROMETER.to_vec());
         bus
     }
@@ -357,7 +380,10 @@ mod tests {
         assert_eq!(device.descriptor().vendor, 0x1234);
         assert_eq!(device.descriptor().command_register, 0x0005);
         assert!(device.has_polled_reports());
-        assert_eq!(bus.writes.last(), Some(&vec![0x05, 0x00, 0x00, opcode::SET_POWER]));
+        assert_eq!(
+            bus.writes.last(),
+            Some(&vec![0x05, 0x00, 0x00, opcode::SET_POWER])
+        );
     }
 
     #[test]
@@ -418,6 +444,9 @@ mod tests {
             true,
             &mut out,
         );
-        assert_eq!(out[..length], [0x05, 0x00, 0x1f, opcode::GET_REPORT, 20, 0x06, 0x00]);
+        assert_eq!(
+            out[..length],
+            [0x05, 0x00, 0x1f, opcode::GET_REPORT, 20, 0x06, 0x00]
+        );
     }
 }

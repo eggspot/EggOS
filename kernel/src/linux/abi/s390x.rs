@@ -199,7 +199,6 @@ pub mod number {
     pub const ACCEPT: u64 = NOT_ON_S390X + 1;
     /// The highest number above that s390x has.
     pub const LAST: u64 = FCHMODAT2;
-    /// Where the names s390x lacks are numbered: past [`LAST`], so they answer `ENOSYS`.
     const NOT_ON_S390X: u64 = 0x1_0000;
 }
 
@@ -362,12 +361,21 @@ pub mod signal_frame {
     }
 
     /// Nothing outside the frame: the back chain is its first word.
-    pub fn write_extra<P: Platform>(_: &Process<P>, _: u64, _: u64, _: &Saved) -> Result<(), BadFrame> {
+    pub fn write_extra<P: Platform>(
+        _: &Process<P>,
+        _: u64,
+        _: u64,
+        _: &Saved,
+    ) -> Result<(), BadFrame> {
         Ok(())
     }
 
     /// Nothing outside the frame.
-    pub fn read_extra<P: Platform>(_: &Process<P>, _: &[u8; READ], _: &mut Saved) -> Result<(), BadFrame> {
+    pub fn read_extra<P: Platform>(
+        _: &Process<P>,
+        _: &[u8; READ],
+        _: &mut Saved,
+    ) -> Result<(), BadFrame> {
         Ok(())
     }
 
@@ -426,7 +434,6 @@ pub mod fault {
     use crate::linux::signal;
     use eggos_hal::{Exception, ExceptionKind};
 
-    /// `FPE_INTDIV`: an integer division by zero, the fixed-point divide exception.
     const FPE_INTDIV: i32 = 1;
 
     /// The signal, `si_code` and `si_addr` Linux gives `exception`: the program-interruption
@@ -442,7 +449,9 @@ pub mod fault {
         let reported = match exception.kind {
             ExceptionKind::DataFault | ExceptionKind::InstructionFault => segv(address),
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, address),
-            ExceptionKind::Breakpoint | ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            ExceptionKind::Breakpoint | ExceptionKind::Debug => {
+                (signal::SIGTRAP, code::TRAP_BRKPT, pc)
+            }
             ExceptionKind::Arithmetic => (signal::SIGFPE, FPE_INTDIV, pc),
             ExceptionKind::IllegalInstruction
             | ExceptionKind::Segment

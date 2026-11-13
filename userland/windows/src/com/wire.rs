@@ -469,7 +469,10 @@ mod tests {
     fn a_create_request_carries_its_class() {
         let class = [7u8; 16];
         let message = create(class);
-        assert_eq!(read_request(body(&message)), Some(Request::Create { class }));
+        assert_eq!(
+            read_request(body(&message)),
+            Some(Request::Create { class })
+        );
     }
 
     #[test]

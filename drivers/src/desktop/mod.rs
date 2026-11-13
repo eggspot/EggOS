@@ -15,17 +15,14 @@
 //! sets a menu ([`Desktop::set_menu`]).
 
 mod agent;
-pub mod form;
-mod osk;
-mod phone;
-mod phone_sheets;
-mod tablet;
-mod tv;
 pub mod boot_screen;
+mod carry;
 mod catalogue;
 mod desktop_icons;
 mod desktops;
 mod events;
+pub mod form;
+mod hot_keys;
 mod icons;
 mod injection;
 mod keyboard_layout;
@@ -34,22 +31,27 @@ pub mod layout;
 mod main_menu;
 mod management;
 mod network;
+mod osk;
 mod paint;
 mod panel_focus;
+mod phone;
+mod phone_sheets;
 mod pointer;
 mod popups;
 pub mod protocol;
 mod responsiveness;
 mod shell;
+mod shell_menu;
 pub mod shortcuts;
 mod sticky_keys;
-mod carry;
-mod hot_keys;
-mod shell_menu;
+mod tablet;
 mod tray;
+mod tv;
 mod updates;
 mod windows;
 
+#[cfg(test)]
+mod carry_tests;
 #[cfg(test)]
 mod injection_tests;
 #[cfg(test)]
@@ -67,17 +69,12 @@ mod polish_tests;
 #[cfg(test)]
 mod shell_tests;
 #[cfg(test)]
-mod carry_tests;
-#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tray_tests;
 #[cfg(test)]
 mod window_tests;
 
-pub use updates::UPDATES_LABEL;
-pub use form::{Form, FormSetting, InputKinds};
-pub use osk::{EnterWord, FieldKind, FocusCause, LONG_PRESS_MS, OnScreenKeyboardMode, ScreenKey};
 pub use agent::{AGENT_ACTING_MS, AGENT_LABEL, AGENT_LOG_LINE, AGENT_SUFFIX, AGENT_TOOLTIP};
 pub use catalogue::{
     ARGUMENT_SEPARATOR, AppId, COMMAND_CAPACITY, Catalogue, Command, INSTALLER_PROGRAM, Launch,
@@ -85,6 +82,7 @@ pub use catalogue::{
 };
 pub use desktop_icons::{ICON_CELL, ICON_GRID_MARGIN};
 pub use events::EventQueue;
+pub use form::{Form, FormSetting, InputKinds};
 pub use icons::{Icon, IconPixels, IconSize, Source};
 pub use injection::{
     ContentLayout, Injected, InjectedInput, PERSON_MOTION_THRESHOLD_PX, PERSON_WINS_MS,
@@ -103,10 +101,12 @@ pub use network::{
     CABLE_UNPLUGGED_TOOLTIP, CONNECTED_TOOLTIP_PREFIX, GETTING_ADDRESS_TOOLTIP, NETWORK_GLYPH_SIDE,
     NO_ADDRESS_TOOLTIP, NetworkState,
 };
+pub use osk::{EnterWord, FieldKind, FocusCause, LONG_PRESS_MS, OnScreenKeyboardMode, ScreenKey};
 pub use pointer::{CURSOR_SIDE, write_cursor_image};
 pub use responsiveness::{
     APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
 };
+pub use updates::UPDATES_LABEL;
 
 /// How far a window's content is cut in from each side on its last rows, bottom row first:
 /// the pixels its rounded corners take (a maximised window has square corners).
@@ -564,8 +564,6 @@ impl Desktop {
         Some(desktop)
     }
 
-    /// The wallpaper of a `width` by `height` screen: the gradient's rows, the egg's spans and
-    /// the yolk's centre and radius.
     #[allow(clippy::type_complexity)]
     fn wallpaper(width: u32, height: u32) -> (Vec<u32>, Vec<(u32, u32)>, (u32, u32, u32)) {
         let gradient = (0..height).map(|row| gradient_pixel(row, height)).collect();
@@ -590,7 +588,13 @@ impl Desktop {
     /// drawn for it, the shell is laid out again, maximised windows fill the new work area and
     /// the others move into it, and everything is drawn again. `false`, with nothing changed,
     /// when the terminal's window does not fit.
-    pub fn resize(&mut self, width: u32, height: u32, damage: &mut Damage, events: &mut dyn EventSink) -> bool {
+    pub fn resize(
+        &mut self,
+        width: u32,
+        height: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> bool {
         if !Self::fits(width, height) {
             return false;
         }
@@ -619,7 +623,6 @@ impl Desktop {
         damage.add(self.screen());
         true
     }
-
 
     fn id_for(&self, slot: usize) -> WindowId {
         self.generations[slot] << SLOT_BITS | slot as u16
@@ -2306,10 +2309,14 @@ impl Desktop {
         self.typed = character;
         self.note_person_input();
         let own_key = pressed && self.take_own_screen_key(code);
-        if pressed && !own_key && let Some(action) = self.on_screen_keyboard_tv_key(code, damage, events) {
+        if pressed
+            && !own_key
+            && let Some(action) = self.on_screen_keyboard_tv_key(code, damage, events)
+        {
             return action;
         }
-        if pressed && !own_key && code == key::BACK && self.on_screen_keyboard_back(damage, events) {
+        if pressed && !own_key && code == key::BACK && self.on_screen_keyboard_back(damage, events)
+        {
             return Action::None;
         }
         if pressed && let Some(action) = self.tv_key(code, damage, events) {
@@ -2702,7 +2709,10 @@ impl Desktop {
             self.draw_content(canvas, window, contents);
             if window.role == Role::Dialog {
                 let content = window.content();
-                canvas.fill(Rect::new(content.x, content.y, content.width, 1), colour::MENU_BORDER);
+                canvas.fill(
+                    Rect::new(content.x, content.y, content.width, 1),
+                    colour::MENU_BORDER,
+                );
             }
             return;
         }
@@ -3024,7 +3034,6 @@ impl<'a> Writer<'a> {
 
 const BLEND_CHUNK: usize = 64;
 
-/// How a layered window's content goes over what is under it (D358, D369).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Blend {
     opacity: u8,
@@ -3046,9 +3055,6 @@ impl Blend {
     }
 }
 
-/// Copies `out.len()` pixels of `window`'s content row from `at` over the pixels already in
-/// `out` (what is under the window), as `blend` says (a layered window, D358, D369), in
-/// chunks small enough for the stack.
 fn blend_row(
     contents: &dyn Contents,
     window: WindowId,
@@ -3070,7 +3076,6 @@ fn blend_row(
     }
 }
 
-/// `over` at `alpha` (0 to 255) over `under`, per channel.
 fn mix(over: u32, under: u32, alpha: u8) -> u32 {
     let alpha = u32::from(alpha);
     [16, 8, 0].into_iter().fold(0, |mixed, shift| {
@@ -3080,8 +3085,6 @@ fn mix(over: u32, under: u32, alpha: u8) -> u32 {
     })
 }
 
-/// `over`, whose top byte is its alpha and whose colour is already multiplied by it, scaled
-/// by `opacity` and put over `under` (Windows' `AC_SRC_ALPHA` blend, D369); opaque.
 fn mix_premultiplied(over: u32, under: u32, opacity: u8) -> u32 {
     let opacity = u32::from(opacity);
     let scale = |value: u32| (value * opacity + 127) / 255;

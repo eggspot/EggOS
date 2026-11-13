@@ -47,7 +47,6 @@ pub(super) struct TabletState {
     dragging: Option<u32>,
 }
 
-/// A window menu's entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Entry {
     FullScreen,
@@ -119,13 +118,23 @@ impl Desktop {
         let left = self.left_width(share);
         match right {
             false => Rect::new(work.x, work.y, left, work.height),
-            true => Rect::new(work.x + left + DIVIDER, work.y, work.width - left - DIVIDER, work.height),
+            true => Rect::new(
+                work.x + left + DIVIDER,
+                work.y,
+                work.width - left - DIVIDER,
+                work.height,
+            ),
         }
     }
 
     fn divider_rect(&self, share: Share) -> Rect {
         let work = self.layout.work_area;
-        Rect::new(work.x + self.left_width(share), work.y, DIVIDER, work.height)
+        Rect::new(
+            work.x + self.left_width(share),
+            work.y,
+            DIVIDER,
+            work.height,
+        )
     }
 
     fn divider_pad(&self, share: Share) -> Rect {
@@ -138,9 +147,14 @@ impl Desktop {
     pub(super) fn live_pair(&self) -> Option<Pair> {
         let pair = self.tablet.pair?;
         let alive = |side: Option<u8>| {
-            side.is_none_or(|slot| self.windows.get(usize::from(slot)).is_some_and(Option::is_some))
+            side.is_none_or(|slot| {
+                self.windows
+                    .get(usize::from(slot))
+                    .is_some_and(Option::is_some)
+            })
         };
-        (alive(pair.left) && alive(pair.right) && (pair.left.is_some() || pair.right.is_some())).then_some(pair)
+        (alive(pair.left) && alive(pair.right) && (pair.left.is_some() || pair.right.is_some()))
+            .then_some(pair)
     }
 
     /// Whether the pair is on screen: both windows shown, or one and the chooser.
@@ -233,7 +247,6 @@ impl Desktop {
         damage.add(self.layout.work_area);
     }
 
-    /// Ends the pair: the window left, if one, is full.
     fn end_pair(&mut self, keep: Option<usize>, damage: &mut Damage, events: &mut dyn EventSink) {
         self.tablet.pair = None;
         if let Some(slot) = keep {
@@ -248,8 +261,13 @@ impl Desktop {
             return;
         };
         if self.live_pair().is_some() {
-            let minimised = |side: Option<u8>| side.is_some_and(|slot| self.window_at(usize::from(slot)).minimised);
-            if minimised(pair.left) != minimised(pair.right) && pair.left.is_some() && pair.right.is_some() {
+            let minimised = |side: Option<u8>| {
+                side.is_some_and(|slot| self.window_at(usize::from(slot)).minimised)
+            };
+            if minimised(pair.left) != minimised(pair.right)
+                && pair.left.is_some()
+                && pair.right.is_some()
+            {
                 let keep = [pair.left, pair.right]
                     .into_iter()
                     .flatten()
@@ -269,16 +287,26 @@ impl Desktop {
 
     fn dock_zone(&self, index: u32) -> Option<Rect> {
         let dock = self.layout.navigation_bar?;
-        Some(Rect::new(dock.x + DOCK_ZONE * index, dock.y, DOCK_ZONE, dock.height))
+        Some(Rect::new(
+            dock.x + DOCK_ZONE * index,
+            dock.y,
+            DOCK_ZONE,
+            dock.height,
+        ))
     }
 
     /// The tablet's navigation zone `index`: `Back`, `Home`, `Apps`.
     pub(super) fn tablet_navigation_zone(&self, index: u32) -> Option<Rect> {
-        (index < DOCK_ZONES).then(|| self.dock_zone(index)).flatten()
+        (index < DOCK_ZONES)
+            .then(|| self.dock_zone(index))
+            .flatten()
     }
 
     fn dock_apps(&self) -> Vec<AppId> {
-        let mut apps: Vec<AppId> = PINNED.into_iter().filter(|app| self.catalogue.has(*app)).collect();
+        let mut apps: Vec<AppId> = PINNED
+            .into_iter()
+            .filter(|app| self.catalogue.has(*app))
+            .collect();
         let fits = (self.width.saturating_sub(433) / DOCK_ZONE) as usize;
         let mut order = [0u8; MAX_WINDOWS];
         let count = self.switcher_order(&mut order);
@@ -304,7 +332,11 @@ impl Desktop {
         };
         let apps = self.dock_apps();
         let pinned = apps.iter().take_while(|app| PINNED.contains(app)).count();
-        let separator = if apps.len() > pinned { DOCK_SEPARATOR } else { 0 };
+        let separator = if apps.len() > pinned {
+            DOCK_SEPARATOR
+        } else {
+            0
+        };
         let width = apps.len() as u32 * DOCK_ZONE + separator;
         let mut x = self.width.saturating_sub(width) / 2;
         let mut targets = Vec::new();
@@ -330,13 +362,19 @@ impl Desktop {
             _ => self.width / 2,
         };
         let right_limit = self.width.saturating_sub(16 + 16 + 8 + 56 + 8);
-        let x = centre.saturating_sub(width / 2).clamp(TITLE_LEFT_LIMIT, right_limit.saturating_sub(width));
+        let x = centre
+            .saturating_sub(width / 2)
+            .clamp(TITLE_LEFT_LIMIT, right_limit.saturating_sub(width));
         Rect::new(x, 0, width, 44)
     }
 
     fn tablet_shown_windows(&self) -> Vec<usize> {
         match self.live_pair().filter(|_| self.pair_shown()) {
-            Some(pair) => [pair.left, pair.right].into_iter().flatten().map(usize::from).collect(),
+            Some(pair) => [pair.left, pair.right]
+                .into_iter()
+                .flatten()
+                .map(usize::from)
+                .collect(),
             None => self.phone_shown_window().into_iter().collect(),
         }
     }
@@ -354,25 +392,48 @@ impl Desktop {
         let focused = self.focused_side_slot().or(self.phone_shown_window());
         for slot in self.tablet_shown_windows() {
             let button = self.title_button(slot);
-            let open = self.tablet.menu.is_some_and(|menu| usize::from(menu.slot) == slot);
+            let open = self
+                .tablet
+                .menu
+                .is_some_and(|menu| usize::from(menu.slot) == slot);
             if open {
-                canvas.fill(Rect::new(button.x, button.y, button.width, button.height - 1), colour::BAR_PRESSED);
+                canvas.fill(
+                    Rect::new(button.x, button.y, button.width, button.height - 1),
+                    colour::BAR_PRESSED,
+                );
             }
             let is_focused = Some(slot) == focused;
-            let ink = if is_focused || open { colour::TEXT } else { colour::TEXT_DIM };
-            let (text, cut) = windows::cut_title(self.window_at(slot).title(), TITLE_GLYPHS.saturating_sub(3));
-            let text_width = (text.chars().count() as u32 + if cut { 3 } else { 0 }) * GLYPH_WIDTH as u32;
+            let ink = if is_focused || open {
+                colour::TEXT
+            } else {
+                colour::TEXT_DIM
+            };
+            let (text, cut) =
+                windows::cut_title(self.window_at(slot).title(), TITLE_GLYPHS.saturating_sub(3));
+            let text_width =
+                (text.chars().count() as u32 + if cut { 3 } else { 0 }) * GLYPH_WIDTH as u32;
             let x = button.x + (button.width.saturating_sub(text_width + 13)) / 2;
             canvas.text(x, TITLE_TEXT_Y, text, ink);
             if cut {
-                canvas.text(x + text.chars().count() as u32 * GLYPH_WIDTH as u32, TITLE_TEXT_Y, windows::ellipsis(), ink);
+                canvas.text(
+                    x + text.chars().count() as u32 * GLYPH_WIDTH as u32,
+                    TITLE_TEXT_Y,
+                    windows::ellipsis(),
+                    ink,
+                );
             }
             let caret_x = x + text_width + CARET_GAP;
             for (row, width) in CARET.into_iter().enumerate() {
-                canvas.fill(Rect::new(caret_x + (7 - width) / 2, CARET_TOP + row as u32, width, 1), ink);
+                canvas.fill(
+                    Rect::new(caret_x + (7 - width) / 2, CARET_TOP + row as u32, width, 1),
+                    ink,
+                );
             }
             if is_focused {
-                canvas.fill(Rect::new(x, TITLE_LINE.0, text_width, TITLE_LINE.1), colour::ACCENT);
+                canvas.fill(
+                    Rect::new(x, TITLE_LINE.0, text_width, TITLE_LINE.1),
+                    colour::ACCENT,
+                );
             }
         }
     }
@@ -384,20 +445,39 @@ impl Desktop {
         for (app, target) in self.dock_targets() {
             let pinned = PINNED.contains(&app);
             if previous_pinned && !pinned {
-                canvas.fill(Rect::new(target.x - DOCK_SEPARATOR + 8, target.y + 12, 1, 40), colour::MENU_BORDER);
+                canvas.fill(
+                    Rect::new(target.x - DOCK_SEPARATOR + 8, target.y + 12, 1, 40),
+                    colour::MENU_BORDER,
+                );
             }
             previous_pinned = pinned;
-            draw_icon(canvas, self.catalogue.icon(app), IconSize::Large, target.x + DOCK_ICON.0, target.y + DOCK_ICON.1);
+            draw_icon(
+                canvas,
+                self.catalogue.icon(app),
+                IconSize::Large,
+                target.x + DOCK_ICON.0,
+                target.y + DOCK_ICON.1,
+            );
             let mut windows = [0u8; MAX_WINDOWS];
             if self.app_windows(app, &mut windows) > 0 {
                 canvas.fill(
-                    Rect::new(target.x + DOCK_RUNNING.0, target.y + DOCK_RUNNING.1, DOCK_RUNNING.2, DOCK_RUNNING.2),
+                    Rect::new(
+                        target.x + DOCK_RUNNING.0,
+                        target.y + DOCK_RUNNING.1,
+                        DOCK_RUNNING.2,
+                        DOCK_RUNNING.2,
+                    ),
                     colour::TEXT,
                 );
             }
             if Some(app) == focused_app {
                 canvas.fill(
-                    Rect::new(target.x + DOCK_FOCUS.0, target.y + DOCK_FOCUS.1, DOCK_FOCUS.2, DOCK_FOCUS.3),
+                    Rect::new(
+                        target.x + DOCK_FOCUS.0,
+                        target.y + DOCK_FOCUS.1,
+                        DOCK_FOCUS.2,
+                        DOCK_FOCUS.3,
+                    ),
                     colour::ACCENT,
                 );
             }
@@ -411,10 +491,19 @@ impl Desktop {
             return;
         };
         let divider = match self.tablet.dragging {
-            Some(x) => Rect::new(x.saturating_sub(DIVIDER / 2), self.layout.work_area.y, DIVIDER, self.layout.work_area.height),
+            Some(x) => Rect::new(
+                x.saturating_sub(DIVIDER / 2),
+                self.layout.work_area.y,
+                DIVIDER,
+                self.layout.work_area.height,
+            ),
             None => self.divider_rect(pair.share),
         };
-        let fill = if self.tablet.dragging.is_some() { colour::BAR_PRESSED } else { colour::BAR };
+        let fill = if self.tablet.dragging.is_some() {
+            colour::BAR_PRESSED
+        } else {
+            colour::BAR
+        };
         canvas.fill(divider, fill);
         let waiting = pair.left.is_none() || pair.right.is_none();
         if !waiting {
@@ -424,15 +513,30 @@ impl Desktop {
                 GRIP.0,
                 GRIP.1,
             );
-            let ink = if self.tablet.dragging.is_some() { colour::TEXT } else { colour::TEXT_DIM };
+            let ink = if self.tablet.dragging.is_some() {
+                colour::TEXT
+            } else {
+                colour::TEXT_DIM
+            };
             canvas.fill(grip, ink);
             return;
         }
         let side = self.side_rect(pair.right.is_none(), pair.share);
         canvas.fill(side, colour::MENU);
-        canvas.text(side.x + CHOOSER_HEADING.0, side.y + CHOOSER_HEADING.1, "Choose an app for this side", colour::TEXT_DIM);
+        canvas.text(
+            side.x + CHOOSER_HEADING.0,
+            side.y + CHOOSER_HEADING.1,
+            "Choose an app for this side",
+            colour::TEXT_DIM,
+        );
         for (app, cell) in self.chooser_cells(side) {
-            draw_icon(canvas, self.catalogue.icon(app), IconSize::Large, cell.x + CELL_ICON.0, cell.y + CELL_ICON.1);
+            draw_icon(
+                canvas,
+                self.catalogue.icon(app),
+                IconSize::Large,
+                cell.x + CELL_ICON.0,
+                cell.y + CELL_ICON.1,
+            );
             let (text, _) = windows::cut_title(self.catalogue.name(app), 12);
             canvas.text(cell.x + 8, cell.y + 64, text, colour::TEXT);
         }
@@ -446,7 +550,15 @@ impl Desktop {
             .enumerate()
             .map(|(index, app)| {
                 let (column, row) = (index as u32 % columns, index as u32 / columns);
-                (app, Rect::new(left + CELL.0 * column, side.y + CHOOSER_TOP + CELL.1 * row, CELL.0, CELL.1))
+                (
+                    app,
+                    Rect::new(
+                        left + CELL.0 * column,
+                        side.y + CHOOSER_TOP + CELL.1 * row,
+                        CELL.0,
+                        CELL.1,
+                    ),
+                )
             })
             .filter(|(_, cell)| cell.bottom() <= side.bottom())
             .collect()
@@ -498,7 +610,12 @@ impl Desktop {
         let rect = self.menu_rect(menu);
         let entries = self.menu_entries(usize::from(menu.slot));
         let separator = if index + 1 == entries.len() { 9 } else { 0 };
-        Rect::new(rect.x, rect.y + MENU_PAD + MENU_ROW * index as u32 + separator, MENU_WIDTH, MENU_ROW)
+        Rect::new(
+            rect.x,
+            rect.y + MENU_PAD + MENU_ROW * index as u32 + separator,
+            MENU_WIDTH,
+            MENU_ROW,
+        )
     }
 
     /// Draws the open window menu.
@@ -520,13 +637,28 @@ impl Desktop {
         for (index, (entry, applicable)) in entries.iter().enumerate() {
             let row = self.menu_row(menu, index);
             if index + 1 == entries.len() {
-                canvas.fill(Rect::new(rect.x + 4, row.y - 5, rect.width - 8, 1), colour::MENU_BORDER);
+                canvas.fill(
+                    Rect::new(rect.x + 4, row.y - 5, rect.width - 8, 1),
+                    colour::MENU_BORDER,
+                );
             }
             if menu.hover == Some(index) && *applicable {
-                canvas.fill(Rect::new(row.x + 1, row.y, row.width - 2, row.height), colour::SELECTION);
+                canvas.fill(
+                    Rect::new(row.x + 1, row.y, row.width - 2, row.height),
+                    colour::SELECTION,
+                );
             }
-            let ink = if *applicable { colour::TEXT } else { colour::TEXT_DIM };
-            canvas.text(row.x + MENU_TEXT.0, row.y + MENU_TEXT.1, Self::menu_label(*entry), ink);
+            let ink = if *applicable {
+                colour::TEXT
+            } else {
+                colour::TEXT_DIM
+            };
+            canvas.text(
+                row.x + MENU_TEXT.0,
+                row.y + MENU_TEXT.1,
+                Self::menu_label(*entry),
+                ink,
+            );
         }
     }
 
@@ -544,14 +676,19 @@ impl Desktop {
         if let Some(menu) = self.tablet.menu.take() {
             damage.add(self.screen());
             let entries = self.menu_entries(usize::from(menu.slot));
-            if let Some(index) = (0..entries.len()).find(|&index| contains(self.menu_row(menu, index), x, y))
+            if let Some(index) =
+                (0..entries.len()).find(|&index| contains(self.menu_row(menu, index), x, y))
                 && entries[index].1
             {
                 self.choose_entry(usize::from(menu.slot), entries[index].0, damage, events);
             }
             return Some(Action::None);
         }
-        if self.layout.status_bar.is_some_and(|bar| contains(bar, x, y)) {
+        if self
+            .layout
+            .status_bar
+            .is_some_and(|bar| contains(bar, x, y))
+        {
             for slot in self.tablet_shown_windows() {
                 if contains(self.title_button(slot), x, y) {
                     if let Some(side) = self.pair_side(slot)
@@ -561,15 +698,26 @@ impl Desktop {
                         self.tablet.pair = Some(pair);
                     }
                     self.set_focus(Some(slot), damage, events);
-                    self.tablet.menu = Some(WindowMenu { slot: slot as u8, hover: None });
+                    self.tablet.menu = Some(WindowMenu {
+                        slot: slot as u8,
+                        hover: None,
+                    });
                     damage.add(self.screen());
                     return Some(Action::None);
                 }
             }
             return None;
         }
-        if self.layout.navigation_bar.is_some_and(|bar| contains(bar, x, y)) {
-            if let Some((app, _)) = self.dock_targets().into_iter().find(|(_, target)| contains(*target, x, y)) {
+        if self
+            .layout
+            .navigation_bar
+            .is_some_and(|bar| contains(bar, x, y))
+        {
+            if let Some((app, _)) = self
+                .dock_targets()
+                .into_iter()
+                .find(|(_, target)| contains(*target, x, y))
+            {
                 return Some(self.phone_open_app(app, damage, events));
             }
             return None;
@@ -578,7 +726,10 @@ impl Desktop {
         if pair.left.is_none() || pair.right.is_none() {
             let side = self.side_rect(pair.right.is_none(), pair.share);
             if contains(side, x, y) {
-                let chosen = self.chooser_cells(side).into_iter().find(|(_, cell)| contains(*cell, x, y));
+                let chosen = self
+                    .chooser_cells(side)
+                    .into_iter()
+                    .find(|(_, cell)| contains(*cell, x, y));
                 return Some(match chosen {
                     Some((app, _)) => self.phone_open_app(app, damage, events),
                     None => Action::None,
@@ -586,7 +737,9 @@ impl Desktop {
             }
             return None;
         }
-        if contains(self.divider_rect(pair.share), x, y) || contains(self.divider_pad(pair.share), x, y) {
+        if contains(self.divider_rect(pair.share), x, y)
+            || contains(self.divider_pad(pair.share), x, y)
+        {
             self.tablet.dragging = Some(x);
             damage.add(self.layout.work_area);
             return Some(Action::None);
@@ -650,7 +803,13 @@ impl Desktop {
         self.refit_pair(damage, events);
     }
 
-    fn choose_entry(&mut self, slot: usize, entry: Entry, damage: &mut Damage, events: &mut dyn EventSink) {
+    fn choose_entry(
+        &mut self,
+        slot: usize,
+        entry: Entry,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         match entry {
             Entry::FullScreen => {
                 if let Some(partner) = self.pair_partner(slot) {
@@ -728,7 +887,13 @@ impl Desktop {
             let minimum = self.window_at(slot).minimum;
             let old = self.window_at(slot).with_shadow();
             self.window_mut(slot).maximised = false;
-            self.apply_geometry(slot, windows::snapped(work, right, minimum), old, damage, events);
+            self.apply_geometry(
+                slot,
+                windows::snapped(work, right, minimum),
+                old,
+                damage,
+                events,
+            );
         }
         let _ = Role::Normal;
     }

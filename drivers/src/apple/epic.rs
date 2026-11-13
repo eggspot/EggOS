@@ -154,7 +154,6 @@ pub struct Entry {
     pub data: Vec<u8>,
 }
 
-/// A ring in the endpoint's shared buffer: its header, then its data.
 #[derive(Debug, Clone, Copy)]
 struct Ring {
     header: SharedBuffer,
@@ -164,7 +163,9 @@ struct Ring {
 impl Ring {
     fn new(buffer: SharedBuffer, offset: usize, bytes: usize) -> Result<Self, EpicError> {
         let whole = buffer.part(offset, bytes).ok_or(EpicError::Malformed)?;
-        let header = whole.part(0, RING_HEADER_BYTES).ok_or(EpicError::Malformed)?;
+        let header = whole
+            .part(0, RING_HEADER_BYTES)
+            .ok_or(EpicError::Malformed)?;
         let size = header.read_u32(RING_SIZE_AT) as usize;
         if size + RING_HEADER_BYTES != bytes {
             return Err(EpicError::Malformed);
@@ -179,8 +180,6 @@ impl Ring {
         self.header.read_u32(RING_READ_AT) != self.header.read_u32(RING_WRITE_AT)
     }
 
-    /// The entry at the read pointer, moving to the ring's start when it would not fit before
-    /// the end, and the read pointer it leaves.
     fn read_entry(&self) -> Result<Entry, EpicError> {
         let mut read = self.header.read_u32(RING_READ_AT) as usize;
         let size = self.entry_size(read)?;
@@ -215,7 +214,6 @@ impl Ring {
         Ok(self.data.read_u32(at + 4) as usize)
     }
 
-    /// Writes an entry of `kind` on `channel` holding `data`: the new write pointer.
     fn write_entry(&self, channel: u32, kind: u32, data: &[u8]) -> Result<u32, EpicError> {
         let size = self.data.bytes;
         let read = self.header.read_u32(RING_READ_AT) as usize;
@@ -470,22 +468,26 @@ impl Endpoint {
     }
 }
 
-/// An EPIC message's sub-header category and type, and what follows the sub-header.
 fn sub_message(data: &[u8]) -> Option<(u8, u16, &[u8])> {
     let sub = data.get(EPIC_HEADER_BYTES..EPIC_HEADER_BYTES + SUB_HEADER_BYTES)?;
     let subtype = u16::from_le_bytes([sub[6], sub[7]]);
-    Some((sub[5], subtype, &data[EPIC_HEADER_BYTES + SUB_HEADER_BYTES..]))
+    Some((
+        sub[5],
+        subtype,
+        &data[EPIC_HEADER_BYTES + SUB_HEADER_BYTES..],
+    ))
 }
 
-/// The class an announcement names: its `EPICProviderClass` when it carries properties, else
-/// its name.
 fn announced_class(body: &[u8]) -> Option<&[u8]> {
     let name = body.get(..ANNOUNCE_NAME_BYTES)?;
     let properties = &body[ANNOUNCE_NAME_BYTES..];
     if properties.len() > ANNOUNCE_PROPERTIES_MINIMUM {
         return super::properties::string_value(properties, b"EPICProviderClass");
     }
-    let end = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+    let end = name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(name.len());
     Some(&name[..end])
 }
 
@@ -514,7 +516,10 @@ mod tests {
         assert_eq!(ring.write_entry(2, entry_kind::COMMAND, b"abc"), Ok(64));
         assert_eq!(ring.write_entry(2, entry_kind::NOTIFY, &[7; 70]), Ok(192));
         let first = ring.read_entry().unwrap();
-        assert_eq!((first.channel, first.kind, first.data), (2, 3, b"abc".to_vec()));
+        assert_eq!(
+            (first.channel, first.kind, first.data),
+            (2, 3, b"abc".to_vec())
+        );
         let second = ring.read_entry().unwrap();
         assert_eq!(second.data, vec![7; 70]);
         assert!(!ring.has_entry());

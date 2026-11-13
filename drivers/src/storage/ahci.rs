@@ -82,7 +82,10 @@ pub struct Controller {
 
 /// Takes the controller at `regs` from the firmware (the BIOS handoff, where it has one),
 /// turns AHCI mode on and lists the ports with an ATA disk on an active link.
-pub fn take_controller<R: RegisterIo>(regs: &R, keep_waiting: &mut dyn FnMut() -> bool) -> Controller {
+pub fn take_controller<R: RegisterIo>(
+    regs: &R,
+    keep_waiting: &mut dyn FnMut() -> bool,
+) -> Controller {
     if regs.read32(CAP2) & CAP2_BIOS_HANDOFF != 0 {
         let handoff = regs.read32(BOHC);
         regs.write32(BOHC, handoff | BOHC_OS_OWNED);
@@ -159,13 +162,15 @@ pub fn identified_size(words: &[u16; 256]) -> Option<(u64, usize)> {
         | (u64::from(words[102]) << 32)
         | (u64::from(words[103]) << 48);
     let size_word = words[106];
-    let block_bytes = if size_word & 0xc000 == SECTOR_SIZE_VALID && size_word & LARGE_LOGICAL_SECTORS != 0 {
-        let size_in_words = u32::from(words[117]) | (u32::from(words[118]) << 16);
-        size_in_words as usize * 2
-    } else {
-        SECTOR_SIZE
-    };
-    (blocks != 0 && block_bytes.is_power_of_two() && block_bytes >= SECTOR_SIZE).then_some((blocks, block_bytes))
+    let block_bytes =
+        if size_word & 0xc000 == SECTOR_SIZE_VALID && size_word & LARGE_LOGICAL_SECTORS != 0 {
+            let size_in_words = u32::from(words[117]) | (u32::from(words[118]) << 16);
+            size_in_words as usize * 2
+        } else {
+            SECTOR_SIZE
+        };
+    (blocks != 0 && block_bytes.is_power_of_two() && block_bytes >= SECTOR_SIZE)
+        .then_some((blocks, block_bytes))
 }
 
 /// One SATA disk on one port, its port's registers at `regs`.
@@ -188,11 +193,17 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<Self, (Error, Option<M>)> {
         if memory.len() < MEMORY_BYTES {
-            return Err((Error::Unsupported("too little DMA memory for a SATA port"), Some(memory)));
+            return Err((
+                Error::Unsupported("too little DMA memory for a SATA port"),
+                Some(memory),
+            ));
         }
         let end = memory.dma_addr().get().saturating_add(memory.len() as u64);
         if !addresses_64_bit && end > u64::from(u32::MAX) {
-            return Err((Error::Unsupported("the controller reaches only 32-bit addresses"), Some(memory)));
+            return Err((
+                Error::Unsupported("the controller reaches only 32-bit addresses"),
+                Some(memory),
+            ));
         }
         let mut disk = Self {
             regs,
@@ -222,7 +233,8 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             core::hint::spin_loop();
         }
         let command = self.regs.read32(PORT_COMMAND);
-        self.regs.write32(PORT_COMMAND, command & !COMMAND_FIS_RECEIVE);
+        self.regs
+            .write32(PORT_COMMAND, command & !COMMAND_FIS_RECEIVE);
         while self.regs.read32(PORT_COMMAND) & COMMAND_FIS_RUNNING != 0 {
             if !keep_waiting() {
                 return false;
@@ -238,14 +250,17 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         let list = base + COMMAND_LIST as u64;
         let received = base + RECEIVED_FIS as u64;
         self.regs.write32(PORT_COMMAND_LIST, list as u32);
-        self.regs.write32(PORT_COMMAND_LIST + 4, (list >> 32) as u32);
+        self.regs
+            .write32(PORT_COMMAND_LIST + 4, (list >> 32) as u32);
         self.regs.write32(PORT_RECEIVED_FIS, received as u32);
-        self.regs.write32(PORT_RECEIVED_FIS + 4, (received >> 32) as u32);
+        self.regs
+            .write32(PORT_RECEIVED_FIS + 4, (received >> 32) as u32);
         self.regs.write32(PORT_SATA_ERROR, u32::MAX);
         self.regs.write32(PORT_INTERRUPT_STATUS, u32::MAX);
         self.regs.write32(PORT_INTERRUPT_ENABLE, 0);
         let command = self.regs.read32(PORT_COMMAND);
-        self.regs.write32(PORT_COMMAND, command | COMMAND_FIS_RECEIVE);
+        self.regs
+            .write32(PORT_COMMAND, command | COMMAND_FIS_RECEIVE);
         while self.regs.read32(PORT_TASK_FILE) & (TASK_FILE_BUSY | TASK_FILE_DATA_REQUEST) != 0 {
             if !keep_waiting() {
                 return Err(Error::TimedOut);
@@ -255,7 +270,15 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         let command = self.regs.read32(PORT_COMMAND);
         self.regs.write32(PORT_COMMAND, command | COMMAND_START);
 
-        self.issue(ATA_IDENTIFY_DEVICE, 0, 0, IDENTIFY, SECTOR_SIZE, false, keep_waiting)?;
+        self.issue(
+            ATA_IDENTIFY_DEVICE,
+            0,
+            0,
+            IDENTIFY,
+            SECTOR_SIZE,
+            false,
+            keep_waiting,
+        )?;
         let mut bytes = [0u8; SECTOR_SIZE];
         copy_out(&self.memory, IDENTIFY, &mut bytes);
         let mut words = [0u16; 256];
@@ -281,8 +304,16 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
         let base = self.memory.dma_addr().get();
-        zero(&self.memory, COMMAND_TABLE, PRDT + PRDT_ENTRIES * 16 - COMMAND_TABLE);
-        copy_in(&self.memory, COMMAND_TABLE, &register_fis(command, lba, count));
+        zero(
+            &self.memory,
+            COMMAND_TABLE,
+            PRDT + PRDT_ENTRIES * 16 - COMMAND_TABLE,
+        );
+        copy_in(
+            &self.memory,
+            COMMAND_TABLE,
+            &register_fis(command, lba, count),
+        );
         let mut entries = 0;
         let mut offset = 0;
         while offset < data_bytes {
@@ -326,7 +357,8 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
     /// Asks the port for an interrupt when a command completes or fails (D262).
     pub fn enable_interrupts(&mut self) {
         self.regs.write32(PORT_INTERRUPT_STATUS, u32::MAX);
-        self.regs.write32(PORT_INTERRUPT_ENABLE, PORT_INTERRUPTS_WANTED);
+        self.regs
+            .write32(PORT_INTERRUPT_ENABLE, PORT_INTERRUPTS_WANTED);
     }
 
     pub fn sectors(&self) -> u64 {
@@ -352,17 +384,42 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
 
     fn chunk_sectors(&self) -> u64 {
         let per_block = (self.block_bytes / SECTOR_SIZE) as u64;
-        let blocks = (DATA_BYTES / self.block_bytes).min(MAX_SECTORS_PER_COMMAND).max(2) as u64 - 1;
+        let blocks = (DATA_BYTES / self.block_bytes)
+            .min(MAX_SECTORS_PER_COMMAND)
+            .max(2) as u64
+            - 1;
         blocks * per_block
     }
 
-    fn transfer(&mut self, write: bool, covering: Covering, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
-        let command = if write { ATA_WRITE_DMA_EXT } else { ATA_READ_DMA_EXT };
+    fn transfer(
+        &mut self,
+        write: bool,
+        covering: Covering,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let command = if write {
+            ATA_WRITE_DMA_EXT
+        } else {
+            ATA_READ_DMA_EXT
+        };
         let bytes = covering.blocks as usize * self.block_bytes;
-        self.issue(command, covering.first_block, covering.blocks as u16, DATA, bytes, write, keep_waiting)
+        self.issue(
+            command,
+            covering.first_block,
+            covering.blocks as u16,
+            DATA,
+            bytes,
+            write,
+            keep_waiting,
+        )
     }
 
-    pub fn read(&mut self, sector: u64, buffer: &mut [u8], keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    pub fn read(
+        &mut self,
+        sector: u64,
+        buffer: &mut [u8],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let sectors = self.check(sector, buffer.len())?;
         let chunk = self.chunk_sectors();
         let mut done = 0;
@@ -372,13 +429,22 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             self.transfer(false, span, keep_waiting)?;
             let start = done as usize * SECTOR_SIZE;
             let length = count as usize * SECTOR_SIZE;
-            copy_out(&self.memory, DATA + span.skip_bytes, &mut buffer[start..start + length]);
+            copy_out(
+                &self.memory,
+                DATA + span.skip_bytes,
+                &mut buffer[start..start + length],
+            );
             done += count;
         }
         Ok(())
     }
 
-    pub fn write(&mut self, sector: u64, buffer: &[u8], keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    pub fn write(
+        &mut self,
+        sector: u64,
+        buffer: &[u8],
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
         let sectors = self.check(sector, buffer.len())?;
         let chunk = self.chunk_sectors();
         let mut done = 0;
@@ -390,7 +456,11 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
                 self.transfer(false, span, keep_waiting)?;
             }
             let start = done as usize * SECTOR_SIZE;
-            copy_in(&self.memory, DATA + span.skip_bytes, &buffer[start..start + length]);
+            copy_in(
+                &self.memory,
+                DATA + span.skip_bytes,
+                &buffer[start..start + length],
+            );
             self.transfer(true, span, keep_waiting)?;
             done += count;
         }

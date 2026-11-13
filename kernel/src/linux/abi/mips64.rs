@@ -6,7 +6,9 @@
 //! before it is dispatched and [`result_out`] the few results that carry flags back; the HAL
 //! gives an error its MIPS number (`a3` set, the number positive in `v0`).
 
-use super::translate::{FlagPairs, flags_to_architecture as flags_to_mips, flags_to_generic, value_to_generic};
+use super::translate::{
+    FlagPairs, flags_to_architecture as flags_to_mips, flags_to_generic, value_to_generic,
+};
 
 /// The calls n64 keeps beyond the generic table: the ones older than the `*at` family,
 /// `renameat`, and `set_thread_area`, which sets the thread pointer (`UserLocal`).
@@ -336,7 +338,6 @@ pub mod mmap {
     }
 }
 
-
 const OPEN_FLAGS: FlagPairs = &[
     (0x0008, 0o2000),
     (0x0010, 0o10000),
@@ -398,7 +399,6 @@ const UNKNOWN_HOW: u64 = u64::MAX;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
-
 fn sigprocmask_how(how: u64) -> u64 {
     SIGPROCMASK_HOW
         .iter()
@@ -415,7 +415,10 @@ fn nonblock(value: u64) -> u64 {
 
 fn socket_type(value: u64) -> u64 {
     let base = value & SOCKET_TYPE_MASK;
-    let mapped = SOCKET_TYPES.iter().find(|&&(mips, _)| mips == base).map_or(base, |&(_, generic)| generic);
+    let mapped = SOCKET_TYPES
+        .iter()
+        .find(|&&(mips, _)| mips == base)
+        .map_or(base, |&(_, generic)| generic);
     nonblock(value & !SOCKET_TYPE_MASK) | mapped
 }
 
@@ -438,7 +441,11 @@ pub fn arguments_in(number: u64, arguments: &mut [u64; 6]) -> bool {
         }
         number::PIPE2 | number::DUP3 | number::INOTIFY_INIT1 => {
             let at = if number == number::DUP3 { 2 } else { 1 };
-            let at = if number == number::INOTIFY_INIT1 { 0 } else { at };
+            let at = if number == number::INOTIFY_INIT1 {
+                0
+            } else {
+                at
+            };
             arguments[at] = nonblock(arguments[at]);
         }
         number::EVENTFD2 | number::TIMERFD_CREATE => arguments[1] = nonblock(arguments[1]),
@@ -458,12 +465,13 @@ pub fn arguments_in(number: u64, arguments: &mut [u64; 6]) -> bool {
 /// Gives call `number`'s result, after the kernel's generic values, MIPS's: `F_GETFL`'s flags.
 pub fn result_out(number: u64, arguments: [u64; 6], result: u64) -> u64 {
     match number {
-        number::FCNTL if arguments[1] == F_GETFL && (result as i64) >= 0 => flags_to_mips(result, OPEN_FLAGS),
+        number::FCNTL if arguments[1] == F_GETFL && (result as i64) >= 0 => {
+            flags_to_mips(result, OPEN_FLAGS)
+        }
         _ => result,
     }
 }
 
-/// The `sa_flags` bits whose values differ: `SA_SIGINFO` and `SA_NOCLDWAIT`.
 const SIGACTION_FLAGS: FlagPairs = &[(0x8, 0x4), (0x1_0000, 0x2)];
 
 /// `sa_flags` as the kernel takes them.
@@ -484,8 +492,6 @@ pub fn reorder_siginfo(info: &mut [u8]) {
     }
 }
 
-/// MIPS's `POLLWRNORM` is `POLLOUT` and its `POLLWRBAND` is 0x100; the generic ones are 0x100
-/// and 0x200.
 const POLL_WRITE_BAND_MIPS: u16 = 0x100;
 const POLL_WRITE_NORMAL_GENERIC: u16 = 0x100;
 const POLL_WRITE_BAND_GENERIC: u16 = 0x200;
@@ -493,14 +499,26 @@ const POLL_OUT: u16 = 0x4;
 
 /// Requested `poll` events in the generic values.
 pub fn poll_events_in(events: u16) -> u16 {
-    let band = if events & POLL_WRITE_BAND_MIPS != 0 { POLL_WRITE_BAND_GENERIC } else { 0 };
+    let band = if events & POLL_WRITE_BAND_MIPS != 0 {
+        POLL_WRITE_BAND_GENERIC
+    } else {
+        0
+    };
     (events & !POLL_WRITE_BAND_MIPS) | band
 }
 
 /// Returned `poll` events in MIPS's values.
 pub fn poll_events_out(events: u16) -> u16 {
-    let normal = if events & POLL_WRITE_NORMAL_GENERIC != 0 { POLL_OUT } else { 0 };
-    let band = if events & POLL_WRITE_BAND_GENERIC != 0 { POLL_WRITE_BAND_MIPS } else { 0 };
+    let normal = if events & POLL_WRITE_NORMAL_GENERIC != 0 {
+        POLL_OUT
+    } else {
+        0
+    };
+    let band = if events & POLL_WRITE_BAND_GENERIC != 0 {
+        POLL_WRITE_BAND_MIPS
+    } else {
+        0
+    };
     (events & !(POLL_WRITE_NORMAL_GENERIC | POLL_WRITE_BAND_GENERIC)) | normal | band
 }
 
@@ -529,7 +547,6 @@ pub mod termios {
     const CONTROL_CHARACTERS_MIPS: usize = 23;
     /// Its size.
     pub const SIZE: usize = 17 + CONTROL_CHARACTERS_MIPS;
-    /// (MIPS index, generic index) of each control character.
     const INDEXES: [(usize, usize); 17] = [
         (0, 0),
         (1, 1),
@@ -555,7 +572,10 @@ pub mod termios {
     pub fn to_program(settings: &Termios) -> [u8; SIZE] {
         let mut bytes = [0; SIZE];
         let local = flags_to_mips(u64::from(settings.local), LOCAL_FLAGS) as u32;
-        for (index, word) in [settings.input, settings.output, settings.control, local].into_iter().enumerate() {
+        for (index, word) in [settings.input, settings.output, settings.control, local]
+            .into_iter()
+            .enumerate()
+        {
             bytes[index * 4..][..4].copy_from_slice(&word.to_ne_bytes());
         }
         bytes[16] = settings.line;
@@ -596,7 +616,9 @@ pub mod termios {
 /// trampoline, with the stack pointer at the frame.
 pub mod signal_frame {
     use crate::linux::fault::Trap;
-    use crate::linux::signal_frame::{BadFrame, Handler, INFO_SIZE, STACK_SIZE, Saved, put, ucontext, word};
+    use crate::linux::signal_frame::{
+        BadFrame, Handler, INFO_SIZE, STACK_SIZE, Saved, put, ucontext, word,
+    };
     use crate::process::Process;
     use eggos_hal::Platform;
     use eggos_hal::fp::FpState;
@@ -671,12 +693,21 @@ pub mod signal_frame {
     }
 
     /// Nothing outside the frame.
-    pub fn write_extra<P: Platform>(_: &Process<P>, _: u64, _: u64, _: &Saved) -> Result<(), BadFrame> {
+    pub fn write_extra<P: Platform>(
+        _: &Process<P>,
+        _: u64,
+        _: u64,
+        _: &Saved,
+    ) -> Result<(), BadFrame> {
         Ok(())
     }
 
     /// Nothing outside the frame.
-    pub fn read_extra<P: Platform>(_: &Process<P>, _: &[u8; READ], _: &mut Saved) -> Result<(), BadFrame> {
+    pub fn read_extra<P: Platform>(
+        _: &Process<P>,
+        _: &[u8; READ],
+        _: &mut Saved,
+    ) -> Result<(), BadFrame> {
         Ok(())
     }
 
@@ -711,7 +742,9 @@ pub mod signal_frame {
                 lo: word(frame, LO),
             },
             blocked: word(frame, SIGMASK),
-            alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE].try_into().unwrap(),
+            alternate_stack: frame[UCONTEXT + ucontext::STACK..][..STACK_SIZE]
+                .try_into()
+                .unwrap(),
             fp,
         })
     }
@@ -728,7 +761,6 @@ pub mod fault {
     use crate::linux::signal;
     use eggos_hal::{Exception, ExceptionKind};
 
-    /// `FPE_FLTINV`: an invalid floating-point operation.
     const FPE_FLTINV: i32 = 7;
 
     /// The signal, `si_code` and `si_addr` Linux gives `exception`, from `BadVAddr` for the
@@ -744,7 +776,9 @@ pub mod fault {
         let reported = match exception.kind {
             ExceptionKind::DataFault | ExceptionKind::InstructionFault => segv(address),
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, address),
-            ExceptionKind::Breakpoint | ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            ExceptionKind::Breakpoint | ExceptionKind::Debug => {
+                (signal::SIGTRAP, code::TRAP_BRKPT, pc)
+            }
             ExceptionKind::Arithmetic => (signal::SIGFPE, FPE_FLTINV, pc),
             ExceptionKind::IllegalInstruction
             | ExceptionKind::Segment

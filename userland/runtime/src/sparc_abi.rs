@@ -59,13 +59,12 @@ const DESCRIPTOR_FLAGS: FlagPairs = &[(0x4000, 0o4000), (0x40_0000, 0o2_000_000)
 const F_GETFL: usize = 3;
 const F_SETFL: usize = 4;
 
-/// SPARC's error numbers for the generic ones from 35 on, in the generic order (as the HAL's).
 const SPARC_ERRORS: [u16; 99] = [
-    78, 63, 79, 90, 66, 62, 0, 75, 77, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105,
-    106, 107, 108, 109, 72, 111, 73, 74, 80, 113, 71, 82, 83, 84, 85, 86, 87, 88, 76, 92, 115,
-    93, 89, 114, 112, 124, 123, 110, 122, 116, 91, 68, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 37, 36, 70, 117, 118, 119,
-    120, 121, 69, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+    78, 63, 79, 90, 66, 62, 0, 75, 77, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106,
+    107, 108, 109, 72, 111, 73, 74, 80, 113, 71, 82, 83, 84, 85, 86, 87, 88, 76, 92, 115, 93, 89,
+    114, 112, 124, 123, 110, 122, 116, 91, 68, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+    51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 65, 37, 36, 70, 117, 118, 119, 120, 121, 69,
+    125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
 ];
 
 /// The generic number of SPARC error `sparc`.
@@ -93,7 +92,10 @@ fn to_generic(value: usize, pairs: FlagPairs) -> usize {
 }
 
 fn value_to_sparc(value: usize, pairs: FlagPairs) -> usize {
-    pairs.iter().find(|&&(_, generic)| generic == value).map_or(value, |&(sparc, _)| sparc)
+    pairs
+        .iter()
+        .find(|&&(_, generic)| generic == value)
+        .map_or(value, |&(sparc, _)| sparc)
 }
 
 /// Call `number`'s arguments with SPARC's values for the generic ones; `rt_sigaction` gets
@@ -127,7 +129,9 @@ pub fn arguments_out(number: usize, mut arguments: [usize; 6]) -> [usize; 6] {
 /// Call `number`'s result in the generic values: `F_GETFL`'s flags.
 pub fn result_in(number: usize, arguments: [usize; 6], result: isize) -> isize {
     match number {
-        number::FCNTL if arguments[1] == F_GETFL && result >= 0 => to_generic(result as usize, OPEN_FLAGS) as isize,
+        number::FCNTL if arguments[1] == F_GETFL && result >= 0 => {
+            to_generic(result as usize, OPEN_FLAGS) as isize
+        }
         _ => result,
     }
 }

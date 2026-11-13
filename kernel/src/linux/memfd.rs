@@ -17,7 +17,6 @@
 //! lock is held: frames are copied into or out of the buffer under the lock, so none is freed
 //! under a copy.
 
-use eggos_hal::atomic::AtomicU64;
 use super::descriptors::{FileKind, OpenFile, open_file_limit, open_flag};
 use super::files::{PathBuffer, read_path};
 use super::thread::LinuxThread;
@@ -30,6 +29,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::Attributes;
 
@@ -80,7 +80,11 @@ pub const NAME_MAX: usize = 249;
 /// 32-bit kernel the pages its index can count (16 TiB, D495).
 pub const MAX_SIZE: u64 = {
     let pages = (usize::MAX as u64).saturating_mul(FRAME_SIZE);
-    if pages < i64::MAX as u64 { pages } else { i64::MAX as u64 }
+    if pages < i64::MAX as u64 {
+        pages
+    } else {
+        i64::MAX as u64
+    }
 };
 
 const PAGE: usize = FRAME_SIZE as usize;

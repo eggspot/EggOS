@@ -23,35 +23,35 @@
 
 mod acpi_bus;
 pub mod acpi_namespace;
+#[cfg(any(test, feature = "vendor-gpus"))]
+pub mod amd_display;
+#[cfg(any(test, feature = "apple-display"))]
+pub mod apple_display;
 mod channel_bus;
 pub mod dma;
+#[cfg(any(test, feature = "ethernet"))]
+pub mod ethernet;
 mod fdt_bus;
+#[cfg(any(test, feature = "i2c-hid"))]
+pub mod i2c;
+#[cfg(any(test, feature = "intel-display"))]
+pub mod intel_display;
+#[cfg(any(test, feature = "intel-wifi"))]
+pub mod intel_wifi;
 pub mod interrupts;
 pub mod message_interrupts;
 mod pci_bus;
 #[cfg(any(test, feature = "rtc"))]
 pub mod rtc;
 pub(crate) mod selftest;
+#[cfg(any(test, feature = "soc-display"))]
+pub mod soc_display;
 #[cfg(any(test, feature = "nvme", feature = "ahci"))]
 pub mod storage;
 #[cfg(any(test, feature = "xhci"))]
 pub mod usb;
-#[cfg(any(test, feature = "ethernet"))]
-pub mod ethernet;
-#[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
-pub mod intel_display;
-#[cfg(any(test, feature = "vendor-gpus"))]
-pub mod amd_display;
-#[cfg(any(test, feature = "apple-display"))]
-pub mod apple_display;
-#[cfg(any(test, feature = "soc-display"))]
-pub mod soc_display;
 #[cfg(any(test, feature = "vendor-gpus"))]
 pub mod vendor_gpus;
-#[cfg(any(test, feature = "intel-wifi"))]
-pub mod intel_wifi;
-#[cfg(any(test, feature = "i2c-hid"))]
-pub mod i2c;
 #[cfg(any(test, feature = "virtio"))]
 pub mod virtio;
 pub mod window;
@@ -306,7 +306,7 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &soc_display::QUALCOMM_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "vendor-gpus"))]
     &vendor_gpus::NVIDIA_DISPLAY_DRIVER,
-    #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
+    #[cfg(any(test, feature = "intel-display"))]
     &intel_display::INTEL_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "intel-wifi"))]
     &intel_wifi::INTEL_WIFI_DRIVER,
@@ -333,7 +333,7 @@ pub fn display_hardware_text() -> alloc::string::String {
 /// Starts loading the Intel display's firmware (D444), or AMD's display microcontroller's
 /// (D514), or NVIDIA's GSP-RM (D522), once the file systems are mounted.
 pub fn start_display_firmware<P: eggos_hal::Platform>() {
-    #[cfg(all(target_arch = "x86_64", any(test, feature = "intel-display")))]
+    #[cfg(any(test, feature = "intel-display"))]
     let _ = intel_display::start_firmware::<P>();
     #[cfg(any(test, feature = "vendor-gpus"))]
     let _ = amd_display::start_firmware::<P>();
@@ -347,7 +347,7 @@ pub fn start_display_firmware<P: eggos_hal::Platform>() {
     test,
     feature = "vendor-gpus",
     feature = "intel-wifi",
-    all(target_arch = "x86_64", feature = "intel-display")
+    feature = "intel-display"
 ))]
 pub(crate) fn read_firmware(path: &str, largest: u64) -> Option<alloc::vec::Vec<u8>> {
     let root = crate::vfs::root();

@@ -38,10 +38,6 @@ unsafe extern "efiapi" fn str_cmp_logical_w(a: *const u16, b: *const u16) -> i32
     }
 }
 
-/// The narrow text at `start` up to its NUL or `longest` bytes.
-///
-/// # Safety
-/// `start` must hold `longest` readable bytes, or a NUL before them.
 unsafe fn narrow_text<'a>(start: *const u8, longest: usize) -> &'a [u8] {
     let mut length = 0;
     // SAFETY: the caller's duty.
@@ -52,12 +48,6 @@ unsafe fn narrow_text<'a>(start: *const u8, longest: usize) -> &'a [u8] {
     unsafe { core::slice::from_raw_parts(start, length) }
 }
 
-/// The text of the `STRRET` at `record`, written into `out` as UTF-16: the units written, and
-/// for `STRRET_WSTR` the string, which the caller frees.
-///
-/// # Safety
-/// `record` must be a readable `STRRET`, and `list` the item list it came with when it is
-/// `STRRET_OFFSET`.
 unsafe fn str_ret_text(
     record: *const u8,
     list: *const u8,

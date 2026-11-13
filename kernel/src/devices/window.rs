@@ -60,13 +60,11 @@ fn map_as<P: Platform>(
     }
     let frames = region.covering_frames();
     let mut windows = WINDOWS.lock();
-    let reused = windows.mapped[..windows.count]
-        .iter()
-        .find(|window| {
-            window.memory_type == attributes.memory_type
-                && window.frames.start <= frames.start
-                && frames.end <= window.frames.end
-        });
+    let reused = windows.mapped[..windows.count].iter().find(|window| {
+        window.memory_type == attributes.memory_type
+            && window.frames.start <= frames.start
+            && frames.end <= window.frames.end
+    });
     if let Some(window) = reused {
         return Ok((window.virt + (region.start - window.frames.start)) as usize);
     }
@@ -88,9 +86,14 @@ fn map_as<P: Platform>(
     let mut allocator = FRAMES.lock();
     let allocator = allocator.as_mut().ok_or(MapError::OutOfMemory)?;
     windows.next = virt.saturating_add(frames.len());
-    memory
-        .page_tables
-        .map_window_as(&window, virt, frames.start, frames.len(), allocator, attributes)?;
+    memory.page_tables.map_window_as(
+        &window,
+        virt,
+        frames.start,
+        frames.len(),
+        allocator,
+        attributes,
+    )?;
     P::make_kernel_mappings_visible(virt as usize, frames.len() as usize);
     let count = windows.count;
     if let Some(slot) = windows.mapped.get_mut(count) {

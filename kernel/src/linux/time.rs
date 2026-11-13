@@ -12,7 +12,6 @@
 //! clocks wait for per-thread CPU time; until then they are invalid, as Linux's are for a
 //! process that does not exist, and `clock()` reports that it cannot tell.
 
-use eggos_hal::atomic::AtomicU64;
 use super::futex;
 use super::signals::{self, Interrupted};
 use super::thread::{self, LinuxThread};
@@ -22,6 +21,7 @@ use crate::sync::LeafSpinLock;
 use core::ops::ControlFlow;
 use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::time::{mul_div_ceil, ratio_ceil};
 use eggos_hal::user::UserContext;
 
@@ -45,14 +45,10 @@ pub const TIMER_ABSTIME: u64 = 1;
 
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
 
-/// The size of a `struct timespec` and of a `struct timeval`: two 64-bit fields.
 const TIMESPEC_SIZE: usize = 16;
 
-/// The first wall-clock second that may not be set, as on Linux: room for 30 years of uptime
-/// before the clock's nanoseconds overflow a signed 64-bit count.
 const UNSETTABLE_SECONDS_FROM: i64 = i64::MAX / NANOSECONDS_PER_SECOND as i64 - 30 * 365 * 86_400;
 
-/// The size of a `struct timezone`: two `int`s.
 const TIMEZONE_SIZE: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,8 +86,6 @@ fn clock(id: u64) -> Option<Clock> {
     Some(Clock { can_sleep, wall })
 }
 
-/// Nanoseconds per clock tick as a 32.32 fixed-point factor, rounded up, computed on first
-/// use; 0 until then.
 static NANOSECONDS_PER_TICK: AtomicU64 = AtomicU64::new(0);
 
 const HOST_TEST_PLATFORMS_HAVE_THEIR_OWN_CLOCKS: bool = cfg!(test);
@@ -117,14 +111,11 @@ pub fn monotonic_nanoseconds<P: Platform>() -> u64 {
     nanoseconds_at(P::clock_ticks(), nanoseconds_per_tick::<P>())
 }
 
-/// Clock tick `ticks` in nanoseconds, with `per_tick` from [`nanoseconds_per_tick`].
 fn nanoseconds_at(ticks: u64, per_tick: u64) -> u64 {
     let nanoseconds = (u128::from(ticks) * u128::from(per_tick)) >> 32;
     u64::try_from(nanoseconds).unwrap_or(u64::MAX)
 }
 
-/// The first clock tick whose nanoseconds ([`nanoseconds_at`]) reach `nanoseconds`: a
-/// deadline never early.
 fn first_tick_at(nanoseconds: u64, per_tick: u64) -> u64 {
     mul_div_ceil(nanoseconds, 1 << 32, per_tick)
 }
@@ -166,14 +157,6 @@ pub fn deadline_at<P: Platform>(
     })
 }
 
-/// Sleeps `thread`, the calling thread of `process`, until the monotonic clock reads
-/// `deadline` nanoseconds, never earlier, then sets the call's result, 0, and delivers what is
-/// due, as Linux does once the time is up, a signal due or not. Until then, a due signal
-/// interrupts the sleep: the time left is written to the `struct timespec` at `remaining`,
-/// if it is not `None` or null (`EFAULT` if it is not the program's writable memory, the
-/// sleep over), and the call fails with `EINTR` if a handler starts; if none does (the
-/// signals were discarded), the sleep goes on to its deadline, as Linux restarts it. Breaks
-/// when the process ends.
 fn sleep_until_nanoseconds<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -249,7 +232,6 @@ const RUSAGE_THREAD: i64 = 1;
 const W: usize = super::abi::WORD_BYTES;
 /// `struct rusage`: two `struct timeval`s and 14 `long`s, 18 words (D493).
 pub const RUSAGE_SIZE: usize = 18 * W;
-/// `struct tms`: four `clock_t`s.
 const TMS_SIZE: usize = 4 * W;
 const USER_HZ: u64 = 100;
 
@@ -563,8 +545,6 @@ fn clock_for_sleep<P: Platform>(
     }
 }
 
-/// The monotonic clock's nanoseconds once the duration in the `struct timespec` at `req` has
-/// passed from now, `u64::MAX` for one too long to count.
 fn deadline_after_request<P: Platform>(process: &Process<P>, req: u64) -> Result<u64, Errno> {
     let duration = poll::read_timeout(process, req)?.unwrap_or(u64::MAX);
     Ok(monotonic_nanoseconds::<P>().saturating_add(duration))

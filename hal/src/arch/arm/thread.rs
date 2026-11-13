@@ -24,7 +24,6 @@ eggos_thread_start:
 "#,
 );
 
-/// `r3` (padding) to `r11` and `lr`, as the switch pushes them, lowest address first.
 const FRAME_WORDS: usize = 10;
 const ENTRY: usize = 2;
 const ARGUMENT: usize = 3;

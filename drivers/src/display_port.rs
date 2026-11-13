@@ -107,15 +107,19 @@ fn status(link: &mut dyn Link) -> Result<([u8; 2], u8, [u8; 2]), TrainingError> 
 /// 0x1e): the drive it settled on.
 pub fn train(link: &mut dyn Link, lanes: usize, rate: u8) -> Result<Drive, TrainingError> {
     let lanes = lanes.clamp(1, 4);
-    let answered = link.write(dpcd::LINK_BW_SET, &[rate]) && link.write(dpcd::LANE_COUNT_SET, &[lanes as u8]);
+    let answered =
+        link.write(dpcd::LINK_BW_SET, &[rate]) && link.write(dpcd::LANE_COUNT_SET, &[lanes as u8]);
     if !answered {
         return Err(TrainingError::NoAnswer);
     }
     let mut drive = Drive::default();
     link.send_pattern(PATTERN_1);
-    link.write(dpcd::TRAINING_PATTERN_SET, &[PATTERN_1 | SCRAMBLING_DISABLED])
-        .then_some(())
-        .ok_or(TrainingError::NoAnswer)?;
+    link.write(
+        dpcd::TRAINING_PATTERN_SET,
+        &[PATTERN_1 | SCRAMBLING_DISABLED],
+    )
+    .then_some(())
+    .ok_or(TrainingError::NoAnswer)?;
     write_drive(link, drive, lanes)?;
     let mut tries = 0;
     loop {
@@ -137,9 +141,12 @@ pub fn train(link: &mut dyn Link, lanes: usize, rate: u8) -> Result<Drive, Train
         write_drive(link, drive, lanes)?;
     }
     link.send_pattern(PATTERN_2);
-    link.write(dpcd::TRAINING_PATTERN_SET, &[PATTERN_2 | SCRAMBLING_DISABLED])
-        .then_some(())
-        .ok_or(TrainingError::NoAnswer)?;
+    link.write(
+        dpcd::TRAINING_PATTERN_SET,
+        &[PATTERN_2 | SCRAMBLING_DISABLED],
+    )
+    .then_some(())
+    .ok_or(TrainingError::NoAnswer)?;
     for _ in 0..EQUALIZATION_TRIES {
         link.pause(400);
         let (lane_states, align, adjust) = status(link)?;
@@ -229,7 +236,10 @@ mod tests {
         assert_eq!(sink.patterns, [PATTERN_1, PATTERN_2, PATTERN_OFF]);
         assert_eq!(sink.registers[dpcd::LINK_BW_SET as usize], 0x14);
         assert_eq!(sink.registers[dpcd::LANE_COUNT_SET as usize], 4);
-        assert_eq!(sink.registers[dpcd::TRAINING_PATTERN_SET as usize], PATTERN_OFF);
+        assert_eq!(
+            sink.registers[dpcd::TRAINING_PATTERN_SET as usize],
+            PATTERN_OFF
+        );
     }
 
     #[test]

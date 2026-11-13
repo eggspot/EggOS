@@ -16,9 +16,9 @@ use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, message, methods, sel, send, send1};
+use eggos_image::Limits;
 use eggos_macos_gui::geometry::{Frame, Point, Size, pixel_rect, round};
 use eggos_macos_gui::image_view::{self as geometry, faded, fits, frame_style, premultiplied};
-use eggos_image::Limits;
 use eggos_toolkit::colour;
 use eggos_toolkit::geometry::Rect;
 
@@ -75,7 +75,10 @@ fn decode_image(bytes: &[u8], out: &mut Buffer<u32>) -> Option<(u32, u32)> {
     if !fits(decoded.width, decoded.height) || !out.reserve(decoded.pixels.len()) {
         return None;
     }
-    let complete = decoded.pixels.iter().all(|&pixel| out.push(premultiplied(pixel)));
+    let complete = decoded
+        .pixels
+        .iter()
+        .all(|&pixel| out.push(premultiplied(pixel)));
     complete.then_some((decoded.width, decoded.height))
 }
 
@@ -156,7 +159,10 @@ extern "C" fn init_with_size(this: Id, _: Sel, size: Size) -> Id {
     if this.is_null() {
         return this;
     }
-    let (width, height) = (round(size.width).max(0) as u32, round(size.height).max(0) as u32);
+    let (width, height) = (
+        round(size.width).max(0) as u32,
+        round(size.height).max(0) as u32,
+    );
     if !fits(width, height) {
         return this;
     }
@@ -233,7 +239,11 @@ fn image_from_resources(name: Id) -> Id {
                 if object.is_null() {
                     return core::ptr::null_mut();
                 }
-                let made = init_with_contents_of_file(object, sel!("initWithContentsOfFile:"), string(text));
+                let made = init_with_contents_of_file(
+                    object,
+                    sel!("initWithContentsOfFile:"),
+                    string(text),
+                );
                 if !made.is_null() {
                     return made;
                 }
@@ -306,7 +316,11 @@ fn draw_scaled(this: Id, rect: Frame, from: Frame, operation: usize, fraction: f
     let fields = image(this);
     let pixels = fields.pixels.as_slice();
     let width = fields.width as usize;
-    let mut drawn = match size == (crop.width, crop.height) && crop.x == 0 && crop.y == 0 && crop.width as usize == width {
+    let mut drawn = match size == (crop.width, crop.height)
+        && crop.x == 0
+        && crop.y == 0
+        && crop.width as usize == width
+    {
         true => {
             let rows = crop.height as usize;
             pixels[..rows * width].to_vec()
@@ -328,13 +342,32 @@ fn draw_scaled(this: Id, rect: Frame, from: Frame, operation: usize, fraction: f
     });
 }
 
-extern "C" fn draw_at_point(this: Id, _: Sel, point: Point, from: Frame, operation: usize, fraction: f64) {
+extern "C" fn draw_at_point(
+    this: Id,
+    _: Sel,
+    point: Point,
+    from: Frame,
+    operation: usize,
+    fraction: f64,
+) {
     let crop = crop_of(this, from);
-    let rect = Frame::new(point.x, point.y, f64::from(crop.width), f64::from(crop.height));
+    let rect = Frame::new(
+        point.x,
+        point.y,
+        f64::from(crop.width),
+        f64::from(crop.height),
+    );
     draw_scaled(this, rect, from, operation, fraction);
 }
 
-extern "C" fn draw_in_rect_from(this: Id, _: Sel, rect: Frame, from: Frame, operation: usize, fraction: f64) {
+extern "C" fn draw_in_rect_from(
+    this: Id,
+    _: Sel,
+    rect: Frame,
+    from: Frame,
+    operation: usize,
+    fraction: f64,
+) {
     draw_scaled(this, rect, from, operation, fraction);
 }
 
@@ -355,7 +388,11 @@ pub fn size_of(object: Id) -> Option<(u32, u32)> {
 /// an image with no pixels.
 pub fn with_pixels<R>(object: Id, work: impl FnOnce(&[u32], usize, usize) -> R) -> Option<R> {
     let (width, height) = size_of(object)?;
-    Some(work(image(object).pixels.as_slice(), width as usize, height as usize))
+    Some(work(
+        image(object).pixels.as_slice(),
+        width as usize,
+        height as usize,
+    ))
 }
 
 /// What agents call image `object`: its name, else its file's name without folder or
@@ -472,7 +509,10 @@ extern "C" fn view_draw_rect(this: Id, _: Sel, _: Frame) {
     let shown = image_view(this).image;
     let mut placed = None;
     drawing::with_canvas(|canvas, height, origin, _, _| {
-        let outer = pixel_rect(Frame::new(origin.x, origin.y, frame.width, frame.height), height);
+        let outer = pixel_rect(
+            Frame::new(origin.x, origin.y, frame.width, frame.height),
+            height,
+        );
         if style != frame_style::NONE {
             let line = match geometry::is_filled(style) {
                 true => colour::BUTTON_BORDER,

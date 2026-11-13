@@ -45,8 +45,6 @@ pub struct Key {
 }
 
 impl Key {
-    /// What [`interrupt`] leaves in the link of a waiter it unlinked: an address no word of 4
-    /// bytes has, in no address space.
     const INTERRUPTED: Self = Self {
         space_and_kind: u64::MAX,
         address: u64::MAX,
@@ -176,7 +174,6 @@ impl Bucket {
         self.append(waiter);
     }
 
-    /// Links `waiter`, built with its link unqueued, with no next waiter and its key, last.
     fn push_back_new(&mut self, waiter: NonNull<Waiter>) {
         self.link(waiter).queued = true;
         self.append(waiter);
@@ -514,7 +511,6 @@ pub fn futex<P: Platform>(
     signals::deliver_sent(process, thread, context)
 }
 
-/// One `futex` call's arguments, decoded.
 #[derive(Debug, Clone, Copy)]
 struct Call {
     address: u64,
@@ -528,9 +524,6 @@ struct Call {
 }
 
 impl Call {
-    /// Runs the call, a wait ending at `deadline`, for `thread` of `process`: `EINTR` when
-    /// the wait was interrupted ([`interrupt`]) or a signal was sent before it began, after
-    /// `EAGAIN` and `ETIMEDOUT`, as Linux checks the word, then the time, then signals.
     fn run<P: Platform>(
         self,
         process: &Process<P>,
@@ -685,8 +678,6 @@ fn release_robust_lock<P: Platform>(
     Ok(())
 }
 
-/// `N` pointers or `long`s at `address`, each a word of the program's width (D493), the
-/// signed ones sign-extended so offsets below an entry stay negative.
 fn read_user_words<P: Platform, const N: usize>(
     process: &Process<P>,
     address: u64,

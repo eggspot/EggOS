@@ -281,9 +281,7 @@ struct ListState {
     pressed: Option<(i32, i32)>,
     last_down: Option<(u32, i32, i32, usize)>,
     drag: Option<Drag>,
-    /// The edit over the label being edited (D354) and the item's index.
     editing: Option<(usize, usize)>,
-    /// The tooltip control of `LVS_EX_INFOTIP` (D362), 0 for none.
     tips: usize,
 }
 
@@ -394,7 +392,6 @@ const CDIS_FOCUS: u32 = 0x10;
 const CLR_DEFAULT: u32 = 0xff00_0000;
 const MOST_CUSTOM_ROWS: usize = 64;
 
-/// `NMCUSTOMDRAW`.
 #[repr(C)]
 struct NmCustomDraw {
     header: NotifyHeader,
@@ -406,7 +403,6 @@ struct NmCustomDraw {
     item_lparam: usize,
 }
 
-/// `NMLVCUSTOMDRAW`.
 #[repr(C)]
 struct NmListCustomDraw {
     draw: NmCustomDraw,
@@ -431,7 +427,6 @@ struct VisibleRow {
     lparam: usize,
 }
 
-/// What the parent asked, by custom draw, for the rows this paint shows (D353).
 struct CustomRows {
     rows: [VisibleRow; MOST_CUSTOM_ROWS],
     draws: [model::RowDraw; MOST_CUSTOM_ROWS],
@@ -515,9 +510,6 @@ fn visible_rows(window: usize, out: &mut [VisibleRow; MOST_CUSTOM_ROWS]) -> (usi
     .unwrap_or((0, [0; 4]))
 }
 
-/// Custom draw's first half, before the list paints: `CDDS_PREPAINT`, then, when the parent
-/// asks, `CDDS_ITEMPREPAINT` for each row shown, whose colours and `CDRF_SKIPDEFAULT` the
-/// paint follows.
 fn custom_rows(window: usize, hdc: usize) -> CustomRows {
     let mut custom = CustomRows {
         rows: [VisibleRow::default(); MOST_CUSTOM_ROWS],
@@ -552,8 +544,6 @@ fn custom_rows(window: usize, hdc: usize) -> CustomRows {
     custom
 }
 
-/// Custom draw's second half, after the list painted: `CDDS_ITEMPOSTPAINT` for the rows that
-/// asked, then `CDDS_POSTPAINT` when the first answer asked.
 fn custom_after(window: usize, hdc: usize, custom: &CustomRows) {
     for at in 0..custom.count {
         if custom.after[at] {
@@ -1329,8 +1319,6 @@ const IMAGE_CALLBACK: i32 = -1;
 const CALLBACK_MARK: [u16; 1] = [0xffff];
 const ASKED_UNITS: usize = 260;
 
-/// A row's text the program gives when asked (`LPSTR_TEXTCALLBACKW`, D403) is kept as this
-/// mark, which no text holds; readers see it as empty.
 fn cell_text(list: &ListView, index: usize, column: usize) -> &[u16] {
     match list.text(index, column) {
         text if text == CALLBACK_MARK => &[],
@@ -1338,11 +1326,6 @@ fn cell_text(list: &ListView, index: usize, column: usize) -> &[u16] {
     }
 }
 
-/// The text an item message's `pszText` gives the list: the callback mark for
-/// `LPSTR_TEXTCALLBACKW`.
-///
-/// # Safety
-/// As [`text_at`].
 unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
     match pointer {
         TEXT_CALLBACK => &CALLBACK_MARK,
@@ -1351,8 +1334,6 @@ unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
     }
 }
 
-/// A callback cell's text or image as the parent answered `LVN_GETDISPINFOW` for one paint;
-/// `keep` when it asked the list to keep it (`LVIF_DI_SETITEM`).
 struct Asked {
     row: usize,
     column: usize,
@@ -1390,8 +1371,8 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
             (true, false) => LVIF_TEXT,
             _ => LVIF_IMAGE,
         };
-        let (_, answer) = super::notify_parent_keeping(window, LVN_GETDISPINFOW, |header| {
-            NmListDisplayInfo {
+        let (_, answer) =
+            super::notify_parent_keeping(window, LVN_GETDISPINFOW, |header| NmListDisplayInfo {
                 header,
                 item: ItemHead {
                     mask,
@@ -1404,14 +1385,16 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
                     image: 0,
                     lparam,
                 },
-            }
-        });
+            });
         let Some(answer) = answer else {
             break;
         };
         let given = text.then(|| match answer.item.text {
             pointer if pointer == place => {
-                let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(ASKED_UNITS);
+                let end = buffer
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .unwrap_or(ASKED_UNITS);
                 buffer[..end].to_vec()
             }
             // SAFETY: the parent pointed `pszText` at its own NUL-terminated text.
@@ -1428,8 +1411,6 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
     asked
 }
 
-/// Puts the asked texts and images into the list for a paint (`shown`), or the callback marks
-/// back after it, but for those the parent asked the list to keep.
 fn swap_asked(window: usize, asked: &[Asked], shown: bool) {
     if asked.is_empty() {
         return;
@@ -1438,11 +1419,17 @@ fn swap_asked(window: usize, asked: &[Asked], shown: bool) {
         for one in asked {
             let given = shown || one.keep;
             if let Some(text) = &one.text {
-                let units = if given { text.as_slice() } else { &CALLBACK_MARK[..] };
+                let units = if given {
+                    text.as_slice()
+                } else {
+                    &CALLBACK_MARK[..]
+                };
                 control.list.set_text(one.row, one.column, units);
             }
             if let Some(image) = one.image {
-                control.list.set_image(one.row, if given { image } else { IMAGE_CALLBACK });
+                control
+                    .list
+                    .set_image(one.row, if given { image } else { IMAGE_CALLBACK });
             }
         }
     });
@@ -2328,7 +2315,6 @@ const VK_RETURN: usize = 0x0d;
 const VK_ESCAPE: usize = 0x1b;
 const VK_F2: u32 = 0x71;
 
-/// `NMLVDISPINFOW`.
 #[repr(C)]
 struct NmListDisplayInfo {
     header: NotifyHeader,
@@ -2349,8 +2335,6 @@ fn label_item(control: &ListState, index: usize, text: usize) -> ItemHead {
     }
 }
 
-/// `LVM_EDITLABELW`: an edit over item `index`'s label (D354), once the parent's
-/// `LVN_BEGINLABELEDITW` lets it, focused with its text selected; its handle, 0 when refused.
 fn begin_label_edit(window: usize, index: usize) -> usize {
     end_label_edit(window, true);
     let mut label = [0u16; LABEL_UNITS + 1];
@@ -2392,13 +2376,15 @@ fn begin_label_edit(window: usize, index: usize) -> usize {
     };
     with_state::<ListState, _>(window, |_, control| control.editing = Some((editor, index)));
     set_focus(editor);
-    gui::send(editor, super::super::controls::code::EM_SETSEL, 0, usize::MAX);
+    gui::send(
+        editor,
+        super::super::controls::code::EM_SETSEL,
+        0,
+        usize::MAX,
+    );
     editor
 }
 
-/// Ends the label edit of list view `window`, if one runs: `LVN_ENDLABELEDITW` with the
-/// edit's text when `accept` (Enter, or the focus leaving), none when cancelled (Escape); the
-/// parent's nonzero answer to an accepted edit sets the label. The edit is destroyed.
 fn end_label_edit(window: usize, accept: bool) {
     let editing = with_state::<ListState, _>(window, |_, control| control.editing.take()).flatten();
     let Some((editor, index)) = editing else {
@@ -2480,7 +2466,6 @@ const TTN_GETDISPINFOW: u32 = -530i32 as u32;
 const INFO_TIP_UNITS: usize = 1024;
 const SHOWN_TIP_UNITS: usize = 79;
 
-/// A list view given `LVS_EX_INFOTIP` makes its tooltip control (D362), once.
 fn make_info_tips(window: usize) {
     let wanted = with_state::<ListState, _>(window, |_, control| {
         control.list.extended & LVS_EX_INFOTIP != 0 && control.tips == 0
@@ -2495,8 +2480,6 @@ fn make_info_tips(window: usize) {
     }
 }
 
-/// One callback tool per shown row of an info-tip list view, named by the row's index, kept as
-/// the rows move (before each paint).
 fn sync_info_tips(window: usize) {
     let tips = with_state::<ListState, _>(window, |_, control| control.tips).unwrap_or(0);
     if tips == 0 {
@@ -2523,7 +2506,6 @@ fn is_from_tips(window: usize, lparam: usize) -> bool {
             .unwrap_or(false)
 }
 
-/// `NMLVGETINFOTIPW`.
 #[repr(C)]
 struct GetInfoTip {
     header: NotifyHeader,
@@ -2535,8 +2517,6 @@ struct GetInfoTip {
     lparam: usize,
 }
 
-/// The tip of the row the tooltip asks about (D362): `LVN_GETINFOTIPW` to the parent with a
-/// 1024-unit buffer holding the row's text, whose answer the tip shows (an empty answer, none).
 fn info_tip(window: usize, lparam: usize) {
     let info = lparam as *mut super::tooltip::DisplayInfo;
     // SAFETY: the tooltip control's own `NMTTDISPINFOW`, alive for this call.
@@ -2563,7 +2543,10 @@ fn info_tip(window: usize, lparam: usize) {
         sub_item: 0,
         lparam: row_lparam,
     });
-    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(INFO_TIP_UNITS);
+    let length = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(INFO_TIP_UNITS);
     let shown = length.min(SHOWN_TIP_UNITS);
     // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
     unsafe {

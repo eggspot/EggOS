@@ -2,8 +2,8 @@
 //! Ethernet Controller I225 datasheet; D240).
 
 use super::{
-    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS, TRANSMIT_RING,
-    buffer_address, is_valid_mac, put_frame, take_frame,
+    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS,
+    TRANSMIT_RING, buffer_address, is_valid_mac, put_frame, take_frame,
 };
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
@@ -60,8 +60,19 @@ const MULTICAST_TABLE_WORDS: usize = 128;
 pub fn is_igc(device: u16) -> bool {
     matches!(
         device,
-        0x15f2 | 0x15f3 | 0x15fd | 0x0d9f | 0x3100 | 0x3101 | 0x3102 | 0x5502 | 0x5503 | 0x125b
-            | 0x125c | 0x125d | 0x125f
+        0x15f2
+            | 0x15f3
+            | 0x15fd
+            | 0x0d9f
+            | 0x3100
+            | 0x3101
+            | 0x3102
+            | 0x5502
+            | 0x5503
+            | 0x125b
+            | 0x125c
+            | 0x125d
+            | 0x125f
     )
 }
 
@@ -78,9 +89,16 @@ pub struct Igc<R: RegisterIo, M: DmaMemory> {
 
 impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
     /// Resets the adapter at `regs` and starts queue 0 with its rings in `memory`.
-    pub fn new(regs: R, memory: M, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Self, (Error, M)> {
+    pub fn new(
+        regs: R,
+        memory: M,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, (Error, M)> {
         if memory.len() < super::MEMORY_BYTES {
-            return Err((Error::Unsupported("too little DMA memory for a network adapter"), memory));
+            return Err((
+                Error::Unsupported("too little DMA memory for a network adapter"),
+                memory,
+            ));
         }
         regs.write32(IMC, u32::MAX);
         regs.write32(EIMC, u32::MAX);
@@ -118,12 +136,18 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
     fn start(&mut self, keep_waiting: &mut dyn FnMut() -> bool) {
         let low = u32::from_le_bytes([self.mac[0], self.mac[1], self.mac[2], self.mac[3]]);
         self.regs.write32(RAL, low);
-        self.regs
-            .write32(RAH, u32::from(u16::from_le_bytes([self.mac[4], self.mac[5]])) | RAH_VALID);
+        self.regs.write32(
+            RAH,
+            u32::from(u16::from_le_bytes([self.mac[4], self.mac[5]])) | RAH_VALID,
+        );
         for word in 0..MULTICAST_TABLE_WORDS {
             self.regs.write32(MTA + word * 4, 0);
         }
-        zero(&self.memory, RECEIVE_RING, TRANSMIT_RING + RING_ENTRIES * DESCRIPTOR_BYTES - RECEIVE_RING);
+        zero(
+            &self.memory,
+            RECEIVE_RING,
+            TRANSMIT_RING + RING_ENTRIES * DESCRIPTOR_BYTES - RECEIVE_RING,
+        );
         for index in 0..RING_ENTRIES {
             self.give_receive_buffer(index);
         }
@@ -140,7 +164,8 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
         self.regs.write32(RXDCTL, QUEUE_ENABLE);
         wait_enabled(&self.regs, RXDCTL, keep_waiting);
         self.regs.write32(RDT, (RING_ENTRIES - 1) as u32);
-        self.regs.write32(RCTL, RCTL_ENABLE | RCTL_BROADCAST | RCTL_STRIP_CRC);
+        self.regs
+            .write32(RCTL, RCTL_ENABLE | RCTL_BROADCAST | RCTL_STRIP_CRC);
         let transmit = base + TRANSMIT_RING as u64;
         self.regs.write32(TXDCTL, 0);
         self.regs.write32(TDBAL, transmit as u32);
@@ -157,7 +182,11 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
 
     fn give_receive_buffer(&self, index: usize) {
         let descriptor = RECEIVE_RING + index * DESCRIPTOR_BYTES;
-        write64(&self.memory, descriptor, buffer_address(&self.memory, RECEIVE_BUFFERS, index));
+        write64(
+            &self.memory,
+            descriptor,
+            buffer_address(&self.memory, RECEIVE_BUFFERS, index),
+        );
         write64(&self.memory, descriptor + 8, 0);
     }
 
@@ -180,7 +209,9 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
             fence(Ordering::SeqCst);
             let length = (read32(&self.memory, descriptor + 12) & 0xffff) as usize;
             let complete = status & END_OF_PACKET != 0 && status & RECEIVE_ERRORS == 0;
-            let taken = complete.then(|| take_frame(&self.memory, index, length.min(BUFFER_BYTES), frame)).flatten();
+            let taken = complete
+                .then(|| take_frame(&self.memory, index, length.min(BUFFER_BYTES), frame))
+                .flatten();
             self.give_receive_buffer(index);
             fence(Ordering::SeqCst);
             self.regs.write32(RDT, index as u32);
@@ -194,16 +225,26 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), Error> {
         let index = self.transmit_next;
         let descriptor = TRANSMIT_RING + index * DESCRIPTOR_BYTES;
-        if self.transmit_used[index] && read32(&self.memory, descriptor + 12) & DESCRIPTOR_DONE == 0 {
+        if self.transmit_used[index] && read32(&self.memory, descriptor + 12) & DESCRIPTOR_DONE == 0
+        {
             return Err(Error::QueueFull);
         }
         put_frame(&self.memory, index, frame)?;
         let length = frame.len() as u32;
-        write64(&self.memory, descriptor, buffer_address(&self.memory, TRANSMIT_BUFFERS, index));
+        write64(
+            &self.memory,
+            descriptor,
+            buffer_address(&self.memory, TRANSMIT_BUFFERS, index),
+        );
         write32(
             &self.memory,
             descriptor + 8,
-            length | DATA_DESCRIPTOR | COMMAND_END_OF_PACKET | COMMAND_INSERT_CRC | COMMAND_REPORT_STATUS | COMMAND_EXTENDED,
+            length
+                | DATA_DESCRIPTOR
+                | COMMAND_END_OF_PACKET
+                | COMMAND_INSERT_CRC
+                | COMMAND_REPORT_STATUS
+                | COMMAND_EXTENDED,
         );
         write32(&self.memory, descriptor + 12, length << PAYLOAD_SHIFT);
         self.transmit_used[index] = true;

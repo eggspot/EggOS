@@ -104,7 +104,9 @@ impl JoinError {
             JoinError::Refused(_) => "the Wi-Fi firmware refused the network's station",
             JoinError::NoMemory => "no memory for the Wi-Fi transmit queue",
             JoinError::BadFrame => "a Wi-Fi frame was too large",
-            JoinError::UnsupportedFirmware => "the Wi-Fi firmware's context commands are not ones the driver sends",
+            JoinError::UnsupportedFirmware => {
+                "the Wi-Fi firmware's context commands are not ones the driver sends"
+            }
         }
     }
 }
@@ -137,7 +139,9 @@ fn put32(bytes: &mut [u8], at: usize, value: u32) {
 }
 
 fn status_of(answer: &[u8]) -> u32 {
-    answer.get(..4).map_or(0, |bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    answer.get(..4).map_or(0, |bytes| {
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    })
 }
 
 fn lmac(channel: &Channel, firmware: &Firmware) -> u32 {
@@ -181,7 +185,12 @@ pub fn phy_context(channel: &Channel, firmware: &Firmware, action: u32) -> alloc
     command
 }
 
-fn mac_context(link_address: [u8; 6], target: &Target, action: u32, association: Option<u16>) -> alloc::vec::Vec<u8> {
+fn mac_context(
+    link_address: [u8; 6],
+    target: &Target,
+    action: u32,
+    association: Option<u16>,
+) -> alloc::vec::Vec<u8> {
     let mut command = alloc::vec![0u8; 148];
     put32(&mut command, 4, action);
     put32(&mut command, 8, MAC_TYPE_BSS_STATION);
@@ -194,10 +203,22 @@ fn mac_context(link_address: [u8; 6], target: &Target, action: u32, association:
     put32(&mut command, 52, filters);
     let station = 100;
     put32(&mut command, station, u32::from(association.is_some()));
-    put32(&mut command, station + 16, u32::from(target.beacon_interval));
-    put32(&mut command, station + 24, u32::from(target.beacon_interval));
+    put32(
+        &mut command,
+        station + 16,
+        u32::from(target.beacon_interval),
+    );
+    put32(
+        &mut command,
+        station + 24,
+        u32::from(target.beacon_interval),
+    );
     put32(&mut command, station + 32, 10);
-    put32(&mut command, station + 36, u32::from(association.unwrap_or(0) & 0x3fff));
+    put32(
+        &mut command,
+        station + 36,
+        u32::from(association.unwrap_or(0) & 0x3fff),
+    );
     command
 }
 
@@ -234,22 +255,40 @@ pub fn join<R: RegisterIo, M: DmaMemory, A: DmaAllocator<Memory = M>>(
     allocator: &mut A,
     wait: &mut dyn Wait,
 ) -> Result<Link<M>, JoinError> {
-    if !matches!(firmware.command_version(LONG_GROUP, PHY_CONTEXT), None | Some(3) | Some(4)) {
+    if !matches!(
+        firmware.command_version(LONG_GROUP, PHY_CONTEXT),
+        None | Some(3) | Some(4)
+    ) {
         return Err(JoinError::UnsupportedFirmware);
     }
-    transport.send_command(LEGACY_GROUP, PHY_CONTEXT, &phy_context(&target.channel, firmware, ACTION_ADD), wait)?;
+    transport.send_command(
+        LEGACY_GROUP,
+        PHY_CONTEXT,
+        &phy_context(&target.channel, firmware, ACTION_ADD),
+        wait,
+    )?;
     if firmware.command_version(DATA_PATH_GROUP, RLC_CONFIG) == Some(2) {
         let mut rlc = [0u8; 32];
         put32(&mut rlc, 4, rx_chain_info(firmware));
         transport.send_command(DATA_PATH_GROUP, RLC_CONFIG, &rlc, wait)?;
     }
-    transport.send_command(LEGACY_GROUP, MAC_CONTEXT, &mac_context(address, &target, ACTION_ADD, None), wait)?;
+    transport.send_command(
+        LEGACY_GROUP,
+        MAC_CONTEXT,
+        &mac_context(address, &target, ACTION_ADD, None),
+        wait,
+    )?;
     let bound = binding(&target.channel, firmware, ACTION_ADD);
     let status = status_of(&transport.send_command(LEGACY_GROUP, BINDING_CONTEXT, &bound, wait)?);
     if status != 0 {
         return Err(JoinError::Refused(status));
     }
-    let status = status_of(&transport.send_command(LEGACY_GROUP, ADD_STATION, &add_station(&target, false), wait)?);
+    let status = status_of(&transport.send_command(
+        LEGACY_GROUP,
+        ADD_STATION,
+        &add_station(&target, false),
+        wait,
+    )?);
     if status & 0xff != ADD_STATION_SUCCESS {
         return Err(JoinError::Refused(status));
     }
@@ -261,7 +300,11 @@ pub fn join<R: RegisterIo, M: DmaMemory, A: DmaAllocator<Memory = M>>(
             put32(&mut config, 4, 1 << STATION_ID);
             config[8] = MANAGEMENT_TID;
             put32(&mut config, 16, QUEUE_SIZE_CODE);
-            put(&mut config, 20, &(base + QUEUE_BYTE_COUNTS as u64).to_le_bytes());
+            put(
+                &mut config,
+                20,
+                &(base + QUEUE_BYTE_COUNTS as u64).to_le_bytes(),
+            );
             put(&mut config, 28, &(base + QUEUE_TFDS as u64).to_le_bytes());
             transport.send_command(DATA_PATH_GROUP, SCD_QUEUE_CONFIG, &config[..36], wait)?
         }
@@ -270,12 +313,20 @@ pub fn join<R: RegisterIo, M: DmaMemory, A: DmaAllocator<Memory = M>>(
             config[1] = MANAGEMENT_TID;
             put(&mut config, 2, &QUEUE_ENABLE.to_le_bytes());
             put32(&mut config, 4, QUEUE_SIZE_CODE);
-            put(&mut config, 8, &(base + QUEUE_BYTE_COUNTS as u64).to_le_bytes());
+            put(
+                &mut config,
+                8,
+                &(base + QUEUE_BYTE_COUNTS as u64).to_le_bytes(),
+            );
             put(&mut config, 16, &(base + QUEUE_TFDS as u64).to_le_bytes());
             transport.send_command(LEGACY_GROUP, TX_QUEUE_CONFIG, &config[..24], wait)?
         }
     };
-    if answer.get(..2).map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])) != Some(u16::from(MANAGEMENT_QUEUE)) {
+    if answer
+        .get(..2)
+        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        != Some(u16::from(MANAGEMENT_QUEUE))
+    {
         return Err(JoinError::Refused(status_of(&answer)));
     }
     let duration = match target.beacon_interval {
@@ -306,7 +357,12 @@ pub fn associated<R: RegisterIo, M: DmaMemory>(
 ) -> Result<(), JoinError> {
     let command = mac_context(link.address, &link.target, ACTION_MODIFY, Some(association));
     transport.send_command(LEGACY_GROUP, MAC_CONTEXT, &command, wait)?;
-    let status = status_of(&transport.send_command(LEGACY_GROUP, ADD_STATION, &add_station(&link.target, true), wait)?);
+    let status = status_of(&transport.send_command(
+        LEGACY_GROUP,
+        ADD_STATION,
+        &add_station(&link.target, true),
+        wait,
+    )?);
     match status & 0xff {
         ADD_STATION_SUCCESS => Ok(()),
         _ => Err(JoinError::Refused(status)),
@@ -352,7 +408,12 @@ pub fn leave<R: RegisterIo, M: DmaMemory>(
     transport.send_command(LEGACY_GROUP, BINDING_CONTEXT, &unbound, wait)?;
     let mac = mac_context(link.address, &link.target, ACTION_REMOVE, None);
     transport.send_command(LEGACY_GROUP, MAC_CONTEXT, &mac, wait)?;
-    transport.send_command(LEGACY_GROUP, PHY_CONTEXT, &phy_context(&link.target.channel, firmware, ACTION_REMOVE), wait)?;
+    transport.send_command(
+        LEGACY_GROUP,
+        PHY_CONTEXT,
+        &phy_context(&link.target.channel, firmware, ACTION_REMOVE),
+        wait,
+    )?;
     drop(link);
     Ok(())
 }
@@ -368,7 +429,11 @@ fn header_bytes(frame: &[u8]) -> usize {
 impl<M: DmaMemory> Link<M> {
     /// Sends the 802.11 `frame` through the management queue, unencrypted, the firmware
     /// choosing its rate.
-    pub fn send<R: RegisterIo>(&mut self, transport: &Transport<R, M>, frame: &[u8]) -> Result<(), JoinError> {
+    pub fn send<R: RegisterIo>(
+        &mut self,
+        transport: &Transport<R, M>,
+        frame: &[u8],
+    ) -> Result<(), JoinError> {
         if frame.len() < 24 {
             return Err(JoinError::BadFrame);
         }
@@ -379,7 +444,8 @@ impl<M: DmaMemory> Link<M> {
         }
         let slot = self.next;
         let pad = (4 - header % 4) % 4;
-        let offload = (((header / 2) as u32 & OFFLOAD_HEADER_MASK) << OFFLOAD_HEADER_SHIFT) | if pad != 0 { OFFLOAD_PAD } else { 0 };
+        let offload = (((header / 2) as u32 & OFFLOAD_HEADER_MASK) << OFFLOAD_HEADER_SHIFT)
+            | if pad != 0 { OFFLOAD_PAD } else { 0 };
         let mut command = [0u8; COMMAND_SLOT_BYTES];
         command[0] = TX_COMMAND;
         command[2] = slot as u8;
@@ -388,7 +454,11 @@ impl<M: DmaMemory> Link<M> {
         let tx_bytes = match self.ax210 {
             true => {
                 put(&mut command, tx, &(frame.len() as u16).to_le_bytes());
-                put(&mut command, tx + 2, &(TX_ENCRYPTION_OFF as u16).to_le_bytes());
+                put(
+                    &mut command,
+                    tx + 2,
+                    &(TX_ENCRYPTION_OFF as u16).to_le_bytes(),
+                );
                 put32(&mut command, tx + 4, offload);
                 TX_COMMAND_GEN3_BYTES
             }
@@ -409,12 +479,32 @@ impl<M: DmaMemory> Link<M> {
         let tbs: u16 = if body.is_empty() { 2 } else { 3 };
         put(&mut descriptor, 0, &tbs.to_le_bytes());
         put(&mut descriptor, 2, &(FIRST_TB_BYTES as u16).to_le_bytes());
-        put(&mut descriptor, 4, &(base + command_at as u64).to_le_bytes());
-        put(&mut descriptor, 2 + TB_BYTES, &((command_bytes - FIRST_TB_BYTES) as u16).to_le_bytes());
-        put(&mut descriptor, 4 + TB_BYTES, &(base + (command_at + FIRST_TB_BYTES) as u64).to_le_bytes());
+        put(
+            &mut descriptor,
+            4,
+            &(base + command_at as u64).to_le_bytes(),
+        );
+        put(
+            &mut descriptor,
+            2 + TB_BYTES,
+            &((command_bytes - FIRST_TB_BYTES) as u16).to_le_bytes(),
+        );
+        put(
+            &mut descriptor,
+            4 + TB_BYTES,
+            &(base + (command_at + FIRST_TB_BYTES) as u64).to_le_bytes(),
+        );
         if !body.is_empty() {
-            put(&mut descriptor, 2 + 2 * TB_BYTES, &(body.len() as u16).to_le_bytes());
-            put(&mut descriptor, 4 + 2 * TB_BYTES, &(base + payload_at as u64).to_le_bytes());
+            put(
+                &mut descriptor,
+                2 + 2 * TB_BYTES,
+                &(body.len() as u16).to_le_bytes(),
+            );
+            put(
+                &mut descriptor,
+                4 + 2 * TB_BYTES,
+                &(base + payload_at as u64).to_le_bytes(),
+            );
         }
         let fetched = 2 + usize::from(tbs) * TB_BYTES;
         let chunks = fetched.div_ceil(64) as u16 - 1;
@@ -433,7 +523,9 @@ impl<M: DmaMemory> Link<M> {
             false => QUEUE_SLOTS,
         };
         self.hardware = (self.hardware + 1) % size;
-        transport.ring_doorbell((u32::from(MANAGEMENT_QUEUE) << HBUS_WRITE_POINTER_QUEUE_SHIFT) | self.hardware as u32);
+        transport.ring_doorbell(
+            (u32::from(MANAGEMENT_QUEUE) << HBUS_WRITE_POINTER_QUEUE_SHIFT) | self.hardware as u32,
+        );
         Ok(())
     }
 
@@ -441,7 +533,13 @@ impl<M: DmaMemory> Link<M> {
         assert!(at + bytes.len() <= self.queue.len());
         // SAFETY: the range lies inside the queue's block (checked), which this link owns; the
         // device reads the slot only after the doorbell that follows.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.queue.as_mut_ptr().add(at), bytes.len()) };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.queue.as_mut_ptr().add(at),
+                bytes.len(),
+            )
+        };
     }
 
     /// The network this link joined.

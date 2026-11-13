@@ -507,21 +507,14 @@ impl Errno {
 /// the real-time ones follow, up to 64.
 pub use abi::signal;
 
-/// The most `write` copies at a time, through a buffer on the kernel stack.
 const WRITE_CHUNK: usize = 256;
 
-/// The most one `write` or `writev` transfers, as on Linux (`write(2)`: 0x7ffff000 bytes,
-/// `INT_MAX` rounded down to a page); a larger count writes this much and returns it.
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
 
-/// The most buffers one `writev` takes: Linux's limit (`IOV_MAX` in C).
 const MAX_IOVECS: u64 = 1024;
 
-/// How many of `writev`'s buffers it reads onto the kernel stack: C libraries pass two
-/// (their buffer and the new data). More go through the heap.
 const STACK_IOVECS: usize = 8;
 
-/// The size of a `struct iovec`: a base address and a length.
 const IOVEC_SIZE: usize = 2 * abi::WORD_BYTES;
 
 /// Starts the first thread of `process`, which runs its Linux program from `context` (see
@@ -590,16 +583,6 @@ pub fn handle<P: Platform>(
     }
 }
 
-/// An exception in the program, of `kind` with raw cause `code` and the faulting address, if
-/// any. A page fault resumes the program if the process resolves it (demand paging); with no
-/// memory for the page, the process ends with `SIGKILL`, as Linux's out-of-memory killer
-/// would; any other fault sends the program the signal Linux sends for it
-/// ([`signal_fault`]). Out of line and laid out away from the system-call path, which stays
-/// as short as it was (the exception's parts passed alone keep the loop's state in
-/// registers). Only `context` stays live across the page's mapping for the fault's sake, in
-/// place of the `kind` that ending the process needed before D65: the fault reads the rest
-/// back from it ([`UserContext::last_exception`]). Keeping the raw cause and the address too
-/// cost up to +1% on `linux_page_fault`.
 #[cold]
 #[inline(never)]
 fn user_exception<P: Platform>(
@@ -630,11 +613,6 @@ fn user_exception<P: Platform>(
     }
 }
 
-/// Sends the program, whose registers are `context` after the exception it raised, the
-/// signal Linux sends for that exception ([`fault::classify`]), forced: its handler runs if it
-/// has one and neither blocks nor ignores the signal, else the process ends with it
-/// ([`signals::deliver_fault`]). Breaks when the process ends. The program's first FP/SIMD
-/// instruction is no fault: it gives the thread its registers and runs again (D54).
 #[cold]
 #[inline(never)]
 fn signal_fault<P: Platform>(
@@ -665,11 +643,6 @@ fn first_fp_use<P: Platform>(thread: &mut LinuxThread, kind: ExceptionKind) -> b
     process::first_fp_use::<P>(kind)
 }
 
-/// Runs the system call the program made and sets its result. Always inlined, as [`handle`]:
-/// as a call of its own, the loop's state spills around it (+8 to +10% on the system-call
-/// round trip when D55's calls tipped the inliner). A number past the table answers `ENOSYS`
-/// with its own store: sharing the others' cost AArch64's round trip two branches (+1.6%,
-/// D91).
 #[inline(always)]
 fn syscall<P: Platform>(
     process: &Arc<Process<P>>,
@@ -712,7 +685,6 @@ fn syscall<P: Platform>(
     ControlFlow::Continue(())
 }
 
-/// The six `mmap` arguments a program on s390x passes in memory at `block` (D323).
 fn mmap_arguments<P: Platform>(process: &Process<P>, block: u64) -> Result<[u64; 6], Errno> {
     let mut bytes = [0u8; 48];
     process
@@ -723,8 +695,6 @@ fn mmap_arguments<P: Platform>(process: &Process<P>, block: u64) -> Result<[u64;
     }))
 }
 
-/// Memory call `number` with `arguments` ([`memory`]): out of line, with the arguments it
-/// needs read there, so the other calls' path stays as short as it was.
 #[inline(never)]
 fn memory_call<P: Platform>(
     process: &Process<P>,
@@ -748,19 +718,6 @@ fn memory_call<P: Platform>(
     }
 }
 
-/// Every call up to [`number::LAST`] but `write`, `exit` and the memory calls, with the
-/// program's registers, whose result it sets: `ENOSYS` for a number with no call. One
-/// out-of-line function for all of them, as [`memory_call`]: each call [`syscall`]'s own match
-/// grows by adds to the thread loop that it is inlined into (the loop's registers spill, and
-/// every system call pays). After a call that can make a signal due, the signal is delivered
-/// before the program runs again ([`signals::deliver`]), which may end the process: then it
-/// breaks; after `sched_yield`, which may switch the thread out, what other threads sent
-/// meanwhile is taken in and delivered ([`signals::deliver_sent`]); the others pay nothing
-/// for it. `rt_sigreturn` sets every register itself and returns the restored result
-/// register's value, so writing the result back changes nothing. The calls that wait (for a
-/// signal, for time, on a `futex`, for console input) set their result and deliver
-/// themselves, since a signal that interrupts them decides their result; `poll` delivers
-/// after it as `ppoll` does.
 #[inline(never)]
 fn out_of_line_call<P: Platform>(
     process: &Arc<Process<P>>,
@@ -852,7 +809,11 @@ fn out_of_line_call<P: Platform>(
                 _ => out_of_line_result(process, thread, number, context),
             };
             let result = result.unwrap_or_else(Errno::result);
-            context.set_syscall_result(abi::result_out(number, context.syscall_arguments(), result));
+            context.set_syscall_result(abi::result_out(
+                number,
+                context.syscall_arguments(),
+                result,
+            ));
             if !is_in(&SIGNALS_AFTER, number) {
                 ControlFlow::Continue(())
             } else if number == number::SCHED_YIELD {
@@ -868,7 +829,6 @@ fn out_of_line_call<P: Platform>(
     flow
 }
 
-/// A set of call numbers up to [`number::LAST`], a bit each.
 type CallSet = [u64; number::LAST as usize / 64 + 1];
 
 const fn call_set(numbers: &[u64]) -> CallSet {
@@ -888,10 +848,6 @@ fn is_in(set: &CallSet, number: u64) -> bool {
         .is_some_and(|word| word >> (number % 64) & 1 != 0)
 }
 
-/// The calls after which [`out_of_line_call`] delivers signals: those that can make one due,
-/// and `sched_yield`, which may switch the thread out (after it, only what other threads sent
-/// meanwhile is delivered, [`signals::deliver_sent`]). One bit test on the others' path,
-/// which a list of comparisons would lengthen with each call.
 const SIGNALS_AFTER: CallSet = call_set(&[
     number::KILL,
     number::TKILL,
@@ -905,7 +861,6 @@ const SIGNALS_AFTER: CallSet = call_set(&[
     number::SCHED_YIELD,
 ]);
 
-/// The result of [`out_of_line_call`]'s call `number`.
 #[inline(always)]
 fn out_of_line_result<P: Platform>(
     process: &Process<P>,
@@ -1170,9 +1125,6 @@ pub fn clear_child_tid_if_memory_shared<P: Platform>(process: &Process<P>, threa
     }
 }
 
-/// `exit(status)` ([`exit_thread`]) and `exit_group(status)`, which ends the process, every
-/// thread of it, with `status`, of which Linux keeps the low 8 bits. One call out of line for
-/// both, as before threads, so the system-call loop's code stays as it was.
 #[inline(never)]
 fn exit<P: Platform>(
     process: &Process<P>,
@@ -1609,7 +1561,6 @@ impl Iovecs {
     }
 }
 
-/// A `struct iovec`'s base and length, each a word of the architecture's (D485).
 fn iovec(entry: &[u8; IOVEC_SIZE]) -> (u64, u64) {
     let (base, length) = entry.split_at(abi::WORD_BYTES);
     (abi::word(base), abi::word(length))
@@ -1634,21 +1585,11 @@ fn unreadable_iovecs_error<P: Platform>(process: &Process<P>, buffers: u64, coun
     Errno::EFAULT
 }
 
-/// As Linux's `access_ok`: whether `count` bytes from `buffer` end within user space. For
-/// none, whether `buffer` is at most the end of user space: a kernel address is `EFAULT`
-/// even with nothing to copy, as on Linux (D58). A range that does not is `EFAULT` before
-/// anything is copied, even if its start is the program's memory.
 fn ends_in_user_space<P: Platform>(buffer: u64, count: u64) -> bool {
     let user_end = <P::PageTableFormat as Format>::USER_END;
     buffer.checked_add(count).is_some_and(|end| end <= user_end)
 }
 
-/// Copies `count` bytes of the program's memory from `buffer`, a range that ends within user
-/// space, to the console, and returns how many it copied: fewer if it reached a byte that is
-/// not the program's memory. Chunks never cross a page, so the count is exact, and a
-/// preemption point follows each, so a long write does not keep its CPU from the threads
-/// waiting for it. It stops early once the process has ended (another thread's `exit_group`),
-/// and the thread stops before it returns to user mode.
 fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) -> u64 {
     let mut chunk = [0u8; WRITE_CHUNK];
     let mut written = 0;
@@ -1738,8 +1679,6 @@ mod tests {
         tables
     }
 
-    /// A process with two readable data pages from [`DATA`], holding `contents` at the end
-    /// of the first and the start of the second.
     fn process_with_data(
         kernel: &PageTables<<P as Platform>::PageTableFormat>,
         contents: &[u8],
@@ -1758,7 +1697,6 @@ mod tests {
         Arc::new(process)
     }
 
-    /// A context that has just made system call `number` with `arguments`.
     fn called(number: u64, arguments: [u64; 6]) -> UserContext {
         let mut context = UserContext::new(0x40_0000, 0);
         context.simulate_syscall(number, arguments, 0x40_0004);
@@ -1827,9 +1765,6 @@ mod tests {
         assert_eq!(console_output().len() as u64, readable);
     }
 
-    /// A process with [`DATA`]'s first page readable, holding `contents` at its start, and the
-    /// second writable, holding the `struct iovec`s for `buffers` (offsets into `contents` and
-    /// lengths), as `writev` reads them.
     fn process_with_iovecs(
         kernel: &PageTables<<P as Platform>::PageTableFormat>,
         contents: &[u8],
@@ -2690,8 +2625,6 @@ mod tests {
         assert_eq!(first_thread_signals(&other), Default::default());
     }
 
-    /// `struct pollfd`s for `entries` (descriptor, requested events), as the program passes
-    /// them, with garbage where the kernel writes the returned events.
     fn pollfds(entries: &[(i32, u16)]) -> alloc::vec::Vec<u8> {
         let mut bytes = alloc::vec::Vec::new();
         for &(fd, requested) in entries {
@@ -3720,10 +3653,6 @@ mod tests {
         );
     }
 
-    /// An exception of `kind` at 0x40_0000, with the faulting address `address`, if any, whose
-    /// raw cause is `status` with the architecture's `class` in it as the HAL reports it:
-    /// AArch64's `ESR_EL1.EC`, RISC-V's `scause`; x86_64's error code is `status` alone (the
-    /// kind tells its vectors apart).
     fn exception(kind: ExceptionKind, class: u64, status: u64, address: Option<u64>) -> Exception {
         let code = crate::linux::abi::test_support::exception_code(class, status);
         Exception {
@@ -3764,9 +3693,6 @@ mod tests {
         }
     }
 
-    /// A process with the stack pages below [`HANDLER_STACK_TOP`] and an alternate stack's
-    /// below [`ALTERNATE_STACK_TOP`], writable, a read-only region at [`READ_ONLY`] with no
-    /// page mapped yet, and its pid.
     fn process_with_stacks(
         kernel: &PageTables<<P as Platform>::PageTableFormat>,
     ) -> (Arc<Process<P>>, u64) {
@@ -3800,7 +3726,6 @@ mod tests {
     const HANDLER: u64 = 0x40_1000;
     const RESTORER: u64 = 0x40_2000;
 
-    /// Sets `signal`'s action with `rt_sigaction` through [`DATA`]'s page of `process`.
     fn set_handler(process: &Arc<Process<P>>, signal: u64, flags: u64, mask: u64) {
         let words = if signals::HAS_RESTORER {
             [HANDLER, flags, RESTORER, mask]
@@ -3817,8 +3742,6 @@ mod tests {
         );
     }
 
-    /// Where the handler that `context` starts returns to, and its stack pointer as it
-    /// returns there: x86_64's `ret` pops the return address from the stack.
     fn return_point(process: &Process<P>, context: &UserContext) -> (u64, u64) {
         let registers = context.registers();
         crate::linux::abi::test_support::return_point(&registers, |address| {
@@ -3828,8 +3751,6 @@ mod tests {
         })
     }
 
-    /// The handler `context` runs returns: at its return point, as `rt_sigreturn` (what the
-    /// restorer and the trampoline do).
     fn handler_returns(process: &Arc<Process<P>>, context: &mut UserContext) -> ControlFlow<()> {
         let (to, stack) = return_point(process, context);
         let mut registers = context.registers();
@@ -4104,8 +4025,6 @@ mod tests {
             );
         }
     }
-    /// Where the FP/SIMD part of the frame whose `ucontext_t` is at `ucontext` is: x86_64's
-    /// image where `fpstate` points, the others' in the frame.
     fn fp_part_address(process: &Process<P>, ucontext: u64) -> u64 {
         let frame = ucontext - signal_frame::layout::UCONTEXT as u64;
         crate::linux::abi::test_support::fp_part_address(frame, |address| {
@@ -4184,9 +4103,6 @@ mod tests {
         }
     }
 
-    /// The exception class of a page fault (x86_64's `#PF`, AArch64's data abort from EL0,
-    /// RISC-V's store page fault) and its code for a `write`, as the test platform encodes it
-    /// (with AArch64's class in it).
     fn page_fault_exception(address: u64, write: bool) -> Exception {
         let class = crate::linux::abi::test_support::PAGE_FAULT_CLASS;
         let status = if write { crate::tests::FAULT_WRITE } else { 0 }
@@ -4194,7 +4110,6 @@ mod tests {
         exception(ExceptionKind::DataFault, class, status, Some(address))
     }
 
-    /// Sets `signal`'s action to `SIG_IGN` with `rt_sigaction`.
     fn ignore(process: &Arc<Process<P>>, signal: u64) {
         let action = HANDLER_STACK_TOP - 3 * FRAME_SIZE;
         let words = [signals::IGNORE, 0, 0, 0];
@@ -4207,9 +4122,6 @@ mod tests {
         );
     }
 
-    /// The signal's frame's machine context, for the handler `context` starts: x86_64's
-    /// `err`, `trapno` and `cr2`; AArch64's `fault_address`, then the record after the FP/SIMD
-    /// one (its magic number and size) and the syndrome it holds; RISC-V's nothing.
     fn reported_trap(process: &Process<P>, context: &UserContext) -> [u64; 3] {
         let [_, _, ucontext, ..] = context.syscall_arguments();
         let frame = ucontext - signal_frame::layout::UCONTEXT as u64;
@@ -4639,7 +4551,6 @@ mod tests {
         );
     }
 
-    /// The mask the frame of the handler `context` runs saved.
     fn saved_mask(process: &Process<P>, context: &UserContext) -> u64 {
         let ucontext = context.syscall_arguments()[2];
         let sigmask =
@@ -7485,8 +7396,6 @@ mod tests {
         assert_eq!(process.signals().lock().left_for(0), 1);
     }
 
-    /// `process`'s first thread, kept for [`handle_first`], and a second thread that sends it
-    /// `signal` with `tgkill` whenever the returned function is called.
     fn first_thread_and_sender(process: &Arc<Process<P>>, signal: u64) -> impl FnMut() + use<'_> {
         let first = take_first_thread(process);
         let mut second = second_thread(process, &first, 0);

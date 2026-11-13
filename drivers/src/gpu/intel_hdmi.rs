@@ -246,7 +246,10 @@ mod tests {
             kdiv: 2,
         };
         assert_eq!(pll.configuration_1(), FREQUENCY_ENABLE | 0x2000 << 9 | 371);
-        assert_eq!(pll.configuration_2(), 3 << 8 | QDIV_MODE | 1 << 5 | 1 << 2 | 1);
+        assert_eq!(
+            pll.configuration_2(),
+            3 << 8 | QDIV_MODE | 1 << 5 | 1 << 2 | 1
+        );
     }
 
     #[derive(Default)]
@@ -283,9 +286,7 @@ mod tests {
         bus.status
             .borrow_mut()
             .extend([HARDWARE_READY, HARDWARE_READY, WAIT_PHASE, 0]);
-        bus.data
-            .borrow_mut()
-            .extend([0xffff_ff00, 0x00ff_ffff]);
+        bus.data.borrow_mut().extend([0xffff_ff00, 0x00ff_ffff]);
         let mut out = [0u8; 8];
         read_edid(&bus, 5, &mut out, &mut || true).unwrap();
         assert_eq!(out, [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);

@@ -90,7 +90,13 @@ impl Desktop {
 
     /// The pointer moved to (`x`, `y`) during a carried drag: the ghost follows, and the window
     /// under it hears `DragOver`, the one it left `DragLeave`.
-    pub(super) fn carry_motion(&mut self, x: u32, y: u32, damage: &mut Damage, events: &mut dyn EventSink) {
+    pub(super) fn carry_motion(
+        &mut self,
+        x: u32,
+        y: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         let Some(mut carry) = self.carried else {
             return;
         };
@@ -145,7 +151,12 @@ impl Desktop {
 
     /// Forgets the window in `slot`, which is gone, from a carried drag: its own drag ends
     /// with no drop, and a window it was over is no longer.
-    pub(super) fn forget_in_carry(&mut self, slot: usize, damage: &mut Damage, events: &mut dyn EventSink) {
+    pub(super) fn forget_in_carry(
+        &mut self,
+        slot: usize,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
         let Some(mut carry) = self.carried else {
             return;
         };
@@ -185,6 +196,11 @@ impl Desktop {
             true,
             colour::MENU,
         );
-        canvas.text(ghost.x + GHOST_TEXT_X, ghost.y + GHOST_TEXT_Y, Self::carry_text(&carry), colour::TEXT);
+        canvas.text(
+            ghost.x + GHOST_TEXT_X,
+            ghost.y + GHOST_TEXT_Y,
+            Self::carry_text(&carry),
+            colour::TEXT,
+        );
     }
 }

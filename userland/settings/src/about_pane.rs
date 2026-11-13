@@ -150,14 +150,24 @@ impl AboutPane {
                 TABLE_AT.1,
             ),
             Some(c) => (
-                Place::at(PADDING, HEADING.1 + 24, Length::Px(c), Length::Px(TOUCH_CONTROL)),
+                Place::at(
+                    PADDING,
+                    HEADING.1 + 24,
+                    Length::Px(c),
+                    Length::Px(TOUCH_CONTROL),
+                ),
                 HEADING.1 + 24 + TOUCH_CONTROL + 8,
             ),
         };
         tree.set_place(self.show_all, show_all);
         tree.set_place(
             self.table,
-            Place::at(TABLE_AT.0, table_top, Length::Fill(PADDING), Length::Fill(PADDING)),
+            Place::at(
+                TABLE_AT.0,
+                table_top,
+                Length::Fill(PADDING),
+                Length::Fill(PADDING),
+            ),
         );
     }
 

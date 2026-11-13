@@ -46,7 +46,8 @@ fn connect<S: System>(output: &mut Output<S>, ssid: &[u8], passphrase: &[u8], hi
         output.error(&[b"a network's name is 1 to 32 bytes on one line"]);
         return FAILURE;
     }
-    if !passphrase.is_empty() && !(SMALLEST_PASSPHRASE..=LARGEST_PASSPHRASE).contains(&passphrase.len())
+    if !passphrase.is_empty()
+        && !(SMALLEST_PASSPHRASE..=LARGEST_PASSPHRASE).contains(&passphrase.len())
         || passphrase.contains(&b'\n')
     {
         output.error(&[b"a WPA2 passphrase is 8 to 63 characters on one line"]);
@@ -60,10 +61,17 @@ fn connect<S: System>(output: &mut Output<S>, ssid: &[u8], passphrase: &[u8], hi
         }
     };
     let hidden_line: &[u8] = if hidden { b"hidden=yes\n" } else { b"" };
-    let written = [&b"ssid="[..], ssid, b"\npassphrase=", passphrase, b"\n", hidden_line]
-        .iter()
-        .try_for_each(|part| output.system.write(descriptor, part))
-        .and_then(|()| output.system.sync_file(descriptor));
+    let written = [
+        &b"ssid="[..],
+        ssid,
+        b"\npassphrase=",
+        passphrase,
+        b"\n",
+        hidden_line,
+    ]
+    .iter()
+    .try_for_each(|part| output.system.write(descriptor, part))
+    .and_then(|()| output.system.sync_file(descriptor));
     output.system.close(descriptor);
     if let Err(errno) = written {
         output.file_error(SETTINGS, errno);
@@ -112,7 +120,9 @@ pub fn wifi<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         (b"list", []) => show(output),
         (b"forget", []) => forget(output),
         (b"connect", [ssid]) => connect(output, ssid.to_bytes(), b"", hidden),
-        (b"connect", [ssid, passphrase]) => connect(output, ssid.to_bytes(), passphrase.to_bytes(), hidden),
+        (b"connect", [ssid, passphrase]) => {
+            connect(output, ssid.to_bytes(), passphrase.to_bytes(), hidden)
+        }
         _ => {
             output.coded(&errors::USAGE, &[USAGE]);
             FAILURE
@@ -138,7 +148,12 @@ mod tests {
         Fake::default()
             .with_directory("/proc", 0)
             .with_directory("/proc/driver", 0)
-            .with_file("/proc/driver/wifi", 0o444, b"ready; address 00:11:22:33:44:55; 37 channels\n", 0)
+            .with_file(
+                "/proc/driver/wifi",
+                0o444,
+                b"ready; address 00:11:22:33:44:55; 37 channels\n",
+                0,
+            )
             .with_directory("/var", 0)
             .with_directory("/var/lib", 0)
             .with_directory("/var/lib/eggos", 0)
@@ -147,10 +162,16 @@ mod tests {
     #[test]
     fn wifi_shows_the_driver_s_state_and_connect_names_the_network() {
         let (status, out, _, _) = run(machine(), &[c"list"]);
-        assert_eq!((status, out.as_str()), (0, "ready; address 00:11:22:33:44:55; 37 channels\n"));
+        assert_eq!(
+            (status, out.as_str()),
+            (0, "ready; address 00:11:22:33:44:55; 37 channels\n")
+        );
         let (status, _, errors, fake) = run(machine(), &[c"connect", c"home", c"correct horse"]);
         assert_eq!((status, errors.as_str()), (0, ""));
-        assert_eq!(fake.contents("/var/lib/eggos/wifi.conf"), b"ssid=home\npassphrase=correct horse\n");
+        assert_eq!(
+            fake.contents("/var/lib/eggos/wifi.conf"),
+            b"ssid=home\npassphrase=correct horse\n"
+        );
         let (status, _, errors, _) = run(machine(), &[c"connect", c"home", c"short"]);
         assert_eq!(status, FAILURE);
         assert!(errors.contains("8 to 63"));

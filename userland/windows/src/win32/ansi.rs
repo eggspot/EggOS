@@ -349,7 +349,6 @@ pub fn from_narrow(
             unsafe { heap::free(block.cast()) };
             written
         }
-    match number {
         message::GET_TEXT => {
             if lparam == 0 || wparam == 0 {
                 return 0;

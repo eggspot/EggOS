@@ -103,12 +103,20 @@ mod tests {
         assert_eq!((pll.dco_integer, pll.dco_fraction), (0x151, 0x4000));
         let pll = for_display_port(0x0a, 19_200).unwrap();
         assert_eq!((pll.dco_integer, pll.dco_fraction), (0x1a5, 0x7000));
-        assert_eq!(for_display_port(0x0a, 38_400), for_display_port(0x0a, 19_200));
+        assert_eq!(
+            for_display_port(0x0a, 38_400),
+            for_display_port(0x0a, 19_200)
+        );
     }
 
     #[test]
     fn each_rate_s_port_clock_is_half_its_link_rate() {
-        for (rate, khz) in [(0x06, 810_000), (0x0a, 1_350_000), (0x14, 2_700_000), (0x1e, 4_050_000)] {
+        for (rate, khz) in [
+            (0x06, 810_000),
+            (0x0a, 1_350_000),
+            (0x14, 2_700_000),
+            (0x1e, 4_050_000),
+        ] {
             let pll = for_display_port(rate, 24_000).unwrap();
             assert_eq!(port_clock_khz(&pll, 24_000), khz);
         }

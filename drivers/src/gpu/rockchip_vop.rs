@@ -66,8 +66,10 @@ impl<R: RegisterIo> Vop<R> {
 
     /// Shows the frame at `address` (below 4 GiB) from the next frame start.
     pub fn flip(&self, address: u64) {
-        self.regs
-            .write32(INTERRUPT_CLEAR, FRAME_START << WRITE_MASK_SHIFT | FRAME_START);
+        self.regs.write32(
+            INTERRUPT_CLEAR,
+            FRAME_START << WRITE_MASK_SHIFT | FRAME_START,
+        );
         self.regs.write32(WINDOW_ADDRESS, address as u32);
         self.regs.write32(CONFIG_DONE, 1);
     }

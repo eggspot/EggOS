@@ -150,7 +150,11 @@ mod tests {
         let firmware = 0x200;
         let objects = 0x240;
         put16(&mut image, master + 4 + 2 * FIRMWARE_INFO, firmware as u16);
-        put16(&mut image, master + 4 + 2 * DISPLAY_OBJECT_INFO, objects as u16);
+        put16(
+            &mut image,
+            master + 4 + 2 * DISPLAY_OBJECT_INFO,
+            objects as u16,
+        );
         image[firmware + 4..firmware + 8].copy_from_slice(&0x0011_0022u32.to_le_bytes());
         image[firmware + 8..firmware + 12].copy_from_slice(&80_000u32.to_le_bytes());
         image[objects + 2] = 1;

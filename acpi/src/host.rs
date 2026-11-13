@@ -31,8 +31,12 @@ pub trait Host {
     ) -> Result<(), HostError>;
 
     /// Reads `width` bits at `offset` of `function`'s configuration space.
-    fn read_pci(&mut self, function: PciFunction, offset: u16, width: u32)
-    -> Result<u64, HostError>;
+    fn read_pci(
+        &mut self,
+        function: PciFunction,
+        offset: u16,
+        width: u32,
+    ) -> Result<u64, HostError>;
 
     /// Writes `value`'s low `width` bits at `offset` of `function`'s configuration space.
     fn write_pci(

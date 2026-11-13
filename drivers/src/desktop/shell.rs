@@ -279,7 +279,9 @@ impl Desktop {
     pub fn focused_orientation(&self) -> eggos_app_manifest::Orientation {
         self.focus
             .and_then(|slot| self.app_of(slot))
-            .map_or(eggos_app_manifest::Orientation::Any, |app| self.catalogue.orientation(app))
+            .map_or(eggos_app_manifest::Orientation::Any, |app| {
+                self.catalogue.orientation(app)
+            })
     }
 
     /// The app window `slot` belongs to, if the catalogue knows it: the console terminal's
@@ -1024,7 +1026,13 @@ impl Desktop {
         }
     }
 
-    pub(super) fn draw_egg_mark(canvas: &mut Canvas<'_>, left: u32, top: u32, height: u32, width: u32) {
+    pub(super) fn draw_egg_mark(
+        canvas: &mut Canvas<'_>,
+        left: u32,
+        top: u32,
+        height: u32,
+        width: u32,
+    ) {
         let mark_width = round_percent(72, height);
         for row in 0..height {
             let (from, to) = span(left + mark_width / 2, egg_half_width(height, row), width);
@@ -1080,7 +1088,8 @@ impl Desktop {
     }
 
     fn updates_chip_hovered(&self) -> bool {
-        self.panels.hover == Some(PanelItem::Updates) || self.panels.pressed == Some(PanelItem::Updates)
+        self.panels.hover == Some(PanelItem::Updates)
+            || self.panels.pressed == Some(PanelItem::Updates)
     }
 
     fn agent_chip_hovered(&self) -> bool {

@@ -39,7 +39,6 @@ use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
-use eggos_settings::wifi_section;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, Request,
     SetOutcome, SettingsForm, SettingsWindow, TITLE,
@@ -47,6 +46,7 @@ use eggos_settings::settings_window::{
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
 };
+use eggos_settings::wifi_section;
 use eggos_settings_file::clock_sync::{self, Record};
 use eggos_settings_file::{
     self as settings_file, DIRECTORIES, DisplayAccessibility, InputPreferences, KeyAccessibility,
@@ -409,7 +409,8 @@ fn components_read() -> ComponentsRead {
         job: component_state::job(&mut files),
         failure: component_state::last_failure(&mut files),
         now_s,
-        network_up: network_adapter().is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
+        network_up: network_adapter()
+            .is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
             || wifi_status().joined.is_some(),
     }
 }
@@ -435,7 +436,8 @@ fn start_component_job(job: &ComponentJob) -> Result<usize, Errno> {
             bytes
         })
         .collect();
-    let mut arguments: alloc::vec::Vec<*const u8> = words.iter().map(|word| word.as_ptr()).collect();
+    let mut arguments: alloc::vec::Vec<*const u8> =
+        words.iter().map(|word| word.as_ptr()).collect();
     arguments.push(core::ptr::null());
     let environment = [core::ptr::null()];
     let request = Spawn::new(c"/bin/component", &arguments, &environment, streams).in_own_session();
@@ -636,13 +638,16 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         form_setting: form.map_or(0, |(_, setting, _)| setting as usize),
         form_in_use: form.map_or(0, |(in_use, _, _)| in_use as usize),
         input_kinds: form.map_or(0, |(_, _, kinds)| kinds),
-        on_screen_keyboard: settings_file::value(&file[..length], settings_file::KEYBOARD_ON_SCREEN)
-            .and_then(|chosen| {
-                settings_file::KEYBOARD_ON_SCREEN_MODES
-                    .iter()
-                    .position(|mode| mode.as_bytes() == chosen)
-            })
-            .unwrap_or(0),
+        on_screen_keyboard: settings_file::value(
+            &file[..length],
+            settings_file::KEYBOARD_ON_SCREEN,
+        )
+        .and_then(|chosen| {
+            settings_file::KEYBOARD_ON_SCREEN_MODES
+                .iter()
+                .position(|mode| mode.as_bytes() == chosen)
+        })
+        .unwrap_or(0),
         rotation: settings_file::value(&file[..length], settings_file::DISPLAY_ROTATION)
             .and_then(|chosen| {
                 settings_file::DISPLAY_ROTATIONS
@@ -771,7 +776,9 @@ fn save_display_scale(scale: u32) -> Result<(), Errno> {
 fn save_display_resolution(size: Option<(u32, u32)>) -> Result<(), Errno> {
     let mut text = Text::<16>::new();
     let _ = match size {
-        Some((width, height)) => core::fmt::Write::write_fmt(&mut text, format_args!("{width}x{height}")),
+        Some((width, height)) => {
+            core::fmt::Write::write_fmt(&mut text, format_args!("{width}x{height}"))
+        }
         None => core::fmt::Write::write_str(&mut text, "auto"),
     };
     save_through_a_temporary_file(settings_file::DISPLAY_RESOLUTION, text.as_str())
@@ -1004,7 +1011,8 @@ impl command::Machine for Machine {
 
     fn save_on_screen_keyboard(&mut self, index: usize) -> Result<(), &'static [u8]> {
         let mode = settings_file::KEYBOARD_ON_SCREEN_MODES[index.min(2)];
-        save_through_a_temporary_file(settings_file::KEYBOARD_ON_SCREEN, mode).map_err(Errno::message)
+        save_through_a_temporary_file(settings_file::KEYBOARD_ON_SCREEN, mode)
+            .map_err(Errno::message)
     }
 
     fn apply_on_screen_keyboard(&mut self, index: usize) -> Result<(), &'static [u8]> {
@@ -1016,12 +1024,15 @@ impl command::Machine for Machine {
                 &opened
             }
         };
-        server.set_on_screen_keyboard_mode(index as u32).map_err(Errno::message)
+        server
+            .set_on_screen_keyboard_mode(index as u32)
+            .map_err(Errno::message)
     }
 
     fn save_rotation(&mut self, index: usize) -> Result<(), &'static [u8]> {
         let rotation = settings_file::DISPLAY_ROTATIONS[index.min(4)];
-        save_through_a_temporary_file(settings_file::DISPLAY_ROTATION, rotation).map_err(Errno::message)
+        save_through_a_temporary_file(settings_file::DISPLAY_ROTATION, rotation)
+            .map_err(Errno::message)
     }
 
     fn apply_rotation(&mut self, index: usize) -> Result<(), &'static [u8]> {
@@ -1450,7 +1461,8 @@ impl Application<CAPACITY> for Settings {
                 self.window.input_changed(change, saved, applied);
             }
             Some(Request::ReadDisks) => {
-                self.window.set_boot_files(storage::has_boot_files(&mut LinuxDisks));
+                self.window
+                    .set_boot_files(storage::has_boot_files(&mut LinuxDisks));
                 self.window.show_disks(storage::list(&mut LinuxDisks));
             }
             Some(Request::CheckDisk(device)) => {
@@ -1510,19 +1522,45 @@ impl Application<CAPACITY> for Settings {
             Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
             Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
             Some(Request::StartComponentJob) => self.start_component_job(),
-            Some(Request::WifiJoin { name, passphrase, hidden }) => {
+            Some(Request::WifiJoin {
+                name,
+                passphrase,
+                hidden,
+            }) => {
                 let marked = if hidden { "hidden=yes\n" } else { "" };
-                let text = alloc::format!("ssid={}\npassphrase={}\n{marked}", name.as_str(), passphrase.as_str());
-                let saved = write_file_with_mode(c"/var/lib/eggos/wifi.conf", WIFI_SETTINGS_MODE, text.as_bytes())
-                    .map_err(|error| core::str::from_utf8(error.message()).unwrap_or("the file could not be written"));
+                let text = alloc::format!(
+                    "ssid={}\npassphrase={}\n{marked}",
+                    name.as_str(),
+                    passphrase.as_str()
+                );
+                let saved = write_file_with_mode(
+                    c"/var/lib/eggos/wifi.conf",
+                    WIFI_SETTINGS_MODE,
+                    text.as_bytes(),
+                )
+                .map_err(|error| {
+                    core::str::from_utf8(error.message()).unwrap_or("the file could not be written")
+                });
                 self.window.wifi_join_saved(saved, now_ms);
                 self.window.show_wifi(wifi_status(), wifi_chosen());
             }
             Some(Request::WifiForget) => {
-                let removed = syscall(number::UNLINKAT, [AT_FDCWD, c"/var/lib/eggos/wifi.conf".as_ptr() as usize, 0, 0, 0, 0]);
+                let removed = syscall(
+                    number::UNLINKAT,
+                    [
+                        AT_FDCWD,
+                        c"/var/lib/eggos/wifi.conf".as_ptr() as usize,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                );
                 if let Err(error) = removed {
-                    self.window
-                        .wifi_forget_failed(core::str::from_utf8(error.message()).unwrap_or("the file could not be removed"));
+                    self.window.wifi_forget_failed(
+                        core::str::from_utf8(error.message())
+                            .unwrap_or("the file could not be removed"),
+                    );
                 }
                 self.window.show_wifi(wifi_status(), wifi_chosen());
             }
@@ -1631,7 +1669,8 @@ impl Settings {
     fn open_pane(&mut self, pane: usize) {
         match self.window.open_pane(pane) {
             Some(Request::ReadDisks) => {
-                self.window.set_boot_files(storage::has_boot_files(&mut LinuxDisks));
+                self.window
+                    .set_boot_files(storage::has_boot_files(&mut LinuxDisks));
                 self.window.show_disks(storage::list(&mut LinuxDisks));
             }
             Some(Request::ReadGrants) => {
@@ -1669,7 +1708,9 @@ impl Settings {
             (Ok(child), true) => self.component_job_child = Some(child),
             (Ok(child), false) => self.component_side_children.push(child),
             (Err(_), true) => {
-                let next = self.window.show_component_job_ended(false, components_read());
+                let next = self
+                    .window
+                    .show_component_job_ended(false, components_read());
                 if next == Some(Request::StartComponentJob) {
                     self.start_component_job();
                 }
@@ -1679,7 +1720,8 @@ impl Settings {
     }
 
     fn follow_component_job(&mut self) {
-        self.component_side_children.retain(|child| child_ended(*child).is_none());
+        self.component_side_children
+            .retain(|child| child_ended(*child).is_none());
         let Some(child) = self.component_job_child else {
             return;
         };
@@ -1687,7 +1729,9 @@ impl Settings {
             None => self.window.show_components(components_read()),
             Some(succeeded) => {
                 self.component_job_child = None;
-                let next = self.window.show_component_job_ended(succeeded, components_read());
+                let next = self
+                    .window
+                    .show_component_job_ended(succeeded, components_read());
                 self.show_windows_layer();
                 if next == Some(Request::StartComponentJob) {
                     self.start_component_job();

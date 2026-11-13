@@ -6,7 +6,10 @@
 
 use super::dma::DmaRegion;
 use super::interrupts::DeviceEvents;
-use super::{Deadline, DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
+use super::{
+    Deadline, DeviceId, DmaCoherence, DriverDescriptor, Identity, Match, Probe, ProbeError,
+    ProbePass,
+};
 use crate::display::{Mode, Rect, Scanout};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -18,7 +21,6 @@ use eggos_drivers::pci;
 const DISPLAY_CONTROLLER: u8 = 0x03;
 const VGA_COMPATIBLE: u8 = 0x00;
 const CHUNK_BYTES: usize = 4 << 20;
-const CACHE_LINE: usize = 64;
 const MAX_PENDING: usize = 16;
 
 /// Intel's integrated graphics (PCI class 03h, subclass 00h, vendor 8086h).
@@ -43,7 +45,8 @@ impl Buffer {
         let mut left = bytes;
         while left > 0 {
             let size = left.min(CHUNK_BYTES);
-            let chunk = DmaRegion::allocate(size).map_err(|_| ProbeError::Refused("no memory for the display's buffers"))?;
+            let chunk = DmaRegion::allocate(size)
+                .map_err(|_| ProbeError::Refused("no memory for the display's buffers"))?;
             left -= size;
             chunks.push(chunk);
         }
@@ -56,7 +59,8 @@ impl Buffer {
             .iter()
             .flat_map(|chunk| {
                 let base = chunk.dma_addr().get();
-                (0..chunk.len() as u64 / intel::GTT_PAGE).map(move |page| base + page * intel::GTT_PAGE)
+                (0..chunk.len() as u64 / intel::GTT_PAGE)
+                    .map(move |page| base + page * intel::GTT_PAGE)
             })
             .take(pages)
     }
@@ -70,8 +74,12 @@ impl Buffer {
             // long since every chunk but the last is `CHUNK_BYTES` and offsets stay inside the
             // frame; the display engine only reads it.
             unsafe {
-                core::ptr::copy_nonoverlapping(bytes.as_ptr(), chunk.as_mut_ptr().add(within), length);
-                write_back(chunk.as_mut_ptr().add(within), length);
+                core::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    chunk.as_mut_ptr().add(within),
+                    length,
+                );
+                eggos_hal::cache::write_back_for_device(chunk.as_mut_ptr().add(within), length);
             }
             offset += length;
             bytes = &bytes[length..];
@@ -79,20 +87,8 @@ impl Buffer {
     }
 }
 
-unsafe fn write_back(start: *mut u8, length: usize) {
-    let first = start as usize & !(CACHE_LINE - 1);
-    let mut line = first;
-    while line < start as usize + length {
-        // SAFETY: `line` is inside a cache line of the mapped range the caller names; `clflush`
-        // writes it back and drops it from the caches, changing no memory.
-        unsafe { core::arch::x86_64::_mm_clflush(line as *const u8) };
-        line += CACHE_LINE;
-    }
-}
-
 fn fence() {
-    // SAFETY: `mfence` only orders this CPU's memory accesses, the write-backs above included.
-    unsafe { core::arch::x86_64::_mm_mfence() };
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 struct IntelDisplay {
@@ -153,7 +149,10 @@ impl IntelDisplay {
         let mut row = vec![0u8; rect.width as usize * 4];
         for y in rect.y..rect.y + rect.height {
             let start = (y * self.mode.width + rect.x) as usize;
-            for (bytes, pixel) in row.chunks_exact_mut(4).zip(&self.frame[start..start + rect.width as usize]) {
+            for (bytes, pixel) in row
+                .chunks_exact_mut(4)
+                .zip(&self.frame[start..start + rect.width as usize])
+            {
                 bytes.copy_from_slice(&pixel.to_le_bytes());
             }
             let offset = y as usize * self.stride as usize + rect.x as usize * 4;
@@ -172,8 +171,6 @@ impl IntelDisplay {
         }
     }
 
-    /// Copies the damage into the hidden buffer and flips to it at the next vertical blank;
-    /// how many rectangles it showed.
     fn post(&mut self, rects: &[Rect]) -> usize {
         let hidden = self.front.map_or(0, |front| 1 - front);
         let missing = core::mem::take(&mut self.missing[hidden]);
@@ -188,7 +185,10 @@ impl IntelDisplay {
     }
 
     fn cursor_corner(&self, at: (u32, u32)) -> (i32, i32) {
-        (at.0 as i32 - self.hotspot.0 as i32, at.1 as i32 - self.hotspot.1 as i32)
+        (
+            at.0 as i32 - self.hotspot.0 as i32,
+            at.1 as i32 - self.hotspot.1 as i32,
+        )
     }
 }
 
@@ -242,7 +242,8 @@ impl Scanout for IntelDisplay {
     }
 
     fn load_firmware(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
-        let dmc = eggos_drivers::gpu::intel_dmc::parse(bytes, 0, 0).ok_or("not display firmware for this device")?;
+        let dmc = eggos_drivers::gpu::intel_dmc::parse(bytes, 0, 0)
+            .ok_or("not display firmware for this device")?;
         self.engine.load_dmc(&dmc);
         Ok(())
     }
@@ -255,21 +256,35 @@ impl Scanout for IntelDisplay {
         // SAFETY: the cursor region is this scanout's own, `CURSOR_BYTES` long and aligned to a
         // frame; `&mut self` makes the borrow unique.
         Some(unsafe {
-            core::slice::from_raw_parts_mut(self.cursor.as_mut_ptr().cast::<u32>(), intel::CURSOR_BYTES / 4)
+            core::slice::from_raw_parts_mut(
+                self.cursor.as_mut_ptr().cast::<u32>(),
+                intel::CURSOR_BYTES / 4,
+            )
         })
     }
 
-    fn show_pointer(&mut self, hotspot: (u32, u32), at: (u32, u32), _deadline: &mut Deadline) -> Result<(), &'static str> {
+    fn show_pointer(
+        &mut self,
+        hotspot: (u32, u32),
+        at: (u32, u32),
+        _deadline: &mut Deadline,
+    ) -> Result<(), &'static str> {
         self.hotspot = hotspot;
         // SAFETY: the cursor region is mapped for `CURSOR_BYTES`.
-        unsafe { write_back(self.cursor.as_mut_ptr(), intel::CURSOR_BYTES) };
+        unsafe {
+            eggos_hal::cache::write_back_for_device(self.cursor.as_mut_ptr(), intel::CURSOR_BYTES)
+        };
         fence();
         let (x, y) = self.cursor_corner(at);
         self.engine.show_cursor(self.cursor_surface, x, y);
         Ok(())
     }
 
-    fn move_pointer(&mut self, at: (u32, u32), _deadline: &mut Deadline) -> Result<(), &'static str> {
+    fn move_pointer(
+        &mut self,
+        at: (u32, u32),
+        _deadline: &mut Deadline,
+    ) -> Result<(), &'static str> {
         let (x, y) = self.cursor_corner(at);
         self.engine.show_cursor(self.cursor_surface, x, y);
         Ok(())
@@ -296,7 +311,10 @@ pub fn surfaces(span: u64, buffer_bytes: u64, firmware_end: u64) -> Option<(u32,
 }
 
 fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
-    let node = *probe.table().get(id).ok_or(ProbeError::Refused("no such device"))?;
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
     let Identity::Pci(function) = node.identity else {
         return Err(ProbeError::Refused("not a PCI function"));
     };
@@ -311,10 +329,15 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
     }
     let region = node.regions[0];
     if region.is_empty() {
-        return Err(ProbeError::Refused("the engine's registers are not in memory space"));
+        return Err(ProbeError::Refused(
+            "the engine's registers are not in memory space",
+        ));
     }
-    let length = usize::try_from(region.len()).map_err(|_| ProbeError::Refused("the register block is too large"))?;
-    let config = probe.pci_config().ok_or(ProbeError::Refused("no PCI configuration space"))?;
+    let length = usize::try_from(region.len())
+        .map_err(|_| ProbeError::Refused("the register block is too large"))?;
+    let config = probe
+        .pci_config()
+        .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let graphics_control = config.read32(function.address, intel::GRAPHICS_CONTROL) as u16;
     pci::enable_memory_and_bus_master(config, function.address);
     let base = probe.map_window(region)?;
@@ -322,22 +345,41 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
     // global GTT, mapped as device memory by `map_window` for as long as the kernel runs; only
     // this driver drives the display engine.
     let regs = unsafe { Mmio::new(base, length) };
-    let (engine, plane) = DisplayEngine::take(regs, length, function.device_id).map_err(|refusal| ProbeError::Refused(refusal.description()))?;
-    let LitPlane { width, height, stride_bytes, surface, .. } = plane;
+    let (engine, plane) = DisplayEngine::take(regs, length, function.device_id)
+        .map_err(|refusal| ProbeError::Refused(refusal.description()))?;
+    let LitPlane {
+        width,
+        height,
+        stride_bytes,
+        surface,
+        ..
+    } = plane;
     let stride = intel::stride_for(width);
     let buffer_bytes = (stride as u64 * u64::from(height)).next_multiple_of(intel::GTT_PAGE);
     let firmware_end = u64::from(surface) + u64::from(stride_bytes) * u64::from(height);
-    let (cursor_surface, [first, second]) = surfaces(intel::gtt_span(graphics_control), buffer_bytes, firmware_end)
-        .ok_or(ProbeError::Refused(Refusal::NoGttSpace.description()))?;
-    let mut buffers = [Buffer::allocate(buffer_bytes as usize)?, Buffer::allocate(buffer_bytes as usize)?];
+    let (cursor_surface, [first, second]) = surfaces(
+        intel::gtt_span(graphics_control),
+        buffer_bytes,
+        firmware_end,
+    )
+    .ok_or(ProbeError::Refused(Refusal::NoGttSpace.description()))?;
+    let mut buffers = [
+        Buffer::allocate(buffer_bytes as usize)?,
+        Buffer::allocate(buffer_bytes as usize)?,
+    ];
     for (buffer, at) in buffers.iter_mut().zip([first, second]) {
         buffer.surface = at;
         engine.map(u64::from(at), &mut buffer.pages(buffer_bytes as usize));
     }
-    let cursor = DmaRegion::allocate(intel::CURSOR_BYTES).map_err(|_| ProbeError::Refused("no memory for the cursor"))?;
-    engine.map(u64::from(cursor_surface), &mut core::iter::once(cursor.dma_addr().get()).chain(
-        (1..intel::CURSOR_BYTES as u64 / intel::GTT_PAGE).map(|page| cursor.dma_addr().get() + page * intel::GTT_PAGE),
-    ));
+    let cursor = DmaRegion::allocate(intel::CURSOR_BYTES)
+        .map_err(|_| ProbeError::Refused("no memory for the cursor"))?;
+    engine.map(
+        u64::from(cursor_surface),
+        &mut core::iter::once(cursor.dma_addr().get()).chain(
+            (1..intel::CURSOR_BYTES as u64 / intel::GTT_PAGE)
+                .map(|page| cursor.dma_addr().get() + page * intel::GTT_PAGE),
+        ),
+    );
     let mode = Mode::new(width, height);
     let whole = mode.rect();
     let scanout = IntelDisplay {
@@ -355,7 +397,10 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         posted_rects: 0,
         sinks: alloc::string::String::new(),
     };
-    FOUND_DEVICE.store(u32::from(function.device_id), core::sync::atomic::Ordering::Release);
+    FOUND_DEVICE.store(
+        u32::from(function.device_id),
+        core::sync::atomic::Ordering::Release,
+    );
     let mut scanout = scanout;
     let lit_ports = scanout.engine.lit_ports();
     let mut second_screen = None;
@@ -366,11 +411,16 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
             continue;
         }
         let mut deadline = probe.deadline(SINK_ANSWER_MS);
-        let (link, edid) = scanout.engine.probe_sink(port, &mut || deadline.keep_waiting());
+        let (link, edid) = scanout
+            .engine
+            .probe_sink(port, &mut || deadline.keep_waiting());
         let (edid, hdmi) = match (link, edid) {
             (None, None) => {
                 let mut deadline = probe.deadline(SINK_ANSWER_MS);
-                match scanout.engine.probe_hdmi_sink(port, &mut || deadline.keep_waiting()) {
+                match scanout
+                    .engine
+                    .probe_hdmi_sink(port, &mut || deadline.keep_waiting())
+                {
                     Some(edid) => (Some(edid), true),
                     None => continue,
                 }
@@ -392,31 +442,44 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         }
         let port_name = (b'A' + port as u8) as char;
         let kind = if hdmi { " hdmi" } else { "" };
-        let _ = core::fmt::Write::write_fmt(
-            &mut scanout.sinks,
-            format_args!("port {port_name}{kind}"),
-        );
+        let _ =
+            core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!("port {port_name}{kind}"));
         if let Some(edid) = edid {
             let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
-            let _ = core::fmt::Write::write_fmt(&mut scanout.sinks, format_args!(" {maker} {}", edid.name()));
+            let _ = core::fmt::Write::write_fmt(
+                &mut scanout.sinks,
+                format_args!(" {maker} {}", edid.name()),
+            );
             if let Some(mode) = edid.preferred {
                 let _ = core::fmt::Write::write_fmt(
                     &mut scanout.sinks,
-                    format_args!(" preferred {}x{}@{}", mode.width, mode.height, mode.refresh_mhz() / 1000),
+                    format_args!(
+                        " preferred {}x{}@{}",
+                        mode.width,
+                        mode.height,
+                        mode.refresh_mhz() / 1000
+                    ),
                 );
             }
         }
         if let Some(link) = link {
             let _ = core::fmt::Write::write_fmt(
                 &mut scanout.sinks,
-                format_args!(" dp {}.{} x{}", link.rate_centigbps / 100, link.rate_centigbps % 100, link.lanes),
+                format_args!(
+                    " dp {}.{} x{}",
+                    link.rate_centigbps / 100,
+                    link.rate_centigbps % 100,
+                    link.lanes
+                ),
             );
         }
         scanout.sinks.push('\n');
     }
     for index in 0..scanout.engine.type_c_ports() {
         let mut deadline = probe.deadline(SINK_ANSWER_MS);
-        let connected = scanout.engine.connect_type_c(index, &mut || deadline.keep_waiting());
+        let connected = scanout
+            .engine
+            .connect_type_c(index, &mut || deadline.keep_waiting());
         let Ok(connected) = connected else {
             continue;
         };
@@ -442,8 +505,9 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
             }
         }
         let mut deadline = probe.deadline(SINK_ANSWER_MS);
-        let (link, edid) =
-            scanout.engine.probe_sink(connected.port, &mut || deadline.keep_waiting());
+        let (link, edid) = scanout
+            .engine
+            .probe_sink(connected.port, &mut || deadline.keep_waiting());
         if let Some(edid) = edid {
             let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
             let _ = core::fmt::Write::write_fmt(
@@ -454,7 +518,12 @@ fn probe_intel_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeE
         if let Some(link) = link {
             let _ = core::fmt::Write::write_fmt(
                 &mut scanout.sinks,
-                format_args!(" dp {}.{} x{}", link.rate_centigbps / 100, link.rate_centigbps % 100, link.lanes),
+                format_args!(
+                    " dp {}.{} x{}",
+                    link.rate_centigbps / 100,
+                    link.rate_centigbps % 100,
+                    link.lanes
+                ),
             );
         }
         scanout.sinks.push('\n');

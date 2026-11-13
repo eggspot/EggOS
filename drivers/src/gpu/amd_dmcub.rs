@@ -197,7 +197,13 @@ impl<R: RegisterIo> Dmcub<R> {
         }
         self.update(SECURITY_CONTROL, 0, SECURITY_RESET);
         let instructions = layout.instructions.1.next_multiple_of(ALIGNMENT);
-        self.window(0, WINDOW_INSTRUCTIONS, instructions, place(layout.instructions), true);
+        self.window(
+            0,
+            WINDOW_INSTRUCTIONS,
+            instructions,
+            place(layout.instructions),
+            true,
+        );
         self.window(1, WINDOW_STACK, layout.stack.1, place(layout.stack), true);
         self.update(
             SECURITY_CONTROL,
@@ -205,7 +211,13 @@ impl<R: RegisterIo> Dmcub<R> {
             MEMORY_UNIT << MEMORY_UNIT_SHIFT,
         );
         self.window(3, WINDOW_BIOS, layout.bios.1, raw(layout.bios), false);
-        self.window(4, WINDOW_MAILBOX, layout.mailbox.1, raw(layout.mailbox), false);
+        self.window(
+            4,
+            WINDOW_MAILBOX,
+            layout.mailbox.1,
+            raw(layout.mailbox),
+            false,
+        );
         self.window(5, WINDOW_TRACE, layout.trace.1, raw(layout.trace), false);
         let trace = raw(layout.trace);
         self.write(REGION_5_OFFSET, trace as u32);
@@ -277,15 +289,27 @@ mod tests {
     #[test]
     fn the_instruction_window_points_at_video_memory_through_the_frame_buffer_offset() {
         let regs = Registers::default();
-        regs.0.borrow_mut().insert(((BASE + FB_LOCATION_BASE) * 4) as usize, 0x8000);
-        regs.0.borrow_mut().insert(((BASE + FB_OFFSET) * 4) as usize, 0x02);
+        regs.0
+            .borrow_mut()
+            .insert(((BASE + FB_LOCATION_BASE) * 4) as usize, 0x8000);
+        regs.0
+            .borrow_mut()
+            .insert(((BASE + FB_OFFSET) * 4) as usize, 0x02);
         let dmcub = Dmcub::new(&regs, BASE);
         let layout = layout(0x1000, 0x100, 0x100);
         dmcub.start(0x80_0040_0000, &layout, &mut || true).unwrap();
-        let at = |place: u32| regs.0.borrow().get(&(((BASE + place) * 4) as usize)).copied();
+        let at = |place: u32| {
+            regs.0
+                .borrow()
+                .get(&(((BASE + place) * 4) as usize))
+                .copied()
+        };
         assert_eq!(at(WINDOW_OFFSET), Some(0x0240_0000));
         assert_eq!(at(WINDOW_BASE), Some(WINDOW_INSTRUCTIONS));
-        assert_eq!(at(WINDOW_TOP), Some((WINDOW_INSTRUCTIONS + 0xfff) | WINDOW_ENABLE));
+        assert_eq!(
+            at(WINDOW_TOP),
+            Some((WINDOW_INSTRUCTIONS + 0xfff) | WINDOW_ENABLE)
+        );
         assert_eq!(at(INBOX_BASE), Some(WINDOW_MAILBOX));
         assert_eq!(at(CONTROL).unwrap() & ENABLE, ENABLE);
         assert_eq!(at(CONTROL_2).unwrap() & SOFT_RESET, 0);

@@ -45,12 +45,10 @@ eggos_thread_start:
     frame_size = const FRAME_WORDS * 8,
 );
 
-/// `ra`, `fp`, s0-s8 and one word of padding, which keeps `sp` 16-byte aligned.
 const FRAME_WORDS: usize = 12;
 
 unsafe extern "C" {
     pub(super) fn eggos_switch_thread(save: *mut usize, resume: usize);
-    /// Only its address is used: a new thread's first switch returns into it.
     fn eggos_thread_start();
 }
 

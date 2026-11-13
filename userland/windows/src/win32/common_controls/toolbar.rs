@@ -13,8 +13,8 @@ use super::image_list::{LayerImages, image_size};
 use super::status_bar::dock;
 use super::style::CCS_BOTTOM;
 use super::{
-    Model, allocate, command_parent, default_procedure, invalidate, item_element, read_state,
-    utf8, with_state,
+    Model, allocate, command_parent, default_procedure, invalidate, item_element, read_state, utf8,
+    with_state,
 };
 use crate::gui::message;
 use crate::gui::windows::{self, CommonKind, ControlKind, Window};
@@ -692,7 +692,6 @@ const CDRF_NOTIFYITEMDRAW: usize = 0x20;
 const CLR_DEFAULT: u32 = 0xff00_0000;
 const MOST_CUSTOM_BUTTONS: usize = 64;
 
-/// `NMTBCUSTOMDRAW`: `NMCUSTOMDRAW`, then the toolbar's brushes, pens and colours.
 #[repr(C)]
 struct NmToolbarCustomDraw {
     header: super::NotifyHeader,
@@ -725,7 +724,6 @@ struct ShownButton {
     data: usize,
 }
 
-/// What the parent asked, by custom draw, for the buttons this paint shows (D367).
 struct CustomButtons {
     buttons: [ShownButton; MOST_CUSTOM_BUTTONS],
     draws: [RowDraw; MOST_CUSTOM_BUTTONS],
@@ -807,7 +805,10 @@ fn custom_buttons(window: usize, hdc: usize) -> CustomButtons {
                 count += 1;
             }
         }
-        (count, [client.left, client.top, client.right, client.bottom])
+        (
+            count,
+            [client.left, client.top, client.right, client.bottom],
+        )
     });
     let Some((count, whole)) = found else {
         return custom;
@@ -969,7 +970,6 @@ pub(super) fn act(window: usize, item: Option<usize>, action: Action, ours: bool
     Outcome::Done
 }
 
-/// A `TBSTYLE_TOOLTIPS` toolbar's tooltip control (D356), made with the toolbar.
 fn make_tooltips(window: usize) {
     let wanted = with(|gui| {
         gui.windows
@@ -987,8 +987,6 @@ fn make_tooltips(window: usize) {
     }
 }
 
-/// One callback tool per shown button of `window` in its tooltip control, named by the
-/// button's command id, kept as the buttons change (called before each paint).
 fn sync_tools(window: usize) {
     let mut tools = [(0usize, Rect::default()); 64];
     let found = with_state::<Toolbar, _>(window, |entry, model| {
@@ -1024,7 +1022,6 @@ fn is_from_tooltips(window: usize, lparam: usize) -> bool {
             .unwrap_or(false)
 }
 
-/// `NMTBGETINFOTIPW`.
 #[repr(C)]
 struct GetInfoTip {
     header: super::NotifyHeader,
@@ -1034,9 +1031,6 @@ struct GetInfoTip {
     lparam: usize,
 }
 
-/// The text of a toolbar button's tip, as the design's section 8 tries it: `TBN_GETINFOTIPW`
-/// to the parent, else the tooltip's `TTN_GETDISPINFOW` passed on to the parent, else the
-/// button's own string when the toolbar draws no text.
 fn info_tip(window: usize, lparam: usize) {
     let info = lparam as *mut super::tooltip::DisplayInfo;
     // SAFETY: the tooltip control's own `NMTTDISPINFOW`, alive for this call.
@@ -1056,7 +1050,10 @@ fn info_tip(window: usize, lparam: usize) {
         item: command as i32,
         lparam: data,
     });
-    let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(INFO_TIP_UNITS);
+    let length = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(INFO_TIP_UNITS);
     let put = |units: &[u16]| {
         let length = units.len().min(INFO_TIP_UNITS - 1);
         // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
@@ -1086,7 +1083,9 @@ fn info_tip(window: usize, lparam: usize) {
             return 0;
         }
         let index = (0..model.count()).find(|&index| {
-            model.button(index).is_some_and(|button| button.command as usize == command)
+            model
+                .button(index)
+                .is_some_and(|button| button.command as usize == command)
         });
         let text = index.map_or(&[][..], |index| model.text(index));
         let length = text.len().min(INFO_TIP_UNITS);

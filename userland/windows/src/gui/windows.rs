@@ -1154,15 +1154,26 @@ mod tests {
         top.set_menu_height(24);
         assert_eq!(
             (top.width, top.height),
-            (400 - SCROLL_BAR_SIZE as u32, 300 - 24 - SCROLL_BAR_SIZE as u32)
+            (
+                400 - SCROLL_BAR_SIZE as u32,
+                300 - 24 - SCROLL_BAR_SIZE as u32
+            )
         );
         assert_eq!(
             top.bar_rect(true),
-            Some(Rect::sized(400 - SCROLL_BAR_SIZE, 0, SCROLL_BAR_SIZE, 300 - 24 - SCROLL_BAR_SIZE))
+            Some(Rect::sized(
+                400 - SCROLL_BAR_SIZE,
+                0,
+                SCROLL_BAR_SIZE,
+                300 - 24 - SCROLL_BAR_SIZE
+            ))
         );
         let mut child = child(1, Rect::sized(10, 10, 100, 50));
         child.set_long(index::STYLE, 4, WS_VSCROLL as usize);
-        assert_eq!((child.width, child.height), (100 - SCROLL_BAR_SIZE as u32, 50));
+        assert_eq!(
+            (child.width, child.height),
+            (100 - SCROLL_BAR_SIZE as u32, 50)
+        );
         assert_eq!(child.bar_rect(false), None);
         let mut control = Window::child(
             Procedure::Control(ControlKind::ListBox, 0),

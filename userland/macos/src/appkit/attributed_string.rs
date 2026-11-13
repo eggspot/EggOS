@@ -2,14 +2,16 @@
 //! dictionaries of its runs, which cover it end to end in UTF-16 units, and AppKit's drawing
 //! of it, each run drawn with its own font and colour after the one before.
 
-use super::{NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META, NSMUTABLEATTRIBUTEDSTRING,
-    NSMUTABLEATTRIBUTEDSTRING_META, store, string};
+use super::{
+    NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META, NSMUTABLEATTRIBUTEDSTRING,
+    NSMUTABLEATTRIBUTEDSTRING_META, store, string,
+};
 use crate::foundation::{NSDICTIONARY, autoreleased, class_pointer};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, message, methods, send, send1, send2, sel};
+use crate::objc::{Runtime, message, methods, sel, send, send1, send2};
 use eggos_macos_gui::geometry::{Frame, Point, Size};
 
 #[repr(C)]
@@ -63,7 +65,8 @@ fn copied_attributes(attributes: Id) -> Id {
 
 fn run_end(this: Id, index: usize) -> usize {
     let runs = fields(this).runs.as_slice();
-    runs.get(index + 1).map_or(length_of(this), |next| next.start)
+    runs.get(index + 1)
+        .map_or(length_of(this), |next| next.start)
 }
 
 fn run_at(this: Id, at: usize) -> Option<usize> {
@@ -157,17 +160,40 @@ fn write_range(out: *mut Range, range: Range) {
 
 extern "C" fn attributes_at_index(this: Id, _: Sel, at: usize, effective: *mut Range) -> Id {
     let Some(index) = run_at(this, at).filter(|_| at < length_of(this).max(1)) else {
-        write_range(effective, Range { location: 0, length: 0 });
+        write_range(
+            effective,
+            Range {
+                location: 0,
+                length: 0,
+            },
+        );
         return empty_attributes();
     };
     let run = fields(this).runs.as_slice()[index];
     let end = run_end(this, index);
-    write_range(effective, Range { location: run.start, length: end - run.start });
+    write_range(
+        effective,
+        Range {
+            location: run.start,
+            length: end - run.start,
+        },
+    );
     run.attributes
 }
 
-extern "C" fn attribute_at_index(this: Id, _: Sel, name: Id, at: usize, effective: *mut Range) -> Id {
-    let attributes = attributes_at_index(this, sel!("attributesAtIndex:effectiveRange:"), at, effective);
+extern "C" fn attribute_at_index(
+    this: Id,
+    _: Sel,
+    name: Id,
+    at: usize,
+    effective: *mut Range,
+) -> Id {
+    let attributes = attributes_at_index(
+        this,
+        sel!("attributesAtIndex:effectiveRange:"),
+        at,
+        effective,
+    );
     send1(attributes, sel!("objectForKey:"), name as usize)
 }
 
@@ -182,7 +208,10 @@ extern "C" fn immutable_copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
 }
 
 extern "C" fn mutable_copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
-    let made = send(class_pointer(&NSMUTABLEATTRIBUTEDSTRING).cast(), sel!("alloc"));
+    let made = send(
+        class_pointer(&NSMUTABLEATTRIBUTEDSTRING).cast(),
+        sel!("alloc"),
+    );
     let init: extern "C" fn(Id, Sel, Id) -> Id = message::msg_send_as();
     init(made, sel!("initWithAttributedString:"), this)
 }
@@ -194,12 +223,24 @@ extern "C" fn is_equal(this: Id, _: Sel, other: Id) -> u8 {
     if other.is_null() || !super::is(other, &NSATTRIBUTEDSTRING) {
         return 0;
     }
-    let same_text = send1(fields(this).string, sel!("isEqualToString:"), fields(other).string as usize) as usize & 0xff != 0;
+    let same_text = send1(
+        fields(this).string,
+        sel!("isEqualToString:"),
+        fields(other).string as usize,
+    ) as usize
+        & 0xff
+        != 0;
     let (mine, theirs) = (fields(this).runs.as_slice(), fields(other).runs.as_slice());
     let same_runs = mine.len() == theirs.len()
         && mine.iter().zip(theirs).all(|(a, b)| {
             a.start == b.start
-                && send1(a.attributes, sel!("isEqualToDictionary:"), b.attributes as usize) as usize & 0xff != 0
+                && send1(
+                    a.attributes,
+                    sel!("isEqualToDictionary:"),
+                    b.attributes as usize,
+                ) as usize
+                    & 0xff
+                    != 0
         });
     u8::from(same_text && same_runs)
 }
@@ -261,7 +302,12 @@ extern "C" fn add_attribute(this: Id, _: Sel, name: Id, value: Id, range: Range)
     }
     edit_runs(this, range, &mut |old| {
         let changed = mutable_attributes(old);
-        send2(changed, sel!("setObject:forKey:"), value as usize, name as usize);
+        send2(
+            changed,
+            sel!("setObject:forKey:"),
+            value as usize,
+            name as usize,
+        );
         changed
     });
 }
@@ -272,7 +318,11 @@ extern "C" fn add_attributes(this: Id, _: Sel, attributes: Id, range: Range) {
     }
     edit_runs(this, range, &mut |old| {
         let changed = mutable_attributes(old);
-        send1(changed, sel!("addEntriesFromDictionary:"), attributes as usize);
+        send1(
+            changed,
+            sel!("addEntriesFromDictionary:"),
+            attributes as usize,
+        );
         changed
     });
 }
@@ -296,7 +346,12 @@ extern "C" fn replace_characters(this: Id, _: Sel, range: Range, text: Id) {
         false => send(text, sel!("length")) as usize,
     };
     let replacing: extern "C" fn(Id, Sel, Range, Id) = message::msg_send_as();
-    replacing(fields(this).string, sel!("replaceCharactersInRange:withString:"), range, if text.is_null() { string("") } else { text });
+    replacing(
+        fields(this).string,
+        sel!("replaceCharactersInRange:withString:"),
+        range,
+        if text.is_null() { string("") } else { text },
+    );
     let shift = added as isize - range.length as isize;
     let mut kept: Buffer<Run> = Buffer::new();
     let mut runs = core::mem::replace(&mut fields(this).runs, Buffer::new());
@@ -309,18 +364,27 @@ extern "C" fn replace_characters(this: Id, _: Sel, range: Range, text: Id) {
             objc_release(run.attributes);
             continue;
         };
-        let duplicate = kept.as_slice().last().is_some_and(|last: &Run| last.start == start);
+        let duplicate = kept
+            .as_slice()
+            .last()
+            .is_some_and(|last: &Run| last.start == start);
         if duplicate && start != 0 {
             let last = kept.len() - 1;
             objc_release(kept.as_slice()[last].attributes);
             kept.as_mut_slice()[last].attributes = run.attributes;
             continue;
         }
-        kept.push(Run { start, attributes: run.attributes });
+        kept.push(Run {
+            start,
+            attributes: run.attributes,
+        });
     }
     runs.free();
     if kept.len() == 0 {
-        kept.push(Run { start: 0, attributes: copied_attributes(core::ptr::null_mut()) });
+        kept.push(Run {
+            start: 0,
+            attributes: copied_attributes(core::ptr::null_mut()),
+        });
     }
     fields(this).runs = kept;
 }
@@ -330,7 +394,11 @@ extern "C" fn append_attributed_string(this: Id, _: Sel, other: Id) {
         return;
     }
     let start = length_of(this);
-    send1(fields(this).string, sel!("appendString:"), fields(other).string as usize);
+    send1(
+        fields(this).string,
+        sel!("appendString:"),
+        fields(other).string as usize,
+    );
     let other_length = send(fields(other).string, sel!("length")) as usize;
     if other_length == 0 {
         return;
@@ -353,11 +421,22 @@ extern "C" fn set_attributed_string(this: Id, _: Sel, other: Id) {
         true => string(""),
         false => fields(other).string,
     };
-    replacing(fields(this).string, sel!("replaceCharactersInRange:withString:"), Range { location: 0, length: length_of(this) }, text);
+    replacing(
+        fields(this).string,
+        sel!("replaceCharactersInRange:withString:"),
+        Range {
+            location: 0,
+            length: length_of(this),
+        },
+        text,
+    );
     match other.is_null() {
         true => {
             release_runs(this);
-            fields(this).runs.push(Run { start: 0, attributes: copied_attributes(core::ptr::null_mut()) });
+            fields(this).runs.push(Run {
+                start: 0,
+                attributes: copied_attributes(core::ptr::null_mut()),
+            });
         }
         false => copy_runs(other, this),
     }
@@ -371,7 +450,10 @@ fn each_run(this: Id, work: &mut dyn FnMut(Id, Id)) {
         if end <= run.start {
             continue;
         }
-        let range = Range { location: run.start, length: end - run.start };
+        let range = Range {
+            location: run.start,
+            length: end - run.start,
+        };
         let piece: extern "C" fn(Id, Sel, Range) -> Id = message::msg_send_as();
         let text = piece(fields(this).string, sel!("substringWithRange:"), range);
         work(text, run.attributes);
@@ -387,7 +469,12 @@ extern "C" fn draw_at_point(this: Id, _: Sel, at: Point) {
     let mut x = at.x;
     each_run(this, &mut |text, attributes| {
         let draw: extern "C" fn(Id, Sel, Point, Id) = message::msg_send_as();
-        draw(text, sel!("drawAtPoint:withAttributes:"), Point::new(x, at.y), attributes);
+        draw(
+            text,
+            sel!("drawAtPoint:withAttributes:"),
+            Point::new(x, at.y),
+            attributes,
+        );
         x += size_of_piece(text, attributes).width;
     });
 }
@@ -398,13 +485,21 @@ extern "C" fn draw_in_rect(this: Id, _: Sel, rect: Frame) {
         let width = size_of_piece(text, attributes).width;
         let draw: extern "C" fn(Id, Sel, Frame, Id) = message::msg_send_as();
         let room = (rect.x + rect.width - x).max(0.0);
-        draw(text, sel!("drawInRect:withAttributes:"), Frame::new(x, rect.y, room, rect.height), attributes);
+        draw(
+            text,
+            sel!("drawInRect:withAttributes:"),
+            Frame::new(x, rect.y, room, rect.height),
+            attributes,
+        );
         x += width;
     });
 }
 
 extern "C" fn size(this: Id, _: Sel) -> Size {
-    let mut total = Size { width: 0.0, height: 0.0 };
+    let mut total = Size {
+        width: 0.0,
+        height: 0.0,
+    };
     each_run(this, &mut |text, attributes| {
         let piece = size_of_piece(text, attributes);
         total.width += piece.width;
@@ -439,7 +534,11 @@ extern "C" fn set_attributed_string_value(this: Id, _: Sel, value: Id) {
 
 extern "C" fn attributed_string_value(this: Id, _: Sel) -> Id {
     let text = send(this, sel!("stringValue"));
-    attributed_with_string(class_pointer(&NSATTRIBUTEDSTRING).cast(), sel!("attributedStringWithString:"), text)
+    attributed_with_string(
+        class_pointer(&NSATTRIBUTEDSTRING).cast(),
+        sel!("attributedStringWithString:"),
+        text,
+    )
 }
 
 extern "C" fn set_attributed_title(this: Id, _: Sel, value: Id) {
@@ -448,7 +547,11 @@ extern "C" fn set_attributed_title(this: Id, _: Sel, value: Id) {
 
 extern "C" fn attributed_title(this: Id, _: Sel) -> Id {
     let text = send(this, sel!("title"));
-    attributed_with_string(class_pointer(&NSATTRIBUTEDSTRING).cast(), sel!("attributedStringWithString:"), text)
+    attributed_with_string(
+        class_pointer(&NSATTRIBUTEDSTRING).cast(),
+        sel!("attributedStringWithString:"),
+        text,
+    )
 }
 
 pub fn define(runtime: &mut Runtime) -> bool {

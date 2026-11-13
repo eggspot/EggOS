@@ -219,7 +219,10 @@ const EGG_TAPER: i64 = 3;
 fn egg_pixel(x: u32, y: u32) -> u32 {
     let centre_x = i64::from(EGG_SIDE);
     let centre_y = i64::from(EGG_SIDE) + EGG_DROP;
-    let (dx, dy) = (i64::from(x) * 2 + 1 - centre_x, i64::from(y) * 2 + 1 - centre_y);
+    let (dx, dy) = (
+        i64::from(x) * 2 + 1 - centre_x,
+        i64::from(y) * 2 + 1 - centre_y,
+    );
     let half_width = match dy < 0 {
         true => EGG_WIDTH - EGG_WIDTH * -dy / (EGG_HEIGHT * EGG_TAPER),
         false => EGG_WIDTH,
@@ -767,8 +770,16 @@ mod tests {
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 3..], ["-o", "out", "main.c"]);
         let names: Vec<&str> = C_PROGRAMS.iter().map(|program| program.name).collect();
-        assert_eq!(names, ["macos-process", "macos-text", "macos-legacy", "macos-cxx"]);
-        let cxx = c_arguments(&C_PROGRAMS[3], Path::new("main.cpp"), "arm64", Path::new("out"));
+        assert_eq!(
+            names,
+            ["macos-process", "macos-text", "macos-legacy", "macos-cxx"]
+        );
+        let cxx = c_arguments(
+            &C_PROGRAMS[3],
+            Path::new("main.cpp"),
+            "arm64",
+            Path::new("out"),
+        );
         assert_eq!(cxx[0], "clang++");
         assert!(cxx.contains(&"-std=c++17".to_owned()));
         let legacy = c_arguments(
@@ -848,7 +859,10 @@ mod tests {
         assert_eq!(egg_pixel(0, 0), 0);
         assert_eq!(egg_pixel(47, 47), 0);
         let png = egg_png().unwrap();
-        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']);
+        assert_eq!(
+            &png[..8],
+            &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']
+        );
     }
 
     #[test]

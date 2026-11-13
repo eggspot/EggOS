@@ -17,9 +17,9 @@ pub mod firmware;
 pub mod index;
 pub mod manager;
 pub mod messages;
-pub mod state;
 #[cfg(eggos_user)]
 pub mod program;
+pub mod state;
 
 #[cfg(test)]
 mod fake;

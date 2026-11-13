@@ -140,7 +140,10 @@ impl BootMouse {
         let motion = [
             (relative::X, i32::from(report[1] as i8)),
             (relative::Y, i32::from(report[2] as i8)),
-            (relative::WHEEL, report.get(3).map_or(0, |&wheel| i32::from(wheel as i8))),
+            (
+                relative::WHEEL,
+                report.get(3).map_or(0, |&wheel| i32::from(wheel as i8)),
+            ),
         ];
         for (code, value) in motion {
             if value != 0 {

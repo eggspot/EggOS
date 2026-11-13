@@ -156,7 +156,10 @@ fn effect_line(effect: Effect, app: &str) -> (String, Token) {
     match effect {
         Effect::Read => (String::from("Only reads."), Token::TextDim),
         Effect::Change => (format!("Changes something in {app}."), Token::TextDim),
-        Effect::Destroy => (String::from("Deletes or overwrites something."), Token::Text),
+        Effect::Destroy => (
+            String::from("Deletes or overwrites something."),
+            Token::Text,
+        ),
     }
 }
 
@@ -217,7 +220,12 @@ fn keep_cell(row: usize, column: usize, words: &str) {
 fn pipe() -> Result<(usize, usize), Errno> {
     let mut ends = [0i32; 2];
     // SAFETY: `pipe2` writes two descriptors into `ends`, which this function owns.
-    let made = unsafe { syscall::call(number::PIPE2, [ends.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0]) };
+    let made = unsafe {
+        syscall::call(
+            number::PIPE2,
+            [ends.as_mut_ptr() as usize, O_CLOEXEC, 0, 0, 0, 0],
+        )
+    };
     Errno::result(made)?;
     Ok((ends[0] as usize, ends[1] as usize))
 }
@@ -273,33 +281,56 @@ impl ActionWindow {
         self.tree.resize(WIDTH, SIZE.1 as i32);
         self.ids = Ids::default();
         self.screen = screen;
-        self.tree.add(None, Place::fill(), Kind::panel(Token::WindowBackground)).expect("a screen fits its tree")
+        self.tree
+            .add(None, Place::fill(), Kind::panel(Token::WindowBackground))
+            .expect("a screen fits its tree")
     }
 
     fn add(&mut self, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
-        self.tree.add(Some(parent), place, kind).expect("a screen fits its tree")
+        self.tree
+            .add(Some(parent), place, kind)
+            .expect("a screen fits its tree")
     }
 
     fn header(&mut self, root: WidgetId, with_effect: bool) {
-        self.add(root, at(PADDING, PADDING, ICON, ICON), dialog::icon_kind(self.icon));
+        self.add(
+            root,
+            at(PADDING, PADDING, ICON, ICON),
+            dialog::icon_kind(self.icon),
+        );
         let Some(action) = self.chosen else {
             return;
         };
         let title = shortened(&title_of(&action), 48);
-        self.add(root, line_at(TEXT_X, TITLE_TOP, TEXT_WIDTH), Kind::label(&title, Token::Text));
+        self.add(
+            root,
+            line_at(TEXT_X, TITLE_TOP, TEXT_WIDTH),
+            Kind::label(&title, Token::Text),
+        );
         let description = lossy(action.description);
         let mut lines = [""; 2];
         let count = dialog::wrap(&description, TEXT_WIDTH, &mut lines);
         for (index, (line, top)) in lines.iter().zip(DESCRIPTION_TOPS).take(count).enumerate() {
-            let shown = match index == 1 && count == 2 && description.len() > lines[0].len() + line.len() + 1 {
+            let shown = match index == 1
+                && count == 2
+                && description.len() > lines[0].len() + line.len() + 1
+            {
                 true => shortened(&format!("{line}..."), 48),
                 false => String::from(*line),
             };
-            self.add(root, line_at(TEXT_X, top, TEXT_WIDTH), Kind::label(&shown, Token::TextDim));
+            self.add(
+                root,
+                line_at(TEXT_X, top, TEXT_WIDTH),
+                Kind::label(&shown, Token::TextDim),
+            );
         }
         if with_effect {
             let (words, ink) = effect_line(action.effect, &self.app_title);
-            self.add(root, line_at(TEXT_X, EFFECT_TOP, TEXT_WIDTH), Kind::label(&words, ink));
+            self.add(
+                root,
+                line_at(TEXT_X, EFFECT_TOP, TEXT_WIDTH),
+                Kind::label(&words, ink),
+            );
         }
     }
 
@@ -327,13 +358,25 @@ impl ActionWindow {
 
     fn show_list(&mut self) {
         let root = self.fresh(Screen::List);
-        self.add(root, at(PADDING, PADDING, ICON, ICON), dialog::icon_kind(self.icon));
+        self.add(
+            root,
+            at(PADDING, PADDING, ICON, ICON),
+            dialog::icon_kind(self.icon),
+        );
         let name = self.app_title.clone();
-        self.add(root, line_at(TEXT_X, TITLE_TOP, TEXT_WIDTH), Kind::label(&name, Token::Text));
+        self.add(
+            root,
+            line_at(TEXT_X, TITLE_TOP, TEXT_WIDTH),
+            Kind::label(&name, Token::Text),
+        );
         let offered: Vec<Action<'static>> = actions::actions(self.file).collect();
         if offered.is_empty() {
             let line = format!("{name} has no actions.");
-            self.add(root, line_at(TEXT_X, DESCRIPTION_TOPS[0], TEXT_WIDTH), Kind::label(&line, Token::TextDim));
+            self.add(
+                root,
+                line_at(TEXT_X, DESCRIPTION_TOPS[0], TEXT_WIDTH),
+                Kind::label(&line, Token::TextDim),
+            );
             self.buttons(root, "Close", "Run");
             if let Some(main) = self.ids.main {
                 self.tree.set_shown(main, false);
@@ -344,7 +387,11 @@ impl ActionWindow {
             1 => String::from("1 action"),
             many => format!("{many} actions"),
         };
-        self.add(root, line_at(TEXT_X, DESCRIPTION_TOPS[0], TEXT_WIDTH), Kind::label(&count, Token::TextDim));
+        self.add(
+            root,
+            line_at(TEXT_X, DESCRIPTION_TOPS[0], TEXT_WIDTH),
+            Kind::label(&count, Token::TextDim),
+        );
         for (row, action) in offered.iter().enumerate() {
             keep_cell(row, 0, &title_of(action));
             keep_cell(row, 1, &lossy(action.description));
@@ -357,7 +404,11 @@ impl ActionWindow {
             align: Align::Left,
             sortable: false,
         };
-        let columns = [column("Action", 160), column("What it does", 208), column("Effect", 72)];
+        let columns = [
+            column("Action", 160),
+            column("What it does", 208),
+            column("Effect", 72),
+        ];
         let table = self.add(
             root,
             at(TABLE.0, TABLE.1, TABLE.2, TABLE.3),
@@ -413,7 +464,11 @@ impl ActionWindow {
                 true => lossy(argument.name),
                 false => shortened(&lossy(argument.description), 42),
             };
-            self.add(root, line_at(PADDING, top, DESCRIPTION_WIDTH), Kind::label(&described, Token::Text));
+            self.add(
+                root,
+                line_at(PADDING, top, DESCRIPTION_WIDTH),
+                Kind::label(&described, Token::Text),
+            );
             let word = self.add(
                 root,
                 Place::right(WIDTH - WORD_END, top),
@@ -484,7 +539,8 @@ impl ActionWindow {
         };
         let arguments: Vec<_> = action.arguments().copied().collect();
         let mut first_problem = None;
-        for (index, (argument, field)) in arguments.iter().zip(self.ids.fields.clone()).enumerate() {
+        for (index, (argument, field)) in arguments.iter().zip(self.ids.fields.clone()).enumerate()
+        {
             let value = match argument.kind {
                 ArgumentType::Boolean => {
                     let chosen = self.tree.selected(field.control).unwrap_or(0);
@@ -499,10 +555,12 @@ impl ActionWindow {
             };
             let problem = match () {
                 _ if value.is_empty() && argument.required => Some("Needs a value"),
-                _ if !value.is_empty() && !argument.kind.accepts(value.as_bytes()) => Some(match argument.kind {
-                    ArgumentType::Number => "Not a number",
-                    _ => "Not a valid value",
-                }),
+                _ if !value.is_empty() && !argument.kind.accepts(value.as_bytes()) => {
+                    Some(match argument.kind {
+                        ArgumentType::Number => "Not a number",
+                        _ => "Not a valid value",
+                    })
+                }
                 _ => None,
             };
             match problem {
@@ -510,7 +568,9 @@ impl ActionWindow {
                     self.tree.set_text(field.word, words);
                     first_problem.get_or_insert(field.control);
                 }
-                None => self.tree.set_text(field.word, Self::requirement(argument.required)),
+                None => self
+                    .tree
+                    .set_text(field.word, Self::requirement(argument.required)),
             }
             self.values[index] = value;
         }
@@ -547,7 +607,8 @@ impl ActionWindow {
             line += 1;
         }
         let title = shortened(&title_of(&action), ACTION_BUTTON_GLYPHS);
-        let width = (title.chars().count() as i32 * GLYPH + ACTION_BUTTON_PADDING).max(BUTTON_WIDTH);
+        let width =
+            (title.chars().count() as i32 * GLYPH + ACTION_BUTTON_PADDING).max(BUTTON_WIDTH);
         let action_x = WORD_END - width;
         let status = self.add(
             root,
@@ -556,14 +617,28 @@ impl ActionWindow {
         );
         let cancel = self.add(
             root,
-            at(action_x - BUTTON_GAP - BUTTON_WIDTH, BUTTONS_TOP, BUTTON_WIDTH, CONTROL_HEIGHT),
+            at(
+                action_x - BUTTON_GAP - BUTTON_WIDTH,
+                BUTTONS_TOP,
+                BUTTON_WIDTH,
+                CONTROL_HEIGHT,
+            ),
             Kind::button("Cancel", false),
         );
-        let main = self.add(root, at(action_x, BUTTONS_TOP, width, CONTROL_HEIGHT), Kind::button(&title, false));
+        let main = self.add(
+            root,
+            at(action_x, BUTTONS_TOP, width, CONTROL_HEIGHT),
+            Kind::button(&title, false),
+        );
         self.tree.set_person_only(main, true);
-        self.tree.set_accessible_name(main, &format!("{title}, deletes or overwrites"));
+        self.tree
+            .set_accessible_name(main, &format!("{title}, deletes or overwrites"));
         if from_form {
-            let back = self.add(root, at(PADDING, BUTTONS_TOP, BUTTON_WIDTH, CONTROL_HEIGHT), Kind::button("Back", false));
+            let back = self.add(
+                root,
+                at(PADDING, BUTTONS_TOP, BUTTON_WIDTH, CONTROL_HEIGHT),
+                Kind::button("Back", false),
+            );
             self.ids.back = Some(back);
         }
         self.ids.status = Some(status);
@@ -602,9 +677,18 @@ impl ActionWindow {
         }
         let mut pointers: Vec<*const u8> = words.iter().map(|word| word.as_ptr()).collect();
         pointers.push(core::ptr::null());
-        let environment = [b"PATH=/bin\0".as_ptr(), b"NO_COLOR=1\0".as_ptr(), core::ptr::null()];
+        let environment = [
+            b"PATH=/bin\0".as_ptr(),
+            b"NO_COLOR=1\0".as_ptr(),
+            core::ptr::null(),
+        ];
         let started = pipe().and_then(|(read_end, write_end)| {
-            let request = Spawn::new(APP_PROGRAM, &pointers, &environment, [write_end, write_end, write_end]);
+            let request = Spawn::new(
+                APP_PROGRAM,
+                &pointers,
+                &environment,
+                [write_end, write_end, write_end],
+            );
             // SAFETY: the program has one thread and starts one child at a time on this stack,
             // which `spawn` uses only until the child's `execve`.
             let stack = unsafe { &mut *(&raw mut STACK) };
@@ -614,9 +698,16 @@ impl ActionWindow {
                 Ok(child) => {
                     // SAFETY: setting the read end's flags, a descriptor this program owns.
                     let _ = unsafe {
-                        syscall::call(number::FCNTL, [read_end, 4, O_NONBLOCK | O_CLOEXEC, 0, 0, 0])
+                        syscall::call(
+                            number::FCNTL,
+                            [read_end, 4, O_NONBLOCK | O_CLOEXEC, 0, 0, 0],
+                        )
                     };
-                    Ok(Run { child, pipe: read_end, stopped: false })
+                    Ok(Run {
+                        child,
+                        pipe: read_end,
+                        stopped: false,
+                    })
                 }
                 Err(error) => {
                     close_descriptor(read_end);
@@ -663,7 +754,12 @@ impl ActionWindow {
         loop {
             // SAFETY: `read` writes at most `chunk.len()` bytes into `chunk`, which this
             // function owns.
-            let read = unsafe { syscall::call(number::READ, [run.pipe, chunk.as_mut_ptr() as usize, chunk.len(), 0, 0, 0]) };
+            let read = unsafe {
+                syscall::call(
+                    number::READ,
+                    [run.pipe, chunk.as_mut_ptr() as usize, chunk.len(), 0, 0, 0],
+                )
+            };
             match Errno::result(read) {
                 Ok(0) | Err(_) => return,
                 Ok(count) => {
@@ -681,7 +777,12 @@ impl ActionWindow {
         self.drain();
         let mut status = 0i32;
         // SAFETY: `wait4` writes the child's status into `status`, which this function owns.
-        let waited = unsafe { syscall::call(number::WAIT4, [run.child, &raw mut status as usize, WNOHANG, 0, 0, 0]) };
+        let waited = unsafe {
+            syscall::call(
+                number::WAIT4,
+                [run.child, &raw mut status as usize, WNOHANG, 0, 0, 0],
+            )
+        };
         match Errno::result(waited) {
             Ok(0) | Err(Errno::EINTR) => return,
             _ => {}
@@ -698,25 +799,48 @@ impl ActionWindow {
             (false, true, code, _) => format!("Failed with status {code}."),
             (false, false, _, _) => format!("Failed with status {}.", 128 + (status & 0x7f)),
         };
-        let again = !self.output.windows(14).any(|part| part == b"no_such_action");
+        let again = !self
+            .output
+            .windows(14)
+            .any(|part| part == b"no_such_action");
         self.show_result_sentence(&sentence, again);
     }
 
     fn show_result_sentence(&mut self, sentence: &str, again: bool) {
         let root = self.fresh(Screen::Result);
-        self.add(root, at(PADDING, PADDING, ICON, ICON), dialog::icon_kind(self.icon));
-        let title = self.chosen.map_or_else(|| self.app_title.clone(), |action| shortened(&title_of(&action), 48));
-        self.add(root, line_at(TEXT_X, TITLE_TOP, TEXT_WIDTH), Kind::label(&title, Token::Text));
-        self.add(root, line_at(TEXT_X, DESCRIPTION_TOPS[0], TEXT_WIDTH), Kind::label(sentence, Token::Text));
+        self.add(
+            root,
+            at(PADDING, PADDING, ICON, ICON),
+            dialog::icon_kind(self.icon),
+        );
+        let title = self.chosen.map_or_else(
+            || self.app_title.clone(),
+            |action| shortened(&title_of(&action), 48),
+        );
+        self.add(
+            root,
+            line_at(TEXT_X, TITLE_TOP, TEXT_WIDTH),
+            Kind::label(&title, Token::Text),
+        );
+        self.add(
+            root,
+            line_at(TEXT_X, DESCRIPTION_TOPS[0], TEXT_WIDTH),
+            Kind::label(sentence, Token::Text),
+        );
         if !self.output.is_empty() {
-            let area = self.add(root, at(AREA.0, AREA.1, AREA.2, AREA.3), Kind::text_area(0, ""));
+            let area = self.add(
+                root,
+                at(AREA.0, AREA.1, AREA.2, AREA.3),
+                Kind::text_area(0, ""),
+            );
             let mut shown = lossy(&self.output);
             if self.output.len() >= OUTPUT_LIMIT {
                 shown.push('\n');
                 shown.push_str(&format!("{OUTPUT_CUT} {} ...", self.app_title));
             }
             self.tree.set_text(area, &shown);
-            self.tree.set_accessible_name(area, &format!("Output of {title}"));
+            self.tree
+                .set_accessible_name(area, &format!("Output of {title}"));
             self.ids.area = Some(area);
         }
         self.buttons(root, "Run again", "Close");
@@ -798,10 +922,15 @@ impl Application<CAPACITY, 1> for ActionWindow {
                 let Some(action) = self.chosen else {
                     return;
                 };
-                if let Some((index, field)) = ids.fields.iter().enumerate().find(|(_, field)| field.control == id)
+                if let Some((index, field)) = ids
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, field)| field.control == id)
                     && let Some(argument) = action.arguments().nth(index)
                 {
-                    self.tree.set_text(field.word, Self::requirement(argument.required));
+                    self.tree
+                        .set_text(field.word, Self::requirement(argument.required));
                 }
             }
             Response::Unused { code: key::ESC, .. } => match self.screen {
@@ -809,7 +938,9 @@ impl Application<CAPACITY, 1> for ActionWindow {
                 Screen::Result | Screen::List => close(),
                 _ => self.cancel(),
             },
-            Response::Unused { code: key::ENTER, .. } if self.screen == Screen::Form => self.press_main(),
+            Response::Unused {
+                code: key::ENTER, ..
+            } if self.screen == Screen::Form => self.press_main(),
             _ => {}
         }
     }

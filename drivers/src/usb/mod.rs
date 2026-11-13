@@ -147,21 +147,21 @@ pub fn storage_interface(configuration: &[u8]) -> Option<StorageInterface> {
                 if found.is_some_and(|storage| storage.bulk_in != 0 && storage.bulk_out != 0) {
                     return found;
                 }
-                found = (descriptor[5] == 0x08 && descriptor[6] == 0x06 && descriptor[7] == 0x50).then_some(
-                    StorageInterface {
+                found = (descriptor[5] == 0x08 && descriptor[6] == 0x06 && descriptor[7] == 0x50)
+                    .then_some(StorageInterface {
                         configuration: value,
                         interface: descriptor[2],
                         bulk_in: 0,
                         bulk_out: 0,
                         max_packet: 0,
-                    },
-                );
+                    });
             }
             DESCRIPTOR_ENDPOINT if length >= 7 => {
                 if let Some(storage) = found.as_mut() {
                     let address = descriptor[2];
                     if descriptor[3] & 0b11 == 0b10 {
-                        storage.max_packet = u16::from_le_bytes([descriptor[4], descriptor[5]]) & 0x7ff;
+                        storage.max_packet =
+                            u16::from_le_bytes([descriptor[4], descriptor[5]]) & 0x7ff;
                         if address & 0x80 != 0 {
                             storage.bulk_in = address & 0x0f;
                         } else {
@@ -191,7 +191,9 @@ pub fn command_block(tag: u32, data_bytes: u32, data_in: bool, command: &[u8]) -
 
 /// Whether a command status wrapper says the command with `tag` passed.
 pub fn status_passed(status: &[u8; 13], tag: u32) -> bool {
-    status[..4] == 0x5342_5355u32.to_le_bytes() && status[4..8] == tag.to_le_bytes() && status[12] == 0
+    status[..4] == 0x5342_5355u32.to_le_bytes()
+        && status[4..8] == tag.to_le_bytes()
+        && status[12] == 0
 }
 
 /// SCSI READ(10) or WRITE(10) of `blocks` blocks from `lba`.
@@ -269,10 +271,8 @@ mod tests {
     #[test]
     fn the_boot_keyboard_interface_and_its_endpoint_are_found() {
         let configuration = [
-            9, 2, 34, 0, 1, 1, 0, 0xa0, 50,
-            9, 4, 0, 0, 1, 3, 1, 1, 0,
-            9, 0x21, 0x11, 1, 0, 1, 0x22, 63, 0,
-            7, 5, 0x81, 3, 8, 0, 10,
+            9, 2, 34, 0, 1, 1, 0, 0xa0, 50, 9, 4, 0, 0, 1, 3, 1, 1, 0, 9, 0x21, 0x11, 1, 0, 1,
+            0x22, 63, 0, 7, 5, 0x81, 3, 8, 0, 10,
         ];
         let found = boot_interface(&configuration).unwrap();
         assert_eq!(found.kind, BootDevice::Keyboard);
@@ -284,20 +284,23 @@ mod tests {
 
     #[test]
     fn a_configuration_without_a_boot_interface_has_none() {
-        let configuration = [9, 2, 25, 0, 1, 1, 0, 0xa0, 50, 9, 4, 0, 0, 1, 8, 6, 80, 0, 7, 5, 0x81, 2, 0, 2, 0];
+        let configuration = [
+            9, 2, 25, 0, 1, 1, 0, 0xa0, 50, 9, 4, 0, 0, 1, 8, 6, 80, 0, 7, 5, 0x81, 2, 0, 2, 0,
+        ];
         assert_eq!(boot_interface(&configuration), None);
     }
 
     #[test]
     fn a_flash_drive_s_bulk_endpoints_are_found() {
         let configuration = [
-            9, 2, 32, 0, 1, 1, 0, 0x80, 50,
-            9, 4, 0, 0, 2, 8, 6, 0x50, 0,
-            7, 5, 0x81, 2, 0, 2, 0,
+            9, 2, 32, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 2, 8, 6, 0x50, 0, 7, 5, 0x81, 2, 0, 2, 0,
             7, 5, 0x02, 2, 0, 2, 0,
         ];
         let storage = storage_interface(&configuration).unwrap();
-        assert_eq!((storage.bulk_in, storage.bulk_out, storage.max_packet), (1, 2, 512));
+        assert_eq!(
+            (storage.bulk_in, storage.bulk_out, storage.max_packet),
+            (1, 2, 512)
+        );
     }
 
     #[test]

@@ -240,7 +240,13 @@ fn a_ranged_request_asks_for_its_bytes_and_ranges_parse_from_first_to_last() {
     let url = parse_url(b"https://files.test/store.img").unwrap();
     let mut out = [0u8; 512];
     let range = ByteRange::parse(b"512-66047").unwrap();
-    assert_eq!(range, ByteRange { first: 512, last: 66_047 });
+    assert_eq!(
+        range,
+        ByteRange {
+            first: 512,
+            last: 66_047
+        }
+    );
     assert_eq!(range.length(), 65_536);
     let length = write_ranged_request(&mut out, &url, b"a", Some(range)).unwrap();
     let text = core::str::from_utf8(&out[..length]).unwrap();

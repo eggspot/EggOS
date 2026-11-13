@@ -170,7 +170,10 @@ fn key_shape(data: u32, row: usize) -> (u8, u8) {
     let mut shape = Text::<64>::new();
     KEY_CELLS.write(data, row, KEY_SHAPE, &mut shape);
     let bytes = shape.as_str().as_bytes();
-    let digits = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let digits = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
     let depth = bytes[..digits]
         .iter()
         .fold(0u32, |sum, digit| sum * 10 + u32::from(digit - b'0'));
@@ -1001,7 +1004,11 @@ impl WindowsPane {
             (true, false) => SHAPE_EXPANDABLE,
             (false, _) => SHAPE_LEAF,
         };
-        format!("{}{}", row.depth.min(usize::from(u8::MAX)), char::from(state))
+        format!(
+            "{}{}",
+            row.depth.min(usize::from(u8::MAX)),
+            char::from(state)
+        )
     }
 
     fn page_rows(&mut self, rows: &mut Vec<KeyRow>) {
@@ -1114,17 +1121,50 @@ impl WindowsPane {
             let lists_height = HEIGHT - LISTS_ROOM;
             let buttons_top = HEIGHT - BUTTONS_FROM_BOTTOM;
             let places = [
-                (widgets.path, at(PATH_FIELD.0, PATH_FIELD.1, PATH_FIELD.2, PATH_FIELD.3)),
-                (widgets.copy, at(COPY_PATH.0, COPY_PATH.1, BUTTON.0, BUTTON.1)),
-                (widgets.refresh, at(REFRESH.0, REFRESH.1, BUTTON.0, BUTTON.1)),
-                (widgets.keys, at(KEYS_X_WIDTH.0, LISTS_TOP, KEYS_X_WIDTH.1, lists_height)),
-                (widgets.values, at(VALUES_X_WIDTH.0, LISTS_TOP, VALUES_X_WIDTH.1, lists_height)),
-                (widgets.new_key, at(BUTTON_XS[0], buttons_top, BUTTON.0, BUTTON.1)),
-                (widgets.new_value, at(BUTTON_XS[1], buttons_top, BUTTON.0, BUTTON.1)),
-                (widgets.edit, at(BUTTON_XS[2], buttons_top, BUTTON.0, BUTTON.1)),
-                (widgets.delete, at(BUTTON_XS[3], buttons_top, BUTTON.0, BUTTON.1)),
-                (widgets.replace, at(BUTTON_XS[0], buttons_top, REPLACE_WIDTH, BUTTON.1)),
-                (widgets.status, status_place(PADDING, HEIGHT - STATUS_FROM_BOTTOM, LINE_WIDTH)),
+                (
+                    widgets.path,
+                    at(PATH_FIELD.0, PATH_FIELD.1, PATH_FIELD.2, PATH_FIELD.3),
+                ),
+                (
+                    widgets.copy,
+                    at(COPY_PATH.0, COPY_PATH.1, BUTTON.0, BUTTON.1),
+                ),
+                (
+                    widgets.refresh,
+                    at(REFRESH.0, REFRESH.1, BUTTON.0, BUTTON.1),
+                ),
+                (
+                    widgets.keys,
+                    at(KEYS_X_WIDTH.0, LISTS_TOP, KEYS_X_WIDTH.1, lists_height),
+                ),
+                (
+                    widgets.values,
+                    at(VALUES_X_WIDTH.0, LISTS_TOP, VALUES_X_WIDTH.1, lists_height),
+                ),
+                (
+                    widgets.new_key,
+                    at(BUTTON_XS[0], buttons_top, BUTTON.0, BUTTON.1),
+                ),
+                (
+                    widgets.new_value,
+                    at(BUTTON_XS[1], buttons_top, BUTTON.0, BUTTON.1),
+                ),
+                (
+                    widgets.edit,
+                    at(BUTTON_XS[2], buttons_top, BUTTON.0, BUTTON.1),
+                ),
+                (
+                    widgets.delete,
+                    at(BUTTON_XS[3], buttons_top, BUTTON.0, BUTTON.1),
+                ),
+                (
+                    widgets.replace,
+                    at(BUTTON_XS[0], buttons_top, REPLACE_WIDTH, BUTTON.1),
+                ),
+                (
+                    widgets.status,
+                    status_place(PADDING, HEIGHT - STATUS_FROM_BOTTOM, LINE_WIDTH),
+                ),
             ];
             for (id, place) in places {
                 tree.set_place(id, place);
@@ -1140,14 +1180,32 @@ impl WindowsPane {
             (widgets.path, at(PADDING, PATH_FIELD.1, full, PATH_FIELD.3)),
             (widgets.copy, at(PADDING, PHONE_COPY_TOP, half, PHONE_ROW)),
             (widgets.refresh, at(right, PHONE_COPY_TOP, half, PHONE_ROW)),
-            (widgets.keys, at(PADDING, PHONE_KEYS_TOP, full, PHONE_KEYS_HEIGHT)),
-            (widgets.values, at(PADDING, values_top, full, PHONE_VALUES_HEIGHT)),
-            (widgets.new_key, at(PADDING, PHONE_BUTTONS_TOP, half, PHONE_ROW)),
-            (widgets.new_value, at(right, PHONE_BUTTONS_TOP, half, PHONE_ROW)),
+            (
+                widgets.keys,
+                at(PADDING, PHONE_KEYS_TOP, full, PHONE_KEYS_HEIGHT),
+            ),
+            (
+                widgets.values,
+                at(PADDING, values_top, full, PHONE_VALUES_HEIGHT),
+            ),
+            (
+                widgets.new_key,
+                at(PADDING, PHONE_BUTTONS_TOP, half, PHONE_ROW),
+            ),
+            (
+                widgets.new_value,
+                at(right, PHONE_BUTTONS_TOP, half, PHONE_ROW),
+            ),
             (widgets.edit, at(PADDING, second, half, PHONE_ROW)),
             (widgets.delete, at(right, second, half, PHONE_ROW)),
-            (widgets.replace, at(PADDING, PHONE_BUTTONS_TOP, full, PHONE_ROW)),
-            (widgets.status, status_place(PADDING, second + PHONE_ROW + PADDING, full)),
+            (
+                widgets.replace,
+                at(PADDING, PHONE_BUTTONS_TOP, full, PHONE_ROW),
+            ),
+            (
+                widgets.status,
+                status_place(PADDING, second + PHONE_ROW + PADDING, full),
+            ),
         ];
         for (id, place) in places {
             tree.set_place(id, place);

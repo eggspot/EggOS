@@ -94,7 +94,11 @@ fn throw_bad_alloc() -> ! {
         // SAFETY: `eggos_cxa_throw` is `__cxa_throw`'s entry, which takes the object, its type
         // and its destructor and never returns.
         unsafe { core::mem::transmute(eggos_cxa_throw as *const ()) };
-    throw(object, &raw const TYPE_BAD_ALLOC, exception_destructor as usize)
+    throw(
+        object,
+        &raw const TYPE_BAD_ALLOC,
+        exception_destructor as usize,
+    )
 }
 
 extern "C" fn operator_new(size: usize) -> *mut u8 {
@@ -175,9 +179,7 @@ extern "C" fn run_finalizers() {
 }
 
 extern "C" fn cxa_atexit(function: usize, argument: usize, _: usize) -> i32 {
-    if !FINALIZERS_REGISTERED.swap(true, Ordering::AcqRel)
-        && process::atexit(run_finalizers) != 0
-    {
+    if !FINALIZERS_REGISTERED.swap(true, Ordering::AcqRel) && process::atexit(run_finalizers) != 0 {
         return -1;
     }
     FINALIZERS.with(|(entries, count)| {
@@ -262,7 +264,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"___cxa_pure_virtual" => pure_virtual as *const () as usize,
         b"___cxa_deleted_virtual" => deleted_virtual as *const () as usize,
         b"__ZSt9terminatev" | b"___cxa_call_unexpected" => terminate as *const () as usize,
-        b"__ZNSt9exceptionD1Ev" | b"__ZNSt9exceptionD2Ev" | b"__ZNSt9bad_allocD1Ev"
+        b"__ZNSt9exceptionD1Ev"
+        | b"__ZNSt9exceptionD2Ev"
+        | b"__ZNSt9bad_allocD1Ev"
         | b"__ZNSt9bad_allocD2Ev" => exception_destructor as *const () as usize,
         b"__ZNSt9exceptionD0Ev" | b"__ZNSt9bad_allocD0Ev" => {
             exception_deleting_destructor as *const () as usize
@@ -283,13 +287,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"__ZTISt9bad_alloc" => &raw const TYPE_BAD_ALLOC as usize,
         b"__ZTVN10__cxxabiv117__class_type_infoE" => &raw const VTABLES.class as usize,
         b"__ZTVN10__cxxabiv120__si_class_type_infoE" => &raw const VTABLES.single_base as usize,
-        b"__ZTVN10__cxxabiv121__vmi_class_type_infoE" => {
-            &raw const VTABLES.multiple_bases as usize
-        }
+        b"__ZTVN10__cxxabiv121__vmi_class_type_infoE" => &raw const VTABLES.multiple_bases as usize,
         b"__ZTVN10__cxxabiv119__pointer_type_infoE" => &raw const VTABLES.pointer as usize,
-        b"__ZTVN10__cxxabiv123__fundamental_type_infoE" => {
-            &raw const VTABLES.fundamental as usize
-        }
+        b"__ZTVN10__cxxabiv123__fundamental_type_infoE" => &raw const VTABLES.fundamental as usize,
         b"__ZTIi" => record(&cxx_types::TYPE_INT),
         b"__ZTIj" => record(&cxx_types::TYPE_UNSIGNED_INT),
         b"__ZTIl" => record(&cxx_types::TYPE_LONG),

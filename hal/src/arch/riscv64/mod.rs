@@ -12,8 +12,8 @@ mod fp;
 mod thread;
 mod timer;
 
-use crate::atomic::AtomicU64;
 use crate::arch::boot_memory;
+use crate::atomic::AtomicU64;
 use crate::cpu::{CpuStart, StartCpuError};
 use crate::memory::PhysicalRange;
 use crate::paging::{self, Attributes, KernelImage, MemoryType};
@@ -351,7 +351,10 @@ impl Platform for Riscv64 {
         use eggos_drivers::interrupt::{aplic, plic};
         let (source, mode) = match console_input::uses_aia() {
             true => aplic::source_of_specifier(specifier.cells())?,
-            false => (plic::source_of_specifier(specifier.cells())?, aplic::SourceMode::LevelHigh),
+            false => (
+                plic::source_of_specifier(specifier.cells())?,
+                aplic::SourceMode::LevelHigh,
+            ),
         };
         let context = plic_context_of(BOOT_HART.load(Ordering::Relaxed));
         console_input::route_device(context, source, mode)

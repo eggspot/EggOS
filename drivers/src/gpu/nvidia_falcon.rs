@@ -323,11 +323,18 @@ impl<R: RegisterIo> Falcon<R> {
             config | TARGET_COHERENT_SYSTEM_MEMORY | PHYSICAL,
         );
         let control = self.regs.read32(fbif + FBIF_CONTROL);
-        self.regs.write32(fbif + FBIF_CONTROL, control | ALLOW_PHYSICAL_WITHOUT_CONTEXT);
+        self.regs.write32(
+            fbif + FBIF_CONTROL,
+            control | ALLOW_PHYSICAL_WITHOUT_CONTEXT,
+        );
         let code_source = program.image.wrapping_sub(u64::from(program.imem_virtual));
         self.dma(
             code_source,
-            (program.imem_physical, program.imem_virtual, program.imem_bytes),
+            (
+                program.imem_physical,
+                program.imem_virtual,
+                program.imem_bytes,
+            ),
             DMA_256_BYTES | DMA_TO_IMEM | DMA_SECURE,
             keep_waiting,
         )?;
@@ -352,7 +359,10 @@ impl<R: RegisterIo> Falcon<R> {
 
     fn load_code(&self, program: &Program<'_>) {
         let secure = if program.secure { SECURE } else { 0 };
-        self.write(IMEM_CONTROL, program.code_physical | AUTO_INCREMENT_WRITE | secure);
+        self.write(
+            IMEM_CONTROL,
+            program.code_physical | AUTO_INCREMENT_WRITE | secure,
+        );
         let mut tag = program.code_virtual / BLOCK_BYTES as u32;
         for (index, word) in program.code.chunks(4).enumerate() {
             if index * 4 % BLOCK_BYTES == 0 {
@@ -443,11 +453,19 @@ mod tests {
         assert_eq!(falcon.run(&program, &mut || true), Ok((0x600d, 0)));
         let writes = regs.writes.borrow();
         assert_eq!(writes[0], (IMEM_CONTROL, AUTO_INCREMENT_WRITE | SECURE));
-        let tags: Vec<u32> = writes.iter().filter(|w| w.0 == IMEM_TAG).map(|w| w.1).collect();
+        let tags: Vec<u32> = writes
+            .iter()
+            .filter(|w| w.0 == IMEM_TAG)
+            .map(|w| w.1)
+            .collect();
         assert_eq!(tags, [2, 3]);
         let code_words = writes.iter().filter(|w| w.0 == IMEM_DATA).count();
         assert_eq!(code_words, 512 / 4);
-        let data: Vec<u32> = writes.iter().filter(|w| w.0 == DMEM_DATA).map(|w| w.1).collect();
+        let data: Vec<u32> = writes
+            .iter()
+            .filter(|w| w.0 == DMEM_DATA)
+            .map(|w| w.1)
+            .collect();
         assert_eq!(data, [0x0403_0201, 5]);
         assert!(writes.contains(&(BOOT_VECTOR, 0x200)));
         assert!(writes.contains(&(MAILBOX_0, 7)) && writes.contains(&(MAILBOX_1, 8)));
@@ -500,7 +518,10 @@ mod tests {
             entry: 0,
             mailboxes: (0, 0),
         };
-        assert_eq!(falcon.run(&program, &mut || true), Err(FalconError::TooLarge));
+        assert_eq!(
+            falcon.run(&program, &mut || true),
+            Err(FalconError::TooLarge)
+        );
         assert!(regs.writes.borrow().is_empty());
     }
 }

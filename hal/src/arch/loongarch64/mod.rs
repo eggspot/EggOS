@@ -263,31 +263,21 @@ pub(super) mod iocsr {
     pub const MAIL_DATA_SHIFT: u32 = 32;
 }
 
-/// `DMW0`: virtual segment 8 to physical memory, uncached, for the kernel only.
 const DMW0: u64 = 0x8000_0000_0000_0001;
-/// `DMW1`: virtual segment 9 to physical memory, cached, for the kernel only, during boot.
 const DMW1: u64 = 0x9000_0000_0000_0011;
 const UNCACHED_WINDOW: usize = 0x8000_0000_0000_0000;
 const CACHED_WINDOW: u64 = 0x9000_0000_0000_0000;
-/// `CRMD`: privilege 0, interrupts masked, translation on, the windows' default access cached.
 const CRMD_PAGED: u64 = 0xb0;
 
-/// The EFI system table QEMU builds: its signature, `IBI SYST`, and where it keeps the number of
-/// configuration tables and their address.
 const EFI_SYSTEM_TABLE_SIGNATURE: u64 = 0x5453_5953_2049_4249;
 const EFI_SYSTEM_TABLE_COUNT: u64 = 104;
 const EFI_SYSTEM_TABLE_TABLES: u64 = 112;
-/// `DEVICE_TREE_GUID`, b1b621d5-f19c-41a5-830b-d9152c69aae0, as two little-endian words.
 const DEVICE_TREE_GUID: [u64; 2] = [0x41a5_f19c_b1b6_21d5, 0xe0aa_692c_15d9_0b83];
 
-/// The direct map: the start of the high half (D29), at a 512 GiB root entry of its own.
 const DIRECT_MAP_OFFSET: usize = 0xffff_8000_0000_0000;
-/// The physical memory the boot direct map covers: 512 GiB.
 const BOOT_DIRECT_MAP_END: u64 = 512 << 30;
-/// The kernel's load address: below it QEMU keeps its boot information.
 const KERNEL_LOAD_ADDRESS: u64 = 0x20_0000;
 
-/// The kernel's boot mapping: read, write and execute until its own page tables are active.
 const BOOT_KERNEL: Attributes = Attributes {
     writable: true,
     executable: true,
@@ -298,31 +288,24 @@ const BOOT_KERNEL: Attributes = Attributes {
 #[repr(C, align(4096))]
 struct BootTable([u64; paging::ENTRIES]);
 
-/// Built by `_start` before any Rust code runs; afterwards only secondary CPUs use them.
 static mut BOOT_ROOT: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_DIRECT: BootTable = BootTable([0; paging::ENTRIES]);
 static mut BOOT_KERNEL: BootTable = BootTable([0; paging::ENTRIES]);
 
-/// The device tree's physical address, from the EFI system table; 0 for none.
 static DEVICE_TREE: AtomicUsize = AtomicUsize::new(0);
 
 const COMMAND_LINE_BYTES: usize = 512;
 
-/// The command line QEMU passed, copied by the entry code, NUL-terminated or full.
 static mut COMMAND_LINE: [u8; COMMAND_LINE_BYTES] = [0; COMMAND_LINE_BYTES];
 
-/// QEMU `virt`'s NS16550 UART, registers 1 byte apart, reached through the uncached window.
 const UART_BASE: usize = 0x1fe0_01e0;
 const UART_REG_SHIFT: u32 = 0;
 
-/// QEMU `virt`'s generic event device's sleep-control and reset registers, and the values that
-/// power the machine off (sleep type 5, enabled) and reset it.
 const GED_SLEEP_CONTROL: usize = 0x100e_001c;
 const GED_RESET: usize = 0x100e_001e;
 const GED_POWER_OFF: u8 = 0x34;
 const GED_RESET_VALUE: u8 = 0x42;
 
-/// QEMU `virt`'s RAM without a device tree: the low 256 MiB.
 const DEFAULT_RAM_END: u64 = 256 << 20;
 
 macro_rules! csr_read {
@@ -354,22 +337,27 @@ pub(super) fn iocsr_read32(address: u64) -> u32 {
     let value: u32;
     // SAFETY: reading this core's interrupt and mail block has no side effects but the ones its
     // registers define, which the callers want.
-    unsafe { core::arch::asm!("iocsrrd.w {0}, {1}", out(reg) value, in(reg) address, options(nostack)) };
+    unsafe {
+        core::arch::asm!("iocsrrd.w {0}, {1}", out(reg) value, in(reg) address, options(nostack))
+    };
     value
 }
 
 /// Writes the 32-bit IOCSR register `address`.
 pub(super) fn iocsr_write32(address: u64, value: u32) {
     // SAFETY: as in `iocsr_read32`: the callers write the registers their meaning allows.
-    unsafe { core::arch::asm!("iocsrwr.w {0}, {1}", in(reg) value, in(reg) address, options(nostack)) };
+    unsafe {
+        core::arch::asm!("iocsrwr.w {0}, {1}", in(reg) value, in(reg) address, options(nostack))
+    };
 }
 
 fn iocsr_write64(address: u64, value: u64) {
     // SAFETY: as in `iocsr_write32`.
-    unsafe { core::arch::asm!("iocsrwr.d {0}, {1}", in(reg) value, in(reg) address, options(nostack)) };
+    unsafe {
+        core::arch::asm!("iocsrwr.d {0}, {1}", in(reg) value, in(reg) address, options(nostack))
+    };
 }
 
-/// Puts `data` in mailbox `mailbox` of CPU `cpu`, its high half first, as Linux does.
 fn send_mail(cpu: u64, mailbox: u64, data: u64) {
     let base = iocsr::SEND_BLOCKING | cpu << iocsr::SEND_CPU_SHIFT;
     let high = base | (mailbox * 2 + 1) << iocsr::MAIL_BOX_SHIFT | (data & 0xffff_ffff_0000_0000);
@@ -378,9 +366,6 @@ fn send_mail(cpu: u64, mailbox: u64, data: u64) {
     iocsr_write64(iocsr::MAIL_SEND, low);
 }
 
-/// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
-/// with the boot page tables: switches to the kernel's, sets this CPU's timer and interrupts up
-/// (D41), then calls the entry.
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now; interrupts are masked (`CRMD.IE`
@@ -390,8 +375,6 @@ extern "C" fn secondary_main(start: &CpuStart) -> ! {
     (start.entry)(start.argument)
 }
 
-/// The device tree's physical address, or 0 when there is none or it lies beyond the boot
-/// direct map.
 fn device_tree() -> usize {
     let address = DEVICE_TREE.load(Ordering::Relaxed);
     if address as u64 > BOOT_DIRECT_MAP_END - boot_memory::MAX_DEVICE_TREE_SIZE as u64 {
@@ -400,7 +383,6 @@ fn device_tree() -> usize {
     address
 }
 
-/// The early console, the UART through the uncached window.
 #[inline]
 fn uart() -> Ns16550<Mmio> {
     // SAFETY: on QEMU `virt` the UART's register block is at `UART_BASE`, which `DMW0` maps
@@ -455,7 +437,8 @@ impl Platform for Loongarch64 {
         interrupts::route_device(specifier.cells())
     }
 
-    fn message_interrupt() -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
+    fn message_interrupt()
+    -> Result<(crate::DeviceLine, crate::interrupt::InterruptMessage), &'static str> {
         interrupts::message()
     }
 
@@ -604,7 +587,10 @@ impl Platform for Loongarch64 {
             UART_BASE as u64,
             Ns16550::<Mmio>::register_block_size(UART_REG_SHIFT) as u64,
         ));
-        region(PhysicalRange::from_start_length(GED_SLEEP_CONTROL as u64, 3));
+        region(PhysicalRange::from_start_length(
+            GED_SLEEP_CONTROL as u64,
+            3,
+        ));
     }
 
     fn device_tree() -> Option<&'static [u8]> {
@@ -615,7 +601,10 @@ impl Platform for Loongarch64 {
     fn command_line(line: &mut dyn FnMut(&[u8])) {
         // SAFETY: written once by the entry code before any Rust code ran, read-only after.
         let bytes = unsafe { &*(&raw const COMMAND_LINE) };
-        let length = bytes.iter().position(|&byte| byte == 0).unwrap_or(bytes.len());
+        let length = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
         line(&bytes[..length]);
     }
 
@@ -682,7 +671,9 @@ impl Platform for Loongarch64 {
         let access = match exception::ecode(code) {
             exception::ECODE_PAGE_INVALID_LOAD | exception::ECODE_PAGE_NOT_READABLE => Access::Read,
             exception::ECODE_PAGE_INVALID_STORE | exception::ECODE_PAGE_MODIFY => Access::Write,
-            exception::ECODE_PAGE_INVALID_FETCH | exception::ECODE_PAGE_NOT_EXECUTABLE => Access::Execute,
+            exception::ECODE_PAGE_INVALID_FETCH | exception::ECODE_PAGE_NOT_EXECUTABLE => {
+                Access::Execute
+            }
             exception::ECODE_PAGE_PRIVILEGE => Access::Read,
             _ => return None,
         };
@@ -773,7 +764,6 @@ impl Platform for Loongarch64 {
 
     unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
         unsafe extern "C" {
-            /// The secondary entry point in the boot code above.
             fn eggos_secondary_start();
         }
         if cpu > 0x1ff {
@@ -838,11 +828,12 @@ pub(crate) fn doorbell_barrier() {
     unsafe { core::arch::asm!("dbar 0", options(nostack, preserves_flags)) };
 }
 
-/// The value mailbox 0 must hold for QEMU's boot code to start a secondary CPU, read back.
 #[allow(dead_code)]
 fn mailbox0() -> u64 {
     let value: u64;
     // SAFETY: reading this core's mailbox has no side effects.
-    unsafe { core::arch::asm!("iocsrrd.d {0}, {1}", out(reg) value, in(reg) iocsr::MAILBOX0, options(nostack)) };
+    unsafe {
+        core::arch::asm!("iocsrrd.d {0}, {1}", out(reg) value, in(reg) iocsr::MAILBOX0, options(nostack))
+    };
     value
 }

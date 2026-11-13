@@ -151,7 +151,11 @@ pub fn find(rom: &[u8], debug: bool) -> Option<Fwsec<'_>> {
     if token_size < 6 {
         return None;
     }
-    let wanted = if debug { APPLICATION_FWSEC_DEBUG } else { APPLICATION_FWSEC };
+    let wanted = if debug {
+        APPLICATION_FWSEC_DEBUG
+    } else {
+        APPLICATION_FWSEC
+    };
     for index in 0..tokens {
         let token = bit + header_size + index * token_size;
         if *rom.get(token)? != FALCON_DATA_TOKEN || *rom.get(token + 1)? != FALCON_DATA_VERSION {

@@ -14,8 +14,8 @@
 use super::{DIRECT_MAP_OFFSET, KERNEL_VIRTUAL_OFFSET, timer};
 use crate::Interrupt;
 use crate::exception::{Exception, ExceptionKind, deliver};
-use crate::paging::{Access, Format, PageFault};
 use crate::paging::s390x::{ASCE_REGION_SECOND, S390x};
+use crate::paging::{Access, Format, PageFault};
 use crate::user::{self, TestProgram, UserContext, UserExit};
 
 /// The lowcore's architected fields and the HAL's own, from 0x200 on (real addresses).
@@ -55,7 +55,6 @@ pub(super) mod lowcore {
     pub const COPIED: core::ops::Range<u64> = 0x1a0..0x330;
 }
 
-/// Interruption classes, as the stubs record them.
 const EXTERNAL: u64 = 1;
 const SVC: u64 = 2;
 const PROGRAM: u64 = 3;
@@ -1010,9 +1009,6 @@ s390x_user_test_end:
     second_value = const TestProgram::LINUX_QUEUED_VALUES[1],
 );
 
-/// Where s390x's `ucontext` keeps what the test programs' handlers read and change: `uc_stack`
-/// after `uc_flags` and `uc_link`, then `_sigregs` (the PSW's mask and address, `gprs[16]`,
-/// `acrs[16]`, the FP control word and a pad, `fprs[16]`), then `uc_sigmask`.
 const UC_STACK: usize = 16;
 const UC_PSW_ADDRESS: usize = 48;
 const UC_GPRS: usize = 56;
@@ -1020,7 +1016,6 @@ const UC_FPC: usize = UC_GPRS + 16 * 8 + 16 * 4;
 const UC_FPRS: usize = UC_FPC + 8;
 const UC_SIGMASK: usize = UC_FPRS + 16 * 8;
 
-/// The registers the kernel entry keeps on the stack, in the order it stores them.
 #[repr(C)]
 struct TrapFrame {
     gpr: [u64; 16],
@@ -1033,7 +1028,6 @@ struct TrapFrame {
 
 const _: () = assert!(core::mem::size_of::<TrapFrame>() == 168);
 
-/// Program-interruption codes the HAL tells apart (the PER bit, 0x80, masked off).
 const OPERATION: u64 = 0x01;
 const PRIVILEGED: u64 = 0x02;
 const PROTECTION: u64 = 0x04;
@@ -1045,7 +1039,6 @@ const FIXED_DIVIDE: u64 = 0x09;
 const SEGMENT_TRANSLATION: u64 = 0x10;
 const PAGE_TRANSLATION: u64 = 0x11;
 const REGION_TRANSLATION: core::ops::RangeInclusive<u64> = 0x38..=0x3b;
-/// The translation-exception identification's fetch-or-store indication: a store.
 const STORE: u64 = 2;
 
 fn translation_address(teid: u64) -> u64 {
@@ -1056,12 +1049,10 @@ fn store_indication(teid: u64) -> u64 {
     (teid >> 10) & 3
 }
 
-/// The `Exception::code` of a program interruption: its code, the store indication above it.
 fn program_code(code: u64, teid: u64) -> u64 {
     (code & 0x7f) | store_indication(teid) << 8
 }
 
-/// Called by the kernel entry with the frame it built.
 extern "C" fn s390x_exception(frame: &mut TrapFrame) {
     if frame.class == EXTERNAL || frame.class == IO {
         external(frame.class, frame.code);
@@ -1074,8 +1065,6 @@ extern "C" fn s390x_exception(frame: &mut TrapFrame) {
     deliver(&exception);
 }
 
-/// Takes an external or I/O interruption: the clock comparator, a wake-up, the SCLP's service
-/// signal; I/O waits for the channel subsystem's driver (part 3).
 fn external(class: u64, code: u64) {
     if class != EXTERNAL {
         return;
@@ -1124,9 +1113,8 @@ const USER_ROOT_ENTRIES: usize = 1024;
 #[repr(C, align(4096))]
 struct ShadowRoot([u64; SHADOW_ENTRIES]);
 
-/// Each CPU's program root: the user half's root entries of the running process's root.
-static mut SHADOWS: [ShadowRoot; super::MAX_CPUS] = [const { ShadowRoot([0; SHADOW_ENTRIES]) }; super::MAX_CPUS];
-/// Each CPU's whole root, as the home space's ASCE names it.
+static mut SHADOWS: [ShadowRoot; super::MAX_CPUS] =
+    [const { ShadowRoot([0; SHADOW_ENTRIES]) }; super::MAX_CPUS];
 static ROOTS: [crate::atomic::AtomicU64; super::MAX_CPUS] =
     [const { crate::atomic::AtomicU64::new(0) }; super::MAX_CPUS];
 
@@ -1140,8 +1128,12 @@ fn load_control(register: u32, value: u64) {
     // a root the kernel built; nothing in the kernel runs in the primary space.
     unsafe {
         match register {
-            1 => core::arch::asm!("lctlg %c1, %c1, 0({0})", in(reg) &raw const value, options(nostack, readonly)),
-            _ => core::arch::asm!("lctlg %c13, %c13, 0({0})", in(reg) &raw const value, options(nostack, readonly)),
+            1 => {
+                core::arch::asm!("lctlg %c1, %c1, 0({0})", in(reg) &raw const value, options(nostack, readonly))
+            }
+            _ => {
+                core::arch::asm!("lctlg %c13, %c13, 0({0})", in(reg) &raw const value, options(nostack, readonly))
+            }
         }
     }
 }
@@ -1201,7 +1193,10 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
                 external(registers.class, registers.code);
                 return UserExit::Interrupt;
             }
-            PROGRAM if REGION_TRANSLATION.contains(&(registers.code & 0x7f)) && root_entry_appeared(registers.teid) => {
+            PROGRAM
+                if REGION_TRANSLATION.contains(&(registers.code & 0x7f))
+                    && root_entry_appeared(registers.teid) =>
+            {
                 continue;
             }
             _ => {}
@@ -1210,8 +1205,6 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     }
 }
 
-/// Whether the whole root has an entry for `teid`'s address that this CPU's program root
-/// lacked: then it is copied in.
 fn root_entry_appeared(teid: u64) -> bool {
     let cpu = super::cpu_index();
     let root = ROOTS[cpu].load(core::sync::atomic::Ordering::Relaxed);
@@ -1220,7 +1213,11 @@ fn root_entry_appeared(teid: u64) -> bool {
         return false;
     }
     // SAFETY: an entry of the process's root, through the direct map.
-    let entry = unsafe { ((root + DIRECT_MAP_OFFSET) as *const u64).add(index).read_volatile() };
+    let entry = unsafe {
+        ((root + DIRECT_MAP_OFFSET) as *const u64)
+            .add(index)
+            .read_volatile()
+    };
     let shadow = shadow_of(cpu);
     // SAFETY: an entry of this CPU's program root.
     let current = unsafe { shadow.add(index).read_volatile() };
@@ -1234,7 +1231,12 @@ fn root_entry_appeared(teid: u64) -> bool {
 }
 
 fn registers_exception(registers: &user::s390x::Registers) -> Exception {
-    decode(registers.class, registers.code, registers.teid, registers.pc)
+    decode(
+        registers.class,
+        registers.code,
+        registers.teid,
+        registers.pc,
+    )
 }
 
 impl crate::user::s390x::Registers {
@@ -1290,8 +1292,14 @@ pub(super) fn page_fault(kind: ExceptionKind, code: u64) -> Option<PageFault> {
         _ => Access::Read,
     };
     match code & 0x7f {
-        SEGMENT_TRANSLATION | PAGE_TRANSLATION => Some(PageFault { access, may_be_stale: true }),
-        program if REGION_TRANSLATION.contains(&program) => Some(PageFault { access, may_be_stale: true }),
+        SEGMENT_TRANSLATION | PAGE_TRANSLATION => Some(PageFault {
+            access,
+            may_be_stale: true,
+        }),
+        program if REGION_TRANSLATION.contains(&program) => Some(PageFault {
+            access,
+            may_be_stale: true,
+        }),
         PROTECTION => Some(PageFault {
             access: Access::Write,
             may_be_stale: false,
@@ -1309,15 +1317,25 @@ fn decode(class: u64, code: u64, teid: u64, pc: u64) -> Exception {
         SVC => (ExceptionKind::Other, "supervisor call", false),
         _ => match program {
             OPERATION => (ExceptionKind::IllegalInstruction, "operation", false),
-            PRIVILEGED => (ExceptionKind::IllegalInstruction, "privileged operation", false),
+            PRIVILEGED => (
+                ExceptionKind::IllegalInstruction,
+                "privileged operation",
+                false,
+            ),
             SPECIFICATION => (ExceptionKind::IllegalInstruction, "specification", false),
             DATA => (ExceptionKind::IllegalInstruction, "data", false),
             FIXED_OVERFLOW | FIXED_DIVIDE => (ExceptionKind::Arithmetic, "fixed point", false),
             PROTECTION => (ExceptionKind::DataFault, "protection", true),
             ADDRESSING => (ExceptionKind::DataFault, "addressing", true),
-            SEGMENT_TRANSLATION | PAGE_TRANSLATION if fetch => (ExceptionKind::InstructionFault, "translation (fetch)", true),
-            SEGMENT_TRANSLATION | PAGE_TRANSLATION => (ExceptionKind::DataFault, "translation", true),
-            program if REGION_TRANSLATION.contains(&program) => (ExceptionKind::DataFault, "region translation", true),
+            SEGMENT_TRANSLATION | PAGE_TRANSLATION if fetch => {
+                (ExceptionKind::InstructionFault, "translation (fetch)", true)
+            }
+            SEGMENT_TRANSLATION | PAGE_TRANSLATION => {
+                (ExceptionKind::DataFault, "translation", true)
+            }
+            program if REGION_TRANSLATION.contains(&program) => {
+                (ExceptionKind::DataFault, "region translation", true)
+            }
             _ => (ExceptionKind::Other, "program interruption", false),
         },
     };

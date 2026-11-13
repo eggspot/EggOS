@@ -166,15 +166,21 @@ const KEYMAP_SUPER: u8 = 8;
 
 fn linux_code_of(virtual_key: u32) -> Option<u16> {
     (1..=255u16).find(|&code| {
-        crate::gui::input::virtual_key(code).is_some_and(|found| u32::from(found.virtual_key) == virtual_key)
+        crate::gui::input::virtual_key(code)
+            .is_some_and(|found| u32::from(found.virtual_key) == virtual_key)
     })
 }
 
 fn keymap_modifiers(modifiers: u32) -> u8 {
-    [(MOD_SHIFT, KEYMAP_SHIFT), (MOD_ALT, KEYMAP_ALT), (MOD_CONTROL, KEYMAP_CTRL), (MOD_WIN, KEYMAP_SUPER)]
-        .into_iter()
-        .filter(|(flag, _)| modifiers & flag != 0)
-        .fold(0, |held, (_, bit)| held | bit)
+    [
+        (MOD_SHIFT, KEYMAP_SHIFT),
+        (MOD_ALT, KEYMAP_ALT),
+        (MOD_CONTROL, KEYMAP_CTRL),
+        (MOD_WIN, KEYMAP_SUPER),
+    ]
+    .into_iter()
+    .filter(|(flag, _)| modifiers & flag != 0)
+    .fold(0, |held, (_, bit)| held | bit)
 }
 
 fn server_of(window: usize) -> Option<(super::window_device::Device, u32)> {

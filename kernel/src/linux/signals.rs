@@ -23,7 +23,6 @@
 //! or ignores it. The signals lock is never held across a copy to or from the program's
 //! memory.
 
-use eggos_hal::atomic::AtomicU64;
 use super::Errno;
 use super::fault::Fault;
 use super::futex::WaitSlot;
@@ -40,6 +39,7 @@ use alloc::vec::Vec;
 use core::ops::{ControlFlow, Deref, DerefMut};
 use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::fp::FpState;
 use eggos_hal::user::UserContext;
 
@@ -54,10 +54,8 @@ pub const FIRST_REAL_TIME: u32 = 32;
 /// must be this, but `rt_sigpending`'s may be smaller.
 pub const SET_SIZE: u64 = crate::linux::abi::SIGSET_SIZE;
 
-/// The bytes of a set that hold the kernel's 64 signals: the first 8 of a larger `sigset_t`.
 const SET_WORD: usize = 8;
 
-/// `set` as `SET_SIZE` bytes: its 64 signals, then zeros for the signals past them.
 fn set_bytes(set: u64) -> [u8; SET_SIZE as usize] {
     let mut bytes = [0; SET_SIZE as usize];
     bytes[..SET_WORD].copy_from_slice(&set.to_ne_bytes());
@@ -103,9 +101,6 @@ pub const HAS_RESTORER: bool = crate::linux::abi::SIGACTION_HAS_RESTORER;
 
 const W: usize = crate::linux::abi::WORD_BYTES;
 
-/// The size of the kernel's `struct sigaction` on the architecture: handler, flags and
-/// restorer (if [`HAS_RESTORER`]), each a word of the program's width, then the 64-bit mask
-/// (D487); MIPS's is 32 bytes.
 const ACTION_SIZE: usize = if FLAGS_FIRST {
     32
 } else if HAS_RESTORER {
@@ -114,8 +109,6 @@ const ACTION_SIZE: usize = if FLAGS_FIRST {
     2 * W + 8
 };
 
-/// Whether `struct sigaction` starts with its flags, then the handler and a 16-byte mask (MIPS,
-/// D315).
 const FLAGS_FIRST: bool = crate::linux::abi::SIGACTION_FLAGS_FIRST;
 
 /// What a signal does when it arrives: the kernel's `struct sigaction`.
@@ -131,16 +124,16 @@ pub struct Action {
 }
 
 impl Action {
-    /// The structure as the program sees it.
     fn to_bytes(self) -> [u8; ACTION_SIZE] {
         let mut bytes = [0; ACTION_SIZE];
         if FLAGS_FIRST {
             let flags = crate::linux::abi::sigaction_flags_out(self.flags) & 0xffff_ffff;
-            for (chunk, word) in bytes
-                .as_chunks_mut::<8>()
-                .0
-                .iter_mut()
-                .zip([flags, self.handler, self.mask])
+            for (chunk, word) in
+                bytes
+                    .as_chunks_mut::<8>()
+                    .0
+                    .iter_mut()
+                    .zip([flags, self.handler, self.mask])
             {
                 *chunk = word.to_ne_bytes();
             }
@@ -177,10 +170,8 @@ impl Action {
     }
 }
 
-/// The signals no mask may block and no action may catch or ignore.
 const UNBLOCKABLE: u64 = bit(SIGKILL) | bit(SIGSTOP);
 
-/// Signal `signal`'s bit in a set (`signal` in 1..=64).
 const fn bit(signal: u32) -> u64 {
     1 << (signal - 1)
 }
@@ -243,23 +234,18 @@ struct ActionsAndQueue {
     trampoline: u64,
 }
 
-/// One of the process's threads but its first, which [`Signals::add_thread`] counted.
 #[derive(Debug)]
 struct OtherThread {
     id: u32,
     wait_slot: Arc<WaitSlot>,
 }
 
-/// A pending signal's [`Info`], for the thread whose id is `thread`.
 #[derive(Debug, Clone, Copy)]
 struct Queued {
     thread: u32,
     info: Info,
 }
 
-/// What one thread left for another in the process's block, which takes it in, in order
-/// ([`LockedSignals::take_in_sent`]), for the thread whose id is `thread`, or for the first
-/// thread that does not block it if `thread` is [`ANY_THREAD`].
 #[derive(Debug, Clone, Copy)]
 struct SentToThread {
     thread: u32,
@@ -268,9 +254,7 @@ struct SentToThread {
 
 #[derive(Debug, Clone, Copy)]
 enum Sent {
-    /// A signal sent to it, counted toward `RLIMIT_SIGPENDING` until taken in.
     Signal(Info),
-    /// The signals in the set were ignored: those pending are discarded, blocked or not.
     Discard(u64),
 }
 
@@ -280,8 +264,6 @@ impl SentToThread {
     }
 }
 
-/// The tag of a signal sent to the process ([`Signals::send_to_process`]), which no thread
-/// id is.
 const ANY_THREAD: u32 = 0;
 
 fn signals_among(sent: &[SentToThread]) -> usize {
@@ -323,8 +305,6 @@ impl ActionsAndQueue {
         self.masks[index] = action.mask;
     }
 
-    /// Removes the signals in `set` left for `thread` and not taken in yet, giving back what
-    /// they counted toward `RLIMIT_SIGPENDING`: whether `SIGCONT` was among them.
     fn remove_left_for(&mut self, thread: u32, set: u64) -> bool {
         let (mut removed, mut sigcont) = (0, false);
         self.sent_to_threads.retain(|left| match left.sent {
@@ -339,7 +319,6 @@ impl ActionsAndQueue {
         sigcont
     }
 
-    /// Whether signal `signal` is left for `thread`, not taken in yet.
     fn is_left_for(&self, thread: u32, signal: u32) -> bool {
         self.sent_to_threads.iter().any(|left| {
             left.thread == thread
@@ -347,10 +326,6 @@ impl ActionsAndQueue {
         })
     }
 
-    /// Leaves `thread` a request to discard its pending signals in `set`, in room the caller
-    /// reserved. The signals in `set` left for it go now, as taking them in and then
-    /// discarding them would (a `SIGCONT` among them still discards the stop signals), and the
-    /// request joins the last thing left for the thread if that is a request too.
     fn leave_discard(&mut self, thread: u32, set: u64) {
         let set = match self.remove_left_for(thread, set) {
             true => set | STOP_SIGNALS,
@@ -401,7 +376,6 @@ fn uncharge(queued: &AtomicU64, entries: usize) {
     queued.fetch_sub(entries as u64, Ordering::Relaxed);
 }
 
-/// How many records ([`KEPT_INFO_SIZE`] bytes each) a drained queue keeps room for.
 const DRAINED_QUEUE_CAPACITY: usize = 32;
 
 /// The bytes of a `siginfo_t` the kernel keeps with a pending signal: `si_signo`, `si_errno`,
@@ -559,7 +533,6 @@ pub struct AlternateStack {
     pub autodisarm: bool,
 }
 
-/// `sigaltstack`'s flags (`SS_*`).
 mod stack_flag {
     /// The thread is running on the stack (reported), or the stack is enabled (accepted as 0).
     pub const ONSTACK: u32 = 1;
@@ -574,15 +547,10 @@ pub const MIN_STACK_SIZE: u64 = crate::linux::abi::MIN_SIGNAL_STACK_SIZE;
 const _: () = assert!(signal_frame::LARGEST_FRAME_SPACE <= MIN_STACK_SIZE);
 
 impl AlternateStack {
-    /// Whether the thread, whose stack pointer is `stack`, is on it: above its base and at
-    /// most at its top, as the stack grows down (a pointer at the top is the empty stack's).
-    /// Never with `SS_AUTODISARM`: the stack is disarmed while a handler runs on it.
     fn is_on(&self, stack: u64) -> bool {
         !self.autodisarm && stack.wrapping_sub(self.base).wrapping_sub(1) < self.size
     }
 
-    /// `stack_t` as the program sees it (from `sigaltstack`, or in a signal frame's
-    /// `uc_stack`), for a thread whose stack pointer is `stack`.
     fn to_bytes(self, stack: u64) -> [u8; STACK_SIZE] {
         let mut flags = if self.size == 0 {
             stack_flag::DISABLE
@@ -603,12 +571,9 @@ impl AlternateStack {
     }
 }
 
-/// Why an action could not be changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChangeError {
-    /// No signal has that number, or it is `SIGKILL` or `SIGSTOP`.
     Invalid,
-    /// There was no memory for the process's own table.
     OutOfMemory,
 }
 
@@ -753,8 +718,6 @@ impl Signals {
         )
     }
 
-    /// Whether `signal` (1 to 64) is discarded when it arrives: ignored, by `SIG_IGN` or by
-    /// its default action.
     fn ignores(&self, signal: u32) -> bool {
         self.action(signal)
             .is_some_and(|action| match action.handler {
@@ -764,9 +727,6 @@ impl Signals {
             })
     }
 
-    /// Gives an empty queue's memory back past [`DRAINED_QUEUE_CAPACITY`] records, so a burst
-    /// of queued signals costs little once they are taken, while a signal sent and taken at a
-    /// time needs no allocation.
     fn free_drained_queue(&mut self) {
         if let Some([block]) = self.actions_and_queue.as_deref_mut()
             && block.queue.is_empty()
@@ -776,9 +736,6 @@ impl Signals {
         }
     }
 
-    /// Sets `signal`'s handler to `SIG_DFL`, keeping its flags and mask, as Linux does for
-    /// [`flag::RESETHAND`] and a forced signal. Nothing to do without a table: every handler
-    /// is `SIG_DFL` then.
     fn reset_handler(&mut self, signal: u32) {
         if let Some([block]) = self.actions_and_queue.as_deref_mut() {
             block.handlers[signal as usize - 1] = DEFAULT;
@@ -928,7 +885,6 @@ impl Signals {
         Ok(())
     }
 
-    /// The signals sent to the process that no thread has taken in yet.
     fn left_for_process(&self) -> u64 {
         self.actions_and_queue.as_deref().map_or(0, |[block]| {
             block
@@ -942,9 +898,6 @@ impl Signals {
         })
     }
 
-    /// Where thread `id` waits ([`LinuxThread::wait_slot`]), if it is one of the process's
-    /// threads that [`Self::add_thread`] counted, or `first`, its first thread, recorded once
-    /// it started another.
     fn wait_slot(&self, id: u32, first: u32) -> Option<Arc<WaitSlot>> {
         let [block] = self.actions_and_queue.as_deref()?;
         let slot = match id == first {
@@ -958,8 +911,6 @@ impl Signals {
         slot.cloned()
     }
 
-    /// Where each of the process's threads but `caller` waits: those [`Self::add_thread`]
-    /// counted and `first`, its first thread, once it started another.
     fn wait_slots_but(&self, caller: u32, first: u32) -> impl Iterator<Item = &WaitSlot> {
         let block = self.actions_and_queue.as_deref().map(|[block]| block);
         let first_slot = block
@@ -1015,11 +966,6 @@ impl LockedSignals<'_> {
         *self.thread
     }
 
-    /// Sets `signal`'s action to `new`, without its unknown flags and with `SIGKILL` and
-    /// `SIGSTOP` left out of its mask, and returns the action it had. The first change that
-    /// changes anything makes the process's own table. An action that ignores the signal
-    /// discards it if pending, blocked or not, as POSIX requires, the thread's and the
-    /// process's ([`Signals::send_to_process`]).
     fn set_action(&mut self, signal: u32, new: Action) -> Result<Action, ChangeError> {
         let current = self.action(signal).ok_or(ChangeError::Invalid)?;
         if bit(signal) & UNBLOCKABLE != 0 {
@@ -1350,10 +1296,6 @@ impl LockedSignals<'_> {
         (due != 0).then(|| self.take(first_to_take(due)))
     }
 
-    /// The thread enters `action`'s handler for `signal`, its frame written: the action's mask
-    /// is blocked too, and the signal itself unless [`flag::NODEFER`]; an alternate stack with
-    /// `SS_AUTODISARM` is disabled on entry to the handler, as sigaltstack(2) says, until the
-    /// handler returns and `rt_sigreturn` restores it from the frame.
     fn enter_handler(&mut self, signal: u32, action: &Action) {
         let mut blocked = self.thread.blocked | action.mask;
         if action.flags & flag::NODEFER == 0 {
@@ -1365,10 +1307,6 @@ impl LockedSignals<'_> {
         }
     }
 
-    /// Changes the thread's alternate stack to `size` bytes from `base` with `sigaltstack`'s
-    /// `flags`, for a thread whose stack pointer is `stack`: `EPERM` while it is on its
-    /// alternate stack, `EINVAL` for unknown flags, `ENOMEM` for a stack smaller than
-    /// [`MIN_STACK_SIZE`] (see [`sigaltstack`]). A disabled stack keeps no base or size.
     fn change_alternate_stack(
         &mut self,
         base: u64,
@@ -1396,10 +1334,6 @@ impl LockedSignals<'_> {
         Ok(())
     }
 
-    /// What `rt_sigreturn` restores from a handler's frame: the blocked mask, as
-    /// [`Self::set_blocked`] sets it, and the alternate stack the `stack_t` at
-    /// `alternate_stack` describes, unless changing it fails (the thread, whose stack pointer
-    /// is `stack`, is on its alternate stack, or the stack is invalid), which Linux ignores too.
     fn restore(&mut self, blocked: u64, alternate_stack: [u8; STACK_SIZE], stack: u64) {
         self.set_blocked(blocked);
         let (base, flags, size) = parse_stack(alternate_stack);
@@ -1419,8 +1353,6 @@ impl LockedSignals<'_> {
         previous
     }
 
-    /// Records the signals the thread waits for in `rt_sigtimedwait` ([`ThreadSignals::waited`]),
-    /// none once it no longer waits, taking in those sent to the process at once.
     fn set_waited(&mut self, waited: u64) {
         self.thread.waited = waited;
         if waited != 0 && waited & self.left_for_process() != 0 {
@@ -1428,14 +1360,11 @@ impl LockedSignals<'_> {
         }
     }
 
-    /// The pending signals that are blocked, as `rt_sigpending` reports them: the thread's,
-    /// and those sent to the process that no thread has taken in yet.
     fn blocked_pending(&self) -> u64 {
         (self.thread.pending | self.left_for_process()) & self.thread.blocked
     }
 }
 
-/// `SIGCONT`'s number.
 const SIGCONT: u32 = 18;
 
 const SIGSYS: u32 = 31;
@@ -1443,15 +1372,12 @@ const SIGSYS: u32 = 31;
 const SYNCHRONOUS: u64 =
     bit(SIGILL) | bit(SIGTRAP) | bit(SIGBUS) | bit(SIGFPE) | bit(SIGSEGV) | bit(SIGSYS);
 
-/// The first signal of the set `due` (not empty) to take: the lowest synchronous one, if any,
-/// else the lowest.
 fn first_to_take(due: u64) -> u32 {
     let synchronous = due & SYNCHRONOUS;
     let first = if synchronous != 0 { synchronous } else { due };
     first.trailing_zeros() + 1
 }
 
-/// The stop signals: `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU`.
 const STOP_SIGNALS: u64 = bit(SIGSTOP) | bit(20) | bit(21) | bit(22);
 
 /// What delivering a signal does, for [`LockedSignals::next_delivery`].
@@ -1509,7 +1435,6 @@ fn actions_and_queue_block() -> Option<Box<[ActionsAndQueue; 1]>> {
     block.into_boxed_slice().try_into().ok()
 }
 
-/// The address `address` as an optional pointer: `None` when null.
 fn pointer(address: u64) -> Option<u64> {
     (address != 0).then_some(address)
 }
@@ -1584,7 +1509,6 @@ pub fn rt_sigaction<P: Platform>(
     Ok(0)
 }
 
-/// `rt_sigprocmask`'s `how`.
 mod how {
     /// Block the set's signals too.
     pub const BLOCK: u32 = 0;
@@ -1691,7 +1615,6 @@ pub fn sigaltstack<P: Platform>(
     Ok(0)
 }
 
-/// A `stack_t`'s base, flags and size.
 fn parse_stack(bytes: [u8; STACK_SIZE]) -> (u64, u32, u64) {
     let (flags_at, size_at) = stack_t_offsets();
     let base = crate::linux::abi::word(&bytes);
@@ -1700,8 +1623,6 @@ fn parse_stack(bytes: [u8; STACK_SIZE]) -> (u64, u32, u64) {
     (base, flags, size)
 }
 
-/// Where a `stack_t` keeps `ss_flags` and `ss_size`: after `ss_sp` in that order, a word
-/// each, or the other way round on MIPS (D315, D487).
 const fn stack_t_offsets() -> (usize, usize) {
     match crate::linux::abi::STACK_T_SIZE_BEFORE_FLAGS {
         true => (2 * W, W),
@@ -1750,16 +1671,10 @@ fn queue_limit<P: Platform>(process: &Process<P>) -> u64 {
         .map_or(u64::MAX, |limit| limit.soft)
 }
 
-/// What thread `id` of `process` is to a signal sent to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
-    /// A thread that has not exited: its first thread, or one [`Signals::add_thread`] counted.
     Live,
-    /// Its first thread, exited while others go on: as Linux's thread group leader, it still
-    /// takes signals, which it never delivers, `SIGKILL` included (Linux's `complete_signal`
-    /// leaves the group alone for a thread-directed signal no live thread wants).
     ExitedFirst,
-    /// No thread of the process.
     None,
 }
 
@@ -1776,13 +1691,6 @@ fn target<P: Platform>(process: &Process<P>, signals: &Signals, id: u32) -> Targ
     }
 }
 
-/// Sends `signal` to thread `id` of the caller's process, as `tgkill` and `rt_tgsigqueueinfo`
-/// do: to the caller as [`send_to_self`]; to another thread, `ESRCH` unless it is one of the
-/// process's ([`Target`]), then `EINVAL` for a signal outside 0 to 64, and 0 only checks.
-/// To a first thread that has exited, a signal is accepted and goes nowhere. Otherwise
-/// `SIGKILL` ends the process at once, as on Linux, and another signal waits in the process's
-/// signal state until the thread takes it in ([`take_in_sent`]), which it is woken from a
-/// sleep and interrupted to do. `EAGAIN` as [`Signals::send_to_thread`] says.
 fn send_to_thread<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1826,12 +1734,6 @@ fn send_to_thread<P: Platform>(
     Ok(0)
 }
 
-/// Sends `signal` to the caller's process, as `kill` and `rt_sigqueueinfo` do: to the caller
-/// as [`send_to_self`] if it does not block the signal or is the process's only thread (Linux
-/// may pick any thread that does not block it); otherwise to the process, for the first of its
-/// threads that takes it in without blocking it ([`Signals::send_to_process`]), each of
-/// which is woken from a sleep and interrupted to look. `EAGAIN` as
-/// [`Signals::send_to_thread`] says.
 fn send_to_process<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -1929,8 +1831,6 @@ pub fn stop_other_threads<P: Platform>(process: &Process<P>, thread: &mut LinuxT
     }
 }
 
-/// The process's id as a `pid_t`, which it fits: a [`crate::process::ProcessId`] is at most
-/// `i32::MAX`.
 fn own_id<P: Platform>(process: &Process<P>) -> i32 {
     process.id().get() as i32
 }
@@ -2193,8 +2093,7 @@ fn read_queued_info<P: Platform>(
         .read_user_memory(address, &mut bytes)
         .map_err(|_| Errno::EFAULT)?;
     crate::linux::abi::reorder_siginfo(&mut bytes);
-    if i32::from_ne_bytes(bytes[info_offset::CODE..][..4].try_into().unwrap()) == code::GROUP_STOP
-    {
+    if i32::from_ne_bytes(bytes[info_offset::CODE..][..4].try_into().unwrap()) == code::GROUP_STOP {
         return Err(Errno::EPERM);
     }
     Ok(bytes)
@@ -2316,8 +2215,6 @@ fn set_waited<P: Platform>(process: &Process<P>, thread: &mut LinuxThread, waite
     note_taken_in(process, &guard);
 }
 
-/// [`rt_sigtimedwait`]'s wait, until `deadline` (`None` for a zero timeout): the signal in
-/// `wanted` it took.
 fn wait_for_signal<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -2400,8 +2297,6 @@ pub fn pause<P: Platform>(
     suspend(process, thread, context, None)
 }
 
-/// What [`rt_sigsuspend`] and x86_64's `pause` share: blocks `mask`, if any, instead of the
-/// thread's mask, then delivers what is due until a handler starts, waiting between rounds.
 fn suspend<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -2433,9 +2328,6 @@ pub fn replace_blocked<P: Platform>(
     previous
 }
 
-/// After the thread took in what waited for it, outside [`take_in_sent_now`]: once nothing
-/// waits in `signals`, the process's lock held, the threads switched back in no longer
-/// interrupt themselves to look ([`Process::set_sent_signals_waiting`]).
 fn note_taken_in<P: Platform>(process: &Process<P>, signals: &Signals) {
     if process.sent_signals_waiting() && !signals.has_sent_to_threads() {
         process.set_sent_signals_waiting(false);
@@ -2636,12 +2528,6 @@ pub fn deliver_fault<P: Platform>(
     ControlFlow::Continue(())
 }
 
-/// [`deliver`], with `fault` the fault whose signal is due, if one is: its handler's frame
-/// describes it. The first frame written saves `mask_to_restore`, if any, instead of the
-/// thread's mask, as Linux's does after `rt_sigsuspend` changed it, and is written after the
-/// call's result is set as `interrupted` says, if a signal interrupted the call. A frame that
-/// cannot be written sends `SIGSEGV`, by its default action if it was `SIGSEGV`'s own frame,
-/// as on Linux. Continues with whether a handler started.
 fn deliver_with<P: Platform>(
     process: &Process<P>,
     thread: &mut LinuxThread,
@@ -2709,13 +2595,6 @@ fn deliver_with<P: Platform>(
     }
 }
 
-/// Writes `action`'s frame for the signal `info` describes (or for `fault`, if the signal is a
-/// fault's), saving `saved_mask` as the mask to restore, and points `context` at its handler,
-/// for a thread whose signal state is `thread`:
-/// on the alternate stack with [`flag::ONSTACK`], if it has one and is not on it already (then
-/// the frame goes below the stack pointer, as it does without the flag). [`BadFrame`] if the
-/// frame's memory is not the program's, if it would run off the bottom of the alternate stack
-/// the thread is on, or if the handler has no way to return.
 fn start_handler<P: Platform>(
     process: &Process<P>,
     context: &mut UserContext,
@@ -2769,10 +2648,6 @@ fn start_handler<P: Platform>(
     Ok(())
 }
 
-/// Gives the running thread the FP/SIMD registers a returning handler's frame holds (D82),
-/// first giving it FP/SIMD registers if it has none and the frame holds other values than a
-/// new program's. [`BadFrame`], changing nothing, if a load would fault on them, or if there
-/// is no memory for them.
 fn load_frame_fp<P: Platform>(part: &FpPart) -> Result<(), BadFrame> {
     let load = |state: &mut FpState| signal_frame::load_fp_part(part, state);
     if let Some(loaded) = thread::with_running_fp::<P, _>(load) {

@@ -134,7 +134,14 @@ fn picker_available() -> bool {
     let found = unsafe {
         syscall::call(
             number::NEWFSTATAT,
-            [AT_FDCWD, c"/bin/pick".as_ptr() as usize, status.as_mut_ptr() as usize, 0, 0, 0],
+            [
+                AT_FDCWD,
+                c"/bin/pick".as_ptr() as usize,
+                status.as_mut_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
         )
     };
     found == 0
@@ -215,7 +222,11 @@ impl View for Program<'_> {
     }
 
     fn handle(&mut self, input: Input, time_ms: u32) -> bool {
-        if let Input::Drop { kind: DROPPED_PATHS, .. } = input {
+        if let Input::Drop {
+            kind: DROPPED_PATHS,
+            ..
+        } = input
+        {
             self.open_dropped();
             return true;
         }

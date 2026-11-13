@@ -222,7 +222,9 @@ pub fn read_integer(text: &[u8], format: i32, signed: bool, width: u32) -> (Read
     let start = at;
     let mut value: u128 = 0;
     while let Some(digit) = text.get(at).and_then(|byte| (*byte as char).to_digit(base)) {
-        value = value.saturating_mul(u128::from(base)).saturating_add(u128::from(digit));
+        value = value
+            .saturating_mul(u128::from(base))
+            .saturating_add(u128::from(digit));
         at += 1;
     }
     if at == start {
@@ -272,7 +274,10 @@ mod tests {
         assert_eq!(text(int(-42), flags::DEC), "-42");
         assert_eq!(text(int(42), flags::DEC | flags::SHOWPOS), "+42");
         assert_eq!(text(int(-1), flags::HEX), "ffffffff");
-        assert_eq!(text(int(255), flags::HEX | flags::SHOWBASE | flags::UPPERCASE), "0XFF");
+        assert_eq!(
+            text(int(255), flags::HEX | flags::SHOWBASE | flags::UPPERCASE),
+            "0XFF"
+        );
         assert_eq!(text(int(8), flags::OCT | flags::SHOWBASE), "010");
         assert_eq!(text(int(0), flags::HEX | flags::SHOWBASE), "0");
         let unsigned = Integer {
@@ -280,7 +285,10 @@ mod tests {
             signed: false,
             width: 64,
         };
-        assert_eq!(text(unsigned, flags::DEC | flags::SHOWPOS), "18446744073709551615");
+        assert_eq!(
+            text(unsigned, flags::DEC | flags::SHOWPOS),
+            "18446744073709551615"
+        );
     }
 
     #[test]
@@ -295,18 +303,33 @@ mod tests {
     #[test]
     fn floats_ask_printf_as_num_put_does() {
         assert_eq!(float_specification(0, false), b"%.*g\0");
-        assert_eq!(float_specification(flags::FIXED | flags::SHOWPOS, false), b"%+.*f\0");
-        assert_eq!(float_specification(flags::SCIENTIFIC | flags::UPPERCASE, true), b"%.*LE\0");
+        assert_eq!(
+            float_specification(flags::FIXED | flags::SHOWPOS, false),
+            b"%+.*f\0"
+        );
+        assert_eq!(
+            float_specification(flags::SCIENTIFIC | flags::UPPERCASE, true),
+            b"%.*LE\0"
+        );
         assert_eq!(float_specification(flags::FLOATFIELD, false), b"%a\0");
         assert_eq!(float_prefix(b"-0x1.8p+1"), 3);
     }
 
     #[test]
     fn reading_takes_the_base_and_stops_at_the_first_non_digit() {
-        assert_eq!(read_integer(b"123 x", flags::DEC, true, 32), (Read::Value(123), 3));
+        assert_eq!(
+            read_integer(b"123 x", flags::DEC, true, 32),
+            (Read::Value(123), 3)
+        );
         let minus_five = -5i32 as u32 as u64;
-        assert_eq!(read_integer(b"-5", flags::DEC, true, 32), (Read::Value(minus_five), 2));
-        assert_eq!(read_integer(b"ff", flags::HEX, false, 32), (Read::Value(255), 2));
+        assert_eq!(
+            read_integer(b"-5", flags::DEC, true, 32),
+            (Read::Value(minus_five), 2)
+        );
+        assert_eq!(
+            read_integer(b"ff", flags::HEX, false, 32),
+            (Read::Value(255), 2)
+        );
         assert_eq!(read_integer(b"0x10", 0, true, 32), (Read::Value(16), 4));
         assert_eq!(read_integer(b"x", flags::DEC, true, 32), (Read::Nothing, 0));
         assert_eq!(

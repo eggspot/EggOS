@@ -100,7 +100,6 @@ const SERVER_ALPHA: u32 = 1;
 const SERVER_COLOUR_KEY: u32 = 2;
 const SERVER_PIXEL_ALPHA: u32 = 4;
 
-/// The layered windows' attributes, as `SetLayeredWindowAttributes` set them (D358).
 static LAYERED: SpinLock<[Option<(usize, u32, u8, u32)>; MOST_LAYERED]> =
     SpinLock::new([None; MOST_LAYERED]);
 
@@ -108,9 +107,6 @@ fn swap_red_blue(colour: u32) -> u32 {
     (colour & 0xff) << 16 | (colour & 0xff00) | (colour >> 16 & 0xff)
 }
 
-/// `SetLayeredWindowAttributes` (D358): a top-level `WS_EX_LAYERED` window's content blends
-/// over what is under it at `alpha` (`LWA_ALPHA`) and shows through where it is `key`
-/// (`LWA_COLORKEY`), as the window server draws it.
 extern "efiapi" fn set_layered_window_attributes(
     window: usize,
     key: u32,
@@ -166,7 +162,6 @@ fn set_layered(window: usize, key: u32, alpha: u8, flags: u32, pixel_alpha: bool
     TRUE
 }
 
-
 const ULW_COLORKEY: u32 = 0x1;
 const ULW_ALPHA: u32 = 0x2;
 const AC_SRC_ALPHA: u32 = 0x1;
@@ -174,7 +169,6 @@ const SRCCOPY: u32 = 0x00cc_0020;
 const SET_SIZE_ONLY: u32 = 0x0002 | 0x0004 | 0x0010;
 const SET_POSITION_ONLY: u32 = 0x0001 | 0x0004 | 0x0010;
 
-/// Win32's `POINT` and `SIZE`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Pair {
@@ -191,11 +185,6 @@ unsafe fn pair(address: *const Pair) -> Option<(i32, i32)> {
     Some((pair.first, pair.second))
 }
 
-/// `UpdateLayeredWindow` (D366): a top-level `WS_EX_LAYERED` window moved to `destination`,
-/// sized to `size`, its client area copied from `source` at `source_point`, and blended by
-/// `BLENDFUNCTION`'s constant alpha (`ULW_ALPHA`), with `AC_SRC_ALPHA` each source pixel's
-/// own premultiplied alpha too (D369), or the colour key (`ULW_COLORKEY`), as
-/// `SetLayeredWindowAttributes` sets them (D358).
 #[allow(clippy::too_many_arguments)]
 unsafe extern "efiapi" fn update_layered_window(
     window: usize,
@@ -256,7 +245,6 @@ unsafe extern "efiapi" fn update_layered_window(
     set_layered(window, key, alpha, layered, pixel_alpha)
 }
 
-/// `GetLayeredWindowAttributes`: what `SetLayeredWindowAttributes` set.
 unsafe extern "efiapi" fn get_layered_window_attributes(
     window: usize,
     key: *mut u32,

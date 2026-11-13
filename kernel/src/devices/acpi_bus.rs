@@ -92,11 +92,13 @@ pub(super) fn discover(dsdt: &[u8], table: &mut DeviceTable, present: &dyn Fn(&[
         };
         let mut id = [0u8; ID_BYTES];
         let hid_bytes = hid.as_bytes();
-        id[..hid_bytes.len().min(ID_BYTES)].copy_from_slice(&hid_bytes[..hid_bytes.len().min(ID_BYTES)]);
+        id[..hid_bytes.len().min(ID_BYTES)]
+            .copy_from_slice(&hid_bytes[..hid_bytes.len().min(ID_BYTES)]);
         let mut compatible = [0u8; ID_BYTES];
         if let Some(cid) = device.cid {
             let bytes = cid.as_bytes();
-            compatible[..bytes.len().min(ID_BYTES)].copy_from_slice(&bytes[..bytes.len().min(ID_BYTES)]);
+            compatible[..bytes.len().min(ID_BYTES)]
+                .copy_from_slice(&bytes[..bytes.len().min(ID_BYTES)]);
         }
         let mut path = [0u8; PATH_BYTES];
         device.path.write(&mut path);
@@ -125,7 +127,10 @@ pub(super) fn discover(dsdt: &[u8], table: &mut DeviceTable, present: &dyn Fn(&[
 
 /// `bytes` up to their first NUL.
 pub fn text(bytes: &[u8]) -> &[u8] {
-    let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
     &bytes[..end]
 }
 

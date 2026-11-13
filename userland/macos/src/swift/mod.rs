@@ -24,9 +24,9 @@ pub mod string_object;
 #[cfg(eggos_user)]
 mod cast;
 #[cfg(eggos_user)]
-mod class_metadata;
-#[cfg(eggos_user)]
 mod characters;
+#[cfg(eggos_user)]
+mod class_metadata;
 #[cfg(eggos_user)]
 mod conformance;
 #[cfg(eggos_user)]

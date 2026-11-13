@@ -310,7 +310,9 @@ mod tests {
 
     #[test]
     fn binary_operations_branches_and_invokes_name_their_registers() {
-        let bytes = code(&[0x0290, 0x0100, 0x1032, 0xfffe, 0x206e, 0x0007, 0x0021, 0x000e]);
+        let bytes = code(&[
+            0x0290, 0x0100, 0x1032, 0xfffe, 0x206e, 0x0007, 0x0021, 0x000e,
+        ]);
         let code = of(&bytes);
         let listed: Vec<(usize, Instruction)> = instructions(&code).collect();
         let (_, add) = listed[0];

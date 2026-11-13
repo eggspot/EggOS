@@ -313,8 +313,6 @@ impl Display {
         }
     }
 
-    /// Waits, polling, for a posted flush before anything else uses the device; gives it up at
-    /// `deadline`.
     fn settle(&mut self, deadline: &mut Deadline) -> Result<(), &'static str> {
         while self.posted {
             if self.finish_flush()?.is_some() {
@@ -333,14 +331,10 @@ impl Display {
         Ok(())
     }
 
-
-    /// Whether the desktop draws into the display's own buffer, which flushes scale or turn.
     fn draws_off_device(&self) -> bool {
         self.scale > 1 || self.rotation != Rotation::Upright
     }
 
-    /// Gives the buffer the desktop draws in for the scale and rotation in force: the device's
-    /// own when neither changes the picture. `false` without memory for it.
     fn reallocate_logical(&mut self) -> bool {
         if !self.draws_off_device() {
             self.logical = Vec::new();
@@ -412,14 +406,19 @@ impl Display {
         if !self.scanout.can_change_mode() {
             return Err("this display keeps the size the firmware set");
         }
-        if mode.width < MIN_MODE.width || mode.height < MIN_MODE.height || mode.bytes() > MAX_MODE_BYTES {
+        if mode.width < MIN_MODE.width
+            || mode.height < MIN_MODE.height
+            || mode.bytes() > MAX_MODE_BYTES
+        {
             return Err("a size this display does not take");
         }
         self.scanout.change_mode(mode, deadline)?;
         let booting = self.boot.is_some();
         let scale = self.scale;
         self.scale = 1;
-        if scale > 1 && eggos_drivers::desktop::Desktop::fits(mode.width / scale, mode.height / scale) {
+        if scale > 1
+            && eggos_drivers::desktop::Desktop::fits(mode.width / scale, mode.height / scale)
+        {
             self.scale = scale;
         }
         if !self.reallocate_logical() {
@@ -518,10 +517,14 @@ impl Display {
         }
     }
 
-    /// Where the drawn point (`x`, `y`) shows on the device.
     fn device_point(&self, x: u32, y: u32) -> (u32, u32) {
         let mode = self.mode();
-        let (x, y) = self.rotation.turn(x.min(mode.width - 1), y.min(mode.height - 1), mode.width, mode.height);
+        let (x, y) = self.rotation.turn(
+            x.min(mode.width - 1),
+            y.min(mode.height - 1),
+            mode.width,
+            mode.height,
+        );
         (x * self.scale, y * self.scale)
     }
 
@@ -570,8 +573,6 @@ impl Display {
 }
 
 impl Display {
-    /// Copies what changed onto the device turned by the rotation, each pixel a square of the
-    /// scale, then flushes the device's rectangles.
     fn flush_turned(&mut self, deadline: &mut Deadline) -> Result<usize, &'static str> {
         let scale = self.scale;
         let rotation = self.rotation;
@@ -585,7 +586,8 @@ impl Display {
                     let pixel = self.logical[(y * mode.width + x) as usize];
                     let (turned_x, turned_y) = rotation.turn(x, y, mode.width, mode.height);
                     for row in 0..scale {
-                        let start = (turned_y * scale + row) as usize * device_width + (turned_x * scale) as usize;
+                        let start = (turned_y * scale + row) as usize * device_width
+                            + (turned_x * scale) as usize;
                         if let Some(target) = device.get_mut(start..start + scale as usize) {
                             target.fill(pixel);
                         }
@@ -676,8 +678,6 @@ impl core::fmt::Debug for Display {
 
 static DISPLAY: LeafSpinLock<Option<Box<Display>>> = LeafSpinLock::new_leaf(None);
 
-/// Whether the display follows the size the device asks for (a host window resized), which it
-/// does unless a size is chosen in Settings (D311).
 static FOLLOWS_DEVICE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Makes the display follow the device's size, or keep the one chosen.
@@ -715,8 +715,6 @@ pub fn install<S: Scanout + 'static>(scanout: S) -> Result<(), S> {
     Ok(())
 }
 
-/// The rotation in force (D330), kept apart from the display's lock so the input layer reads
-/// it from anywhere; upright without a display.
 static ROTATION: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 /// The rotation in force (D330).
@@ -762,7 +760,9 @@ pub fn change_mode<P: Platform>(mode: Option<Mode>) -> Result<(), &'static str> 
     let mut deadline = Deadline::after::<P>(FLUSH_TIMEOUT_MS);
     let mode = match mode {
         Some(mode) => mode,
-        None => display.preferred_mode(&mut deadline).ok_or("the display prefers no size")?,
+        None => display
+            .preferred_mode(&mut deadline)
+            .ok_or("the display prefers no size")?,
     };
     if mode == display.device_mode() {
         return Ok(());
@@ -772,7 +772,10 @@ pub fn change_mode<P: Platform>(mode: Option<Mode>) -> Result<(), &'static str> 
 
 /// Whether the display can change size; false without one.
 pub fn can_change_mode() -> bool {
-    DISPLAY.lock().as_ref().is_some_and(|display| display.can_change_mode())
+    DISPLAY
+        .lock()
+        .as_ref()
+        .is_some_and(|display| display.can_change_mode())
 }
 
 /// The device's own size, before the scale divides it; `None` without a display.
@@ -795,7 +798,12 @@ pub fn status_text() -> alloc::string::String {
     let mut sinks = display.scanout.sinks();
     sinks.push_str(&crate::devices::display_hardware_text());
     match sinks.is_empty() {
-        true => alloc::format!("{}x{} scale {} changeable {changeable}", mode.width, mode.height, display.scale()),
+        true => alloc::format!(
+            "{}x{} scale {} changeable {changeable}",
+            mode.width,
+            mode.height,
+            display.scale()
+        ),
         false => alloc::format!(
             "{}x{} scale {} changeable {changeable}\n{sinks}",
             mode.width,

@@ -113,7 +113,10 @@ pub fn run(startup: &Startup) -> i32 {
 fn wall_clock_s() -> u64 {
     const CLOCK_REALTIME: usize = 0;
     let mut time = [0i64; 2];
-    match syscall(number::CLOCK_GETTIME, [CLOCK_REALTIME, time.as_mut_ptr() as usize, 0, 0, 0, 0]) {
+    match syscall(
+        number::CLOCK_GETTIME,
+        [CLOCK_REALTIME, time.as_mut_ptr() as usize, 0, 0, 0, 0],
+    ) {
         Ok(_) => time[0].max(0) as u64,
         Err(_) => 0,
     }
@@ -135,15 +138,11 @@ fn c_string(text: &str, out: &mut [u8; PATH_BYTES]) -> Option<usize> {
     Some(out.as_ptr() as usize)
 }
 
-/// Runs `fetch -q --range <first>-<last> -o <path> <url>` (D271) and waits for it: whether it
-/// ended with status 0.
 fn download_range_with_fetch(url: &str, path: &str, first: u64, last: u64) -> bool {
     let range = alloc::format!("{first}-{last}");
     run_fetch(url, path, Some(&range))
 }
 
-/// Runs `fetch -q -o <path> <url>` (D257) and waits for it: whether it ended with status 0.
-/// The folder is made first; the download shows in the Downloads window as any `fetch` does.
 fn download_with_fetch(url: &str, path: &str) -> bool {
     run_fetch(url, path, None)
 }
@@ -151,10 +150,17 @@ fn download_with_fetch(url: &str, path: &str) -> bool {
 fn run_fetch(url: &str, path: &str, range: Option<&str>) -> bool {
     let mut folder = [0u8; PATH_BYTES];
     if let Some(folder) = c_string(crate::manager::DOWNLOAD_FOLDER, &mut folder) {
-        let _ = syscall(number::MKDIRAT, [-100isize as usize, folder, 0o755, 0, 0, 0]);
+        let _ = syscall(
+            number::MKDIRAT,
+            [-100isize as usize, folder, 0o755, 0, 0, 0],
+        );
     }
-    let (mut url_bytes, mut path_bytes, mut range_bytes) = ([0u8; PATH_BYTES], [0u8; PATH_BYTES], [0u8; PATH_BYTES]);
-    let (Some(url), Some(path)) = (c_string(url, &mut url_bytes), c_string(path, &mut path_bytes)) else {
+    let (mut url_bytes, mut path_bytes, mut range_bytes) =
+        ([0u8; PATH_BYTES], [0u8; PATH_BYTES], [0u8; PATH_BYTES]);
+    let (Some(url), Some(path)) = (
+        c_string(url, &mut url_bytes),
+        c_string(path, &mut path_bytes),
+    ) else {
         return false;
     };
     let (quiet, output) = (QUIET.as_ptr() as usize, OUTPUT.as_ptr() as usize);
@@ -164,7 +170,16 @@ fn run_fetch(url: &str, path: &str, range: Option<&str>) -> bool {
             let Some(range) = c_string(range, &mut range_bytes) else {
                 return false;
             };
-            [FETCH.as_ptr() as usize, quiet, RANGE.as_ptr() as usize, range, output, path, url, 0]
+            [
+                FETCH.as_ptr() as usize,
+                quiet,
+                RANGE.as_ptr() as usize,
+                range,
+                output,
+                path,
+                url,
+                0,
+            ]
         }
     };
     let environment = [0usize];
@@ -174,7 +189,14 @@ fn run_fetch(url: &str, path: &str, range: Option<&str>) -> bool {
     if child == 0 {
         let _ = syscall(
             number::EXECVE,
-            [FETCH.as_ptr() as usize, arguments.as_ptr() as usize, environment.as_ptr() as usize, 0, 0, 0],
+            [
+                FETCH.as_ptr() as usize,
+                arguments.as_ptr() as usize,
+                environment.as_ptr() as usize,
+                0,
+                0,
+                0,
+            ],
         );
         let _ = syscall(number::EXIT_GROUP, [127, 0, 0, 0, 0, 0]);
         return false;

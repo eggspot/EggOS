@@ -769,8 +769,14 @@ mod tests {
 
     #[test]
     fn an_app_may_hold_portrait_or_landscape() {
-        assert_eq!(orientation(b"orientation=portrait\n"), Orientation::Portrait);
-        assert_eq!(orientation(b"orientation=landscape\n"), Orientation::Landscape);
+        assert_eq!(
+            orientation(b"orientation=portrait\n"),
+            Orientation::Portrait
+        );
+        assert_eq!(
+            orientation(b"orientation=landscape\n"),
+            Orientation::Landscape
+        );
         assert_eq!(orientation(b"orientation=sideways\n"), Orientation::Any);
         assert_eq!(orientation(b"name=A\n"), Orientation::Any);
     }

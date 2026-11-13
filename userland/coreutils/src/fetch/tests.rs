@@ -365,16 +365,30 @@ fn a_range_is_asked_for_and_a_whole_file_answer_refused() {
     ));
     let (status, _, errors, fake) = run(
         fake,
-        &[c"-q", c"--range", c"7-11", c"http://files.test/part", c"/home/part"],
+        &[
+            c"-q",
+            c"--range",
+            c"7-11",
+            c"http://files.test/part",
+            c"/home/part",
+        ],
     );
     assert_eq!((status, errors.as_str()), (0, ""));
     assert_eq!(fake.contents("/home/part"), b"EggOS");
-    assert!(fake.network.requests[0]
-        .windows(b"\r\nRange: bytes=7-11\r\n".len())
-        .any(|window| window == b"\r\nRange: bytes=7-11\r\n"));
+    assert!(
+        fake.network.requests[0]
+            .windows(b"\r\nRange: bytes=7-11\r\n".len())
+            .any(|window| window == b"\r\nRange: bytes=7-11\r\n")
+    );
     let (status, _, errors, _) = run(
         network(),
-        &[c"-q", c"--range", c"7-11", c"http://10.0.2.2:8080/hello.txt", c"/home/whole"],
+        &[
+            c"-q",
+            c"--range",
+            c"7-11",
+            c"http://10.0.2.2:8080/hello.txt",
+            c"/home/whole",
+        ],
     );
     assert_eq!(status, FAILURE);
     assert!(errors.contains("the server sent the whole file"));

@@ -91,19 +91,15 @@ fn registers(probe: &mut dyn Probe, id: DeviceId) -> Result<Mmio, ProbeError> {
         .table()
         .get(id)
         .ok_or(ProbeError::Refused("no such device"))?;
-    let region = node
-        .regions()
-        .next()
-        .ok_or(ProbeError::Refused("the display controller has no registers"))?;
+    let region = node.regions().next().ok_or(ProbeError::Refused(
+        "the display controller has no registers",
+    ))?;
     let virt = probe.map_window(region)?;
     // SAFETY: `map_window` mapped the controller's register block as device memory for good;
     // only this driver reaches it.
     Ok(unsafe { Mmio::new(virt, region.len() as usize) })
 }
 
-/// Shows the desktop through `engine`, whose plane shows `width` by `height` pixels, rows
-/// `stride` bytes apart, from the firmware's frame at `address`, flipping between it and a
-/// frame of the kernel's own, below 4 GiB when `below_4_gib`.
 fn take_over<E: FlipEngine + 'static>(
     probe: &mut dyn Probe,
     engine: E,
@@ -112,14 +108,18 @@ fn take_over<E: FlipEngine + 'static>(
 ) -> Result<(), ProbeError> {
     let bytes = u64::from(stride) * u64::from(height);
     if stride < width * 4 || bytes == 0 {
-        return Err(ProbeError::Refused("the lit plane's rows are shorter than its width"));
+        return Err(ProbeError::Refused(
+            "the lit plane's rows are shorter than its width",
+        ));
     }
     let firmware = probe.map_write_combining(PhysicalRange::from_start_length(address, bytes))?;
     let second = DmaRegion::allocate(bytes as usize)
         .map_err(|_| ProbeError::Refused("no memory for a second framebuffer"))?;
     let physical = second.physical();
     if below_4_gib && physical + bytes > FOUR_GIGABYTES {
-        return Err(ProbeError::Refused("the second framebuffer lies past 4 GiB"));
+        return Err(ProbeError::Refused(
+            "the second framebuffer lies past 4 GiB",
+        ));
     }
     let own = probe.map_write_combining(PhysicalRange::from_start_length(physical, bytes))?;
     core::mem::forget(second);

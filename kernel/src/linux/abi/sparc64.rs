@@ -303,7 +303,8 @@ const MOV_RT_SIGRETURN_G1: u32 = 0x8210_2000 | number::RT_SIGRETURN as u32;
 const TA_0X6D: u32 = 0x91d0_206d;
 const NOP: u32 = 0x0100_0000;
 /// The kernel's `rt_sigreturn` trampoline: `mov 101, %g1`, `ta 0x6d`, then a `nop`.
-pub const SIGRETURN_TRAMPOLINE: Option<&[u8]> = Some(&super::code_bytes([MOV_RT_SIGRETURN_G1, TA_0X6D, NOP]));
+pub const SIGRETURN_TRAMPOLINE: Option<&[u8]> =
+    Some(&super::code_bytes([MOV_RT_SIGRETURN_G1, TA_0X6D, NOP]));
 
 /// Linux's `stat` on SPARC64: a 32-bit `st_dev` and `st_rdev`, a 16-bit `st_nlink`, the times
 /// in whole seconds.
@@ -393,8 +394,6 @@ const FCNTL_COMMANDS: FlagPairs = &[(7, 5), (8, 6), (9, 7), (6, 8), (5, 9)];
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
-/// `O_NONBLOCK` and `O_CLOEXEC`, which `pipe2`, `dup3`, `accept4`, the socket types and the
-/// event files take, in the generic values.
 fn descriptor_flags(value: u64) -> u64 {
     let mut out = value & !(NONBLOCK_SPARC | CLOEXEC_SPARC);
     if value & NONBLOCK_SPARC != 0 {
@@ -459,8 +458,6 @@ pub fn result_out(number: u64, arguments: [u64; 6], result: u64) -> u64 {
     }
 }
 
-/// The `sa_flags` bits whose values differ: `SA_ONSTACK`, `SA_RESTART`, `SA_RESETHAND`,
-/// `SA_NOCLDSTOP`, `SA_NODEFER`, `SA_NOCLDWAIT` and `SA_SIGINFO`.
 const SIGACTION_FLAGS: FlagPairs = &[
     (0x1, 0x0800_0000),
     (0x2, 0x1000_0000),
@@ -481,7 +478,6 @@ pub fn sigaction_flags_out(flags: u64) -> u64 {
     flags_to_architecture(flags, SIGACTION_FLAGS)
 }
 
-/// SPARC's `POLLWRNORM` is `POLLOUT` and its `POLLWRBAND` 0x100, as on MIPS.
 const POLL_WRITE_BAND_SPARC: u16 = 0x100;
 const POLL_WRITE_NORMAL_GENERIC: u16 = 0x100;
 const POLL_WRITE_BAND_GENERIC: u16 = 0x200;
@@ -489,14 +485,26 @@ const POLL_OUT: u16 = 0x4;
 
 /// Requested `poll` events in the generic values.
 pub fn poll_events_in(events: u16) -> u16 {
-    let band = if events & POLL_WRITE_BAND_SPARC != 0 { POLL_WRITE_BAND_GENERIC } else { 0 };
+    let band = if events & POLL_WRITE_BAND_SPARC != 0 {
+        POLL_WRITE_BAND_GENERIC
+    } else {
+        0
+    };
     (events & !POLL_WRITE_BAND_SPARC) | band
 }
 
 /// Returned `poll` events in SPARC's values.
 pub fn poll_events_out(events: u16) -> u16 {
-    let normal = if events & POLL_WRITE_NORMAL_GENERIC != 0 { POLL_OUT } else { 0 };
-    let band = if events & POLL_WRITE_BAND_GENERIC != 0 { POLL_WRITE_BAND_SPARC } else { 0 };
+    let normal = if events & POLL_WRITE_NORMAL_GENERIC != 0 {
+        POLL_OUT
+    } else {
+        0
+    };
+    let band = if events & POLL_WRITE_BAND_GENERIC != 0 {
+        POLL_WRITE_BAND_SPARC
+    } else {
+        0
+    };
     (events & !(POLL_WRITE_NORMAL_GENERIC | POLL_WRITE_BAND_GENERIC)) | normal | band
 }
 
@@ -525,7 +533,6 @@ pub mod termios {
     pub const SIZE: usize = 36;
     const SHARED_EOF_MIN: usize = 4;
     const SHARED_EOL_TIME: usize = 5;
-    /// (SPARC index, generic index) of the control characters that are not shared.
     const INDEXES: [(usize, usize); 13] = [
         (0, 0),
         (1, 1),
@@ -548,7 +555,15 @@ pub mod termios {
     pub fn to_program(settings: &Termios) -> [u8; SIZE] {
         let mut bytes = [0; SIZE];
         let local_flags = flags_to_architecture(u64::from(settings.local), LOCAL_FLAGS) as u32;
-        for (at, word) in [settings.input, settings.output, settings.control, local_flags].into_iter().enumerate() {
+        for (at, word) in [
+            settings.input,
+            settings.output,
+            settings.control,
+            local_flags,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             bytes[at * 4..][..4].copy_from_slice(&word.to_ne_bytes());
         }
         bytes[16] = settings.line;
@@ -696,20 +711,33 @@ pub mod signal_frame {
 
     /// The interrupted window's locals and ins, to its own stack's save area, as a spill puts
     /// them.
-    pub fn write_extra<P: Platform>(process: &Process<P>, _top: u64, _frame: u64, saved: &Saved) -> Result<(), BadFrame> {
+    pub fn write_extra<P: Platform>(
+        process: &Process<P>,
+        _top: u64,
+        _frame: u64,
+        saved: &Saved,
+    ) -> Result<(), BadFrame> {
         let mut window = [0u8; WINDOW_BYTES];
         for (index, value) in saved.registers.r[16..32].iter().enumerate() {
             put(&mut window, index * 8, *value);
         }
         let save_area = saved.registers.r[14].wrapping_add(STACK_BIAS);
-        process.write_user_memory(save_area, &window).map_err(|_| BadFrame)
+        process
+            .write_user_memory(save_area, &window)
+            .map_err(|_| BadFrame)
     }
 
     /// The restored window's locals and ins, from its stack's save area.
-    pub fn read_extra<P: Platform>(process: &Process<P>, _frame: &[u8; READ], saved: &mut Saved) -> Result<(), BadFrame> {
+    pub fn read_extra<P: Platform>(
+        process: &Process<P>,
+        _frame: &[u8; READ],
+        saved: &mut Saved,
+    ) -> Result<(), BadFrame> {
         let mut window = [0u8; WINDOW_BYTES];
         let save_area = saved.registers.r[14].wrapping_add(STACK_BIAS);
-        process.read_user_memory(save_area, &mut window).map_err(|_| BadFrame)?;
+        process
+            .read_user_memory(save_area, &mut window)
+            .map_err(|_| BadFrame)?;
         for (index, value) in saved.registers.r[16..32].iter_mut().enumerate() {
             *value = word(&window, index * 8);
         }
@@ -767,7 +795,6 @@ pub mod fault {
     use crate::linux::signal;
     use eggos_hal::{Exception, ExceptionKind};
 
-    /// `FPE_INTDIV`.
     const FPE_INTDIV: i32 = 1;
 
     /// The signal, `si_code` and `si_addr` Linux gives `exception`; the trap number is the trap
@@ -783,7 +810,9 @@ pub mod fault {
         let reported = match exception.kind {
             ExceptionKind::DataFault | ExceptionKind::InstructionFault => segv(address),
             ExceptionKind::Alignment => (signal::SIGBUS, code::BUS_ADRALN, address),
-            ExceptionKind::Breakpoint | ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            ExceptionKind::Breakpoint | ExceptionKind::Debug => {
+                (signal::SIGTRAP, code::TRAP_BRKPT, pc)
+            }
             ExceptionKind::Arithmetic => (signal::SIGFPE, FPE_INTDIV, pc),
             ExceptionKind::IllegalInstruction
             | ExceptionKind::Segment

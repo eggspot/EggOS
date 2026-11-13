@@ -495,7 +495,11 @@ pub fn up_to_date(when: &str) -> String {
 /// `2 updates · 0.7 MB to download`, `1 update · 0.4 MB to copy` from a store on a disk.
 pub fn updates_line(count: usize, bytes: u64, from_disk: bool) -> String {
     let noun = if count == 1 { "update" } else { "updates" };
-    format!("{count} {noun} \u{b7} {} {}", size_text(bytes), to_fetch(from_disk))
+    format!(
+        "{count} {noun} \u{b7} {} {}",
+        size_text(bytes),
+        to_fetch(from_disk)
+    )
 }
 
 /// `Update: 0.4 MB to download`, a row's line while it has an update.
@@ -535,7 +539,10 @@ pub fn job_phase_line(phase: &str, done: u64, total: u64) -> String {
 pub fn downloading_store(done: u64, total: u64) -> String {
     match total {
         0 => format!("Downloading the component store: {}", size_text(done)),
-        _ => format!("Downloading the component store: {}", copied_of(done, total)),
+        _ => format!(
+            "Downloading the component store: {}",
+            copied_of(done, total)
+        ),
     }
 }
 
@@ -589,7 +596,10 @@ pub fn update_failure(failure: &Failure, title: &str) -> (String, &'static str) 
 /// The bar's chip tooltip: `2 component updates, 0.7 MB. Click to open Components.`
 pub fn updates_tooltip(count: usize, bytes: u64) -> String {
     let noun = if count == 1 { "update" } else { "updates" };
-    format!("{count} component {noun}, {}. Click to open Components.", size_text(bytes))
+    format!(
+        "{count} component {noun}, {}. Click to open Components.",
+        size_text(bytes)
+    )
 }
 
 fn errno_text(errno: eggos_runtime::errno::Errno) -> String {

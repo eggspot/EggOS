@@ -59,7 +59,9 @@ fn walk(binary: &[u8], found: &mut dyn FnMut(IpBlock)) -> Option<()> {
         return None;
     }
     let dies = usize::from(half(binary, table + DIE_COUNT)?).min(MOST_DIES);
-    let wide = binary.get(table + BASE_IS_64_BIT).is_some_and(|flags| flags & 1 != 0);
+    let wide = binary
+        .get(table + BASE_IS_64_BIT)
+        .is_some_and(|flags| flags & 1 != 0);
     for die in 0..dies {
         let mut at = usize::from(half(binary, table + DIE_LIST + 4 * die + 2)?);
         let ips = half(binary, at + 2)?;
@@ -69,7 +71,11 @@ fn walk(binary: &[u8], found: &mut dyn FnMut(IpBlock)) -> Option<()> {
             let mut block = IpBlock {
                 hardware_id: half(binary, at)?,
                 instance: *binary.get(at + 2)?,
-                version: (*binary.get(at + 4)?, *binary.get(at + 5)?, *binary.get(at + 6)?),
+                version: (
+                    *binary.get(at + 4)?,
+                    *binary.get(at + 5)?,
+                    *binary.get(at + 6)?,
+                ),
                 base_count: count.min(MOST_BASES),
                 ..IpBlock::default()
             };
@@ -131,9 +137,8 @@ pub fn dmcub_firmware(file: &[u8]) -> Option<DmcubFirmware> {
     let inner = instruction_bytes.checked_sub(PSP_HEADER_BYTES + PSP_FOOTER_BYTES)? as usize;
     let instructions = (array + PSP_HEADER_BYTES as usize, inner);
     let data = (array + instruction_bytes as usize, data_bytes);
-    let fits = |(start, length): (usize, usize)| {
-        start.checked_add(length).is_some_and(|end| end <= size)
-    };
+    let fits =
+        |(start, length): (usize, usize)| start.checked_add(length).is_some_and(|end| end <= size);
     (fits(instructions) && fits(data)).then_some(DmcubFirmware {
         ip_version,
         version,

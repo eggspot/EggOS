@@ -7,11 +7,16 @@
 use super::dma::DmaRegion;
 use super::{DeviceNode, DeviceTable, DmaCoherence, Identity};
 use eggos_drivers::channel::{
-    self, ChannelBuffer, ChannelError, ChannelSubsystem, ConditionCode, Schib, SubchannelId, subchannel_type,
+    self, ChannelBuffer, ChannelError, ChannelSubsystem, ConditionCode, Schib, SubchannelId,
+    subchannel_type,
 };
 
-pub(super) fn discover(channels: &'static dyn ChannelSubsystem, table: &mut DeviceTable) -> Result<(), &'static str> {
-    let memory = DmaRegion::allocate(channel::BUFFER_BYTES).map_err(|_| "no memory for SENSE ID")?;
+pub(super) fn discover(
+    channels: &'static dyn ChannelSubsystem,
+    table: &mut DeviceTable,
+) -> Result<(), &'static str> {
+    let memory =
+        DmaRegion::allocate(channel::BUFFER_BYTES).map_err(|_| "no memory for SENSE ID")?;
     let mut buffer = match ChannelBuffer::new(memory) {
         Ok(buffer) => buffer,
         Err((error, memory)) => {

@@ -80,7 +80,8 @@ pub struct Push {
 
 impl Push {
     fn methods(&mut self, offset: u32, data: &[u32]) {
-        self.words.push((data.len() as u32) << METHOD_COUNT_SHIFT | offset);
+        self.words
+            .push((data.len() as u32) << METHOD_COUNT_SHIFT | offset);
         self.words.extend_from_slice(data);
     }
 }
@@ -96,7 +97,10 @@ pub fn raster(timing: &Timing) -> [u32; 4] {
         timing.width + timing.horizontal_blank,
         timing.height + timing.vertical_blank,
     );
-    let sync_end = (timing.horizontal_sync_width - 1, timing.vertical_sync_width - 1);
+    let sync_end = (
+        timing.horizontal_sync_width - 1,
+        timing.vertical_sync_width - 1,
+    );
     let blank_end = (
         total.0 - timing.width - timing.horizontal_sync_offset - 1,
         total.1 - timing.height - timing.vertical_sync_offset - 1,
@@ -114,8 +118,15 @@ pub fn raster(timing: &Timing) -> [u32; 4] {
 /// 0 owned by it and showing `surface` (width, height), then the core's update.
 pub fn core_methods(sor: u32, timing: &Timing, surface: (u32, u32)) -> Push {
     let mut push = Push::default();
-    let polarity = if timing.horizontal_sync_positive { 0 } else { HSYNC_NEGATIVE }
-        | if timing.vertical_sync_positive { 0 } else { VSYNC_NEGATIVE };
+    let polarity = if timing.horizontal_sync_positive {
+        0
+    } else {
+        HSYNC_NEGATIVE
+    } | if timing.vertical_sync_positive {
+        0
+    } else {
+        VSYNC_NEGATIVE
+    };
     let hertz = timing.clock_khz * 1000;
     let size = pair(timing.width, timing.height);
     push.methods(SOR_CONTROL + sor * SOR_STRIDE, &[1 | PROTOCOL_DP_A]);
@@ -139,7 +150,10 @@ pub fn window_methods(surface: (u32, u32, u32), handle: u32) -> Push {
     let (width, height, pitch) = surface;
     let size = pair(width, height);
     push.methods(WINDOW_PRESENT, &[0]);
-    push.methods(WINDOW_SIZE, &[size, 0, FORMAT_X8R8G8B8, pitch >> PITCH_UNIT_SHIFT]);
+    push.methods(
+        WINDOW_SIZE,
+        &[size, 0, FORMAT_X8R8G8B8, pitch >> PITCH_UNIT_SHIFT],
+    );
     push.methods(WINDOW_CONTEXT_DMA, &[handle]);
     push.methods(WINDOW_OFFSET, &[0]);
     push.methods(WINDOW_POINT_IN, &[0]);
@@ -209,7 +223,11 @@ pub fn stream_symbols(
     let watermark = watermark.max(WATERMARK_LEAST);
     let framing = if enhanced { 3 * 8 * lanes64 } else { 0 };
     let remainder = surface_width % lanes64;
-    let steering = if remainder != 0 { (lanes64 - remainder) * BITS_PER_PIXEL } else { 0 };
+    let steering = if remainder != 0 {
+        (lanes64 - remainder) * BITS_PER_PIXEL
+    } else {
+        0
+    };
     let blanking_bits = 3 * 8 * lanes64 + framing + 3 * 8 * 4 + steering;
     let blanking_clocks = blanking_bits * PRECISION / (8 * lanes64);
     let least_blank = blanking_clocks * pixel_rate / symbol_rate / PRECISION + 12;

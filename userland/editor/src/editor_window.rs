@@ -1041,7 +1041,13 @@ impl<'a> EditorWindow<'a> {
         let folder = Path::from(self.path().map_or(HOME, folder_of)).unwrap_or_else(Path::new);
         let name = match self.path() {
             Some(path) => Path::from(shown_name(path).as_bytes()),
-            None => Path::from(UNTITLED_PATH.rsplit('/').next().unwrap_or("Untitled.txt").as_bytes()),
+            None => Path::from(
+                UNTITLED_PATH
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("Untitled.txt")
+                    .as_bytes(),
+            ),
         }
         .unwrap_or_else(Path::new);
         Some(PickRequest { save, folder, name })

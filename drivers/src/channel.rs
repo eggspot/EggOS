@@ -136,7 +136,8 @@ impl Schib {
     /// their interruption parameter, keeping the rest of the word.
     pub fn enable(&mut self, isc: u8, parameter: u32) {
         self.0[..4].copy_from_slice(&parameter.to_be_bytes());
-        self.0[PMCW_ISC_ENABLE] = (self.0[PMCW_ISC_ENABLE] & !(7 << ISC_SHIFT)) | ((isc & 7) << ISC_SHIFT);
+        self.0[PMCW_ISC_ENABLE] =
+            (self.0[PMCW_ISC_ENABLE] & !(7 << ISC_SHIFT)) | ((isc & 7) << ISC_SHIFT);
         self.0[PMCW_FLAGS] |= ENABLED;
     }
 
@@ -346,7 +347,10 @@ pub const MAX_POLLS: usize = 1 << 22;
 
 /// Enables `subchannel` for I/O in [`POLLED_SUBCLASS`], with its subchannel word as the
 /// interruption parameter. Refuses a subchannel without a device.
-pub fn enable(channels: &dyn ChannelSubsystem, subchannel: SubchannelId) -> Result<Schib, ChannelError> {
+pub fn enable(
+    channels: &dyn ChannelSubsystem,
+    subchannel: SubchannelId,
+) -> Result<Schib, ChannelError> {
     let mut schib = Schib::default();
     if channels.store_subchannel(subchannel, &mut schib) != ConditionCode::DONE {
         return Err(ChannelError::NotOperational);
@@ -371,13 +375,14 @@ pub fn enable(channels: &dyn ChannelSubsystem, subchannel: SubchannelId) -> Resu
         _ => return Err(ChannelError::NotOperational),
     }
     let mut check = Schib::default();
-    if channels.store_subchannel(subchannel, &mut check) != ConditionCode::DONE || !check.is_enabled() {
+    if channels.store_subchannel(subchannel, &mut check) != ConditionCode::DONE
+        || !check.is_enabled()
+    {
         return Err(ChannelError::NotOperational);
     }
     Ok(check)
 }
 
-/// Where in a block of channel memory ([`ChannelBuffer`]) the program and its data are.
 const CCW_OFFSET: usize = 0;
 const DATA_OFFSET: usize = 256;
 /// The data bytes one command of a [`ChannelBuffer`] moves at most.
@@ -417,13 +422,17 @@ impl<M: DmaMemory> ChannelBuffer<M> {
     pub fn data(&self) -> &[u8] {
         // SAFETY: `DATA_OFFSET..BUFFER_BYTES` lies inside the memory (`new` checked), which the
         // buffer owns; a channel program writes it only while `run` waits for its end.
-        unsafe { core::slice::from_raw_parts(self.memory.as_mut_ptr().add(DATA_OFFSET), DATA_BYTES) }
+        unsafe {
+            core::slice::from_raw_parts(self.memory.as_mut_ptr().add(DATA_OFFSET), DATA_BYTES)
+        }
     }
 
     /// The data bytes, to fill before a command.
     pub fn data_mut(&mut self) -> &mut [u8] {
         // SAFETY: as in `data`; `&mut self` makes the slice the only one.
-        unsafe { core::slice::from_raw_parts_mut(self.memory.as_mut_ptr().add(DATA_OFFSET), DATA_BYTES) }
+        unsafe {
+            core::slice::from_raw_parts_mut(self.memory.as_mut_ptr().add(DATA_OFFSET), DATA_BYTES)
+        }
     }
 
     /// Runs `command` on `subchannel` over the first `count` data bytes and polls for its end:
@@ -436,7 +445,12 @@ impl<M: DmaMemory> ChannelBuffer<M> {
         count: u16,
     ) -> Result<Scsw, ChannelError> {
         let count = count.min(DATA_BYTES as u16);
-        let word = ccw1(command, ccw_flags::SUPPRESS_LENGTH, count, self.address(DATA_OFFSET));
+        let word = ccw1(
+            command,
+            ccw_flags::SUPPRESS_LENGTH,
+            count,
+            self.address(DATA_OFFSET),
+        );
         // SAFETY: `CCW_OFFSET..CCW_OFFSET + CCW_BYTES` lies inside the memory, which the buffer
         // owns, and no channel program runs now (`&mut self`).
         unsafe {
@@ -483,7 +497,8 @@ impl<M: DmaMemory> ChannelBuffer<M> {
 
 fn final_status(status: Scsw) -> Result<Scsw, ChannelError> {
     let checks = status.subchannel_status()
-        & !(subchannel_status::INCORRECT_LENGTH | subchannel_status::PROGRAM_CONTROLLED_INTERRUPTION);
+        & !(subchannel_status::INCORRECT_LENGTH
+            | subchannel_status::PROGRAM_CONTROLLED_INTERRUPTION);
     if checks != 0 {
         return Err(ChannelError::SubchannelCheck(checks));
     }

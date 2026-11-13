@@ -4,24 +4,24 @@
 //! so `/proc/driver/display` says which outputs the board has and which firmware it carries.
 //! The firmware's framebuffer (D236) stays the display until the display engines are driven.
 
+use super::dma::DmaRegion;
 use super::{DeviceId, DriverDescriptor, Identity, Match, Probe, ProbeError, ProbePass};
 use crate::sync::SpinLock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use eggos_drivers::dma::DmaMemory;
 use eggos_drivers::gpu::amd_atom::AtomBios;
 use eggos_drivers::gpu::amd_atom_interpreter::Interpreter;
 use eggos_drivers::gpu::amd_dcn;
 use eggos_drivers::gpu::amd_discovery::{OFFSET_FROM_TOP, display_block, dmcub_file_name};
 use eggos_drivers::gpu::nvidia_bios::NvidiaBios;
-use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
-use eggos_drivers::io::RegisterIo;
 use eggos_drivers::gpu::nvidia_gsp::{self, Chip};
 use eggos_drivers::gpu::nvidia_gsp_boot::{self, SharedMemory, SystemImages, WprLayout};
 use eggos_drivers::gpu::nvidia_gsp_display;
 use eggos_drivers::gpu::nvidia_gsp_queue::{self, Queues, SequencerStep, SystemInfo};
-use eggos_drivers::dma::DmaMemory;
-use super::dma::DmaRegion;
+use eggos_drivers::gpu::{nvidia_falcon, nvidia_fwsec};
+use eggos_drivers::io::RegisterIo;
 use eggos_hal::PhysicalRange;
 
 const VENDOR_AMD: u16 = 0x1002;
@@ -35,7 +35,6 @@ const REGISTER_BAR: usize = 5;
 
 static SUMMARY: SpinLock<String> = SpinLock::new(String::new());
 
-/// AMD's GPUs (PCI vendor 1002h), ahead of the display class's other drivers.
 const ATOM_COMMAND_TABLES: usize = 81;
 const BOOT_0_PAGE: u64 = 4096;
 const GSP_BLOCK_BYTES: u64 = 0x4000;
@@ -68,7 +67,6 @@ struct GspTarget {
     surface: Option<FirmwareSurface>,
 }
 
-/// The firmware's framebuffer as video memory: its offset, size and row bytes.
 #[derive(Clone, Copy)]
 struct FirmwareSurface {
     offset: u64,
@@ -106,7 +104,10 @@ pub static NVIDIA_DISPLAY_DRIVER: DriverDescriptor = DriverDescriptor {
 };
 
 fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
-    let node = *probe.table().get(id).ok_or(ProbeError::Refused("no such device"))?;
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
     let Identity::Pci(function) = node.identity else {
         return Err(ProbeError::Refused("not a PCI function"));
     };
@@ -114,7 +115,8 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
         return Err(ProbeError::Refused("not a display controller"));
     }
     let image = read_rom(probe, function.address)?;
-    let bios = NvidiaBios::parse(&image).ok_or(ProbeError::Refused("the expansion ROM holds no video BIOS"))?;
+    let bios = NvidiaBios::parse(&image)
+        .ok_or(ProbeError::Refused("the expansion ROM holds no video BIOS"))?;
     let mut line = String::new();
     let _ = write!(line, "nvidia {:04x}", function.device_id);
     if let Some(version) = bios.version {
@@ -127,7 +129,12 @@ fn probe_nvidia_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), Probe
         eggos_drivers::pci::enable_memory_and_bus_master(config, function.address);
     }
     if let Some((imem, dmem)) = read_gsp_memories(probe, node.regions[0]) {
-        let _ = write!(line, " gsp falcon {} KiB imem {} KiB dmem", imem >> 10, dmem >> 10);
+        let _ = write!(
+            line,
+            " gsp falcon {} KiB imem {} KiB dmem",
+            imem >> 10,
+            dmem >> 10
+        );
     }
     let mut wpr2_ready = false;
     if let Some(rom) = read_prom(probe, node.regions[0])
@@ -195,22 +202,22 @@ fn read_boot_0(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<u32> {
         return None;
     }
     let start = probe
-        .map_window(PhysicalRange::from_start_length(registers.start, BOOT_0_PAGE))
+        .map_window(PhysicalRange::from_start_length(
+            registers.start,
+            BOOT_0_PAGE,
+        ))
         .ok()?;
     // SAFETY: `map_window` mapped BAR 0's first page, the GPU's registers, as device memory
     // for good; `PMC_BOOT_0` is a read-only identification register.
     Some(unsafe { core::ptr::read_volatile((start + nvidia_gsp::BOOT_0) as *const u32) })
 }
 
-/// The usable video memory's bytes and where the VGA workspace starts in it.
 fn video_memory(regs: &eggos_drivers::io::Mmio) -> (u64, u64) {
     let bytes = u64::from(regs.read32(USABLE_VIDEO_MEMORY_MB)) << 20;
     let workspace = regs.read32(nvidia_gsp_boot::VGA_WORKSPACE_REGISTER);
     (bytes, nvidia_gsp_boot::bios_start(bytes, workspace))
 }
 
-/// Keeps BAR 0 mapped and what the GSP boot needs to know about the board until the file
-/// systems hold its firmware (D522).
 fn keep_gsp_target(
     probe: &mut dyn Probe,
     registers: PhysicalRange,
@@ -240,8 +247,6 @@ fn keep_gsp_target(
     Ok(())
 }
 
-/// The firmware's framebuffer, when it lies in the framebuffer BAR `bar`, as an offset into
-/// video memory (the BAR maps it in order before GSP-RM runs).
 fn firmware_surface(probe: &mut dyn Probe, bar: PhysicalRange) -> Option<FirmwareSurface> {
     let framebuffer = probe.boot_framebuffer()?;
     let end = framebuffer.address.checked_add(framebuffer.size)?;
@@ -298,15 +303,6 @@ fn paged_copy(bytes: &[u8], kept: &mut Vec<DmaRegion>) -> Result<Vec<u64>, &'sta
     Ok(pages)
 }
 
-/// Boots GSP-RM (D522): its image, boot binary and signature into system memory, the WPR
-/// metadata, libos's regions and the queues' shared memory; GSP's Falcon reset into RISC-V
-/// with libos's arguments in its mailboxes; SEC2's booter, signed for the fuse, run with the
-/// metadata's address, which copies GSP-RM into WPR2 and starts it; then the boot binary's
-/// version told and the RISC-V core seen running. The memory stays GSP-RM's for good. The
-/// system information and the registry wait in the command queue before the booter runs
-/// (D523); GSP-RM's messages are then read, its CPU sequencer requests run (`delay` waits a
-/// number of microseconds), until it says it finished starting. Then the screens GSP-RM finds
-/// are asked for (D524); a summary of them.
 fn boot_gsp(
     target: &GspTarget,
     (gsp, boot_file, booter_file): (&[u8], &[u8], &[u8]),
@@ -408,7 +404,16 @@ fn boot_gsp(
     let (status, _) = sec2
         .run_secure(nvidia_falcon::SEC2_FBIF, &program, mailboxes, &mut polls())
         .map_err(nvidia_falcon::FalconError::description)?;
-    kept.extend([radix3, bootloader, signature, meta, queues, rm_arguments, libos, booter_image]);
+    kept.extend([
+        radix3,
+        bootloader,
+        signature,
+        meta,
+        queues,
+        rm_arguments,
+        libos,
+        booter_image,
+    ]);
     GSP_MEMORY.lock().append(&mut kept);
     if status != 0 {
         return Err("the booter reported an error");
@@ -465,7 +470,11 @@ fn boot_gsp(
     }
     for sink in sinks {
         let _ = write!(line, " display {}", sink.display);
-        if let Some(edid) = sink.edid.as_deref().and_then(eggos_drivers::edid::Edid::parse) {
+        if let Some(edid) = sink
+            .edid
+            .as_deref()
+            .and_then(eggos_drivers::edid::Edid::parse)
+        {
             let maker = core::str::from_utf8(&edid.maker).unwrap_or("?");
             let _ = write!(line, " {maker} {}", edid.name());
             if let Some(mode) = edid.preferred {
@@ -476,9 +485,6 @@ fn boot_gsp(
     Ok(line)
 }
 
-/// Brings the display's core channel up through GSP-RM (D529): GSP-RM's internal handles from
-/// its static information, 64 KiB of instance memory right below the heap outside WPR2, a push
-/// buffer in system memory, then one update pushed and waited for.
 fn bring_up_display_core(
     gsp_rm: &mut GspRm,
     target: &GspTarget,
@@ -486,14 +492,13 @@ fn bring_up_display_core(
     delay: &mut dyn FnMut(u32),
 ) -> Result<DisplayCore, &'static str> {
     use nvidia_gsp_display::{
-        CORE_GET, CORE_PUT, CORE_UPDATE, CoreSetup, INSTANCE_BYTES, STATIC_INFO,
-        STATIC_INFO_BYTES,
+        CORE_GET, CORE_PUT, CORE_UPDATE, CoreSetup, INSTANCE_BYTES, STATIC_INFO, STATIC_INFO_BYTES,
     };
     let classes = nvidia_gsp_display::display_classes(target.architecture)
         .ok_or("no display classes for this chip")?;
     let info = gsp_rm.call(STATIC_INFO, &[0u8; STATIC_INFO_BYTES], delay)?;
-    let (internal_client, _, internal_subdevice) =
-        nvidia_gsp_display::internal_handles(&info).ok_or("GSP-RM's static information is short")?;
+    let (internal_client, _, internal_subdevice) = nvidia_gsp_display::internal_handles(&info)
+        .ok_or("GSP-RM's static information is short")?;
     let mut push = allocate(nvidia_gsp_boot::PAGE_BYTES as usize)?;
     let push_address = device_address(&push);
     let setup = CoreSetup {
@@ -524,8 +529,6 @@ fn bring_up_display_core(
     })
 }
 
-/// The display's core channel once up (D529): what the engine has, how it was made, its push
-/// buffer and where the next methods go in it.
 struct DisplayCore {
     engine: nvidia_gsp_display::DisplayEngineInfo,
     setup: nvidia_gsp_display::CoreSetup,
@@ -579,11 +582,6 @@ fn write_video_memory(regs: &eggos_drivers::io::Mmio, base: u64, offset: u32, wo
     }
 }
 
-/// Lights the first screen with a preferred mode (D530): a SOR assigned, the sink's DPCD read
-/// over GSP-RM's AUX channel, the link trained at the sink's rate and lanes, the stream
-/// configured, the firmware's framebuffer named by a context DMA in the display's instance
-/// memory (through the PRAMIN window), window 0's channel made and given the surface, and head 0
-/// given the mode through the core channel.
 fn light_screen(
     gsp_rm: &mut GspRm,
     target: &GspTarget,
@@ -610,7 +608,8 @@ fn light_screen(
         .ok_or("the mode does not fit the link")?;
     nvidia_gsp_display::train_link(&mut call, display, (lanes, u32::from(rate)), enhanced)
         .map_err(|_| "GSP-RM could not train the link")?;
-    nvidia_gsp_display::configure_stream(&mut call, (0, sor), enhanced, symbols).map_err(refused)?;
+    nvidia_gsp_display::configure_stream(&mut call, (0, sor), enhanced, symbols)
+        .map_err(refused)?;
     let instance = core.setup.instance_memory;
     let bytes = u64::from(surface.pitch) * u64::from(surface.height);
     let dma = mode::context_dma(surface.offset, bytes);
@@ -621,7 +620,12 @@ fn light_screen(
         mode::CONTEXT_DMA_OFFSET,
         nvidia_gsp_display::CLIENT,
     );
-    write_video_memory(&gsp_rm.regs, instance, slot * 8, &[mode::SURFACE_HANDLE, context]);
+    write_video_memory(
+        &gsp_rm.regs,
+        instance,
+        slot * 8,
+        &[mode::SURFACE_HANDLE, context],
+    );
     let mut window_push = allocate(nvidia_gsp_boot::PAGE_BYTES as usize)?;
     let window_address = device_address(&window_push);
     let setup = core.setup;
@@ -632,7 +636,10 @@ fn light_screen(
         (window_address, nvidia_gsp_boot::PAGE_BYTES),
     )
     .map_err(refused)?;
-    let shown = (surface.width.min(timing.width), surface.height.min(timing.height));
+    let shown = (
+        surface.width.min(timing.width),
+        surface.height.min(timing.height),
+    );
     let window = mode::window_methods((shown.0, shown.1, surface.pitch), mode::SURFACE_HANDLE);
     let channel = (mode::WINDOW_PUT, mode::WINDOW_GET);
     let pushed = push_methods(&gsp_rm.regs, &mut window_push, channel, (0, &window.words));
@@ -640,11 +647,15 @@ fn light_screen(
     pushed?;
     let methods = mode::core_methods(sor, &timing, shown);
     let channel = (nvidia_gsp_display::CORE_PUT, nvidia_gsp_display::CORE_GET);
-    core.put = push_methods(&gsp_rm.regs, &mut core.push, channel, (core.put, &methods.words))?;
+    core.put = push_methods(
+        &gsp_rm.regs,
+        &mut core.push,
+        channel,
+        (core.put, &methods.words),
+    )?;
     Ok((display, timing))
 }
 
-/// GSP-RM once it runs: its queues, BAR 0 (`length` bytes) and GSP's Falcon.
 struct GspRm {
     channel: Queues<eggos_drivers::io::Mmio>,
     regs: eggos_drivers::io::Mmio,
@@ -653,8 +664,6 @@ struct GspRm {
 }
 
 impl GspRm {
-    /// Reads GSP-RM's messages until one of `function` comes, running its CPU sequencer
-    /// requests on the way (D523); that message.
     fn await_message(
         &mut self,
         function: u32,
@@ -686,7 +695,6 @@ impl GspRm {
         }
     }
 
-    /// Sends remote call `function` with `payload` and waits for its answer's payload (D524).
     fn call(
         &mut self,
         function: u32,
@@ -701,8 +709,6 @@ impl GspRm {
     }
 }
 
-/// Runs GSP-RM's CPU sequencer `steps` on BAR 0 (`length` bytes, behind `regs`) and GSP's
-/// Falcon (D523).
 fn run_sequencer(
     regs: &eggos_drivers::io::Mmio,
     length: usize,
@@ -719,11 +725,20 @@ fn run_sequencer(
     for step in steps {
         match *step {
             SequencerStep::Write { address, value } => regs.write32(place(address)?, value),
-            SequencerStep::Modify { address, mask, value } => {
+            SequencerStep::Modify {
+                address,
+                mask,
+                value,
+            } => {
                 let at = place(address)?;
                 regs.write32(at, regs.read32(at) & !mask | value);
             }
-            SequencerStep::Poll { address, mask, value, .. } => {
+            SequencerStep::Poll {
+                address,
+                mask,
+                value,
+                ..
+            } => {
                 let at = place(address)?;
                 let mut keep_waiting = polls();
                 while regs.read32(at) & mask != value {
@@ -759,7 +774,10 @@ pub fn start_gsp<P: eggos_hal::Platform>() -> bool {
     crate::thread::spawn::<P, _>(move || {
         let version = nvidia_gsp_boot::FIRMWARE_VERSION;
         let path = |name: &str| {
-            alloc::format!("{GSP_FIRMWARE_FOLDER}/{}/gsp/{name}-{version}.bin", target.chip)
+            alloc::format!(
+                "{GSP_FIRMWARE_FOLDER}/{}/gsp/{name}-{version}.bin",
+                target.chip
+            )
         };
         let read = |name: &str| super::read_firmware(&path(name), LARGEST_GSP_FILE);
         let (gsp, boot, booter) = loop {
@@ -786,9 +804,6 @@ pub fn start_gsp<P: eggos_hal::Platform>() -> bool {
     .is_ok()
 }
 
-/// Runs FWSEC's FRTS command on GSP's Falcon (D513), so the protected region WPR2 is set up
-/// where GSP-RM's layout puts FRTS (1 MiB right below WPR2's 128 KiB aligned end, under the
-/// VGA workspace, D522); the region the GPU then reports.
 fn run_fwsec(
     probe: &mut dyn Probe,
     registers: PhysicalRange,
@@ -860,8 +875,6 @@ fn run_fwsec(
     wpr2(&regs).ok_or("FWSEC left no WPR2")
 }
 
-/// The video BIOS whole, through BAR 0's `PROM` window (D512): the expansion ROM BAR may show
-/// only its first images, and FWSEC sits in the extended one.
 fn read_prom(probe: &mut dyn Probe, registers: PhysicalRange) -> Option<Vec<u8>> {
     if registers.len() < PROM_START + PROM_BYTES {
         return None;
@@ -913,15 +926,23 @@ fn read_discovery(probe: &mut dyn Probe, aperture: PhysicalRange) -> Option<Vec<
     Some(binary)
 }
 
-fn read_rom(probe: &mut dyn Probe, address: eggos_drivers::pci::Address) -> Result<Vec<u8>, ProbeError> {
-    let config = probe.pci_config().ok_or(ProbeError::Refused("no PCI configuration space"))?;
+fn read_rom(
+    probe: &mut dyn Probe,
+    address: eggos_drivers::pci::Address,
+) -> Result<Vec<u8>, ProbeError> {
+    let config = probe
+        .pci_config()
+        .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let rom = config.read32(address, EXPANSION_ROM);
     let base = rom & ROM_ADDRESS_MASK;
     if base == 0 {
         return Err(ProbeError::Refused("the expansion ROM has no address"));
     }
     config.write32(address, EXPANSION_ROM, rom | ROM_ENABLE);
-    let window = probe.map_window(PhysicalRange::from_start_length(u64::from(base), ROM_BYTES as u64));
+    let window = probe.map_window(PhysicalRange::from_start_length(
+        u64::from(base),
+        ROM_BYTES as u64,
+    ));
     let image = window.map(|start| {
         let mut image = Vec::with_capacity(ROM_BYTES);
         for offset in 0..ROM_BYTES {
@@ -938,7 +959,10 @@ fn read_rom(probe: &mut dyn Probe, address: eggos_drivers::pci::Address) -> Resu
 }
 
 fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
-    let node = *probe.table().get(id).ok_or(ProbeError::Refused("no such device"))?;
+    let node = *probe
+        .table()
+        .get(id)
+        .ok_or(ProbeError::Refused("no such device"))?;
     let Identity::Pci(function) = node.identity else {
         return Err(ProbeError::Refused("not a PCI function"));
     };
@@ -946,7 +970,8 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
         return Err(ProbeError::Refused("not a display controller"));
     }
     let image = read_rom(probe, function.address)?;
-    let bios = AtomBios::parse(&image).ok_or(ProbeError::Refused("the expansion ROM holds no ATOM BIOS"))?;
+    let bios = AtomBios::parse(&image)
+        .ok_or(ProbeError::Refused("the expansion ROM holds no ATOM BIOS"))?;
     let mut line = String::new();
     let _ = write!(line, "amd {:04x}", function.device_id);
     if let Some(revision) = bios.firmware_revision {
@@ -967,7 +992,9 @@ fn probe_amd_display(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeErr
     if let Some(config) = probe.pci_config() {
         eggos_drivers::pci::enable_memory_and_bus_master(config, function.address);
     }
-    let display = read_discovery(probe, node.regions[0]).as_deref().and_then(display_block);
+    let display = read_discovery(probe, node.regions[0])
+        .as_deref()
+        .and_then(display_block);
     match display {
         Some(display) => {
             let (major, minor, revision) = display.version;

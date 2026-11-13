@@ -71,8 +71,6 @@ fn index_insert(mutable: &mut MutableDictionaryObject, position: usize, hash: us
     unsafe { mutable.index.add(at).write(position as u32 + 1) };
 }
 
-/// Rebuilds `this`'s hash index (D359): none below 8 keys, else a power of two at least twice
-/// the count, each slot the position of a key plus one (0 empty), probed linearly.
 fn reindex(this: Id) {
     let count = count_of(this);
     let mutable = mutable_fields(this);

@@ -209,16 +209,10 @@ extern "C" fn throw_cpp_error_call(code: u64, _: u64, _: u64, _: u64, context: *
     throw_cpp_error(code as i32, context)
 }
 
-/// `_Winerror_map`: the `std::errc` value Windows error `code` stands for, 0 when none does.
 extern "efiapi" fn winerror_map(code: i32) -> i32 {
     errc_of_windows_error(code as u32)
 }
 
-/// `_Winerror_message`: Windows' message for `code` in the `size` bytes at `narrow`,
-/// NUL-terminated; its length, 0 when there is none or it does not fit.
-///
-/// # Safety
-/// `narrow` is null or holds `size` writable bytes.
 unsafe extern "efiapi" fn winerror_message(code: u32, narrow: *mut u8, size: u32) -> u32 {
     let Some(message) = crate::errors::message(code) else {
         return 0;
@@ -235,12 +229,6 @@ unsafe extern "efiapi" fn winerror_message(code: u32, narrow: *mut u8, size: u32
     bytes.len() as u32
 }
 
-/// `__std_system_error_allocate_message`, which `std::system_category()`'s `message` calls:
-/// Windows' message for `code` in a new block at `*out` (null when there is none), which
-/// `__std_system_error_deallocate_message` frees; its length.
-///
-/// # Safety
-/// `out` is a writable word.
 unsafe extern "efiapi" fn system_error_allocate_message(code: u32, out: *mut *mut u8) -> usize {
     let message = crate::errors::message(code).map_or(&[][..], str::as_bytes);
     let block = match message.is_empty() {
@@ -262,10 +250,6 @@ unsafe extern "efiapi" fn system_error_allocate_message(code: u32, out: *mut *mu
     }
 }
 
-/// `__std_system_error_deallocate_message`: frees a message the call above made.
-///
-/// # Safety
-/// `message` is null or a block `__std_system_error_allocate_message` made.
 unsafe extern "efiapi" fn system_error_deallocate_message(message: *mut u8) {
     if !message.is_null() {
         // SAFETY: the caller's contract.

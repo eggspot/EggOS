@@ -90,8 +90,9 @@ fn controller_for(probe: &mut dyn Probe, target: &I2cTarget) -> Result<Controlle
     let (region, intel) = match target.controller {
         I2cController::Registers(region) => (region, false),
         I2cController::PciSlot { device, function } => {
-            let (found, region) = pci_function(probe.table(), device, function)
-                .ok_or(ProbeError::Refused("the I2C controller's PCI function is missing"))?;
+            let (found, region) = pci_function(probe.table(), device, function).ok_or(
+                ProbeError::Refused("the I2C controller's PCI function is missing"),
+            )?;
             let config = probe
                 .pci_config()
                 .ok_or(ProbeError::Refused("no PCI configuration space"))?;
@@ -100,7 +101,9 @@ fn controller_for(probe: &mut dyn Probe, target: &I2cTarget) -> Result<Controlle
         }
     };
     if region.is_empty() {
-        return Err(ProbeError::Refused("the I2C controller's registers are not in memory space"));
+        return Err(ProbeError::Refused(
+            "the I2C controller's registers are not in memory space",
+        ));
     }
     let known = CONTROLLERS
         .lock()
@@ -125,12 +128,9 @@ fn controller_for(probe: &mut dyn Probe, target: &I2cTarget) -> Result<Controlle
         false => OTHER_CLOCK_HZ,
     };
     let mut deadline = probe.deadline(SETUP_TIMEOUT_MS);
-    let bus = DesignWare::new(
-        regs,
-        clock,
-        Speed::of_hz(target.speed_hz),
-        &mut || deadline.keep_waiting(),
-    )
+    let bus = DesignWare::new(regs, clock, Speed::of_hz(target.speed_hz), &mut || {
+        deadline.keep_waiting()
+    })
     .map_err(|error| ProbeError::Refused(error.description()))?;
     let controller = Arc::new(SleepLock::new(bus, Sleeping::spinning()));
     let mut controllers = CONTROLLERS.lock();

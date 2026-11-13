@@ -265,9 +265,18 @@ mod tests {
 
     #[test]
     fn folders_sort_before_files_then_names_ignore_case() {
-        let folder = Item { name: b"zeta", flags: FOLDER };
-        let file = Item { name: b"Alpha", flags: 0 };
-        let other = Item { name: b"alpha", flags: 0 };
+        let folder = Item {
+            name: b"zeta",
+            flags: FOLDER,
+        };
+        let file = Item {
+            name: b"Alpha",
+            flags: 0,
+        };
+        let other = Item {
+            name: b"alpha",
+            flags: 0,
+        };
         assert_eq!(compare(&folder, &file), core::cmp::Ordering::Less);
         assert_eq!(compare(&file, &other), core::cmp::Ordering::Equal);
     }
