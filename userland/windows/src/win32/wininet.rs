@@ -12,7 +12,9 @@ use crate::linux::{self, AF_INET, MSG_NOSIGNAL};
 use crate::text;
 use eggos_net::http::{self, Body, Framing, Redirect};
 use eggos_tls::chain::{NoRoots, TrustAnchors};
-use eggos_tls::client::{self, Buffers, RANDOMNESS_BYTES, Session, Settings, Stopped, Transport};
+use eggos_tls::client::{
+    self, Buffers, RANDOMNESS_BYTES, Session as TlsSession, Settings, Stopped, Transport,
+};
 use eggos_tls::pem::Certificates;
 
 const ERROR_INTERNET_TIMEOUT: u32 = 12002;
@@ -197,7 +199,7 @@ impl TrustAnchors for RootsFile {
 }
 
 struct Secure {
-    session: Session<'static>,
+    session: TlsSession<'static>,
     buffers: *mut Buffers,
 }
 

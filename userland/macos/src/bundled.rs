@@ -66,7 +66,7 @@ pub struct Search<'s> {
 }
 
 fn joined(parts: &[&[u8]], out: &mut [u8; LONGEST_PATH]) -> Option<usize> {
-    let mut length = 0;
+    let mut length: usize = 0;
     for part in parts {
         let end = length.checked_add(part.len())?;
         if end >= LONGEST_PATH {

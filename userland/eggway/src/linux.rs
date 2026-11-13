@@ -56,7 +56,6 @@ const POLLOUT: i16 = 4;
 const POLLERR: i16 = 8;
 const POLLHUP: i16 = 0x10;
 const SIGPIPE: usize = eggos_runtime::signal::SIGPIPE as usize;
-const SIG_IGN: u64 = 1;
 const SIGNAL_SET_BYTES: usize = eggos_runtime::signal::SET_BYTES;
 const CLOCK_MONOTONIC: usize = 1;
 const RUNTIME_PARENT_MODE: usize = 0o755;
@@ -250,7 +249,7 @@ fn listen() -> Result<Fd, Errno> {
 }
 
 fn ignore_broken_pipes() {
-    let action = eggos_runtime::signal::action(SIG_IGN);
+    let action = eggos_runtime::signal::action(eggos_runtime::signal::IGNORE);
     let _ = call(
         number::RT_SIGACTION,
         [SIGPIPE, action.as_ptr() as usize, 0, SIGNAL_SET_BYTES, 0, 0],

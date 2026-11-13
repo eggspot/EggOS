@@ -7,6 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use eggos_android_package::vector::{Colour, Vector};
+use eggos_math::roundf;
 
 const CURVE_STEPS: usize = 16;
 const SUBROWS: usize = 4;
@@ -210,8 +211,8 @@ fn over(pixel: &mut u32, colour: u32, coverage: f32) {
     let alpha = (colour >> 24) as f32 / 255.0 * coverage;
     let channel = |shift: u32| (colour >> shift & 0xff) as f32 * alpha;
     let below = |shift: u32| (*pixel >> shift & 0xff) as f32 * (1.0 - alpha);
-    let mix = |shift: u32| ((channel(shift) + below(shift)).round() as u32).min(255) << shift;
-    let out_alpha = (alpha * 255.0 + (*pixel >> 24) as f32 * (1.0 - alpha)).round() as u32;
+    let mix = |shift: u32| (roundf(channel(shift) + below(shift)) as u32).min(255) << shift;
+    let out_alpha = roundf(alpha * 255.0 + (*pixel >> 24) as f32 * (1.0 - alpha)) as u32;
     *pixel = out_alpha.min(255) << 24 | mix(16) | mix(8) | mix(0);
 }
 
@@ -245,8 +246,8 @@ fn fill(pixels: &mut [u32], width: usize, shapes: &[Vec<Point>], even_odd: bool,
                 if !inside {
                     continue;
                 }
-                let first = pair[0].0.max(0.0).round() as usize;
-                let last = (pair[1].0.min(width as f32)).round() as usize;
+                let first = roundf(pair[0].0.max(0.0)) as usize;
+                let last = roundf(pair[1].0.min(width as f32)) as usize;
                 for value in coverage.iter_mut().take(last.min(width)).skip(first) {
                     *value += 1.0 / SUBROWS as f32;
                 }
@@ -269,7 +270,7 @@ pub fn rasterize(
     vector: &Vector,
     colour_of: impl Fn(Colour) -> Option<u32>,
 ) -> Option<(usize, Vec<u32>)> {
-    let (width, height) = (vector.width.round(), vector.height.round());
+    let (width, height) = (roundf(vector.width), roundf(vector.height));
     if !(1.0..=LARGEST_SIDE).contains(&width) || !(1.0..=LARGEST_SIDE).contains(&height) {
         return None;
     }

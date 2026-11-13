@@ -70,7 +70,7 @@ impl<T> Shared<T> {
 
 macro_rules! shared_pointer {
     ($static:ident) => {
-        UnsafeCell::raw_get((&raw const $static).cast())
+        UnsafeCell::raw_get(&raw const $static.0)
     };
 }
 

@@ -20,6 +20,8 @@ pub mod futex;
 mod memory;
 #[cfg(target_arch = "mips64")]
 mod mips_abi;
+#[cfg(eggos_user)]
+pub mod pages;
 pub mod process;
 pub mod relocation;
 pub mod signal;

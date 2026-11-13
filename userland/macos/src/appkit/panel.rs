@@ -75,7 +75,7 @@ pub fn about_stand_in() -> Option<Id> {
 }
 
 extern "C" fn about_title(_: Id, _: Sel) -> Id {
-    string_from_utf8(about::title().as_bytes())
+    string_from_utf8(about::title().as_str().as_bytes())
 }
 
 extern "C" fn about_visible(_: Id, _: Sel) -> u8 {

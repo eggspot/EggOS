@@ -362,7 +362,13 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
             cursor::pointer_left(window);
             super::tracking::pointer_left(window, time);
         }
-        Input::StateChanged { .. } | Input::DeadKey { .. } | Input::Overflow => {}
+        Input::StateChanged { .. }
+        | Input::DeadKey { .. }
+        | Input::Overflow
+        | Input::DragOver { .. }
+        | Input::DragLeave
+        | Input::Drop { .. }
+        | Input::DragEnded { .. } => {}
     }
 }
 

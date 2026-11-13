@@ -135,7 +135,7 @@ fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 fn iso8601(seconds: f64, out: &mut [u8; 20]) -> &[u8] {
-    let unix = seconds.floor() as i64 + SECONDS_TO_2001;
+    let unix = eggos_math::floor(seconds) as i64 + SECONDS_TO_2001;
     let (days, rest) = (unix.div_euclid(86_400), unix.rem_euclid(86_400));
     let (year, month, day) = civil(days);
     let fields = [

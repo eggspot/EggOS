@@ -401,7 +401,7 @@ impl ActionWindow {
             title,
             width,
             min_width: width,
-            align: Align::Left,
+            align: Align::Start,
             sortable: false,
         };
         let columns = [
@@ -877,13 +877,17 @@ impl ActionWindow {
                     self.choose(action);
                 }
             }
-            Screen::Form if self.read_form() => match self.chosen.map(|action| action.effect) {
-                Some(Effect::Destroy) => self.show_confirm(true),
-                _ => self.start_run(false),
-            },
+            Screen::Form => {
+                if self.read_form() {
+                    match self.chosen.map(|action| action.effect) {
+                        Some(Effect::Destroy) => self.show_confirm(true),
+                        _ => self.start_run(false),
+                    }
+                }
+            }
             Screen::Confirm { .. } => self.start_run(true),
             Screen::Result => close(),
-            Screen::Form | Screen::Running => {}
+            Screen::Running => {}
         }
     }
 

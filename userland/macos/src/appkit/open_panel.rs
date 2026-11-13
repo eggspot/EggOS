@@ -20,7 +20,7 @@ use core::ffi::{c_char, c_int};
 const MODAL_OK: isize = 1;
 const MODAL_CANCEL: isize = 0;
 const O_NONBLOCK_CLOEXEC: usize = 0o4000 | 0o2_000_000;
-const EAGAIN: i32 = 11;
+const EAGAIN: u16 = 11;
 const IDLE: [i64; 2] = [0, 20_000_000];
 const PICK: &[u8] = b"/bin/pick\0";
 const MOST_ARGUMENTS: usize = 64;

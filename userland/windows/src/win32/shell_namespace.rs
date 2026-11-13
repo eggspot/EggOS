@@ -857,8 +857,9 @@ fn next_list(found: &mut Children) -> Option<*mut u8> {
     let lists = listed(found);
     let rest = lists.get(found.at..)?;
     let length = item_lists::length(rest).filter(|&length| length > 2)?;
+    let list = new_list(&[without_terminator(&rest[..length])]);
     found.at += length;
-    Some(new_list(&[without_terminator(&rest[..length])]))
+    Some(list)
 }
 
 unsafe extern "efiapi" fn children_next(

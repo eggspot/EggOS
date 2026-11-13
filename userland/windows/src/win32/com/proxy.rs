@@ -49,7 +49,7 @@ struct Link {
 
 #[repr(C)]
 #[derive(Debug)]
-struct Proxy {
+pub(crate) struct Proxy {
     table: usize,
     references: AtomicU32,
     link: *mut Link,

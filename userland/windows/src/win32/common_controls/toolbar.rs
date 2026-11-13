@@ -1057,11 +1057,10 @@ fn info_tip(window: usize, lparam: usize) {
     let put = |units: &[u16]| {
         let length = units.len().min(INFO_TIP_UNITS - 1);
         // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
-        unsafe {
-            (*info).buffer[..length].copy_from_slice(&units[..length]);
-            (*info).buffer[length] = 0;
-            (*info).text = (*info).buffer.as_ptr() as usize;
-        }
+        let tip = unsafe { &mut *info };
+        tip.buffer[..length].copy_from_slice(&units[..length]);
+        tip.buffer[length] = 0;
+        tip.text = tip.buffer.as_ptr() as usize;
     };
     if length > 0 {
         put(&buffer[..length]);

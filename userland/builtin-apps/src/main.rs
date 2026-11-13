@@ -13,6 +13,10 @@ extern crate alloc;
 eggos_runtime::main!(run);
 
 #[cfg(eggos_user)]
+#[global_allocator]
+static MEMORY: eggos_runtime::pages::Pages = eggos_runtime::pages::Pages;
+
+#[cfg(eggos_user)]
 const USAGE: &[u8] = b"builtin-apps: start it as files, text-editor, edit or downloads\n";
 
 #[cfg(eggos_user)]

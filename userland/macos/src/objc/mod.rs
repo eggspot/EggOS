@@ -70,7 +70,9 @@ mod runtime {
     use super::buffer::Buffer;
     use super::class::{self, ClassRecord};
     use super::selector::SelectorTable;
-    use super::{api, autorelease, block, exception, message, reference_count, root, weak};
+    use super::{
+        api, autorelease, block, cxx_abi, exception, message, reference_count, root, weak,
+    };
     use crate::libsystem::{Exclusive, heap, stdio, thread, write_error};
     use crate::macho::{ObjcSections, SectionRange};
     use core::sync::atomic::{AtomicUsize, Ordering};

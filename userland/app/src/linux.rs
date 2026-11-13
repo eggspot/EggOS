@@ -54,7 +54,6 @@ const GET_LAUNCH_SIZE: usize = 264;
 const LAUNCH_START: u32 = 1;
 const LAUNCH_TYPE: u32 = 2;
 const LAUNCH_COMMAND: usize = 8;
-const AT_FDCWD: usize = -100isize as usize;
 const STANDARD_INPUT_LINK: &CStr = c"/proc/self/fd/0";
 const CONSOLE: &[u8] = b"/dev/console";
 const SHELL: &[u8] = b"/bin/eggsh";

@@ -27,6 +27,7 @@ const DISP_E_TYPEMISMATCH: HResult = 0x8002_0005_u32 as i32;
 const DISP_E_BADPARAMCOUNT: HResult = 0x8002_000e_u32 as i32;
 const RPC_E_DISCONNECTED: HResult = 0x8001_0108_u32 as i32;
 const E_NOTIMPL: HResult = 0x8000_4001_u32 as i32;
+static NO_INTERFACE: Guid = guid::NULL;
 const SLOT_CREATE_INSTANCE: usize = 3;
 const SLOT_GET_IDS_OF_NAMES: usize = 5;
 const SLOT_INVOKE: usize = 6;
@@ -541,7 +542,7 @@ fn numbers_of_names(fd: usize, object: u32, locale: u32, names: &[Vec<u16>]) -> 
     let mut numbers = alloc::vec![0i32; names.len()];
     let arguments = [
         target,
-        &raw const guid::NULL as usize,
+        &raw const NO_INTERFACE as usize,
         pointers.as_ptr() as usize,
         names.len(),
         locale as usize,
@@ -693,7 +694,7 @@ fn invoke(
     let call = [
         target,
         member as u32 as usize,
-        &raw const guid::NULL as usize,
+        &raw const NO_INTERFACE as usize,
         locale as usize,
         usize::from(flags),
         parameters.as_ptr() as usize,

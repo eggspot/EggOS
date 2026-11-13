@@ -872,7 +872,6 @@ const CDRF_SKIPDEFAULT: usize = 0x4;
 const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
 const CDRF_NOTIFYITEMDRAW: usize = 0x20;
 const CDIS_SELECTED: u32 = 0x1;
-const CLR_DEFAULT: u32 = 0xff00_0000;
 const MOST_CUSTOM_ITEMS: usize = 64;
 
 #[repr(C)]
@@ -2220,9 +2219,8 @@ fn info_tip(window: usize, lparam: usize) {
         .unwrap_or(INFO_TIP_UNITS);
     let shown = length.min(SHOWN_TIP_UNITS);
     // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
-    unsafe {
-        (*info).buffer[..shown].copy_from_slice(&buffer[..shown]);
-        (*info).buffer[shown] = 0;
-        (*info).text = (*info).buffer.as_ptr() as usize;
-    }
+    let tip = unsafe { &mut *info };
+    tip.buffer[..shown].copy_from_slice(&buffer[..shown]);
+    tip.buffer[shown] = 0;
+    tip.text = tip.buffer.as_ptr() as usize;
 }

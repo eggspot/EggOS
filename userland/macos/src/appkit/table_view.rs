@@ -897,7 +897,7 @@ extern "C" fn column_set_identifier(this: Id, _: Sel, identifier: Id) {
     store_copy(&mut column(this).identifier, identifier);
 }
 
-extern "C" fn column_title(this: Id, _: Sel) -> Id {
+extern "C" fn column_get_title(this: Id, _: Sel) -> Id {
     column(this).title
 }
 
@@ -1213,9 +1213,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "dealloc" => column_dealloc,
         "identifier" => column_identifier,
         "setIdentifier:" => column_set_identifier,
-        "title" => column_title,
+        "title" => column_get_title,
         "setTitle:" => column_set_title,
-        "stringValue" => column_title,
+        "stringValue" => column_get_title,
         "setStringValue:" => column_set_title,
         "width" => column_width,
         "setWidth:" => column_set_width,

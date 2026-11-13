@@ -17,6 +17,7 @@ use super::{
     NSSET, NSSTRING, autoreleased, class_pointer, define as define_class, new_instance,
 };
 use crate::libsystem::heap;
+use crate::objc::sel;
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};

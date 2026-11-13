@@ -136,7 +136,7 @@ extern "C" fn instantiate_with_identifier(this: Id, _: Sel, identifier: Id) -> I
     let Some(mut loaded) = load_scene(this, nib_name_for(this, identifier)) else {
         return core::ptr::null_mut();
     };
-    let mut found = core::ptr::null_mut();
+    let mut found: Id = core::ptr::null_mut();
     for &object in loaded.top_level.as_slice() {
         if found.is_null() && is_controller(object) {
             found = objc_retain(object);
