@@ -21,7 +21,8 @@ use alloc::vec::Vec;
 use eggos_hal::Platform;
 use eggos_net::checksum::{self, Completion};
 use eggos_net::interface::SendError;
-use eggos_net::ipv4::{self, Ipv4Address};
+use eggos_net::ip::IpAddress;
+use eggos_net::ipv4;
 use eggos_net::tcp::{
     self, Buffers, Connection, Error, Extensions, KeepAlive, Segment, State, flags,
 };
@@ -295,15 +296,15 @@ impl Stream {
     /// Starts a connection from `local` to `remote` and puts it in the table: its SYN goes
     /// at the next [`run`]. `None` when the reserve leaves programs no memory for it.
     pub fn connect<P: Platform>(
-        local: (Ipv4Address, u16),
-        remote: (Ipv4Address, u16),
+        local: (IpAddress, u16),
+        remote: (IpAddress, u16),
     ) -> Option<Arc<Self>> {
         if !crate::heap::may_grow_for_user(core::mem::size_of::<Self>()) {
             return None;
         }
         let mss = match is_local(remote.0) {
             true => MSS,
-            false => crate::net::tcp_mss().min(MSS),
+            false => crate::net::tcp_mss_for(remote.0).min(MSS),
         };
         let connection = Connection::connect(local, remote, initial_sequence::<P>(), mss);
         let stream = Self::new(connection, None);
@@ -311,12 +312,12 @@ impl Stream {
     }
 
     /// The connection's own address and port.
-    pub fn local(&self) -> (Ipv4Address, u16) {
+    pub fn local(&self) -> (IpAddress, u16) {
         self.state.lock().connection.local()
     }
 
     /// The peer's address and port.
-    pub fn remote(&self) -> (Ipv4Address, u16) {
+    pub fn remote(&self) -> (IpAddress, u16) {
         self.state.lock().connection.remote()
     }
 
@@ -473,7 +474,7 @@ struct ListenerState {
 /// waiting for `accept`.
 #[derive(Debug)]
 pub struct Listener {
-    local: (Ipv4Address, u16),
+    local: (IpAddress, u16),
     state: LeafSpinLock<ListenerState>,
 }
 
@@ -481,7 +482,7 @@ impl Listener {
     /// Listens on `local` (address `0.0.0.0` for any), with at most `backlog` connections
     /// waiting at once (being made or made). `None` when the reserve leaves programs no
     /// memory for it.
-    pub fn listen(local: (Ipv4Address, u16), backlog: usize) -> Option<Arc<Self>> {
+    pub fn listen(local: (IpAddress, u16), backlog: usize) -> Option<Arc<Self>> {
         if !crate::heap::may_grow_for_user(core::mem::size_of::<Self>()) {
             return None;
         }
@@ -505,7 +506,7 @@ impl Listener {
     }
 
     /// Where it listens.
-    pub fn local(&self) -> (Ipv4Address, u16) {
+    pub fn local(&self) -> (IpAddress, u16) {
         self.local
     }
 
@@ -524,8 +525,12 @@ impl Listener {
         self.state.lock().ready.pop_front()
     }
 
-    fn takes(&self, address: Ipv4Address, port: u16) -> bool {
-        port == self.local.1 && (self.local.0.is_unspecified() || self.local.0 == address)
+    fn takes(&self, address: IpAddress, port: u16) -> bool {
+        let any = match self.local.0 {
+            IpAddress::V6(local) => local.is_unspecified(),
+            IpAddress::V4(local) => local.is_unspecified() && matches!(address, IpAddress::V4(_)),
+        };
+        port == self.local.1 && (any || self.local.0.unmapped() == address.unmapped())
     }
 
     fn has_room(&self) -> bool {
@@ -686,8 +691,8 @@ impl Socket {
 
 #[derive(Debug)]
 struct Outgoing {
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: IpAddress,
+    destination: IpAddress,
     bytes: Vec<u8>,
 }
 
@@ -748,7 +753,7 @@ fn initial_sequence<P: Platform>() -> u32 {
     u32::from_ne_bytes(bytes)
 }
 
-fn find_stream(local: (Ipv4Address, u16), remote: (Ipv4Address, u16)) -> Option<Arc<Stream>> {
+fn find_stream(local: (IpAddress, u16), remote: (IpAddress, u16)) -> Option<Arc<Stream>> {
     let table = TABLE.lock();
     table.as_ref()?.streams.iter().find_map(|stream| {
         let state = stream.state.lock();
@@ -757,7 +762,7 @@ fn find_stream(local: (Ipv4Address, u16), remote: (Ipv4Address, u16)) -> Option<
     })
 }
 
-fn find_listener(address: Ipv4Address, port: u16) -> Option<Arc<Listener>> {
+fn find_listener(address: IpAddress, port: u16) -> Option<Arc<Listener>> {
     let table = TABLE.lock();
     table
         .as_ref()?
@@ -767,7 +772,7 @@ fn find_listener(address: Ipv4Address, port: u16) -> Option<Arc<Listener>> {
         .find(|listener| listener.takes(address, port))
 }
 
-fn queue_outgoing(source: Ipv4Address, destination: Ipv4Address, bytes: &[u8]) {
+fn queue_outgoing(source: IpAddress, destination: IpAddress, bytes: &[u8]) {
     let mut copy = Vec::new();
     if copy.try_reserve_exact(bytes.len()).is_err() {
         return;
@@ -795,8 +800,8 @@ fn take_outgoing() -> Option<Outgoing> {
 /// connection for a listener's SYN, or answers it with a reset. Whether a connection took it.
 /// It takes no lock of the adapter, whose receive path calls it.
 pub fn deliver<P: Platform>(
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: IpAddress,
+    destination: IpAddress,
     segment: &Segment<'_>,
     link_mss: u16,
 ) -> bool {
@@ -852,8 +857,8 @@ pub fn deliver<P: Platform>(
 
 fn accept_syn<P: Platform>(
     listener: &Arc<Listener>,
-    local: (Ipv4Address, u16),
-    remote: (Ipv4Address, u16),
+    local: (IpAddress, u16),
+    remote: (IpAddress, u16),
     segment: &Segment<'_>,
     link_mss: u16,
 ) -> bool {
@@ -874,8 +879,8 @@ fn accept_syn<P: Platform>(
 }
 
 fn send_segment<P: Platform>(
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: IpAddress,
+    destination: IpAddress,
     bytes: &mut [u8],
     segment_size: u16,
 ) -> bool {

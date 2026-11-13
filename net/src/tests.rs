@@ -262,7 +262,7 @@ fn a_ping_to_our_address_is_answered_and_echo_replies_are_delivered() {
             delivered.push((source, identifier, message.to_vec()));
         }
     });
-    assert_eq!(delivered, [(address(2), 0x77, replied.to_vec())]);
+    assert_eq!(delivered, [(address(2).into(), 0x77, replied.to_vec())]);
 }
 
 #[test]
@@ -363,7 +363,7 @@ fn datagrams_for_us_are_delivered_and_frames_for_others_are_dropped() {
             delivered.push((source, source_port, destination_port, data.to_vec()));
         }
     });
-    assert_eq!(delivered, [(address(3), 53, 40_000, b"answer".to_vec())]);
+    assert_eq!(delivered, [(address(3).into(), 53, 40_000, b"answer".to_vec())]);
     let elsewhere = udp_frame(
         (DNS_MAC, address(3), 53),
         (MacAddress([2, 0, 0, 0, 0, 9]), address(9), 40_000),
@@ -494,7 +494,7 @@ fn tcp_segments_to_our_address_are_delivered_and_ours_go_out_through_arp() {
     });
     assert_eq!(
         delivered,
-        [(address(2), address(15), header, b"hi".to_vec())]
+        [(address(2).into(), address(15).into(), header, b"hi".to_vec())]
     );
     let broadcast = ip_frame(ROUTER_MAC, OURS, ip(Ipv4Address::BROADCAST), &segment);
     interface.receive(&broadcast, 71, &mut sent.transmit(), &mut |_| {

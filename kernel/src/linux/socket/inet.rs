@@ -37,10 +37,66 @@ use eggos_hal::atomic::AtomicU64;
 use eggos_hal::user::UserContext;
 use eggos_net::icmp;
 use eggos_net::interface::SendError;
+use eggos_net::ip::IpAddress;
 use eggos_net::ipv4::{self, Ipv4Address};
+use eggos_net::ipv6::{self, Ipv6Address};
 
 /// The IPv4 address family (`AF_INET`).
 pub const AF_INET: u32 = 2;
+/// The IPv6 address family (`AF_INET6`, D565).
+pub const AF_INET6: u32 = 10;
+/// ICMPv6, for IPv6 ping sockets (`IPPROTO_ICMPV6`).
+pub const IPPROTO_ICMPV6: u32 = 58;
+/// The size of a `struct sockaddr_in6`.
+pub const SOCKADDR_IN6_SIZE: usize = 28;
+/// The IPv6 option level (`IPPROTO_IPV6`).
+pub const IPPROTO_IPV6: u32 = 41;
+const IPV6_UNICAST_HOPS: u32 = 16;
+const IPV6_V6ONLY: u32 = 26;
+
+/// Which address family a socket is (D565).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// `AF_INET`: IPv4 only, `struct sockaddr_in`.
+    V4,
+    /// `AF_INET6`: IPv6, and IPv4 through IPv4-mapped addresses unless `IPV6_V6ONLY`,
+    /// `struct sockaddr_in6`.
+    V6,
+}
+
+impl Family {
+    /// Its "any" address.
+    pub fn unspecified(self) -> IpAddress {
+        match self {
+            Self::V4 => IpAddress::V4(Ipv4Address::UNSPECIFIED),
+            Self::V6 => IpAddress::V6(Ipv6Address::UNSPECIFIED),
+        }
+    }
+
+    /// The loopback address a connection to "any" goes to.
+    pub fn loopback(self) -> IpAddress {
+        match self {
+            Self::V4 => IpAddress::V4(Ipv4Address::LOOPBACK),
+            Self::V6 => IpAddress::V6(Ipv6Address::LOOPBACK),
+        }
+    }
+
+    /// Its `AF_` number.
+    pub fn number(self) -> u32 {
+        match self {
+            Self::V4 => AF_INET,
+            Self::V6 => AF_INET6,
+        }
+    }
+
+    /// The size of its socket address structure.
+    pub fn address_size(self) -> usize {
+        match self {
+            Self::V4 => SOCKADDR_IN_SIZE,
+            Self::V6 => SOCKADDR_IN6_SIZE,
+        }
+    }
+}
 /// Datagram sockets (`SOCK_DGRAM`).
 pub const SOCK_DGRAM: u32 = 2;
 /// ICMP, for ping sockets (`IPPROTO_ICMP`).
@@ -73,6 +129,7 @@ pub struct Options {
     reuse_port: AtomicBool,
     ttl: AtomicU32,
     send_buffer: AtomicU32,
+    v6_only: AtomicBool,
 }
 
 /// An `AF_INET` socket: its endpoint (a datagram socket's queue, or a stream socket's port),
@@ -82,35 +139,54 @@ pub struct InetSocket {
     endpoint: Arc<Endpoint>,
     stream: Option<tcp::Socket>,
     options: Options,
+    family: Family,
 }
 
 impl InetSocket {
-    /// A new socket of `protocol`, not bound.
-    pub fn new(protocol: Protocol) -> Arc<Self> {
+    /// A new socket of `protocol` and `family`, not bound.
+    pub fn new(protocol: Protocol, family: Family) -> Arc<Self> {
         Arc::new(Self {
             endpoint: Endpoint::new(protocol),
             stream: None,
             options: Options::default(),
+            family,
         })
     }
 
-    /// A new stream socket, neither connected nor listening; `run` runs the connections
-    /// ([`crate::net::tcp::run`]).
-    pub fn new_stream(run: fn()) -> Arc<Self> {
+    /// A new stream socket of `family`, neither connected nor listening; `run` runs the
+    /// connections ([`crate::net::tcp::run`]).
+    pub fn new_stream(run: fn(), family: Family) -> Arc<Self> {
         Arc::new(Self {
             endpoint: Endpoint::new(Protocol::Tcp),
             stream: Some(tcp::Socket::new(run)),
             options: Options::default(),
+            family,
         })
     }
 
-    /// A stream socket for `stream`, a connection a listener made.
-    pub fn accepted(stream: Arc<tcp::Stream>, run: fn()) -> Arc<Self> {
+    /// A stream socket of `family` for `stream`, a connection a listener made.
+    pub fn accepted(stream: Arc<tcp::Stream>, run: fn(), family: Family) -> Arc<Self> {
         Arc::new(Self {
             endpoint: Endpoint::new(Protocol::Tcp),
             stream: Some(tcp::Socket::accepted(stream, run)),
             options: Options::default(),
+            family,
         })
+    }
+
+    /// Its address family.
+    pub fn family(&self) -> Family {
+        self.family
+    }
+
+    /// Whether it takes `address`: any IPv4 one for `AF_INET`; any IPv6 one for `AF_INET6`,
+    /// and IPv4 ones unless `IPV6_V6ONLY`.
+    pub fn takes(&self, address: IpAddress) -> bool {
+        match (self.family, address.unmapped()) {
+            (Family::V4, IpAddress::V4(_)) | (Family::V6, IpAddress::V6(_)) => true,
+            (Family::V6, IpAddress::V4(_)) => !self.options.v6_only.load(Ordering::Relaxed),
+            (Family::V4, IpAddress::V6(_)) => false,
+        }
     }
 
     /// Its TCP side, when it is a stream socket.
@@ -134,9 +210,10 @@ impl InetSocket {
     }
 
     fn ttl(&self) -> u8 {
-        match self.options.ttl.load(Ordering::Relaxed) {
-            0 => ipv4::DEFAULT_TTL,
-            ttl => ttl as u8,
+        match (self.options.ttl.load(Ordering::Relaxed), self.family) {
+            (0, Family::V4) => ipv4::DEFAULT_TTL,
+            (0, Family::V6) => ipv6::DEFAULT_HOP_LIMIT,
+            (ttl, _) => ttl as u8,
         }
     }
 
@@ -185,6 +262,7 @@ pub fn socket_at(thread: &LinuxThread, fd: u64) -> Option<(Arc<OpenFile>, Arc<In
 pub fn socket<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
+    family: Family,
     kind: u64,
     protocol: u64,
 ) -> Result<u64, Errno> {
@@ -194,10 +272,14 @@ pub fn socket<P: Platform>(
     if base & !super::SOCK_TYPE_MASK != 0 || base >= super::SOCK_MAX {
         return Err(Errno::EINVAL);
     }
+    let ping = match family {
+        Family::V4 => IPPROTO_ICMP,
+        Family::V6 => IPPROTO_ICMPV6,
+    };
     let socket = match (base, protocol as u32) {
-        (super::SOCK_STREAM, 0 | IPPROTO_TCP) => InetSocket::new_stream(tcp::run::<P>),
-        (SOCK_DGRAM, 0 | IPPROTO_UDP) => InetSocket::new(Protocol::Udp),
-        (SOCK_DGRAM, IPPROTO_ICMP) => InetSocket::new(Protocol::Ping),
+        (super::SOCK_STREAM, 0 | IPPROTO_TCP) => InetSocket::new_stream(tcp::run::<P>, family),
+        (SOCK_DGRAM, 0 | IPPROTO_UDP) => InetSocket::new(Protocol::Udp, family),
+        (SOCK_DGRAM, wanted) if wanted == ping => InetSocket::new(Protocol::Ping, family),
         (super::SOCK_STREAM | SOCK_DGRAM, _) => return Err(Errno::EPROTONOSUPPORT),
         _ => return Err(Errno::ESOCKTNOSUPPORT),
     };
@@ -213,54 +295,79 @@ pub fn socket<P: Platform>(
     opened.map(u64::from)
 }
 
-/// The address a `struct sockaddr_in` of `bytes` names; `None` for `AF_UNSPEC`. As Linux:
-/// `EINVAL` when shorter than the structure, `EAFNOSUPPORT` for another family.
-pub fn parse_address(bytes: &[u8]) -> Result<Option<(Ipv4Address, u16)>, Errno> {
-    let family = match bytes.first_chunk::<2>() {
-        Some(family) => u16::from_ne_bytes(*family),
+/// The address a `struct sockaddr_in` (or, for `family` [`Family::V6`], `struct
+/// sockaddr_in6`, D565) of `bytes` names, an IPv4-mapped address as IPv4; `None` for
+/// `AF_UNSPEC`. As Linux: `EINVAL` when shorter than the structure, `EAFNOSUPPORT` for
+/// another family.
+pub fn parse_address(bytes: &[u8], family: Family) -> Result<Option<(IpAddress, u16)>, Errno> {
+    let given = match bytes.first_chunk::<2>() {
+        Some(given) => u16::from_ne_bytes(*given),
         None => return Err(Errno::EINVAL),
     };
-    if family == AF_UNSPEC {
+    if given == AF_UNSPEC {
         return Ok(None);
     }
-    if bytes.len() < SOCKADDR_IN_SIZE {
+    if bytes.len() < family.address_size() {
         return Err(Errno::EINVAL);
     }
-    if u32::from(family) != AF_INET {
+    if u32::from(given) != family.number() {
         return Err(Errno::EAFNOSUPPORT);
     }
     let port = u16::from_be_bytes([bytes[2], bytes[3]]);
-    let address = Ipv4Address([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let address = match family {
+        Family::V4 => IpAddress::V4(Ipv4Address([bytes[4], bytes[5], bytes[6], bytes[7]])),
+        Family::V6 => {
+            let mut address = [0u8; 16];
+            address.copy_from_slice(&bytes[8..24]);
+            IpAddress::V6(Ipv6Address(address)).unmapped()
+        }
+    };
     Ok(Some((address, port)))
 }
 
-/// `address`:`port` as a `struct sockaddr_in`.
-pub fn encode_address(address: Ipv4Address, port: u16) -> [u8; SOCKADDR_IN_SIZE] {
-    let mut bytes = [0u8; SOCKADDR_IN_SIZE];
-    bytes[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+/// `address`:`port` as a `struct sockaddr_in`, or for [`Family::V6`] a `struct sockaddr_in6`
+/// (IPv4 addresses mapped): the bytes and how many of them.
+pub fn encode_address(
+    address: IpAddress,
+    port: u16,
+    family: Family,
+) -> ([u8; SOCKADDR_IN6_SIZE], usize) {
+    let mut bytes = [0u8; SOCKADDR_IN6_SIZE];
+    bytes[..2].copy_from_slice(&(family.number() as u16).to_ne_bytes());
     bytes[2..4].copy_from_slice(&port.to_be_bytes());
-    bytes[4..8].copy_from_slice(&address.0);
-    bytes
+    match (family, address) {
+        (Family::V4, address) => {
+            let address = address.ipv4().unwrap_or(Ipv4Address::UNSPECIFIED);
+            bytes[4..8].copy_from_slice(&address.0);
+        }
+        (Family::V6, IpAddress::V4(address)) => {
+            bytes[8..24].copy_from_slice(&Ipv6Address::mapped(address).0);
+        }
+        (Family::V6, IpAddress::V6(address)) => bytes[8..24].copy_from_slice(&address.0),
+    }
+    (bytes, family.address_size())
 }
 
 pub(super) fn read_address<P: Platform>(
     process: &Process<P>,
+    family: Family,
     address: u64,
     length: u64,
-) -> Result<Option<(Ipv4Address, u16)>, Errno> {
-    let length = (length as u32 as usize).min(SOCKADDR_IN_SIZE);
-    let mut bytes = [0u8; SOCKADDR_IN_SIZE];
+) -> Result<Option<(IpAddress, u16)>, Errno> {
+    let length = (length as u32 as usize).min(SOCKADDR_IN6_SIZE);
+    let mut bytes = [0u8; SOCKADDR_IN6_SIZE];
     process
         .read_user_memory(address, &mut bytes[..length])
         .map_err(|_| Errno::EFAULT)?;
-    parse_address(&bytes[..length])
+    parse_address(&bytes[..length], family)
 }
 
 pub(super) fn write_address<P: Platform>(
     process: &Process<P>,
+    family: Family,
     address: u64,
     length_at: u64,
-    value: (Ipv4Address, u16),
+    value: (IpAddress, u16),
 ) -> Result<(), Errno> {
     if address == 0 {
         return Ok(());
@@ -269,13 +376,13 @@ pub(super) fn write_address<P: Platform>(
     if room < 0 {
         return Err(Errno::EINVAL);
     }
-    let bytes = encode_address(value.0, value.1);
-    let written = SOCKADDR_IN_SIZE.min(room as usize);
+    let (bytes, size) = encode_address(value.0, value.1, family);
+    let written = size.min(room as usize);
     process
         .write_user_memory(address, &bytes[..written])
         .map_err(|_| Errno::EFAULT)?;
     process
-        .write_user_memory(length_at, &(SOCKADDR_IN_SIZE as u32).to_ne_bytes())
+        .write_user_memory(length_at, &(size as u32).to_ne_bytes())
         .map_err(|_| Errno::EFAULT)
 }
 
@@ -304,12 +411,13 @@ fn is_privileged<P: Platform>(process: &Process<P>) -> bool {
         .is_privileged()
 }
 
-pub(super) fn ensure_bound(socket: &InetSocket) -> Result<(Ipv4Address, u16), Errno> {
+pub(super) fn ensure_bound(socket: &InetSocket) -> Result<(IpAddress, u16), Errno> {
     if let Some(local) = socket.endpoint.local() {
         return Ok(local);
     }
-    match socket.endpoint.bind(Ipv4Address::UNSPECIFIED, 0) {
-        Ok(port) => Ok((Ipv4Address::UNSPECIFIED, port)),
+    let any = socket.family.unspecified();
+    match socket.endpoint.bind(any, 0) {
+        Ok(port) => Ok((any, port)),
         Err(BindError::AlreadyBound) => socket.endpoint.local().ok_or(Errno::EINVAL),
         Err(error) => Err(bind_error(error)),
     }
@@ -346,7 +454,7 @@ pub fn call<P: Platform>(
             };
             let destination = match fifth {
                 0 => Ok(None),
-                address => read_address(process, address, sixth),
+                address => read_address(process, socket.family, address, sixth),
             };
             let result = prepared
                 .and_then(|buffers| send(process, &socket, &buffers, destination?, fourth as u32));
@@ -360,7 +468,9 @@ pub fn call<P: Platform>(
                 let buffers = Iovecs::read(process, header.buffers, header.buffer_count)?;
                 let destination = match (header.name, header.name_length) {
                     (0, _) | (_, 0) => None,
-                    (address, length) => read_address(process, address, u64::from(length))?,
+                    (address, length) => {
+                        read_address(process, socket.family, address, u64::from(length))?
+                    }
                 };
                 send(process, &socket, &buffers, destination, third as u32)
             });
@@ -391,11 +501,20 @@ pub(super) fn bind<P: Platform>(
     address: u64,
     length: u64,
 ) -> Result<u64, Errno> {
-    if (length as u32 as usize) < SOCKADDR_IN_SIZE {
+    if (length as u32 as usize) < socket.family.address_size() {
         return Err(Errno::EINVAL);
     }
-    let (address, port) = read_address(process, address, length)?.ok_or(Errno::EAFNOSUPPORT)?;
-    let local = address.is_unspecified() || crate::net::is_local(address) || address.is_broadcast();
+    let (address, port) =
+        read_address(process, socket.family, address, length)?.ok_or(Errno::EAFNOSUPPORT)?;
+    if !socket.takes(address) && !address.is_unspecified() {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    let address = match (socket.family, address.is_unspecified()) {
+        (_, true) => socket.family.unspecified(),
+        _ => address,
+    };
+    let broadcast = matches!(address, IpAddress::V4(address) if address.is_broadcast());
+    let local = address.is_unspecified() || crate::net::is_local(address) || broadcast;
     if !local {
         return Err(Errno::EADDRNOTAVAIL);
     }
@@ -416,12 +535,15 @@ fn connect<P: Platform>(
     address: u64,
     length: u64,
 ) -> Result<u64, Errno> {
-    match read_address(process, address, length)? {
+    match read_address(process, socket.family, address, length)? {
         None => socket.endpoint.connect(None),
         Some((address, port)) => {
+            if !socket.takes(address) {
+                return Err(Errno::EAFNOSUPPORT);
+            }
             ensure_bound(socket)?;
             let address = match address.is_unspecified() {
-                true => Ipv4Address::LOOPBACK,
+                true => socket.family.loopback(),
                 false => address,
             };
             socket.endpoint.connect(Some((address, port)));
@@ -443,9 +565,9 @@ fn name<P: Platform>(
             let (address, port) = socket
                 .endpoint
                 .local()
-                .unwrap_or((Ipv4Address::UNSPECIFIED, 0));
+                .unwrap_or((socket.family.unspecified(), 0));
             match (address.is_unspecified(), socket.endpoint.remote()) {
-                (true, Some((remote, _))) => (crate::net::source_for(remote), port),
+                (true, Some((remote, _))) => (crate::net::source_for_any::<P>(remote), port),
                 _ => (address, port),
             }
         }
@@ -453,7 +575,7 @@ fn name<P: Platform>(
     if address == 0 {
         return Err(Errno::EFAULT);
     }
-    write_address(process, address, length_at, value)?;
+    write_address(process, socket.family, address, length_at, value)?;
     Ok(0)
 }
 
@@ -509,13 +631,21 @@ pub(super) fn setsockopt<P: Platform>(
             SOL_SOCKET,
             option::SNDBUF | option::RCVBUF | option::REUSEADDR | SO_REUSEPORT | SO_BROADCAST,
         )
-        | (SOL_IP, IP_TTL) => {
+        | (SOL_IP, IP_TTL)
+        | (IPPROTO_IPV6, IPV6_UNICAST_HOPS)
+        | (IPPROTO_IPV6, IPV6_V6ONLY) => {
             if length < 4 {
                 return Err(Errno::EINVAL);
             }
             let number = read_int(process, value)?;
             match (level as u32, name as u32) {
-                (SOL_IP, _) => {
+                (IPPROTO_IPV6, IPV6_V6ONLY) => {
+                    if socket.family != Family::V6 || socket.endpoint.local().is_some() {
+                        return Err(Errno::EINVAL);
+                    }
+                    options.v6_only.store(number != 0, Ordering::Relaxed);
+                }
+                (SOL_IP, _) | (IPPROTO_IPV6, _) => {
                     let ttl = match number {
                         -1 => 0,
                         1..=255 => number as u32,
@@ -575,7 +705,11 @@ pub(super) fn getsockopt<P: Platform>(
     };
     let (bytes, size) = match (level as u32, name as u32) {
         (SOL_SOCKET, option::TYPE) => int(SOCK_DGRAM),
-        (SOL_SOCKET, option::DOMAIN) => int(AF_INET),
+        (SOL_SOCKET, option::DOMAIN) => int(socket.family.number()),
+        (IPPROTO_IPV6, IPV6_V6ONLY) if socket.family == Family::V6 => flag(&options.v6_only),
+        (IPPROTO_IPV6, IPV6_UNICAST_HOPS) if socket.family == Family::V6 => {
+            int(u32::from(socket.ttl()))
+        }
         (SOL_SOCKET, option::PROTOCOL) => int(protocol),
         (SOL_SOCKET, option::ERROR | option::ACCEPTCONN) => int(0),
         (SOL_SOCKET, option::SNDBUF) => int(match options.send_buffer.load(Ordering::Relaxed) {
@@ -657,15 +791,20 @@ fn gather<P: Platform>(process: &Process<P>, buffers: &Iovecs) -> Result<Vec<u8>
     Ok(bytes)
 }
 
-fn is_broadcast(address: Ipv4Address) -> bool {
-    address.is_broadcast() || crate::net::is_subnet_broadcast(address)
+fn is_broadcast(address: IpAddress) -> bool {
+    match address {
+        IpAddress::V4(address) => {
+            address.is_broadcast() || crate::net::is_subnet_broadcast(address)
+        }
+        IpAddress::V6(_) => false,
+    }
 }
 
 fn send<P: Platform>(
     process: &Process<P>,
     socket: &InetSocket,
     buffers: &Iovecs,
-    destination: Option<(Ipv4Address, u16)>,
+    destination: Option<(IpAddress, u16)>,
     flags: u32,
 ) -> Result<u64, Errno> {
     if flags & message::OOB != 0 {
@@ -679,9 +818,12 @@ fn send<P: Platform>(
         None => return Err(Errno::EDESTADDRREQ),
     };
     let (address, port) = destination;
+    if !socket.takes(address) {
+        return Err(Errno::EAFNOSUPPORT);
+    }
     let address = match address.is_unspecified() {
-        true => Ipv4Address::LOOPBACK,
-        false => address,
+        true => socket.family.loopback(),
+        false => address.unmapped(),
     };
     if is_broadcast(address) && !socket.options.broadcast.load(Ordering::Relaxed) {
         return Err(Errno::EACCES);
@@ -695,7 +837,11 @@ fn send<P: Platform>(
             let Some((header, payload)) = data.split_first_chunk::<{ icmp::HEADER_BYTES }>() else {
                 return Err(Errno::EINVAL);
             };
-            if header[0] != icmp::kind::ECHO_REQUEST || header[1] != 0 {
+            let request = match socket.family {
+                Family::V4 => icmp::kind::ECHO_REQUEST,
+                Family::V6 => eggos_net::icmpv6::kind::ECHO_REQUEST,
+            };
+            if header[0] != request || header[1] != 0 {
                 return Err(Errno::EINVAL);
             }
             let sequence = u16::from_be_bytes([header[6], header[7]]);
@@ -745,7 +891,7 @@ struct Receive {
 struct Received {
     copied: u64,
     length: u64,
-    source: (Ipv4Address, u16),
+    source: (IpAddress, u16),
 }
 
 fn recvfrom<P: Platform>(
@@ -761,7 +907,7 @@ fn recvfrom<P: Platform>(
         None => return ControlFlow::Continue(()),
     };
     let result = result.and_then(|received| {
-        write_address(process, address, length_at, received.source)?;
+        write_address(process, receive.socket.family, address, length_at, received.source)?;
         Ok(match receive.flags & MSG_TRUNC {
             0 => received.copied,
             _ => received.length,
@@ -836,13 +982,13 @@ fn recvmsg<P: Platform>(
             .read_user_memory(header_at, &mut written)
             .map_err(|_| Errno::EFAULT)?;
         if header.name != 0 {
-            let bytes = encode_address(received.source.0, received.source.1);
-            let copied = SOCKADDR_IN_SIZE.min(header.name_length as usize);
+            let family = receive.socket.family;
+            let (bytes, size) = encode_address(received.source.0, received.source.1, family);
+            let copied = size.min(header.name_length as usize);
             process
                 .write_user_memory(header.name, &bytes[..copied])
                 .map_err(|_| Errno::EFAULT)?;
-            written[HEADER_NAME_LENGTH..][..4]
-                .copy_from_slice(&(SOCKADDR_IN_SIZE as u32).to_ne_bytes());
+            written[HEADER_NAME_LENGTH..][..4].copy_from_slice(&(size as u32).to_ne_bytes());
         }
         let truncated = received.copied < received.length;
         let message_flags = if truncated { MSG_TRUNC } else { 0 };
@@ -907,7 +1053,9 @@ fn receive_or_wait<P: Platform>(
             return ControlFlow::Continue(Some(Ok(Received {
                 copied: 0,
                 length: 0,
-                source: endpoint.remote().unwrap_or((Ipv4Address::UNSPECIFIED, 0)),
+                source: endpoint
+                    .remote()
+                    .unwrap_or((receive.socket.family.unspecified(), 0)),
             })));
         }
         if nonblocking {

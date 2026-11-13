@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use eggos_hal::atomic::AtomicU64;
 use eggos_net::interface::{Datagram as Arrived, Delivery};
-use eggos_net::ipv4::Ipv4Address;
+use eggos_net::ip::IpAddress;
 
 /// The ports and identifiers the kernel picks from, as Linux's `ip_local_port_range`.
 pub const EPHEMERAL_PORTS: core::ops::RangeInclusive<u16> = 32768..=60999;
@@ -45,7 +45,7 @@ pub enum Protocol {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Datagram {
     /// Who sent it.
-    pub source: Ipv4Address,
+    pub source: IpAddress,
     /// From which port (0 for an echo reply).
     pub source_port: u16,
     /// Its data; an echo reply's whole ICMP message.
@@ -54,8 +54,8 @@ pub struct Datagram {
 
 #[derive(Debug)]
 struct State {
-    local: Option<(Ipv4Address, u16)>,
-    remote: Option<(Ipv4Address, u16)>,
+    local: Option<(IpAddress, u16)>,
+    remote: Option<(IpAddress, u16)>,
     queue: VecDeque<Datagram>,
     queued_bytes: usize,
     receive_limit: usize,
@@ -154,17 +154,22 @@ impl Endpoint {
     }
 
     /// The address and port it is bound to.
-    pub fn local(&self) -> Option<(Ipv4Address, u16)> {
+    pub fn local(&self) -> Option<(IpAddress, u16)> {
         self.state.lock().local
     }
 
     /// The address and port it is connected to.
-    pub fn remote(&self) -> Option<(Ipv4Address, u16)> {
+    pub fn remote(&self) -> Option<(IpAddress, u16)> {
         self.state.lock().remote
     }
 
     /// Binds it to `address` and `port`, or a port the kernel picks for port 0.
-    pub fn bind(self: &Arc<Self>, address: Ipv4Address, port: u16) -> Result<u16, BindError> {
+    pub fn bind(
+        self: &Arc<Self>,
+        address: impl Into<IpAddress>,
+        port: u16,
+    ) -> Result<u16, BindError> {
+        let address = address.into();
         if self.state.lock().local.is_some() {
             return Err(BindError::AlreadyBound);
         }
@@ -187,8 +192,11 @@ impl Endpoint {
             return Err(BindError::NoMemory);
         };
         bound.retain(|endpoint| endpoint.strong_count() > 0);
-        let clashes = |other: Ipv4Address| {
-            other.is_unspecified() || address.is_unspecified() || other == address
+        let clashes = |other: IpAddress| {
+            let any = |address: IpAddress| {
+                address.is_unspecified() && (matches!(address, IpAddress::V6(_)) || other.same_version(address))
+            };
+            any(other) || any(address) || other.unmapped() == address.unmapped()
         };
         let taken = |port: u16| {
             bound.iter().filter_map(Weak::upgrade).any(|endpoint| {
@@ -234,7 +242,7 @@ impl Endpoint {
     }
 
     /// Connects it to `remote`, or disconnects it for `None`.
-    pub fn connect(&self, remote: Option<(Ipv4Address, u16)>) {
+    pub fn connect(&self, remote: Option<(IpAddress, u16)>) {
         self.state.lock().remote = remote;
     }
 
@@ -307,8 +315,8 @@ impl Endpoint {
     fn accepts(
         &self,
         protocol: Protocol,
-        from: (Ipv4Address, u16),
-        to: (Ipv4Address, u16),
+        from: (IpAddress, u16),
+        to: (IpAddress, u16),
     ) -> bool {
         if self.protocol != protocol {
             return false;
@@ -318,15 +326,25 @@ impl Endpoint {
             return false;
         };
         let ping = protocol == Protocol::Ping;
+        let any = match address {
+            IpAddress::V6(local) => local.is_unspecified(),
+            IpAddress::V4(local) => local.is_unspecified() && matches!(to.0, IpAddress::V4(_)),
+        };
+        let broadcast = matches!(to.0, IpAddress::V4(to) if to.is_broadcast()) || to.0.is_multicast();
+        let same_version = match ping {
+            true => address.same_version(from.0.unmapped()),
+            false => any || address.unmapped().same_version(to.0.unmapped()),
+        };
         let bound = port == to.1
-            && (ping || address.is_unspecified() || address == to.0 || to.0.is_broadcast());
+            && same_version
+            && (ping || any || address.unmapped() == to.0.unmapped() || broadcast);
         let connected = state.remote.is_none_or(|(remote, remote_port)| {
-            remote == from.0 && (ping || remote_port == from.1)
+            remote.unmapped() == from.0.unmapped() && (ping || remote_port == from.1)
         });
         bound && connected
     }
 
-    fn push(&self, source: Ipv4Address, source_port: u16, data: &[u8]) -> bool {
+    fn push(&self, source: IpAddress, source_port: u16, data: &[u8]) -> bool {
         let mut state = self.state.lock();
         let fits = state.queued_bytes + data.len() <= state.receive_limit;
         if !fits
@@ -375,7 +393,7 @@ pub fn deliver(delivery: Delivery<'_>) -> bool {
         } => (
             Protocol::Ping,
             (source, 0),
-            (Ipv4Address::UNSPECIFIED, identifier),
+            (IpAddress::V6(eggos_net::Ipv6Address::UNSPECIFIED), identifier),
             message,
         ),
         Delivery::Tcp { .. } => return false,

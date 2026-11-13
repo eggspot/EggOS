@@ -41,7 +41,9 @@ use eggos_net::ethernet::{MAX_FRAME_BYTES, MacAddress};
 use eggos_net::interface::{
     Counters, Datagram, Delivery, Interface, LARGE_TCP_SEGMENT_AT, SendError,
 };
+use eggos_net::ip::IpAddress;
 use eggos_net::ipv4::{Ipv4Address, Subnet};
+use eggos_net::ipv6::{self, Ipv6Address};
 use eggos_net::status::{
     Dhcp, ETHERNET_NAME, InterfaceName, InterfaceStatus, LOOPBACK_NAME, Neighbour, WIRELESS_NAME,
 };
@@ -146,6 +148,25 @@ fn route(adapters: &[Box<Adapter>], destination: Ipv4Address) -> Option<usize> {
                 .position(|adapter| adapter.interface.is_link_up())
         })
         .or_else(|| (!adapters.is_empty()).then_some(0))
+}
+
+fn route6(adapters: &[Box<Adapter>], destination: Ipv6Address, now: u64) -> Option<usize> {
+    adapters
+        .iter()
+        .position(|adapter| {
+            adapter.interface.is_link_up() && adapter.interface.ipv6().is_on_link(destination)
+                && !destination.is_link_local()
+        })
+        .or_else(|| {
+            adapters.iter().position(|adapter| {
+                adapter.interface.is_link_up() && adapter.interface.ipv6().router(now).is_some()
+            })
+        })
+        .or_else(|| {
+            adapters
+                .iter()
+                .position(|adapter| adapter.interface.is_link_up())
+        })
 }
 
 fn default_adapter(adapters: &[Box<Adapter>]) -> Option<&Adapter> {
@@ -456,15 +477,41 @@ pub fn tcp_mss() -> u16 {
     default_adapter(&ADAPTERS.lock()).map_or(tcp::MSS, |adapter| adapter.interface.tcp_mss())
 }
 
+/// The largest TCP segment to `destination` its adapter's link carries (D565).
+pub fn tcp_mss_for(destination: IpAddress) -> u16 {
+    match destination.unmapped() {
+        IpAddress::V4(_) => tcp_mss(),
+        IpAddress::V6(destination) => {
+            let adapters = ADAPTERS.lock();
+            route6(&adapters, destination, 0)
+                .map_or(tcp::MSS, |index| adapters[index].interface.tcp_mss6())
+        }
+    }
+}
+
 /// Sends `segment`, a TCP segment from the interface's address whose checksum is whole or
-/// partial as `completion` says, to `destination` through the adapter, with time to live `ttl`.
+/// partial as `completion` says, to `destination` through the adapter, with time to live `ttl`
+/// (a hop limit over IPv6, D565).
 pub fn send_tcp<P: Platform>(
-    destination: Ipv4Address,
+    destination: impl Into<IpAddress>,
     segment: &[u8],
     completion: Completion,
     ttl: u8,
 ) -> Result<(), SendError> {
     let now = now_ms::<P>();
+    let destination = match destination.into().unmapped() {
+        IpAddress::V4(destination) => destination,
+        IpAddress::V6(destination) => {
+            let mut adapters = ADAPTERS.lock();
+            let index = route6(&adapters, destination, now).ok_or(SendError::NoRoute)?;
+            let Adapter {
+                device, interface, ..
+            } = &mut *adapters[index];
+            return interface.send_tcp6(destination, segment, completion, ttl, now, &mut |bytes| {
+                let _ = device.transmit(bytes);
+            });
+        }
+    };
     let mut adapters = ADAPTERS.lock();
     let Some(index) = route(&adapters, destination) else {
         return Err(SendError::NoRoute);
@@ -479,7 +526,10 @@ pub fn send_tcp<P: Platform>(
 
 /// The most TCP data one segment to `destination` may hold for its adapter to cut into
 /// segments itself (D541); `None` when the adapter does not cut segments.
-pub fn segmentation_data_limit(destination: Ipv4Address) -> Option<usize> {
+pub fn segmentation_data_limit(destination: IpAddress) -> Option<usize> {
+    let IpAddress::V4(destination) = destination.unmapped() else {
+        return None;
+    };
     let adapters = ADAPTERS.lock();
     let index = route(&adapters, destination)?;
     adapters[index].interface.segmentation_data_limit()
@@ -490,12 +540,15 @@ pub fn segmentation_data_limit(destination: Ipv4Address) -> Option<usize> {
 /// cuts it into segments of `segment_size` data bytes itself (D541), with time to live `ttl`.
 /// [`SendError::TooLong`] when that adapter does not cut segments.
 pub fn send_large_tcp<P: Platform>(
-    destination: Ipv4Address,
+    destination: IpAddress,
     segment: &[u8],
     completion: Completion,
     segment_size: u16,
     ttl: u8,
 ) -> Result<(), SendError> {
+    let IpAddress::V4(destination) = destination.unmapped() else {
+        return Err(SendError::TooLong);
+    };
     let mut frame = Vec::new();
     let length = LARGE_TCP_SEGMENT_AT + segment.len();
     if frame.try_reserve_exact(length).is_err() {
@@ -518,13 +571,25 @@ pub fn send_large_tcp<P: Platform>(
         .map_err(|_| SendError::TooLong)
 }
 
-/// Whether `address` is this machine's: in `127.0.0.0/8`, or an interface's.
-pub fn is_local(address: Ipv4Address) -> bool {
-    address.is_loopback()
-        || ADAPTERS
-            .lock()
-            .iter()
-            .any(|adapter| adapter.interface.address() == Some(address))
+/// Whether `address` is this machine's: in `127.0.0.0/8`, `::1`, or an interface's.
+pub fn is_local(address: impl Into<IpAddress>) -> bool {
+    match address.into().unmapped() {
+        IpAddress::V4(address) => {
+            address.is_loopback()
+                || ADAPTERS
+                    .lock()
+                    .iter()
+                    .any(|adapter| adapter.interface.address() == Some(address))
+        }
+        IpAddress::V6(address) => {
+            address.is_loopback()
+                || ADAPTERS.lock().iter().any(|adapter| {
+                    let ipv6 = adapter.interface.ipv6();
+                    ipv6.link_local == address
+                        || ipv6.global.is_some_and(|(global, _, _)| global == address)
+                })
+        }
+    }
 }
 
 /// The default adapter's address, if it has one.
@@ -576,6 +641,23 @@ pub fn source_for(destination: Ipv4Address) -> Ipv4Address {
         .unwrap_or(Ipv4Address::UNSPECIFIED)
 }
 
+/// [`source_for`] for either IP version (D565): `::1` to `::1`, the link-local or global
+/// address of the adapter an IPv6 route leaves through, `::` without one.
+pub fn source_for_any<P: Platform>(destination: IpAddress) -> IpAddress {
+    match destination.unmapped() {
+        IpAddress::V4(destination) => IpAddress::V4(source_for(destination)),
+        IpAddress::V6(destination) if destination.is_loopback() => IpAddress::V6(destination),
+        IpAddress::V6(destination) => {
+            let now = now_ms::<P>();
+            let adapters = ADAPTERS.lock();
+            let source = route6(&adapters, destination, now)
+                .map(|index| adapters[index].interface.ipv6_source_for(destination, now))
+                .unwrap_or(Ipv6Address::UNSPECIFIED);
+            IpAddress::V6(source)
+        }
+    }
+}
+
 fn count_loopback(bytes: usize) {
     LOOPBACK_PACKETS.fetch_add(1, Ordering::Relaxed);
     LOOPBACK_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
@@ -585,20 +667,21 @@ fn count_loopback(bytes: usize) {
 /// `source_port` to `destination`:`destination_port`, with time to live `ttl`. A datagram for
 /// this machine is handed to its endpoint at once.
 pub fn send_udp<P: Platform>(
-    source: Ipv4Address,
+    source: impl Into<IpAddress>,
     source_port: u16,
-    destination: (Ipv4Address, u16),
+    destination: (impl Into<IpAddress>, u16),
     data: &[u8],
     ttl: u8,
 ) -> Result<(), SendError> {
-    let (address, port) = destination;
+    let source = source.into();
+    let (address, port) = (destination.0.into().unmapped(), destination.1);
     if is_local(address) {
-        if data.len() > usize::from(u16::MAX) - 28 {
+        if data.len() > usize::from(u16::MAX) - 48 {
             return Err(SendError::TooLong);
         }
         let source = match source.is_unspecified() {
-            true => source_for(address),
-            false => source,
+            true => source_for_any::<P>(address),
+            false => source.unmapped(),
         };
         count_loopback(data.len() + 28);
         let datagram = Datagram {
@@ -614,6 +697,20 @@ pub fn send_udp<P: Platform>(
         return Ok(());
     }
     let now = now_ms::<P>();
+    let address = match address {
+        IpAddress::V4(address) => address,
+        IpAddress::V6(address) => {
+            let mut adapters = ADAPTERS.lock();
+            let index = route6(&adapters, address, now).ok_or(SendError::NoRoute)?;
+            let Adapter {
+                device, interface, ..
+            } = &mut *adapters[index];
+            return interface.send_udp6(source_port, address, port, data, ttl, now, &mut |bytes| {
+                let _ = device.transmit(bytes);
+            });
+        }
+    };
+    let source = source.ipv4().unwrap_or(Ipv4Address::UNSPECIFIED);
     let mut adapters = ADAPTERS.lock();
     let chosen = adapters
         .iter()
@@ -634,12 +731,19 @@ pub fn send_udp<P: Platform>(
 /// to live `ttl`. One to this machine is answered at once: the reply goes to the ping
 /// endpoint with `identifier`.
 pub fn send_echo<P: Platform>(
-    destination: Ipv4Address,
+    destination: impl Into<IpAddress>,
     identifier: u16,
     sequence: u16,
     data: &[u8],
     ttl: u8,
 ) -> Result<(), SendError> {
+    let destination = destination.into().unmapped();
+    if let IpAddress::V6(destination) = destination {
+        return send_echo6::<P>(destination, identifier, sequence, data, ttl);
+    }
+    let IpAddress::V4(destination) = destination else {
+        return Err(SendError::NoRoute);
+    };
     if is_local(destination) {
         let mut reply = Vec::new();
         if reply
@@ -660,7 +764,7 @@ pub fn send_echo<P: Platform>(
         .ok_or(SendError::TooLong)?;
         count_loopback(2 * (reply.len() + ipv4::HEADER_BYTES));
         let delivery = Delivery::EchoReply {
-            source: destination,
+            source: IpAddress::V4(destination),
             identifier,
             message: &reply,
         };
@@ -684,6 +788,63 @@ pub fn send_echo<P: Platform>(
         sequence,
         data,
         ttl,
+        now,
+        &mut |bytes| {
+            let _ = device.transmit(bytes);
+        },
+    )
+}
+
+fn send_echo6<P: Platform>(
+    destination: Ipv6Address,
+    identifier: u16,
+    sequence: u16,
+    data: &[u8],
+    hop_limit: u8,
+) -> Result<(), SendError> {
+    if is_local(destination) {
+        let source = source_for_any::<P>(IpAddress::V6(destination))
+            .ipv6()
+            .unwrap_or(Ipv6Address::LOOPBACK);
+        let mut reply = Vec::new();
+        if reply.try_reserve_exact(8 + data.len()).is_err() {
+            return Err(SendError::TooLong);
+        }
+        reply.resize(8 + data.len(), 0);
+        eggos_net::icmpv6::write_echo(
+            &mut reply,
+            destination,
+            source,
+            eggos_net::icmpv6::kind::ECHO_REPLY,
+            identifier,
+            sequence,
+            data,
+        )
+        .ok_or(SendError::TooLong)?;
+        count_loopback(2 * (reply.len() + ipv6::HEADER_BYTES));
+        let delivery = Delivery::EchoReply {
+            source: IpAddress::V6(destination),
+            identifier,
+            message: &reply,
+        };
+        if endpoints::deliver(delivery) {
+            console::wake_input_waiters::<P>();
+        }
+        return Ok(());
+    }
+    let now = now_ms::<P>();
+    let mut adapters = ADAPTERS.lock();
+    let index = route6(&adapters, destination, now).ok_or(SendError::NoRoute)?;
+    let Adapter {
+        device, interface, ..
+    } = &mut *adapters[index];
+    interface.send_echo6(
+        destination,
+        eggos_net::icmpv6::kind::ECHO_REQUEST,
+        identifier,
+        sequence,
+        data,
+        hop_limit,
         now,
         &mut |bytes| {
             let _ = device.transmit(bytes);

@@ -1,10 +1,11 @@
 use super::*;
+use eggos_net::ipv4::Ipv4Address;
 
 fn udp(source: Ipv4Address, source_port: u16, port: u16, data: &[u8]) -> Delivery<'_> {
     Delivery::Udp(Arrived {
-        source,
+        source: source.into(),
         source_port,
-        destination: Ipv4Address::new(10, 0, 2, 15),
+        destination: Ipv4Address::new(10, 0, 2, 15).into(),
         destination_port: port,
         data,
     })
@@ -63,13 +64,13 @@ fn datagrams_reach_the_endpoint_of_their_port_and_a_connected_one_hears_only_its
     assert_eq!(
         peeked,
         Datagram {
-            source: HOST,
+            source: HOST.into(),
             source_port: 53,
             bytes: b"one".to_vec()
         }
     );
     assert_eq!(endpoint.take(false), None);
-    endpoint.connect(Some((HOST, 53)));
+    endpoint.connect(Some((HOST.into(), 53)));
     assert!(!deliver(udp(HOST, 54, 5102, b"other port")));
     assert!(!deliver(udp(
         Ipv4Address::new(10, 0, 2, 3),
@@ -92,9 +93,9 @@ fn a_full_queue_drops_and_counts_what_does_not_fit() {
     let data = [7u8; 1000];
     let to_loopback = |data| {
         deliver(Delivery::Udp(Arrived {
-            source: Ipv4Address::LOOPBACK,
+            source: Ipv4Address::LOOPBACK.into(),
             source_port: 9,
-            destination: Ipv4Address::LOOPBACK,
+            destination: Ipv4Address::LOOPBACK.into(),
             destination_port: 5104,
             data,
         }))
@@ -112,13 +113,13 @@ fn echo_replies_go_to_the_ping_endpoint_with_their_identifier() {
     let ping = Endpoint::new(Protocol::Ping);
     ping.bind(Ipv4Address::UNSPECIFIED, 5105).unwrap();
     let reply = Delivery::EchoReply {
-        source: HOST,
+        source: HOST.into(),
         identifier: 5105,
         message: b"\0\0\0\0\x13\xf1\0\x01data",
     };
     assert!(deliver(reply));
     assert!(!deliver(Delivery::EchoReply {
-        source: HOST,
+        source: HOST.into(),
         identifier: 5106,
         message: b"stray",
     }));

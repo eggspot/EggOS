@@ -194,7 +194,10 @@ pub fn call<P: Platform>(
     }
     let result = match number {
         number::SOCKET if first as u32 == inet::AF_INET => {
-            inet::socket(process, thread, second, third)
+            inet::socket(process, thread, inet::Family::V4, second, third)
+        }
+        number::SOCKET if first as u32 == inet::AF_INET6 => {
+            inet::socket(process, thread, inet::Family::V6, second, third)
         }
         number::SOCKET if first as u32 == netlink::AF_NETLINK => {
             netlink_socket(process, thread, second, third)

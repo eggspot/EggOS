@@ -19,7 +19,7 @@ fn a_datagram_to_the_loopback_network_reaches_its_endpoint_at_once() {
     let datagram = receiver.take(false).unwrap();
     assert_eq!(
         (datagram.source, datagram.source_port, &datagram.bytes[..]),
-        (Ipv4Address::LOOPBACK, port, &b"hello"[..])
+        (Ipv4Address::LOOPBACK.into(), port, &b"hello"[..])
     );
     assert_eq!(
         send_udp::<TestPlatform>(
@@ -40,7 +40,7 @@ fn a_ping_to_the_loopback_network_is_answered_at_once() {
     let identifier = ping.bind(Ipv4Address::UNSPECIFIED, 5202).unwrap();
     send_echo::<TestPlatform>(Ipv4Address::LOOPBACK, identifier, 9, b"abc", 64).unwrap();
     let reply = ping.take(false).unwrap();
-    assert_eq!(reply.source, Ipv4Address::LOOPBACK);
+    assert_eq!(reply.source, Ipv4Address::LOOPBACK.into());
     let echo = icmp::parse_echo(&reply.bytes).unwrap();
     assert_eq!(
         (echo.kind, echo.identifier, echo.sequence, echo.data),

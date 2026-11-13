@@ -30,7 +30,6 @@ use core::ops::ControlFlow;
 use core::sync::atomic::Ordering;
 use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
-use eggos_net::ipv4::Ipv4Address;
 use eggos_net::tcp::{Error, State};
 
 const TCP_NODELAY: u32 = 1;
@@ -147,7 +146,7 @@ pub fn call<P: Platform>(
             let result = result.and_then(|count| {
                 if fifth != 0 {
                     let peer = connected(&socket)?.remote();
-                    write_address(process, fifth, sixth, peer)?;
+                    write_address(process, socket.family(), fifth, sixth, peer)?;
                 }
                 Ok(count)
             });
@@ -199,9 +198,9 @@ fn name<P: Platform>(
         (false, Phase::Idle) => socket
             .endpoint()
             .local()
-            .unwrap_or((Ipv4Address::UNSPECIFIED, 0)),
+            .unwrap_or((socket.family().unspecified(), 0)),
     };
-    write_address(process, address, length_at, value)?;
+    write_address(process, socket.family(), address, length_at, value)?;
     Ok(0)
 }
 
@@ -496,7 +495,8 @@ fn accept<P: Platform>(
             if let Ok(listening) = tcp_socket(socket) {
                 listening.hand_options_to::<P>(&stream);
             }
-            break install_accepted(process, thread, stream, address, length_at, flags);
+            let family = socket.family();
+            break install_accepted(process, thread, stream, family, address, length_at, flags);
         }
         if file.is_nonblocking() {
             break Err(Errno::EAGAIN);
@@ -518,12 +518,13 @@ fn install_accepted<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
     stream: Arc<Stream>,
+    family: inet::Family,
     address: u64,
     length_at: u64,
     flags: u32,
 ) -> Result<u64, Errno> {
     let peer = stream.remote();
-    let accepted = InetSocket::accepted(stream, tcp::run::<P>);
+    let accepted = InetSocket::accepted(stream, tcp::run::<P>, family);
     let file = Arc::new(OpenFile::new(
         FileKind::InetSocket(accepted),
         open_flag::RDWR | flags & open_flag::NONBLOCK,
@@ -534,7 +535,7 @@ fn install_accepted<P: Platform>(
         .lock()
         .open(file, flags & open_flag::CLOEXEC != 0, limit)?;
     if address != 0
-        && let Err(error) = write_address(process, address, length_at, peer)
+        && let Err(error) = write_address(process, family, address, length_at, peer)
     {
         let closed = thread.files().lock().remove(fd);
         drop(closed);
@@ -606,18 +607,23 @@ fn start_connection<P: Platform>(
         Phase::Listening(_) => return Err(Errno::EINVAL),
         Phase::Idle => {}
     }
-    let (address, port) = read_address(process, address, length)?.ok_or(Errno::EAFNOSUPPORT)?;
+    let (address, port) = read_address(process, socket.family(), address, length)?
+        .ok_or(Errno::EAFNOSUPPORT)?;
+    if !socket.takes(address) {
+        return Err(Errno::EAFNOSUPPORT);
+    }
     let remote = match address.is_unspecified() {
-        true => (Ipv4Address::LOOPBACK, port),
-        false => (address, port),
+        true => (socket.family().loopback(), port),
+        false => (address.unmapped(), port),
     };
-    if remote.0.is_broadcast() || remote.0.is_multicast() || port == 0 {
+    let broadcast = remote.0.ipv4().is_some_and(|address| address.is_broadcast());
+    if broadcast || remote.0.is_multicast() || port == 0 {
         return Err(Errno::ENETUNREACH);
     }
     let (bound, local_port) = ensure_bound(socket)?;
     let source = match bound.is_unspecified() {
-        true => crate::net::source_for(remote.0),
-        false => bound,
+        true => crate::net::source_for_any::<P>(remote.0),
+        false => bound.unmapped(),
     };
     if source.is_unspecified() {
         return Err(Errno::ENETUNREACH);
@@ -991,12 +997,12 @@ fn recvmsg<P: Platform>(
             .map_err(|_| Errno::EFAULT)?;
         if header.name != 0 {
             let peer = connected(socket)?.remote();
-            let bytes = inet::encode_address(peer.0, peer.1);
-            let copied = inet::SOCKADDR_IN_SIZE.min(header.name_length as usize);
+            let (bytes, size) = inet::encode_address(peer.0, peer.1, socket.family());
+            let copied = size.min(header.name_length as usize);
             process
                 .write_user_memory(header.name, &bytes[..copied])
                 .map_err(|_| Errno::EFAULT)?;
-            written[8..12].copy_from_slice(&(inet::SOCKADDR_IN_SIZE as u32).to_ne_bytes());
+            written[8..12].copy_from_slice(&(size as u32).to_ne_bytes());
         }
         written[40..48].copy_from_slice(&0u64.to_ne_bytes());
         written[48..52].copy_from_slice(&0u32.to_ne_bytes());
