@@ -73,6 +73,7 @@ pub mod futex;
 pub mod identity;
 pub mod inotify;
 pub mod job_control;
+pub mod leases;
 pub mod limits;
 pub mod memfd;
 pub mod memory;
@@ -433,6 +434,7 @@ impl Errno {
     /// The result does not fit: a buffer too small for the working directory (`getcwd`).
     pub const ERANGE: Self = Self(34);
     pub const ENODATA: Self = Self(61);
+    pub const ETXTBSY: Self = Self(26);
     /// A read-only file system: a file opened for writing or created on one.
     pub const EROFS: Self = Self(30);
     /// An invalid argument: here, a bad flag, the same descriptor twice (`dup3`), an unknown

@@ -173,6 +173,12 @@ pub fn pie_slots(user_end: u64, align: u64) -> u64 {
 }
 /// How many pages below the top of its reserve a program's stack may start at random.
 pub const STACK_SLOTS: u64 = 256;
+/// How many 2 MiB steps below its usual place the interpreter may be loaded at random (D558).
+pub const INTERPRETER_SLOTS: u64 = 256;
+/// How many pages past the program's end its break may start at random: 32 MiB (D558).
+pub const BREAK_SLOTS: u64 = 8192;
+/// How many pages below its usual top the `mmap` area may start at random: 256 MiB (D558).
+pub const MMAP_SLOTS: u64 = 65536;
 
 static RANDOMIZE_LAYOUTS: AtomicBool = AtomicBool::new(false);
 
@@ -337,7 +343,10 @@ pub fn load_program<P: Platform>(
     let loader = match (layout.names_interpreter, interpreter) {
         (false, _) => None,
         (true, None) => return Err(ExecError::NoInterpreter),
-        (true, Some(interpreter)) => Some(check_loader(interpreter, &layout, user_end)?),
+        (true, Some(interpreter)) => {
+            let slide = random_below::<P>(INTERPRETER_SLOTS) * PIE_ALIGN;
+            Some(check_loader(interpreter, &layout, user_end, slide)?)
+        }
     };
     let [hwcap, hwcap2] = P::linux_hardware_capabilities();
     let credentials = &mut process.credentials_and_limits_mut().credentials;
@@ -383,7 +392,8 @@ pub fn load_program<P: Platform>(
     if let Some(loader) = &loader {
         map_segments(process, &loader.elf, loader.file.as_ref(), loader.bias)?;
     }
-    process.set_program_break(layout.end);
+    process.set_program_break(layout.end + random_below::<P>(BREAK_SLOTS) * FRAME_SIZE);
+    process.set_mmap_slide(random_below::<P>(MMAP_SLOTS) * FRAME_SIZE);
     process
         .add_region(
             user_end - STACK_RESERVE,
@@ -464,11 +474,13 @@ fn interpreter_bias(
     span: &Span,
     user_end: u64,
     program: &Layout,
+    slide: u64,
 ) -> Result<u64, ExecError> {
     if elf.kind() == Kind::Executable || span.is_empty() {
         return Ok(0);
     }
     let top = user_end - STACK_RESERVE - STACK_GUARD_GAP;
+    let top = top.checked_sub(slide).filter(|&lowered| lowered >= top / 2).unwrap_or(top);
     let length = span
         .highest
         .checked_sub(span.floor())
@@ -554,6 +566,7 @@ fn check_loader<'a>(
     interpreter: Program<'a>,
     program: &Layout,
     user_end: u64,
+    slide: u64,
 ) -> Result<Loader<'a>, ExecError> {
     let bad = |error: ExecError| match error {
         ExecError::InvalidProgram(reason) => ExecError::BadInterpreter(reason),
@@ -562,7 +575,7 @@ fn check_loader<'a>(
     let elf = Elf::parse(interpreter.image, elf::machine::NATIVE)
         .map_err(|InvalidElf(reason)| ExecError::BadInterpreter(reason))?;
     let span = Span::of(&elf).map_err(bad)?;
-    let bias = interpreter_bias(&elf, &span, user_end, program)?;
+    let bias = interpreter_bias(&elf, &span, user_end, program, slide)?;
     let layout = check_image(&elf, bias, user_end, interpreter.size).map_err(bad)?;
     if layout.names_interpreter {
         return Err(ExecError::BadInterpreter(
@@ -1028,10 +1041,13 @@ fn prepare<P: Platform>(
         }
         None => (name, arguments),
     };
+    if !vfs::allows_execution(node) || !vfs::allows_execution(image_node) {
+        return Err(Errno::EACCES);
+    }
     let program = Program::from_file(
         image.bytes(),
         image_size,
-        Arc::new(vfs::HeldNode::new(image_node)),
+        Arc::new(vfs::RunningImage::new(image_node)),
     )
     .with_set_ids(match vfs::allows_set_ids(node) {
         true => SetIds::of(&attributes),

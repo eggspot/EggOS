@@ -307,6 +307,9 @@ pub fn truncate_on_open<P: Platform>(node: Node, flags: u32) -> Result<(), Errno
     if !file_system.is_node_writable(node.id()) {
         return Err(Errno::EROFS);
     }
+    if vfs::is_running_image(node) {
+        return Err(Errno::ETXTBSY);
+    }
     let writes = flags & open_flag::ACCMODE != open_flag::RDONLY;
     if writes && flags & open_flag::TRUNC != 0 {
         file_system

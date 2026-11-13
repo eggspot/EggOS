@@ -124,6 +124,9 @@ const DRIVER_BOOT_LOADER: u64 = 29;
 const DRIVER_WIFI: u64 = 30;
 const DRIVER_DISPLAY: u64 = 31;
 const DRIVER_POWER: u64 = 32;
+const THREAD_SELF: u64 = 33;
+const SYS_VM: u64 = 34;
+const OVERCOMMIT_MEMORY: u64 = 35;
 
 const SYS_EGGOS: u64 = 23;
 
@@ -133,7 +136,7 @@ const KEYBOARD_LAYOUTS_IN_USE: u64 = 25;
 
 const KEYBOARD_SWITCH_KEY: u64 = 26;
 
-const FILES: [(&[u8], u64); 10] = [
+const FILES: [(&[u8], u64); 11] = [
     (b"cmdline", CMDLINE),
     (b"driver", DRIVER),
     (b"meminfo", MEMINFO),
@@ -142,6 +145,7 @@ const FILES: [(&[u8], u64); 10] = [
     (b"ps", PS),
     (b"self", SELF),
     (b"sys", SYS),
+    (b"thread-self", THREAD_SELF),
     (b"uptime", UPTIME),
     (b"version", VERSION),
 ];
@@ -176,7 +180,13 @@ const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 8] = [
     (b"wifi", DRIVER_WIFI),
 ];
 
-const SYS_FILES: [(&[u8], u64); 2] = [(b"eggos", SYS_EGGOS), (b"kernel", SYS_KERNEL)];
+const SYS_FILES: [(&[u8], u64); 3] = [
+    (b"eggos", SYS_EGGOS),
+    (b"kernel", SYS_KERNEL),
+    (b"vm", SYS_VM),
+];
+
+const SYS_VM_FILES: [(&[u8], u64); 1] = [(b"overcommit_memory", OVERCOMMIT_MEMORY)];
 
 const SYS_EGGOS_FILES: [(&[u8], u64); 3] = [
     (b"keyboard_layout", KEYBOARD_LAYOUT),
@@ -274,11 +284,26 @@ mod part {
     pub const STATUS: u64 = 7;
     pub const DESCRIPTOR: u64 = 8;
     pub const COMM: u64 = 9;
+    pub const MOUNTINFO: u64 = 10;
+    pub const TASK: u64 = 11;
+    pub const TASK_ENTRY: u64 = 12;
+    pub const TASK_COMM: u64 = 13;
+    pub const TASK_STAT: u64 = 14;
+    pub const TASK_STATUS: u64 = 15;
 }
 
-const PROCESS_FILES: [(&[u8], u64); 7] = [
+/// The files of a thread's directory, `/proc/<pid>/task/<tid>` (D558).
+const TASK_FILES: [(&[u8], u64); 3] = [
+    (b"comm", part::TASK_COMM),
+    (b"stat", part::TASK_STAT),
+    (b"status", part::TASK_STATUS),
+];
+
+const PROCESS_FILES: [(&[u8], u64); 9] = [
     (b"cmdline", part::CMDLINE),
     (b"comm", part::COMM),
+    (b"mountinfo", part::MOUNTINFO),
+    (b"task", part::TASK),
     (b"exe", part::EXE),
     (b"fd", part::FD),
     (b"maps", part::MAPS),
@@ -323,15 +348,15 @@ impl ProcessNode {
 
 fn is_directory(node: u64) -> bool {
     match ProcessNode::of(node) {
-        Some(node) => matches!(node.part, part::DIRECTORY | part::FD),
-        None => matches!(node, ROOT | NET | DRIVER | SYS | SYS_KERNEL | SYS_EGGOS),
+        Some(node) => matches!(node.part, part::DIRECTORY | part::FD | part::TASK | part::TASK_ENTRY),
+        None => matches!(node, ROOT | NET | DRIVER | SYS | SYS_KERNEL | SYS_EGGOS | SYS_VM),
     }
 }
 
 fn is_link(node: u64) -> bool {
     match ProcessNode::of(node) {
         Some(node) => matches!(node.part, part::EXE | part::DESCRIPTOR),
-        None => node == SELF,
+        None => node == SELF || node == THREAD_SELF,
     }
 }
 
@@ -344,6 +369,7 @@ fn listing(directory: u64) -> &'static [(&'static [u8], u64)] {
         SYS => &SYS_FILES,
         SYS_KERNEL => &SYS_KERNEL_FILES,
         SYS_EGGOS => &SYS_EGGOS_FILES,
+        SYS_VM => &SYS_VM_FILES,
         _ => &[],
     }
 }
@@ -537,9 +563,14 @@ pub fn mounts_text() -> Option<Vec<u8>> {
         let usage = root.file_system().usage();
         let kind = crate::vfs::type_name(usage.magic);
         let access = if usage.read_only { "ro" } else { "rw" };
-        let set_ids = match crate::vfs::ignores_set_ids_at(point) {
-            true => ",nosuid",
-            false => "",
+        let set_ids = match (
+            crate::vfs::ignores_set_ids_at(point),
+            crate::vfs::refuses_execution_at(point),
+        ) {
+            (true, true) => ",nosuid,noexec",
+            (true, false) => ",nosuid",
+            (false, true) => ",noexec",
+            (false, false) => "",
         };
         let written = text
             .bytes(kind.as_bytes())
@@ -883,7 +914,7 @@ fn process_status<P: Platform>(pid: u32) -> Option<Vec<u8>> {
     Some(text.0)
 }
 
-fn process_lookup(directory: ProcessNode, name: &[u8]) -> Option<u64> {
+fn process_lookup<P: Platform>(directory: ProcessNode, name: &[u8]) -> Option<u64> {
     match directory.part {
         part::DIRECTORY => PROCESS_FILES
             .iter()
@@ -902,11 +933,82 @@ fn process_lookup(directory: ProcessNode, name: &[u8]) -> Option<u64> {
                 .number(),
             )
         }
+        part::TASK => {
+            let tid = parse_decimal(name, MAX_FD)?;
+            thread_ids::<P>(directory.pid).contains(&tid).then(|| {
+                ProcessNode {
+                    pid: directory.pid,
+                    part: part::TASK_ENTRY,
+                    fd: tid,
+                }
+                .number()
+            })
+        }
+        part::TASK_ENTRY => TASK_FILES
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|&(_, part)| {
+                ProcessNode {
+                    pid: directory.pid,
+                    part,
+                    fd: directory.fd,
+                }
+                .number()
+            }),
         _ => None,
     }
 }
 
-fn process_entry(directory: ProcessNode, position: usize) -> Option<DirectoryEntry> {
+/// The ids of process `pid`'s threads, its first thread's id first (D558): the threads the
+/// process's signal state records; just the first while it has one thread.
+fn thread_ids<P: Platform>(pid: u32) -> Vec<u32> {
+    let mut ids = alloc::vec![pid];
+    if let Some(process) = running_process::<P>(pid) {
+        let mut others = process.signals().lock().other_thread_ids();
+        others.retain(|&id| id != pid);
+        ids.append(&mut others);
+    }
+    ids
+}
+
+/// `/proc/<pid>/mountinfo` (D558): a line per mounted file system, as Linux writes it: its
+/// number, its parent's, its device, `/`, where it is mounted, its options, `-`, its type twice
+/// and `rw` or `ro`.
+fn mountinfo_text() -> Option<Vec<u8>> {
+    let mut text = Text(Vec::new());
+    let mut path = [0u8; PATH_MAX];
+    let mut number = 20u32;
+    text.bytes(b"1 1 0:1 / / rw - rootfs rootfs rw\n")?;
+    let mut complete = true;
+    crate::vfs::each_mount(|point, root| {
+        if root.kind() != NodeKind::Directory {
+            return;
+        }
+        let Some(start) = point.path_into(&mut path) else {
+            return;
+        };
+        number += 1;
+        let usage = root.file_system().usage();
+        let kind = crate::vfs::type_name(usage.magic);
+        let access = if usage.read_only { "ro" } else { "rw" };
+        let (major, minor) = root.file_system().device();
+        let mut options = alloc::string::String::from(access);
+        if crate::vfs::ignores_set_ids_at(point) {
+            options.push_str(",nosuid");
+        }
+        if crate::vfs::refuses_execution_at(point) {
+            options.push_str(",noexec");
+        }
+        let written = write!(text, "{number} 1 {major}:{minor} / ")
+            .ok()
+            .and_then(|()| text.bytes(&path[start..]))
+            .and_then(|()| writeln!(text, " {options} - {kind} {kind} {access}").ok());
+        complete &= written.is_some();
+    });
+    complete.then_some(text.0)
+}
+
+fn process_entry<P: Platform>(directory: ProcessNode, position: usize) -> Option<DirectoryEntry> {
     match directory.part {
         part::DIRECTORY => {
             let &(name, part) = PROCESS_FILES.get(position)?;
@@ -915,6 +1017,33 @@ fn process_entry(directory: ProcessNode, position: usize) -> Option<DirectoryEnt
                 name: Name::new(name),
                 node,
                 kind: kind_of(node),
+            })
+        }
+        part::TASK => {
+            let tid = *thread_ids::<P>(directory.pid).get(position)?;
+            let mut digits = [0; 20];
+            Some(DirectoryEntry {
+                name: Name::new(decimal(u64::from(tid), &mut digits)),
+                node: ProcessNode {
+                    pid: directory.pid,
+                    part: part::TASK_ENTRY,
+                    fd: tid,
+                }
+                .number(),
+                kind: NodeKind::Directory,
+            })
+        }
+        part::TASK_ENTRY => {
+            let &(name, part) = TASK_FILES.get(position)?;
+            Some(DirectoryEntry {
+                name: Name::new(name),
+                node: ProcessNode {
+                    pid: directory.pid,
+                    part,
+                    fd: directory.fd,
+                }
+                .number(),
+                kind: NodeKind::Regular,
             })
         }
         part::FD => {
@@ -985,7 +1114,7 @@ impl<P: Platform> FileSystem for Proc<P> {
 
     fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
         if let Some(directory) = ProcessNode::of(directory) {
-            return process_lookup(directory, name);
+            return process_lookup::<P>(directory, name);
         }
         if let Some(&(_, node)) = listing(directory).iter().find(|(file, _)| *file == name) {
             return Some(node);
@@ -1003,6 +1132,13 @@ impl<P: Platform> FileSystem for Proc<P> {
             return match node.part {
                 part::DIRECTORY => ROOT,
                 part::DESCRIPTOR => ProcessNode::part_of(node.pid, part::FD).number(),
+                part::TASK_ENTRY => ProcessNode::part_of(node.pid, part::TASK).number(),
+                part::TASK_COMM | part::TASK_STAT | part::TASK_STATUS => ProcessNode {
+                    pid: node.pid,
+                    part: part::TASK_ENTRY,
+                    fd: node.fd,
+                }
+                .number(),
                 _ => ProcessNode::part_of(node.pid, part::DIRECTORY).number(),
             };
         }
@@ -1017,6 +1153,8 @@ impl<P: Platform> FileSystem for Proc<P> {
             SYS_KERNEL
         } else if holds(&SYS_EGGOS_FILES) {
             SYS_EGGOS
+        } else if holds(&SYS_VM_FILES) {
+            SYS_VM
         } else {
             ROOT
         }
@@ -1027,9 +1165,10 @@ impl<P: Platform> FileSystem for Proc<P> {
         if let Some(node) = ProcessNode::of(node) {
             return Name::new(match node.part {
                 part::DIRECTORY => decimal(u64::from(node.pid), &mut digits),
-                part::DESCRIPTOR => decimal(u64::from(node.fd), &mut digits),
+                part::DESCRIPTOR | part::TASK_ENTRY => decimal(u64::from(node.fd), &mut digits),
                 other => PROCESS_FILES
                     .iter()
+                    .chain(TASK_FILES.iter())
                     .find(|&&(_, file)| file == other)
                     .map_or(&[][..], |(name, _)| name),
             });
@@ -1042,6 +1181,7 @@ impl<P: Platform> FileSystem for Proc<P> {
                 .chain(SYS_FILES.iter())
                 .chain(SYS_KERNEL_FILES.iter())
                 .chain(SYS_EGGOS_FILES.iter())
+                .chain(SYS_VM_FILES.iter())
                 .find(|&&(_, file)| file == node)
                 .map_or(&[][..], |(name, _)| name),
         )
@@ -1088,7 +1228,10 @@ impl<P: Platform> FileSystem for Proc<P> {
                 part::MAPS => process_maps::<P>(node.pid),
                 part::STAT => process_stat::<P>(node.pid),
                 part::STATUS => process_status::<P>(node.pid),
-                part::COMM => process_comm::<P>(node.pid),
+                part::COMM | part::TASK_COMM => process_comm::<P>(node.pid),
+                part::TASK_STAT => process_stat::<P>(node.pid),
+                part::TASK_STATUS => process_status::<P>(node.pid),
+                part::MOUNTINFO => mountinfo_text(),
                 _ => return Ok(None),
             };
             return Ok(Some(generated.unwrap_or_default()));
@@ -1113,6 +1256,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             DRIVER_WIFI => line(crate::devices::wifi_status().as_bytes()),
             DRIVER_DISPLAY => line(crate::display::status_text().as_bytes()),
             DRIVER_POWER => line(crate::devices::acpi_namespace::power_text().as_bytes()),
+            OVERCOMMIT_MEMORY => line(b"0"),
             DRIVER_BOOT_KERNEL => boot_file_bytes::<P>(eggos_hal::handoff::BootFile::Kernel),
             DRIVER_BOOT_LOADER => boot_file_bytes::<P>(eggos_hal::handoff::BootFile::Loader),
             DRIVER_RTC => match crate::wall_clock::read_clock::<P>() {
@@ -1144,6 +1288,16 @@ impl<P: Platform> FileSystem for Proc<P> {
             let mut digits = [0; 20];
             return Some(decimal(u64::from(caller), &mut digits).to_vec());
         }
+        if node == THREAD_SELF {
+            if caller == KERNEL_CALLER {
+                return None;
+            }
+            let mut digits = [0; 20];
+            let mut target = decimal(u64::from(caller), &mut digits).to_vec();
+            target.extend_from_slice(b"/task/");
+            target.extend_from_slice(decimal(u64::from(caller), &mut digits));
+            return Some(target);
+        }
         let node = ProcessNode::of(node)?;
         match node.part {
             part::EXE => {
@@ -1165,7 +1319,7 @@ impl<P: Platform> FileSystem for Proc<P> {
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         let position = usize::try_from(position).ok()?;
         if let Some(directory) = ProcessNode::of(directory) {
-            return process_entry(directory, position);
+            return process_entry::<P>(directory, position);
         }
         let files = listing(directory);
         if let Some(&(name, node)) = files.get(position) {

@@ -339,6 +339,7 @@ pub fn init_boot_cpu<P: Platform>() {
     unsafe { P::set_cpu_local(ptr::from_ref(&BOOT_CPU) as usize) };
     if cfg!(eggos_kernel) {
         crate::HEAP.set_cpu_index(current_index::<P>);
+        crate::linux::leases::set_platform::<P>();
     }
 }
 

@@ -691,6 +691,8 @@ const PROC_PATH: &str = "proc";
 
 const DEV_PATH: &str = "dev";
 
+const SYS_PATH: &str = "sys";
+
 const HELLO_WINDOW_PATH: &str = "usr/libexec/hello-window";
 
 const TMP_PATH: &str = "tmp";
@@ -2000,6 +2002,7 @@ fn initramfs_with(
         ),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
+        (SYS_PATH, initramfs::Content::Directory),
         (TMP_PATH, initramfs::Content::Directory),
         (HOME_PATH, initramfs::Content::Directory),
         (APPLICATIONS_PATH, initramfs::Content::Directory),

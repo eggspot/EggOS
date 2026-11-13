@@ -30,6 +30,7 @@
 
 pub mod cpio;
 pub mod devfs;
+pub mod sysfs;
 pub mod eggfs;
 pub mod fat;
 pub mod initramfs;
@@ -203,6 +204,8 @@ pub mod magic {
     pub const RAMFS: u64 = 0x8584_58f6;
     /// `/proc`.
     pub const PROC: u64 = 0x9fa0;
+    /// `/sys` (D558).
+    pub const SYSFS: u64 = 0x6265_6572;
     /// FAT (the host share).
     pub const MSDOS: u64 = 0x4d44;
     /// EggFS (D131): `EggF` in ASCII.
@@ -679,6 +682,83 @@ impl Drop for HeldNode {
     }
 }
 
+/// A node a running program was loaded from (D558): while one lives, the node refuses to be
+/// opened for writing or cut short (`ETXTBSY`), as Linux keeps a running executable from changing
+/// under it.
+#[derive(Debug)]
+pub struct RunningImage(HeldNode);
+
+/// The nodes running programs were loaded from, by file system and node, with how many run.
+static RUNNING_IMAGES: crate::sync::LeafSpinLock<alloc::vec::Vec<(usize, u64, u32)>> =
+    crate::sync::LeafSpinLock::new_leaf(alloc::vec::Vec::new());
+
+fn image_key(node: Node) -> (usize, u64) {
+    (
+        node.file_system() as *const dyn FileSystem as *const () as usize,
+        node.id(),
+    )
+}
+
+impl RunningImage {
+    /// Holds `node` as a running program's file.
+    pub fn new(node: Node) -> Self {
+        let (system, id) = image_key(node);
+        let mut running = RUNNING_IMAGES.lock();
+        match running
+            .iter_mut()
+            .find(|(held_system, held_id, _)| *held_system == system && *held_id == id)
+        {
+            Some((_, _, count)) => *count += 1,
+            None => {
+                if running.try_reserve(1).is_ok() {
+                    running.push((system, id, 1));
+                }
+            }
+        }
+        drop(running);
+        Self(HeldNode::new(node))
+    }
+}
+
+impl Drop for RunningImage {
+    fn drop(&mut self) {
+        let (system, id) = image_key(self.0.node());
+        let mut running = RUNNING_IMAGES.lock();
+        if let Some(index) = running
+            .iter()
+            .position(|(held_system, held_id, _)| *held_system == system && *held_id == id)
+        {
+            running[index].2 -= 1;
+            if running[index].2 == 0 {
+                running.swap_remove(index);
+            }
+        }
+    }
+}
+
+/// Whether a running program was loaded from `node` (D558).
+pub fn is_running_image(node: Node) -> bool {
+    let (system, id) = image_key(node);
+    RUNNING_IMAGES
+        .lock()
+        .iter()
+        .any(|(held_system, held_id, _)| *held_system == system && *held_id == id)
+}
+
+impl crate::regions::FilePages for RunningImage {
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
+        crate::regions::FilePages::read_at(&self.0, offset, buffer)
+    }
+
+    fn path_into(&self, buffer: &mut [u8]) -> Option<usize> {
+        crate::regions::FilePages::path_into(&self.0, buffer)
+    }
+
+    fn identity(&self) -> ((u32, u32), u64) {
+        crate::regions::FilePages::identity(&self.0)
+    }
+}
+
 impl crate::regions::FilePages for HeldNode {
     fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Option<usize> {
         crate::regions::FilePages::read_at(&self.0, offset, buffer)
@@ -858,6 +938,8 @@ struct Mounted {
     point: Node,
     root: Node,
     no_set_ids: bool,
+    /// Programs on it may not run (`noexec`, D558).
+    no_execution: bool,
 }
 
 static MOUNTS: [AtomicPtr<Mounted>; MAX_MOUNTS] =
@@ -917,17 +999,47 @@ pub fn mount_without_set_ids(
     mount_directory(path, file_system, true)
 }
 
+/// [`mount_without_set_ids`], with no program on it allowed to run either, as Linux's
+/// `nosuid,noexec` (D558): `/proc` and `/dev`.
+pub fn mount_without_programs(
+    path: &[u8],
+    file_system: &'static dyn FileSystem,
+) -> Result<(), MountError> {
+    mount_directory_as(path, file_system, true, true)
+}
+
 fn mount_directory(
     path: &[u8],
     file_system: &'static dyn FileSystem,
     no_set_ids: bool,
+) -> Result<(), MountError> {
+    mount_directory_as(path, file_system, no_set_ids, false)
+}
+
+fn mount_directory_as(
+    path: &[u8],
+    file_system: &'static dyn FileSystem,
+    no_set_ids: bool,
+    no_execution: bool,
 ) -> Result<(), MountError> {
     let root = root();
     let point = resolve(root, root, path).map_err(|_| MountError::NoMountPoint)?;
     if !point.is_directory() || point == root {
         return Err(MountError::NoMountPoint);
     }
-    add_mount(point, file_system, no_set_ids)
+    add_mount(point, file_system, no_set_ids, no_execution)
+}
+
+/// Whether programs on `node`'s file system may run: it was not mounted `noexec` (D558).
+pub fn allows_execution(node: Node) -> bool {
+    !mounts().any(|mounted| {
+        mounted.no_execution && core::ptr::addr_eq(mounted.root.file_system, node.file_system)
+    })
+}
+
+/// Whether the file system mounted on `point` refuses to run programs, for `/proc/mounts`.
+pub fn refuses_execution_at(point: Node) -> bool {
+    mounts().any(|mounted| mounted.point == point && mounted.no_execution)
 }
 
 /// Whether programs on `node`'s file system may take their set-user-id and set-group-id bits:
@@ -954,13 +1066,14 @@ pub fn mount_file(path: &[u8], file_system: &'static dyn FileSystem) -> Result<(
     {
         return Err(MountError::NoMountPoint);
     }
-    add_mount(point, file_system, false)
+    add_mount(point, file_system, false, false)
 }
 
 fn add_mount(
     point: Node,
     file_system: &'static dyn FileSystem,
     no_set_ids: bool,
+    no_execution: bool,
 ) -> Result<(), MountError> {
     if covered_by(point).is_some() || mounts().any(|mounted| mounted.point == point) {
         return Err(MountError::Taken);
@@ -969,6 +1082,7 @@ fn add_mount(
         point,
         root: Node::root_of(file_system),
         no_set_ids,
+        no_execution,
     }));
     for slot in &MOUNTS {
         if slot
@@ -1009,6 +1123,7 @@ pub fn type_name(magic: u64) -> &'static str {
         magic::PIPEFS => "pipefs",
         magic::SOCKFS => "sockfs",
         magic::ANON_INODE_FS => "anon_inodefs",
+        magic::SYSFS => "sysfs",
         _ => "unknown",
     }
 }

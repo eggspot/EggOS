@@ -198,10 +198,13 @@ fn mount_system_file_systems<P: Platform>() {
     let exists = |path: &[u8]| vfs::resolve(root, root, path).is_ok_and(|node| node.is_directory());
     if exists(b"/proc") {
         let proc: &'static linux::proc::Proc<P> = Box::leak(Box::new(linux::proc::Proc::new()));
-        let _ = vfs::mount(b"/proc", proc);
+        let _ = vfs::mount_without_programs(b"/proc", proc);
     }
     if exists(b"/dev") {
-        let _ = vfs::mount_without_set_ids(b"/dev", &vfs::devfs::DeviceFiles);
+        let _ = vfs::mount_without_programs(b"/dev", &vfs::devfs::DeviceFiles);
+    }
+    if exists(b"/sys") {
+        let _ = vfs::mount_without_programs(b"/sys", &vfs::sysfs::SystemFiles);
     }
     if !MEMORY_FILE_SYSTEMS
         .iter()

@@ -928,6 +928,13 @@ impl Signals {
         first_slot.into_iter().chain(others)
     }
 
+    /// The ids of the threads besides the first that the block records (D558).
+    pub fn other_thread_ids(&self) -> Vec<u32> {
+        self.actions_and_queue
+            .as_deref()
+            .map_or_else(Vec::new, |[block]| block.threads.iter().map(|thread| thread.id).collect())
+    }
+
     /// How many other threads' records the block keeps.
     fn thread_records(&self) -> usize {
         self.actions_and_queue

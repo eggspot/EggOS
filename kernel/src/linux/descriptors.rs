@@ -814,6 +814,23 @@ pub fn fcntl<P: Platform>(
             let new = files.lock().duplicate(fd, argument, close_on_exec, limit)?;
             Ok(u64::from(new))
         }
+        super::leases::command::SETLEASE
+        | super::leases::command::GETLEASE
+        | super::leases::command::NOTIFY => {
+            let file = files.lock().get(fd).ok_or(Errno::EBADF)?.file.clone();
+            let node = file.kind().node().ok_or(Errno::EINVAL)?;
+            let pid = process.id().get();
+            match command as u32 {
+                super::leases::command::SETLEASE => {
+                    if !matches!(file.kind(), FileKind::Regular(_)) {
+                        return Err(Errno::EINVAL);
+                    }
+                    super::leases::set(node, pid, argument)
+                }
+                super::leases::command::GETLEASE => Ok(super::leases::get(node, pid)),
+                _ => super::leases::watch(node, pid, argument),
+            }
+        }
         command::GETFD => {
             let close_on_exec = files.lock().get(fd).ok_or(Errno::EBADF)?.close_on_exec;
             Ok(u64::from(close_on_exec))

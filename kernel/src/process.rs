@@ -322,7 +322,15 @@ struct Memory<P: Platform> {
     records: AtomicU8,
     image: ImageLayout,
     cpu_ticks: Arc<AtomicU64>,
+    /// How far below the usual top this program's `mmap` area starts, chosen at random by
+    /// `execve` (D558); 0 for the fixed layout.
+    mmap_slide: AtomicU64,
+    /// The starts of the `MAP_GROWSDOWN` regions, which a fault just below extends (D558).
+    grows_down: SpinLock<Vec<u64>>,
 }
+
+/// How far below a `MAP_GROWSDOWN` region a fault may land and still extend it (D558).
+const GROWS_DOWN_REACH: u64 = 64 * 1024;
 
 fn mapping_end(
     at: u64,
@@ -413,6 +421,8 @@ impl<P: Platform> Memory<P> {
             lent: SpinLock::new(Vec::new()),
             files: LeafSpinLock::new_leaf(FileRanges::new()),
             fork_marks: LeafSpinLock::new_leaf(ForkMarks::new()),
+            mmap_slide: AtomicU64::new(0),
+            grows_down: SpinLock::new(Vec::new()),
             cpu_ticks: Arc::new(AtomicU64::new(0)),
             records: AtomicU8::new(0),
             image: ImageLayout::default(),
@@ -498,6 +508,8 @@ impl<P: Platform> Memory<P> {
             lent: SpinLock::new(copied_lent),
             files: LeafSpinLock::new_leaf(copied_files),
             fork_marks: LeafSpinLock::new_leaf(marks),
+            mmap_slide: AtomicU64::new(self.mmap_slide.load(Ordering::Relaxed)),
+            grows_down: SpinLock::new(self.grows_down.lock().clone()),
             records: AtomicU8::new(records),
             image: self.image.clone(),
             cpu_ticks: Arc::new(AtomicU64::new(0)),
@@ -1064,6 +1076,28 @@ impl<P: Platform> Process<P> {
     /// Sets the program break's start and end to `start`, page-aligned: where the heap `brk`
     /// grows begins (Linux: the end of the program's last segment). While the process is
     /// built.
+    /// The top of the area `mmap` places mappings in for this process (D558): `usual` lowered by
+    /// the slide `execve` chose at random.
+    pub fn mmap_top(&self, usual: u64) -> u64 {
+        usual.saturating_sub(self.memory.mmap_slide.load(Ordering::Relaxed))
+    }
+
+    /// Lowers this process's `mmap` area by `slide` bytes (D558), at `execve`.
+    pub fn set_mmap_slide(&mut self, slide: u64) {
+        self.memory_mut().mmap_slide.store(slide, Ordering::Relaxed);
+    }
+
+    /// The bytes its mappings cover, and those of its writable private ones and its break:
+    /// what `RLIMIT_AS` and `RLIMIT_DATA` count (D558).
+    pub fn mapped_bytes(&self) -> (u64, u64) {
+        let regions = self.memory.regions.lock();
+        regions.iter().fold((0u64, 0u64), |(all, data), region| {
+            let length = region.end - region.start;
+            let writable = region.attributes.is_some_and(|attributes| attributes.writable);
+            (all + length, data + if writable { length } else { 0 })
+        })
+    }
+
     pub fn set_program_break(&mut self, start: u64) {
         debug_assert!(start.is_multiple_of(FRAME_SIZE));
         let start = NonZeroU64::new(start).expect("the program break starts above address 0");
@@ -1776,10 +1810,46 @@ impl<P: Platform> Process<P> {
         address: u64,
         fault: PageFault,
     ) -> Result<(), UnresolvedFault> {
+        self.grow_down_to(address & !(FRAME_SIZE - 1));
         if <P::PageTableFormat as Format>::PAIRED_PAGES {
             return self.resolve_paired_page_fault(address, fault);
         }
         self.resolve_page(address & !(FRAME_SIZE - 1), fault)
+    }
+
+    /// Records that the region starting at `start` was mapped with `MAP_GROWSDOWN` (D558).
+    pub fn mark_grows_down(&self, start: u64) {
+        let mut starts = self.memory.grows_down.lock();
+        if starts.try_reserve(1).is_ok() {
+            starts.push(start);
+        }
+    }
+
+    /// Extends a `MAP_GROWSDOWN` region down to `page` when the fault at `page` lies in no
+    /// region and at most [`GROWS_DOWN_REACH`] below one, as Linux grows a stack (D558).
+    fn grow_down_to(&self, page: u64) {
+        let memory = &*self.memory;
+        let mut starts = memory.grows_down.lock();
+        if starts.is_empty() {
+            return;
+        }
+        let mut regions = memory.regions.lock();
+        if regions.find(page).is_some() {
+            return;
+        }
+        let Some(slot) = starts
+            .iter()
+            .position(|&start| start > page && start - page <= GROWS_DOWN_REACH)
+        else {
+            return;
+        };
+        let start = starts[slot];
+        let Some(attributes) = regions.find(start).map(|region| region.attributes) else {
+            return;
+        };
+        if regions.is_free(page, start) && regions.insert(page, start, attributes).is_ok() {
+            starts[slot] = page;
+        }
     }
 
     #[cold]

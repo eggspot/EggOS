@@ -390,6 +390,9 @@ fn open<P: Platform>(
             if !directory && (writes || flags & open_flag::TRUNC != 0) {
                 super::file_changes::truncate_on_open::<P>(node, flags)?;
             }
+            if !directory {
+                super::leases::opened(node, process.id().get(), writes);
+            }
             match (directory, node.generate().map_err(|_| Errno::EIO)?) {
                 (true, _) => FileKind::Directory(node),
                 (false, Some(bytes)) => FileKind::Snapshot(Snapshot { node, bytes }),

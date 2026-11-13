@@ -186,7 +186,33 @@ fn mapped_file(file: Option<MappedFile<'_>>) -> Result<Arc<OpenFile>, Errno> {
 /// raw system call does: the new break, or the current one if the move is refused (`brk(0)`
 /// asks for it). Never an error number.
 pub fn brk<P: Platform>(process: &Process<P>, address: u64) -> u64 {
-    process.move_program_break(address, mmap_top::<P>())
+    let limit = process.mmap_top(mmap_top::<P>());
+    let current = process.move_program_break(0, limit);
+    if address > current
+        && !within_limits(process, address.next_multiple_of(FRAME_SIZE) - current.next_multiple_of(FRAME_SIZE), true)
+    {
+        return current;
+    }
+    process.move_program_break(address, limit)
+}
+
+/// Whether `process` may map `length` more bytes (D558): its mappings stay within `RLIMIT_AS`,
+/// and, for writable private memory (`data`), its writable mappings within `RLIMIT_DATA`.
+fn within_limits<P: Platform>(process: &Process<P>, length: u64, data: bool) -> bool {
+    use super::limits::resource;
+    let (address_space, data_limit) = {
+        let state = process.credentials_and_limits().lock();
+        (
+            state.limits.get(resource::AS).map_or(u64::MAX, |limit| limit.soft),
+            state.limits.get(resource::DATA).map_or(u64::MAX, |limit| limit.soft),
+        )
+    };
+    if address_space == u64::MAX && (!data || data_limit == u64::MAX) {
+        return true;
+    }
+    let (all, writable) = process.mapped_bytes();
+    all.saturating_add(length) <= address_space
+        && (!data || writable.saturating_add(length) <= data_limit)
 }
 
 /// The descriptor a mapping of a file maps, in its process's table.
@@ -262,23 +288,59 @@ fn map_memory<P: Platform>(
         return Err(Errno::ENOMEM);
     }
     let attributes = attributes(prot)?;
-    let placement = placement::<P>(address, length, flags)?;
-    if kind != map::PRIVATE {
-        if let Some(lent) = attributes.filter(|attributes| !attributes.executable) {
-            return map_shared_anonymous(process, placement, length, lent);
-        }
-        process.mark_shared_anonymous();
+    let writable_private =
+        kind == map::PRIVATE && attributes.is_some_and(|attributes| attributes.writable);
+    if !within_limits(process, length, writable_private) {
+        return Err(Errno::ENOMEM);
     }
-    process
-        .map_region(placement, length, attributes)
-        .map_err(|error| match error {
-            RegionError::Overlaps => Errno::EEXIST,
-            RegionError::Invalid
-            | RegionError::NotCovered
-            | RegionError::NoRoom
-            | RegionError::OutOfMemory
-            | RegionError::NotWritable => Errno::ENOMEM,
-        })
+    let placement = placement::<P>(process, address, length, flags)?;
+    let start = if kind != map::PRIVATE
+        && let Some(lent) = attributes.filter(|attributes| !attributes.executable)
+    {
+        map_shared_anonymous(process, placement, length, lent)?
+    } else {
+        if kind != map::PRIVATE {
+            process.mark_shared_anonymous();
+        }
+        process
+            .map_region(placement, length, attributes)
+            .map_err(|error| match error {
+                RegionError::Overlaps => Errno::EEXIST,
+                RegionError::Invalid
+                | RegionError::NotCovered
+                | RegionError::NoRoom
+                | RegionError::OutOfMemory
+                | RegionError::NotWritable => Errno::ENOMEM,
+            })?
+    };
+    if flags & map::GROWSDOWN != 0 {
+        process.mark_grows_down(start);
+    }
+    populate_if_asked(process, start, length, flags, attributes);
+    Ok(start)
+}
+
+/// `MAP_POPULATE` (D558): the new mapping's pages are made present now, as `MADV_POPULATE_WRITE`
+/// (or `_READ` for one that cannot be written) would, rather than at their first touch; a page
+/// that cannot be made present is left to its first touch, as Linux ignores the failure.
+fn populate_if_asked<P: Platform>(
+    process: &Process<P>,
+    start: u64,
+    length: u64,
+    flags: u64,
+    attributes: Option<Attributes>,
+) {
+    if flags & map::POPULATE == 0 || flags & map::NONBLOCK != 0 {
+        return;
+    }
+    let Some(attributes) = attributes else {
+        return;
+    };
+    let access = match attributes.writable {
+        true => Access::Write,
+        false => Access::Read,
+    };
+    let _ = process.populate_range(start, start.saturating_add(length), access);
 }
 
 #[inline(never)]
@@ -305,6 +367,9 @@ fn map_file<P: Platform>(
 ) -> Result<u64, Errno> {
     let kind = flags & map::TYPE;
     let file = mapped_file(file)?;
+    if !within_limits(process, length, false) {
+        return Err(Errno::ENOMEM);
+    }
     if flags & map::HUGETLB != 0 {
         return Err(Errno::ENOMEM);
     }
@@ -335,7 +400,7 @@ fn map_file<P: Platform>(
     let Some(attributes) = attributes.filter(|attributes| !attributes.executable) else {
         return Err(Errno::EPERM);
     };
-    let placement = placement::<P>(address, length, flags)?;
+    let placement = placement::<P>(process, address, length, flags)?;
     match file.kind() {
         FileKind::Window(connection) => {
             super::window::map(process, connection, placement, length, attributes, offset)
@@ -383,7 +448,7 @@ fn map_regular<P: Platform>(
     {
         return Err(Errno::EOVERFLOW);
     }
-    let placement = placement::<P>(wanted.address, wanted.length, wanted.flags)?;
+    let placement = placement::<P>(process, wanted.address, wanted.length, wanted.flags)?;
     if let Some(attributes) = wanted
         .attributes
         .filter(|attributes| !attributes.executable)
@@ -427,7 +492,12 @@ fn map_regular<P: Platform>(
 }
 
 #[inline(always)]
-fn placement<P: Platform>(address: u64, length: u64, flags: u64) -> Result<Placement, Errno> {
+fn placement<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    length: u64,
+    flags: u64,
+) -> Result<Placement, Errno> {
     let user_end = <P::PageTableFormat as Format>::USER_END;
     let placement = if flags & (map::FIXED | map::FIXED_NOREPLACE) != 0 {
         if !address.is_multiple_of(FRAME_SIZE) {
@@ -457,7 +527,7 @@ fn placement<P: Platform>(address: u64, length: u64, flags: u64) -> Result<Place
         Placement::Anywhere {
             hint,
             floor: MINIMUM_ADDRESS,
-            top: mmap_top::<P>(),
+            top: process.mmap_top(mmap_top::<P>()),
         }
     };
     Ok(placement)
@@ -701,7 +771,7 @@ pub fn mremap<P: Platform>(
     let remap = if flags & remap::MAYMOVE != 0 {
         Remap::InPlaceOrAnywhere {
             floor: MINIMUM_ADDRESS,
-            top: mmap_top::<P>(),
+            top: process.mmap_top(mmap_top::<P>()),
         }
     } else {
         Remap::InPlace {
@@ -750,7 +820,7 @@ fn move_to<P: Platform>(
         Remap::Anywhere {
             hint: (new_address != 0).then_some(new_address),
             floor: MINIMUM_ADDRESS,
-            top: mmap_top::<P>(),
+            top: process.mmap_top(mmap_top::<P>()),
         }
     };
     let keep_source = flags & remap::DONTUNMAP != 0;
