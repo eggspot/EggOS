@@ -20,14 +20,40 @@ then `diskutil unmountDisk /dev/diskN` and `sudo dd if=<image> of=/dev/rdiskN bs
 
 ## Boot it
 
-Turn Secure Boot off in the firmware's setup (the loader is not signed yet), then choose the USB
-stick in the firmware's boot menu. EggOS starts with its home in memory.
+Turn Secure Boot off in the firmware's setup (the loader is not signed yet; see "Secure Boot" below),
+then choose the USB stick in the firmware's boot menu. EggOS starts with its home in memory.
 
 What it drives: the firmware's framebuffer (D236), or Intel's integrated graphics from Skylake to
 Meteor Lake at the firmware's mode with tear-free flips and a hardware pointer (D268); ACPI tables
 and, on AArch64, GICv2/v3/v4 and PSCI (D237); NVMe and AHCI disks (D238) and USB flash drives
 (D264); USB keyboards and mice, through hubs too, and PS/2 ones (D239, D254); and Intel
 e1000/e1000e/igc and Realtek RTL8111/8125 wired network adapters (D240).
+
+## Secure Boot
+
+Nearly every PC ships with Secure Boot on, and its firmware trusts only Microsoft's keys: Windows boots
+with one, and every other system (Linux distributions included) boots through Microsoft's third-party
+UEFI CA. EggOS's loader is not signed by it yet, so the firmware refuses it until Secure Boot is turned
+off. That is normal for an experimental system.
+
+How EggOS gets signed, the way Linux distributions do it:
+
+1. An EggOS signing key signs the loader and the kernel.
+2. EggOS ships `shim` (the small open-source first-stage loader, BSD-licensed) with that key's
+   certificate inside it.
+3. The shim build goes through the public shim review on GitHub (how the key is kept, that nothing
+   unsigned is booted, how a bad release is revoked, a reproducible build).
+4. Microsoft signs the reviewed shim through its hardware developer portal. The firmware then trusts
+   shim, and shim trusts EggOS's key.
+
+Until then, a user can keep Secure Boot on by enrolling EggOS's own certificate in the firmware's key
+setup instead of turning it off. Arm boards mostly have no Secure Boot; Apple silicon Macs need their
+own reduced-security setting.
+
+Status: not started. The signing key, a Microsoft Partner Center account and an EV code-signing
+certificate are the owner's (CLAUDE.md, "Still the owner's"), and the work is planned for when EggOS is
+close to 1.0. Microsoft's 2011 UEFI CA was due to expire in 2026 and new signatures come from its 2023
+CA, which older PCs may need a firmware update to trust; check the current state when the work starts.
 
 ## Install it
 
