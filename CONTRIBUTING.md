@@ -6,10 +6,12 @@ Thanks for helping build EggOS. A few rules keep the project fast, clean and fre
 - **Everything is our own Rust.** No third-party crates, ever, and no C, C++ or shell build scripts.
   If you need something a crate would provide, write it. Assembly only where the CPU requires it,
   inside `hal/src/arch/<arch>/`.
-- **Clean-room only.** Never copy, translate or closely paraphrase code from other projects, especially
-  GPL/LGPL/copyleft ones such as the Linux kernel, Wine or Darling. Work from public specifications,
-  documentation, man pages and observed behaviour. If you have studied a copyleft implementation of the
-  thing you are writing, say so in the PR.
+- **Written by us.** You may read any project to learn how hardware, formats and other systems work,
+  GPL/LGPL/copyleft ones such as the Linux kernel, Wine or Darling included, next to public
+  specifications, documentation, man pages and observed behaviour. Never copy, translate or closely
+  paraphrase their code, tables or comments: write it in EggOS's own design, names and structure. If
+  you learned part of your change from another project's code, say so in the PR and name it in the
+  module's NOTICE file (D550).
 - **Performance first.** A PR that touches a hot path includes before/after numbers from the same
   machine, and a new hot path adds its benchmark to `kernel/src/bench.rs` (`cargo xtask bench`,
   D27). CI reports every benchmark's change against the baseline and blocks a PR only for a slowdown of
