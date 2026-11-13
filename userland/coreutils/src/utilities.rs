@@ -22,7 +22,7 @@ use crate::ls::{Listing, ls};
 use crate::nslookup::nslookup;
 use crate::output::{FAILURE, Output};
 use crate::ping::ping;
-use crate::power::{HALT, POWER_OFF, RESTART, power, sync};
+use crate::power::{HALT, POWER_OFF, RESTART, power, shutdown, sync, wall};
 use crate::processes::{free, ps, uptime};
 use crate::properties::{getprop, setprop};
 use crate::sleep::sleep;
@@ -80,6 +80,7 @@ pub enum Utility {
     Reboot,
     Rm,
     Setprop,
+    Shutdown,
     Sleep,
     Stty,
     Sync,
@@ -91,13 +92,14 @@ pub enum Utility {
     True,
     Uname,
     Uptime,
+    Wall,
     Wc,
     Wifi,
     Wm,
 }
 
 impl Utility {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 51] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -133,6 +135,7 @@ impl Utility {
         Self::Reboot,
         Self::Rm,
         Self::Setprop,
+        Self::Shutdown,
         Self::Sleep,
         Self::Stty,
         Self::Sync,
@@ -144,6 +147,7 @@ impl Utility {
         Self::True,
         Self::Uname,
         Self::Uptime,
+        Self::Wall,
         Self::Wc,
         Self::Wifi,
         Self::Wm,
@@ -186,6 +190,7 @@ impl Utility {
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
             Self::Setprop => b"setprop",
+            Self::Shutdown => b"shutdown",
             Self::Sleep => b"sleep",
             Self::Stty => b"stty",
             Self::Sync => b"sync",
@@ -197,6 +202,7 @@ impl Utility {
             Self::True => b"true",
             Self::Uname => b"uname",
             Self::Uptime => b"uptime",
+            Self::Wall => b"wall",
             Self::Wc => b"wc",
             Self::Wifi => b"wifi",
             Self::Wm => b"wm",
@@ -244,6 +250,7 @@ impl Utility {
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
             Self::Setprop => setprop(output, arguments),
+            Self::Shutdown => shutdown(output, arguments),
             Self::Sleep => sleep(output, arguments),
             Self::Stty => stty(output, arguments),
             Self::Sync => sync(output, arguments),
@@ -255,6 +262,7 @@ impl Utility {
             Self::True => 0,
             Self::Uname => uname(output, arguments),
             Self::Uptime => uptime(output, arguments),
+            Self::Wall => wall(output, arguments),
             Self::Wc => wc(output, arguments),
             Self::Wifi => wifi(output, arguments),
             Self::Wm => wm(output, arguments),

@@ -593,7 +593,7 @@ pub const NOUN_VERBS: [(&str, &[&str]); 10] = [
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full
 /// definition all the same (the spec's list, checked against the code).
-pub const KEPT_NAMES: [&str; 56] = [
+pub const KEPT_NAMES: [&str; 58] = [
     "agent",
     "agentlog",
     "app",
@@ -634,6 +634,7 @@ pub const KEPT_NAMES: [&str; 56] = [
     "rm",
     "setprop",
     "settings",
+    "shutdown",
     "sleep",
     "stty",
     "sync",
@@ -646,6 +647,7 @@ pub const KEPT_NAMES: [&str; 56] = [
     "true",
     "uname",
     "uptime",
+    "wall",
     "wc",
     "wifi",
     "windows",
@@ -654,8 +656,46 @@ pub const KEPT_NAMES: [&str; 56] = [
 
 /// `eggsh`'s built-ins: CLI only, defined in [`shell::SHELL_COMMANDS`] for the docs and the
 /// tests (D165); `eggsh` does not link the registry, so they are not in [`COMMANDS`].
-pub const SHELL_BUILTINS: [&str; 27] = [
-    ".", ":", "[", "bg", "break", "cd", "continue", "echo", "eval", "exit", "export", "false",
-    "fg", "help", "jobs", "kill", "local", "pwd", "read", "return", "set", "shift", "test", "true",
-    "type", "unset", "wait",
+pub const SHELL_BUILTINS: [&str; 41] = [
+    ".",
+    ":",
+    "[",
+    "alias",
+    "bg",
+    "break",
+    "cd",
+    "command",
+    "continue",
+    "disown",
+    "echo",
+    "eval",
+    "exec",
+    "exit",
+    "export",
+    "false",
+    "fg",
+    "getopts",
+    "help",
+    "history",
+    "jobs",
+    "kill",
+    "let",
+    "local",
+    "printf",
+    "pwd",
+    "read",
+    "readonly",
+    "return",
+    "set",
+    "shift",
+    "suspend",
+    "test",
+    "times",
+    "trap",
+    "true",
+    "type",
+    "umask",
+    "unalias",
+    "unset",
+    "wait",
 ];

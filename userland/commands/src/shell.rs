@@ -119,7 +119,7 @@ const fn built_in(
 }
 
 /// `eggsh`'s built-ins, in the order of [`crate::SHELL_BUILTINS`].
-pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
+pub const SHELL_COMMANDS: [CommandDefinition; 41] = [
     built_in(
         &["."],
         "Runs a file's commands in this shell.",
@@ -147,6 +147,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         &EXPRESSION,
         NOTHING,
         Effect::Read,
+        &USAGE_2,
+    ),
+    built_in(
+        &["alias"],
+        "Names a command line to run in place of a word.",
+        "With name=value defines an alias, with a name shows it, alone lists them all; a command whose first word is an alias runs the alias's text with the other words after it.",
+        &WORDS,
+        TEXT,
+        Effect::Change,
         &USAGE_2,
     ),
     built_in(
@@ -181,6 +190,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         &CD_ERRORS,
     ),
     built_in(
+        &["command"],
+        "Runs a command, skipping functions and aliases, or says what a name is.",
+        "Runs the builtin or program named, not a function or alias of that name; -v writes how a name would run and -V says it in words.",
+        &WORDS,
+        TEXT,
+        Effect::Control,
+        &USAGE_2,
+    ),
+    built_in(
         &["continue"],
         "Starts a loop's next round.",
         "Goes on with the next round of the innermost for, while or until loop, or of the \
@@ -189,6 +207,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         NOTHING,
         Effect::Control,
         &USAGE_1,
+    ),
+    built_in(
+        &["disown"],
+        "Lets jobs run on without the shell following them.",
+        "Removes each job named (the current one when none is) from the job table; it keeps running.",
+        &JOB,
+        NOTHING,
+        Effect::Change,
+        &JOB_ERRORS,
     ),
     CommandDefinition {
         options: &[flag(b'n', "No newline at the end.")],
@@ -212,6 +239,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         NOTHING,
         Effect::Control,
         &[],
+    ),
+    built_in(
+        &["exec"],
+        "Replaces the shell with a program.",
+        "Runs the program in the shell's process, which then ends with it; with no program the redirections stay for the shell.",
+        &WORDS,
+        NOTHING,
+        Effect::Control,
+        &NOT_FOUND,
     ),
     built_in(
         &["exit"],
@@ -253,6 +289,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         &JOB_ERRORS,
     ),
     built_in(
+        &["getopts"],
+        "Takes the next option of a script's arguments.",
+        "Reads the option letters, the variable's name and the arguments (the positional parameters when none are given), sets the variable, OPTARG and OPTIND, and ends with 1 after the options.",
+        &WORDS,
+        NOTHING,
+        Effect::Change,
+        &USAGE_2,
+    ),
+    built_in(
         &["help"],
         "Describes the shell, or an EggOS command.",
         "Alone, describes the shell's syntax and built-ins; with words, runs /bin/help, which \
@@ -261,6 +306,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         TEXT,
         Effect::Read,
         &NOT_FOUND,
+    ),
+    built_in(
+        &["history"],
+        "Lists the lines typed at the prompt.",
+        "Writes the history oldest first, numbered, or only the last count lines; ^R at the prompt searches it backwards.",
+        &WORDS,
+        TEXT,
+        Effect::Read,
+        &USAGE_2,
     ),
     CommandDefinition {
         options: &[
@@ -293,6 +347,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         )
     },
     built_in(
+        &["let"],
+        "Works out arithmetic expressions.",
+        "Evaluates each expression as $((...)) does, setting the variables it assigns, and ends with 1 when the last is 0, else 0.",
+        &EXPRESSION,
+        NOTHING,
+        Effect::Change,
+        &USAGE_2,
+    ),
+    built_in(
         &["local"],
         "Makes variables local to a function.",
         "Keeps each NAME or NAME=value to the function running: when it returns, the \
@@ -301,6 +364,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         NOTHING,
         Effect::Change,
         &USAGE_1,
+    ),
+    built_in(
+        &["printf"],
+        "Writes text in a format.",
+        "Writes the format with its backslash escapes and its %s, %b, %c, %d, %i, %u, %o, %x, %X and %% directives filled from the arguments, using the format again while arguments are left.",
+        &WORDS,
+        TEXT,
+        Effect::Read,
+        &USAGE_2,
     ),
     built_in(
         &["pwd"],
@@ -325,6 +397,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
             &READ_ERRORS,
         )
     },
+    built_in(
+        &["readonly"],
+        "Makes variables read-only.",
+        "Marks each variable (setting it first with name=value) so that it can no longer be set or unset; alone lists them.",
+        &WORDS,
+        TEXT,
+        Effect::Change,
+        &USAGE_2,
+    ),
     built_in(
         &["return"],
         "Ends a function.",
@@ -356,6 +437,15 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         &USAGE_1,
     ),
     built_in(
+        &["suspend"],
+        "Stops the shell until it is continued.",
+        "Sends the shell SIGSTOP; a login shell refuses unless -f is given.",
+        &WORDS,
+        NOTHING,
+        Effect::Control,
+        &USAGE_1,
+    ),
+    built_in(
         &["test"],
         "Tests an expression.",
         "Ends with status 0 if the expression is true, 1 if it is false and 2 if it cannot be \
@@ -364,6 +454,24 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         &EXPRESSION,
         NOTHING,
         Effect::Read,
+        &USAGE_2,
+    ),
+    built_in(
+        &["times"],
+        "Writes the shell's and its children's CPU times.",
+        "Writes the user and system time of the shell, then of its finished children, in minutes and seconds.",
+        &[],
+        TEXT,
+        Effect::Read,
+        &[],
+    ),
+    built_in(
+        &["trap"],
+        "Runs a command when a signal comes or the shell ends.",
+        "Sets the command run on each signal named (EXIT when the shell ends), - for the default and an empty command to ignore it; alone lists the traps.",
+        &WORDS,
+        TEXT,
+        Effect::Change,
         &USAGE_2,
     ),
     built_in(
@@ -384,6 +492,24 @@ pub const SHELL_COMMANDS: [CommandDefinition; 27] = [
         TEXT,
         Effect::Read,
         &NOT_FOUND,
+    ),
+    built_in(
+        &["umask"],
+        "Shows or sets the file mode creation mask.",
+        "With an octal mode sets the mask new files take their permissions from; alone writes it in octal, or symbolically with -S.",
+        &WORDS,
+        TEXT,
+        Effect::Change,
+        &USAGE_1,
+    ),
+    built_in(
+        &["unalias"],
+        "Removes aliases.",
+        "Removes each alias named, or every alias with -a.",
+        &WORDS,
+        NOTHING,
+        Effect::Change,
+        &USAGE_1,
     ),
     built_in(
         &["unset"],

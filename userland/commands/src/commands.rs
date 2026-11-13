@@ -3383,6 +3383,48 @@ pub const REBOOT: CommandDefinition = power(
     Surface::Gui("the desktop's Restart"),
 );
 
+/// `shutdown` (D572).
+pub const SHUTDOWN: CommandDefinition = CommandDefinition {
+    words: &["shutdown"],
+    summary: "Powers the machine off, restarts or halts it later, telling everyone first.",
+    description: "Waits until the time given (now, +minutes or hh:mm in UTC; a minute when none \
+                  is given), telling every terminal with the message, then asks init to end \
+                  every program and powers off (-P, the default), restarts (-r) or halts (-H). \
+                  -c cancels a shutdown waiting, -k only sends the warnings. Unsaved work in \
+                  apps is lost.",
+    options: &[
+        named_flag(b'P', "poweroff", "Power the machine off (the default)."),
+        named_flag(b'r', "reboot", "Restart the machine."),
+        named_flag(b'H', "halt", "Halt the machine."),
+        named_flag(b'c', "cancel", "Cancel the shutdown waiting."),
+        named_flag(b'k', "warn-only", "Only send the warnings."),
+    ],
+    operands: &[
+        operand("time", ValueType::Text, Count::ZeroOrOne),
+        operand("message", ValueType::Text, Count::ZeroOrMore),
+    ],
+    outputs: NOTHING,
+    max_effect: Effect::Destroy,
+    errors: &POWER_ERRORS,
+    examples: &[],
+    surface: Surface::Gui("the desktop's Power off, after its countdown"),
+};
+
+/// `wall` (D572).
+pub const WALL: CommandDefinition = CommandDefinition {
+    words: &["wall"],
+    summary: "Writes a message on every terminal.",
+    description: "Writes the message (the operands, or standard input without any) on the \
+                  console and every pseudo-terminal, after a line naming who sent it.",
+    options: &[],
+    operands: &[operand("message", ValueType::Text, Count::ZeroOrMore)],
+    outputs: NOTHING,
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 1)],
+    examples: &[],
+    surface: Surface::NoGui("the desktop shows notifications; wall is for terminals"),
+};
+
 const NETWORK_PANE: Surface = Surface::Gui("Settings: Network");
 const NO_HOST_PANE: &str =
     "Settings: Network shows the network's state; reaching a host has no window yet";
@@ -4320,7 +4362,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 116] = [
+pub static COMMANDS: [CommandDefinition; 118] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4390,6 +4432,7 @@ pub static COMMANDS: [CommandDefinition; 116] = [
     SETTINGS_LIST,
     SETTINGS_OPEN,
     SETTINGS_SET,
+    SHUTDOWN,
     SLEEP,
     STTY,
     SYNC,
@@ -4402,6 +4445,7 @@ pub static COMMANDS: [CommandDefinition; 116] = [
     TRUE,
     UNAME,
     UPTIME,
+    WALL,
     WC,
     WIFI_CONNECT,
     WIFI_FORGET,
