@@ -25785,3 +25785,16 @@ the license, by an explicit instruction recorded here.
     the Wi-Fi driver's (D272).
 - **Not yet.** Mode setting on MDP5 (its clocks and the DSI and HDMI bridges) and the second
   pipe of a split display.
+
+## D550 Reading other code to learn from, every line written by us — Decided (owner, 2026-11-13); replaces the clean-room-only rule, D79's licence unchanged
+
+- **Decision.** Any source may be read to learn how hardware, formats and other systems work,
+  GPL/LGPL/copyleft projects such as the Linux kernel included. Every line of EggOS is still our own:
+  never copied, pasted, translated or closely paraphrased, and never their files, tables or comments.
+  The design, names and structure are EggOS's own.
+- **Recording it.** When a part was learned from someone else's code, its decision names the source,
+  and a NOTICE file next to the module lists the sources and their licences (as D272 did for `iwx`).
+- **Why.** The owner: "all code here we write ourself only, could we read other code or learn from
+  them, but our code is always write our self". Some hardware is described only in copyleft drivers
+  (for example Qualcomm's DPU, which D549 left on the firmware framebuffer); this lets EggOS support it.
+- **What stays.** MIT OR Apache-2.0 (D79), no third-party crates, no copyleft code in the repo.
