@@ -1166,6 +1166,50 @@ impl<P: Platform> FileSystem for Proc<P> {
     }
 }
 
+fn boot_text<P: Platform>() -> Option<Vec<u8>> {
+    let mut text = Vec::new();
+    text.try_reserve(128).ok()?;
+    if let Some(guid) = P::boot_partition() {
+        text.extend_from_slice(b"partition ");
+        for byte in guid {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            text.push(HEX[usize::from(byte >> 4)]);
+            text.push(HEX[usize::from(byte & 0xf)]);
+        }
+        text.push(b'\n');
+    }
+    for (name, file) in [
+        (&b"kernel "[..], eggos_hal::handoff::BootFile::Kernel),
+        (&b"loader "[..], eggos_hal::handoff::BootFile::Loader),
+    ] {
+        if let Some(bytes) = P::boot_file(file) {
+            text.extend_from_slice(name);
+            let mut digits = [0u8; 20];
+            let mut value = bytes.len();
+            let mut at = digits.len();
+            loop {
+                at -= 1;
+                digits[at] = b'0' + (value % 10) as u8;
+                value /= 10;
+                if value == 0 {
+                    break;
+                }
+            }
+            text.extend_from_slice(&digits[at..]);
+            text.push(b'\n');
+        }
+    }
+    Some(text)
+}
+
+fn boot_file_bytes<P: Platform>(file: eggos_hal::handoff::BootFile) -> Option<Vec<u8>> {
+    let bytes = P::boot_file(file).unwrap_or_default();
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).ok()?;
+    copy.extend_from_slice(bytes);
+    Some(copy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1490,48 +1534,4 @@ mod tests {
         .unwrap();
         assert_eq!(text.0, b"00001000-00002000 ---s 00000000 00:00 0 \n");
     }
-}
-
-fn boot_text<P: Platform>() -> Option<Vec<u8>> {
-    let mut text = Vec::new();
-    text.try_reserve(128).ok()?;
-    if let Some(guid) = P::boot_partition() {
-        text.extend_from_slice(b"partition ");
-        for byte in guid {
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            text.push(HEX[usize::from(byte >> 4)]);
-            text.push(HEX[usize::from(byte & 0xf)]);
-        }
-        text.push(b'\n');
-    }
-    for (name, file) in [
-        (&b"kernel "[..], eggos_hal::handoff::BootFile::Kernel),
-        (&b"loader "[..], eggos_hal::handoff::BootFile::Loader),
-    ] {
-        if let Some(bytes) = P::boot_file(file) {
-            text.extend_from_slice(name);
-            let mut digits = [0u8; 20];
-            let mut value = bytes.len();
-            let mut at = digits.len();
-            loop {
-                at -= 1;
-                digits[at] = b'0' + (value % 10) as u8;
-                value /= 10;
-                if value == 0 {
-                    break;
-                }
-            }
-            text.extend_from_slice(&digits[at..]);
-            text.push(b'\n');
-        }
-    }
-    Some(text)
-}
-
-fn boot_file_bytes<P: Platform>(file: eggos_hal::handoff::BootFile) -> Option<Vec<u8>> {
-    let bytes = P::boot_file(file).unwrap_or_default();
-    let mut copy = Vec::new();
-    copy.try_reserve_exact(bytes.len()).ok()?;
-    copy.extend_from_slice(bytes);
-    Some(copy)
 }

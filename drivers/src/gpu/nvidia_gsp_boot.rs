@@ -219,7 +219,7 @@ pub fn wpr_meta(
         0,
     ];
     let mut meta = [0u8; WPR_META_BYTES];
-    for (slot, value) in meta.chunks_exact_mut(8).zip(fields) {
+    for (slot, value) in meta.as_chunks_mut::<8>().0.iter_mut().zip(fields) {
         slot.copy_from_slice(&value.to_le_bytes());
     }
     meta

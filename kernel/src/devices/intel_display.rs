@@ -150,7 +150,9 @@ impl IntelDisplay {
         for y in rect.y..rect.y + rect.height {
             let start = (y * self.mode.width + rect.x) as usize;
             for (bytes, pixel) in row
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip(&self.frame[start..start + rect.width as usize])
             {
                 bytes.copy_from_slice(&pixel.to_le_bytes());

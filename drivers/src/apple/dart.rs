@@ -354,7 +354,7 @@ impl<R: RegisterIo, M: DartMemory> Dart<R, M> {
 
     /// Unmaps `bytes` from the device's address `address`, then invalidates the TLB.
     pub fn unmap(&mut self, address: u64, bytes: u64) -> Result<(), DartError> {
-        if address % PAGE_BYTES != 0 || bytes % PAGE_BYTES != 0 {
+        if !address.is_multiple_of(PAGE_BYTES) || !bytes.is_multiple_of(PAGE_BYTES) {
             return Err(DartError::Unaligned);
         }
         self.clear(address, bytes);

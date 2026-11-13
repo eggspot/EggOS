@@ -10,11 +10,11 @@ use super::{
     NSMUTABLEDICTIONARY, NSMUTABLESET, autoreleased, class_pointer, define as define_class,
     is_array, is_data, is_date, is_dictionary, is_number, is_set, is_string, new_instance,
 };
-use crate::objc::sel;
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::objc_release;
 use crate::objc::root;
+use crate::objc::sel;
 use crate::objc::{Runtime, methods, send1, send2};
 
 const NO_ENTRY: u32 = u32::MAX;

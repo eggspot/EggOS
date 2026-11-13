@@ -465,23 +465,23 @@ impl Decoder {
             }
             self.buttons = buttons;
         }
-        if let Some(usage) = consumer_seen {
-            if usage != self.consumer {
-                for (code, pressed) in [
-                    (consumer_key(self.consumer), false),
-                    (consumer_key(usage), true),
-                ] {
-                    if code != 0 {
-                        event(RawEvent {
-                            kind: event_type::KEY,
-                            code,
-                            value: i32::from(pressed),
-                        });
-                        sent += 1;
-                    }
+        if let Some(usage) = consumer_seen
+            && usage != self.consumer
+        {
+            for (code, pressed) in [
+                (consumer_key(self.consumer), false),
+                (consumer_key(usage), true),
+            ] {
+                if code != 0 {
+                    event(RawEvent {
+                        kind: event_type::KEY,
+                        code,
+                        value: i32::from(pressed),
+                    });
+                    sent += 1;
                 }
-                self.consumer = usage;
             }
+            self.consumer = usage;
         }
         if sent > 0 {
             event(RawEvent {

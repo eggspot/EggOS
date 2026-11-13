@@ -85,7 +85,7 @@ fn cat(parts: &[&[u8]]) -> Vec<u8> {
 }
 
 fn package_length(content: usize) -> Vec<u8> {
-    match content + 1 <= 0x3f {
+    match content < 0x3f {
         true => vec![(content + 1) as u8],
         false => {
             let total = content + 2;

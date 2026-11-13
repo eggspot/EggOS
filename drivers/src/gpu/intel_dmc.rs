@@ -51,11 +51,15 @@ pub fn parse(file: &[u8], stepping: u8, substepping: u8) -> Option<Dmc<'_>> {
     let entries = package
         .get(PACKAGE_ENTRIES_AT..PACKAGE_ENTRIES_AT + count.checked_mul(PACKAGE_ENTRY_BYTES)?)?;
     let chosen = entries
-        .chunks_exact(PACKAGE_ENTRY_BYTES)
+        .as_chunks::<PACKAGE_ENTRY_BYTES>()
+        .0
+        .iter()
         .find(|entry| entry[2] == stepping && entry[3] == substepping)
         .or_else(|| {
             entries
-                .chunks_exact(PACKAGE_ENTRY_BYTES)
+                .as_chunks::<PACKAGE_ENTRY_BYTES>()
+                .0
+                .iter()
                 .find(|entry| entry[2] == ANY_STEPPING)
         })?;
     let offset = (word(chosen, 4)? as usize).checked_mul(4)?;

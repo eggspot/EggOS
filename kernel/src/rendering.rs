@@ -343,7 +343,7 @@ impl Buffer {
         if offset
             .checked_add(bytes)
             .is_none_or(|end| end > self.length)
-            || offset % 4 != 0
+            || !offset.is_multiple_of(4)
         {
             return false;
         }

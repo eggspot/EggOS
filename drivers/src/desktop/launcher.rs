@@ -154,7 +154,7 @@ impl AppMenu {
             items: [MenuItem::Separator; MAX_MENU_ITEMS],
             count: 0,
         };
-        let mut push = |menu: &mut Self, item: MenuItem| {
+        let push = |menu: &mut Self, item: MenuItem| {
             if usize::from(menu.count) < MAX_MENU_ITEMS {
                 menu.items[usize::from(menu.count)] = item;
                 menu.count += 1;

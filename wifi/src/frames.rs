@@ -95,11 +95,15 @@ pub fn rsn_security(element: &[u8]) -> Security {
         let (after_pairwise, pairwise) = suites(after_group)?;
         let (_, management) = suites(after_pairwise)?;
         let ccmp = pairwise
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|suite| selector(suite) == suite::CCMP);
         let has = |wanted: u32| {
             management
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|suite| selector(suite) == wanted)
         };
         Some(

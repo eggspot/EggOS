@@ -56,4 +56,3 @@ unsafe impl GlobalAlloc for Pages {
         unsafe { syscall::call(number::MUNMAP, [pointer as usize, length, 0, 0, 0, 0]) };
     }
 }
-

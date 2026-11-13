@@ -144,7 +144,10 @@ fn failures_say_what_went_wrong() {
             &[c"http://files.test/cut"],
             "fetch: files.test:80: the connection closed before the whole file came\n",
         ),
-        (&[], "fetch: usage: fetch [-q] [-o <file>] [--range <first>-<last>] <url> [<file>]\n"),
+        (
+            &[],
+            "fetch: usage: fetch [-q] [-o <file>] [--range <first>-<last>] <url> [<file>]\n",
+        ),
         (&[c"-o"], "fetch: option requires an argument -- 'o'\n"),
     ];
     for (arguments, expected) in cases {

@@ -694,7 +694,7 @@ impl<C: AtomCard> State<'_, C> {
                     0 => (0, 0),
                     divisor => (
                         (dividend / divisor) as u32,
-                        (dividend / divisor >> 32) as u32,
+                        ((dividend / divisor) >> 32) as u32,
                     ),
                 };
                 None

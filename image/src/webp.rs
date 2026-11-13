@@ -392,7 +392,10 @@ fn decode_stream(
         let position = pixels.len();
         let group = match &meta {
             Some((meta_width, meta)) => {
-                let (x, y) = (position % width >> meta_bits, position / width >> meta_bits);
+                let (x, y) = (
+                    (position % width) >> meta_bits,
+                    (position / width) >> meta_bits,
+                );
                 (meta[y * meta_width + x] >> 8 & 0xffff) as usize
             }
             None => 0,
@@ -444,7 +447,7 @@ enum Transform {
 fn add(a: u32, b: u32) -> u32 {
     let mut out = 0;
     for shift in [0, 8, 16, 24] {
-        out |= ((a >> shift & 0xff) + (b >> shift & 0xff) & 0xff) << shift;
+        out |= (((a >> shift & 0xff) + (b >> shift & 0xff)) & 0xff) << shift;
     }
     out
 }
@@ -452,7 +455,7 @@ fn add(a: u32, b: u32) -> u32 {
 fn average(a: u32, b: u32) -> u32 {
     let mut out = 0;
     for shift in [0, 8, 16, 24] {
-        out |= ((a >> shift & 0xff) + (b >> shift & 0xff)) / 2 << shift;
+        out |= (((a >> shift & 0xff) + (b >> shift & 0xff)) / 2) << shift;
     }
     out
 }

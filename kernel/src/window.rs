@@ -195,8 +195,8 @@ impl GpuPicture {
         let fits = buffer.is_in_guest_memory()
             && width > 0
             && u64::from(stride) >= row
-            && stride % 4 == 0
-            && offset % 4 == 0
+            && stride.is_multiple_of(4)
+            && offset.is_multiple_of(4)
             && last_row_end <= buffer.size();
         fits.then_some(Self {
             buffer,

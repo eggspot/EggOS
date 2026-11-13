@@ -73,7 +73,7 @@ struct UsbDisk {
 
 impl UsbDisk {
     fn check_range(&self, sector: u64, length: usize) -> Result<(), BlockError> {
-        let whole = length % eggos_drivers::storage::SECTOR_SIZE == 0;
+        let whole = length.is_multiple_of(eggos_drivers::storage::SECTOR_SIZE);
         let end = sector.checked_add((length / eggos_drivers::storage::SECTOR_SIZE) as u64);
         match (whole, end) {
             (true, Some(end)) if end <= self.sectors => Ok(()),

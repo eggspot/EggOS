@@ -99,11 +99,15 @@ pub fn element(function: u32, payload: &[u8], sequence: u32) -> Vec<u8> {
     put(&mut element, call + CALL_RESULT, NO_RESULT);
     put(&mut element, call + CALL_RESULT_PRIVATE, NO_RESULT);
     element[call + CALL_HEADER_BYTES..][..payload.len()].copy_from_slice(payload);
-    let folded = element.chunks_exact(8).fold(0u64, |folded, chunk| {
-        let mut word = [0u8; 8];
-        word.copy_from_slice(chunk);
-        folded ^ u64::from_le_bytes(word)
-    });
+    let folded = element
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .fold(0u64, |folded, chunk| {
+            let mut word = [0u8; 8];
+            word.copy_from_slice(chunk);
+            folded ^ u64::from_le_bytes(word)
+        });
     put(
         &mut element,
         CHECKSUM,
@@ -166,14 +170,14 @@ impl<R: RegisterIo> Queues<R> {
     }
 
     fn write_page(&self, at: usize, bytes: &[u8]) {
-        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
             let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             self.memory.write32(at + 4 * index, value);
         }
     }
 
     fn read_page(&self, at: usize, bytes: &mut [u8]) {
-        for (index, chunk) in bytes.chunks_exact_mut(4).enumerate() {
+        for (index, chunk) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             chunk.copy_from_slice(&self.memory.read32(at + 4 * index).to_le_bytes());
         }
     }
@@ -194,7 +198,7 @@ impl<R: RegisterIo> Queues<R> {
         if (read + ENTRIES - write - 1) % ENTRIES < pages {
             return Err(QueueError::Full);
         }
-        for (index, page) in element.chunks_exact(PAGE).enumerate() {
+        for (index, page) in element.as_chunks::<PAGE>().0.iter().enumerate() {
             let slot = (write + index) % ENTRIES;
             self.write_page(self.command() + PAGE + slot * PAGE, page);
         }
@@ -230,7 +234,7 @@ impl<R: RegisterIo> Queues<R> {
             return Ok(None);
         }
         let mut bytes = vec![0u8; pages * PAGE];
-        for (page, chunk) in bytes.chunks_exact_mut(PAGE).enumerate() {
+        for (page, chunk) in bytes.as_chunks_mut::<PAGE>().0.iter_mut().enumerate() {
             self.read_page(entry(read + page), chunk);
         }
         let call = &bytes[ELEMENT_HEADER_BYTES..ELEMENT_HEADER_BYTES + length];

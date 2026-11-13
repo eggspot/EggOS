@@ -265,8 +265,7 @@ mod tests {
                 ),
                 (
                     "usr/lib/eggos/android".to_string(),
-                    "/var/lib/eggos/components/android-apps/root/usr/lib/eggos/android"
-                        .to_string()
+                    "/var/lib/eggos/components/android-apps/root/usr/lib/eggos/android".to_string()
                 ),
                 (
                     "usr/lib/firmware/intel/iwlwifi".to_string(),

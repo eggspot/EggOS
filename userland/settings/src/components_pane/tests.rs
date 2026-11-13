@@ -213,7 +213,10 @@ fn components_is_found_by_its_words_and_its_row_is_the_tenth_shown() {
             );
         }
     }
-    for (word, others) in [("install", &[AGENTS, STORAGE][..]), ("space", &[STORAGE][..])] {
+    for (word, others) in [
+        ("install", &[AGENTS, STORAGE][..]),
+        ("space", &[STORAGE][..]),
+    ] {
         for pane in 0..PANES.len() {
             assert_eq!(
                 pane_matches(pane, word),

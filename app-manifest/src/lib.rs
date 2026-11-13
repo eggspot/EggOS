@@ -777,7 +777,13 @@ mod tests {
             orientation(&[HEADER, b"\norientation=landscape\n"].concat()),
             Orientation::Landscape
         );
-        assert_eq!(orientation(&[HEADER, b"\norientation=sideways\n"].concat()), Orientation::Any);
-        assert_eq!(orientation(&[HEADER, b"\nname=A\n"].concat()), Orientation::Any);
+        assert_eq!(
+            orientation(&[HEADER, b"\norientation=sideways\n"].concat()),
+            Orientation::Any
+        );
+        assert_eq!(
+            orientation(&[HEADER, b"\nname=A\n"].concat()),
+            Orientation::Any
+        );
     }
 }

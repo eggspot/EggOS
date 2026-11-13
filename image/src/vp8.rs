@@ -530,7 +530,7 @@ fn inverse_walsh(input: &[i32; 16]) -> [i32; 16] {
         temp[12 + i] = d - c;
     }
     let mut out = [0i32; 16];
-    for (row, values) in temp.chunks_exact(4).enumerate() {
+    for (row, values) in temp.as_chunks::<4>().0.iter().enumerate() {
         let (a, b) = (values[0] + values[3], values[1] + values[2]);
         let (c, d) = (values[1] - values[2], values[0] - values[3]);
         out[row * 4] = (a + b + 3) >> 3;
@@ -559,7 +559,7 @@ fn inverse_dct(input: &[i32; 16]) -> [i32; 16] {
         temp[12 + i] = a - d;
     }
     let mut out = [0i32; 16];
-    for (row, values) in temp.chunks_exact(4).enumerate() {
+    for (row, values) in temp.as_chunks::<4>().0.iter().enumerate() {
         let (a, b) = (values[0] + values[2], values[0] - values[2]);
         let (c, d) = rotate(values[1], values[3]);
         out[row * 4] = (a + d + 4) >> 3;

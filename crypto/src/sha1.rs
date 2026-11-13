@@ -103,7 +103,7 @@ impl Sha1 {
         }
         self.update(&bits.to_be_bytes());
         let mut digest = [0u8; DIGEST_BYTES];
-        for (bytes, word) in digest.chunks_exact_mut(4).zip(self.state) {
+        for (bytes, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(self.state) {
             bytes.copy_from_slice(&word.to_be_bytes());
         }
         digest

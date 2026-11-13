@@ -204,7 +204,12 @@ impl Layout {
 /// The entry array for `partitions`.
 pub fn entry_array(partitions: &[NewPartition<'_>]) -> [u8; ENTRY_ARRAY_BYTES] {
     let mut array = [0u8; ENTRY_ARRAY_BYTES];
-    for (entry, partition) in array.chunks_exact_mut(ENTRY_BYTES).zip(partitions) {
+    for (entry, partition) in array
+        .as_chunks_mut::<ENTRY_BYTES>()
+        .0
+        .iter_mut()
+        .zip(partitions)
+    {
         entry[..16].copy_from_slice(&partition.kind);
         entry[16..32].copy_from_slice(&partition.unique);
         entry[32..40].copy_from_slice(&partition.first.to_le_bytes());

@@ -147,7 +147,7 @@ pub fn premultiplied(pixel: u32) -> u32 {
         0xff => pixel,
         0 => 0,
         _ => [16, 8, 0].into_iter().fold(alpha << 24, |mixed, shift| {
-            mixed | ((pixel >> shift & 0xff) * alpha + 127) / 255 << shift
+            mixed | (((pixel >> shift & 0xff) * alpha + 127) / 255) << shift
         }),
     }
 }
@@ -231,7 +231,7 @@ mod tests {
     fn premultiplying_scales_the_colour_by_alpha() {
         assert_eq!(premultiplied(0x80ff_0000), 0x8080_0000);
         assert_eq!(premultiplied(0x00ff_ffff), 0);
-        let pixels = vec![premultiplied(0xffff_0000)];
+        let pixels = [premultiplied(0xffff_0000)];
         assert_eq!(pixels[0], 0xffff_0000);
     }
 }

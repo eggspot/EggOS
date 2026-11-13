@@ -267,7 +267,7 @@ impl Desktop {
                 false,
             ),
             Tile::DarkTheme => {
-                let dark = self.palette % 2 == 0;
+                let dark = self.palette.is_multiple_of(2);
                 ("Dark theme", if dark { "On" } else { "Off" }, dark)
             }
             Tile::HighContrast => {
@@ -318,7 +318,7 @@ impl Desktop {
                 }
                 Tile::DarkTheme => Action::SetSetting {
                     key: "appearance.theme",
-                    value: if self.palette % 2 == 0 {
+                    value: if self.palette.is_multiple_of(2) {
                         "light"
                     } else {
                         "dark"

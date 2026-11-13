@@ -245,7 +245,7 @@ pub fn write_volume<E>(
             u64::from(RESERVED_SECTORS + fat * geometry.fat_sectors) * SECTOR_BYTES as u64;
         for index in 0..geometry.fat_sectors {
             let first = index * entries_per_sector;
-            for (slot, entry) in sector.chunks_exact_mut(4).enumerate() {
+            for (slot, entry) in sector.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let cluster = first + slot as u32;
                 let value = if cluster < next_cluster {
                     entry_of(cluster)
@@ -299,22 +299,25 @@ pub fn write_volume<E>(
         }
         for (index, file) in files.iter().enumerate() {
             let (folder_path, name) = file.path.rsplit_once('/').unwrap_or(("", file.path));
-            if folder_path == folder.path {
-                if let Some(short) = short_name(name) {
-                    entry(
-                        short,
-                        ATTRIBUTE_ARCHIVE,
-                        first_clusters[index],
-                        file.bytes.len() as u32,
-                    );
-                }
+            if folder_path == folder.path
+                && let Some(short) = short_name(name)
+            {
+                entry(
+                    short,
+                    ATTRIBUTE_ARCHIVE,
+                    first_clusters[index],
+                    file.bytes.len() as u32,
+                );
             }
         }
         if overflowed {
             return Err(Error::BadName);
         }
-        write(geometry.cluster_offset(folder.cluster), &cluster[..cluster_bytes])
-            .map_err(Error::Write)?;
+        write(
+            geometry.cluster_offset(folder.cluster),
+            &cluster[..cluster_bytes],
+        )
+        .map_err(Error::Write)?;
     }
 
     for (index, file) in files.iter().enumerate() {
@@ -357,7 +360,10 @@ mod tests {
         let geometry = Geometry::new(524_288).unwrap();
         assert!(geometry.clusters >= MIN_CLUSTERS);
         assert_eq!(geometry.cluster_bytes(), SECTOR_BYTES);
-        assert_eq!(Geometry::new(4 << 21).unwrap().cluster_bytes(), MAX_CLUSTER_BYTES);
+        assert_eq!(
+            Geometry::new(4 << 21).unwrap().cluster_bytes(),
+            MAX_CLUSTER_BYTES
+        );
         assert!(Geometry::new(65_536).is_none());
     }
 

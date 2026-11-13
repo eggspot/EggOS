@@ -460,7 +460,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         );
         self.write64_register(
             self.op(COMMAND_RING_CONTROL),
-            base + COMMAND_RING_AT as u64 | 1,
+            (base + COMMAND_RING_AT as u64) | 1,
         );
         write64(&self.memory, EVENT_TABLE_AT, base + EVENT_RING_AT as u64);
         write32(&self.memory, EVENT_TABLE_AT + 8, EVENT_TRBS as u32);
@@ -679,7 +679,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
             keep_waiting,
         )?;
         let base = self.memory.dma_addr().get();
-        let dequeue = base + (device.control.at + device.control.index * TRB_BYTES) as u64
+        let dequeue = (base + (device.control.at + device.control.index * TRB_BYTES) as u64)
             | u64::from(device.control.cycle);
         self.command(
             dequeue,
@@ -1043,7 +1043,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         write64(
             &self.memory,
             endpoint + 8,
-            base + (area + REPORT_RING) as u64 | 1,
+            (base + (area + REPORT_RING) as u64) | 1,
         );
         write32(&self.memory, endpoint + 16, packet | (packet << 16));
         self.command(
@@ -1091,7 +1091,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
                 endpoint + 4,
                 (3 << 1) | (kind << 3) | (packet << 16),
             );
-            write64(&self.memory, endpoint + 8, base + ring as u64 | 1);
+            write64(&self.memory, endpoint + 8, (base + ring as u64) | 1);
             write32(&self.memory, endpoint + 16, 3072);
         }
         self.command(
@@ -1282,7 +1282,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         };
         let block_bytes = block_bytes as usize;
         let length = buffer.len();
-        if length % SECTOR_SIZE != 0 {
+        if !length.is_multiple_of(SECTOR_SIZE) {
             return Err(Error::Unsupported("not a whole number of sectors"));
         }
         let sectors = (length / SECTOR_SIZE) as u64;
@@ -1479,7 +1479,7 @@ impl<R: RegisterIo, M: DmaMemory> Xhci<R, M> {
         write64(
             &self.memory,
             endpoint + 8,
-            base + device.control.at as u64 | u64::from(device.control.cycle),
+            (base + device.control.at as u64) | u64::from(device.control.cycle),
         );
         write32(&self.memory, endpoint + 16, 8);
     }

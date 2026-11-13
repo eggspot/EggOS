@@ -199,7 +199,9 @@ impl Firmware {
                     return Err(bad());
                 }
                 self.command_versions = data
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|entry| CommandVersion {
                         command: entry[0],
                         group: entry[1],
@@ -209,10 +211,8 @@ impl Firmware {
                     .collect();
             }
             IMAGE_LOADER => self.image_loader = Some(range),
-            PNVM_DATA => {
-                if self.pnvm.is_none() {
-                    self.pnvm = Some(range);
-                }
+            PNVM_DATA if self.pnvm.is_none() => {
+                self.pnvm = Some(range);
             }
             _ => {}
         }

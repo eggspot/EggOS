@@ -335,6 +335,19 @@ impl<'a> Canvas<'a> {
     }
 }
 
+/// Premultiplied `source` over `target`: each channel `s + (d x (255 - a) + 127) / 255`.
+pub fn over(source: u32, target: u32) -> u32 {
+    let alpha = source >> 24;
+    if alpha == 0xff {
+        return source & 0x00ff_ffff;
+    }
+    [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+        let top = source >> shift & 0xff;
+        let bottom = target >> shift & 0xff;
+        mixed | (top + (bottom * (255 - alpha) + 127) / 255).min(255) << shift
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,17 +449,4 @@ mod tests {
         assert_eq!(&rows[6][..12], "....##......");
         assert_eq!(rows[6], rows[7]);
     }
-}
-
-/// Premultiplied `source` over `target`: each channel `s + (d x (255 - a) + 127) / 255`.
-pub fn over(source: u32, target: u32) -> u32 {
-    let alpha = source >> 24;
-    if alpha == 0xff {
-        return source & 0x00ff_ffff;
-    }
-    [16, 8, 0].into_iter().fold(0, |mixed, shift| {
-        let top = source >> shift & 0xff;
-        let bottom = target >> shift & 0xff;
-        mixed | (top + (bottom * (255 - alpha) + 127) / 255).min(255) << shift
-    })
 }

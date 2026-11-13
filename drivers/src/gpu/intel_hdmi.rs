@@ -131,7 +131,7 @@ fn deviation(dco: u64, central: u64) -> Option<u64> {
 }
 
 fn split(divider: u32) -> Option<(u32, u32, u32)> {
-    if divider % 2 == 0 {
+    if divider.is_multiple_of(2) {
         let half = divider / 2;
         return match half {
             1 | 2 | 3 | 5 => Some((2, 1, half)),

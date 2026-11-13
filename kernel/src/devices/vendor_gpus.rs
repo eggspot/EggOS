@@ -718,7 +718,7 @@ fn run_sequencer(
 ) -> Result<(), &'static str> {
     let place = |address: u32| {
         let address = address as usize;
-        (address % 4 == 0 && address + 4 <= length)
+        (address.is_multiple_of(4) && address + 4 <= length)
             .then_some(address)
             .ok_or("GSP-RM's sequencer named a register outside BAR 0")
     };
