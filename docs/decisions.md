@@ -26133,3 +26133,46 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; system-call stops; `PTRACE_O_TRACE*` events (fork, exec, exit
   events); single-step on AArch64 and RISC-V; hardware breakpoints and watchpoints (`TRAP_HWBKPT`);
   the `PTRACE_MODE_READ` check on `/proc/<pid>/maps`, `fd`, `exe` and `stat`.
+
+## D562 EggFS version 3 (an on-disk name index), a backup superblock, block device nodes, disk labels and access-time options (M7; D192's and D534's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the index format and the readdir order decided by research)
+
+- **Backup superblock.** `Geometry` gains `flags` (superblock bytes 72 to 75, zero on older
+  volumes); `format_with` sets `BACKUP_SUPERBLOCK`, marks the volume's last block used and writes
+  the superblock there before block 0. `Volume::upgrade` rewrites both copies. The checkers count
+  that block as used and `is_data_block` excludes it. `check_disk` reads the last block when
+  block 0 does not decode: a valid copy that says it lives there is written back over block 0
+  (`DamagedSuperblock`, now `Repaired`, or `Repairable` in read-only mode) and the check goes on
+  from it. Volumes formatted before keep no copy and stay `NotRepairable`.
+- **On-disk name index, EggFS version 3.** A directory's inode bytes 120 to 123 (zero before)
+  hold `name_index`: a root block (`EGGFSNIX`, a power-of-two bucket count up to 512, the bucket
+  pointers) and bucket blocks of up to 511 pairs (the CRC-32C of a name, the directory block
+  index holding it), filled to at most half when built. `add_entry` builds it when the
+  directory grows past four blocks and the current transaction has room for every bucket (so it
+  is all-or-nothing in one commit), adds a pair for each new entry in the same transaction, and
+  drops the whole index (freeing its blocks) when a bucket is full; the next growth rebuilds it,
+  larger and without stale pairs. Removed names leave their pair: a stale pair only costs one
+  block read and every hit is checked against the record, as the in-memory index (D192). A
+  lookup asks the on-disk index first, the in-memory one when there is none. Removing a
+  directory frees its index. Building the first index upgrades the volume to version 3; links
+  and orphans still need only version 2 (`VERSION_WITH_LINKS`), and `format` writes 3.
+- **Checking it.** `Volume::check` marks the index blocks used and fails on a malformed index,
+  a block used twice, a missing pair or an index on a version 2 volume or on a file;
+  `check_disk` drops such an index (`DamagedNameIndex`, repairable), otherwise claims its blocks.
+- **Decided by research.** Hash buckets of one block each, not ext4's htree of sorted hash
+  ranges: one bucket read per lookup, no splits to journal, and a full bucket costs a rebuild,
+  which a growing directory amortises like a hash table's doubling. Hashed `readdir` order is
+  not adopted: ext4 uses it to give NFS and `telldir` cookies that survive changes, but EggFS's
+  listing cursor and stable record order already give `getdents` a repeatable order, and a hash
+  order would make every listing of a big directory sort or read the index as well.
+- **Block devices.** `/dev/vda` to `/dev/vdd` report `S_IFBLK` with `st_rdev` 254:16·n (the
+  virtio-blk major); `ioctl` answers `BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, `BLKBSZGET`,
+  `BLKROGET` and `BLKFLSBUF` on them. A mounted EggFS volume's label is the disk's fifth field in
+  `/proc/driver/disks` (`block::set_label`).
+- **Access times.** `utimensat` sets the access time too (`FileSystem::set_accessed`, EggFS
+  only; other file systems keep none and accept it). Each mount has an `AccessTimes`:
+  `relatime` (D534's rule, the default), `noatime` (never) or `strictatime` (every read writes
+  it); `/proc/mounts` and `mountinfo` name it. `mount(2)` with `MS_REMOUNT` (root only) changes
+  a mount's `nosuid`, `noexec` and access-time options; mounting anything new is `ENODEV`, since
+  EggOS mounts its file systems at boot.
+- **Not yet.** Building and running; `MS_RDONLY` remounts; checking a mounted volume online and
+  the checker's progress report (D192).

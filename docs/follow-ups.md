@@ -75,11 +75,11 @@ and is not listed per item.
 
 ## M7 VFS and file systems
 
-- [ ] EggFS: a backup copy of the superblock used by the checker to repair a damaged one (D192)
-- [ ] EggFS: an on-disk name index (version 3) for fast first lookups and hashed `readdir` order (D192)
-- [ ] Block devices as `S_IFBLK` nodes with `BLKGETSIZE64`, `BLKSSZGET` and `BLKFLSBUF` for Linux tools (D192)
-- [ ] A mounted volume's label in `/proc/driver/disks` (D192)
-- [ ] `utimensat` setting the access time, and the `noatime`/`strictatime` mount options (D534)
+- [x] EggFS: a backup copy of the superblock used by the checker to repair a damaged one (D192) — code written, unbuilt, D562
+- [x] EggFS: an on-disk name index (version 3) for fast first lookups and hashed `readdir` order (D192) — code written, unbuilt, D562 (hashed `readdir` order declined by research)
+- [x] Block devices as `S_IFBLK` nodes with `BLKGETSIZE64`, `BLKSSZGET` and `BLKFLSBUF` for Linux tools (D192) — code written, unbuilt, D562
+- [x] A mounted volume's label in `/proc/driver/disks` (D192) — code written, unbuilt, D562
+- [x] `utimensat` setting the access time, and the `noatime`/`strictatime` mount options (D534) — code written, unbuilt, D562
 
 ## M8 virtio and the network stack
 
