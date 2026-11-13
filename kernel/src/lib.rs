@@ -163,7 +163,6 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                     return Ok(false);
                 }
                 let passed = selftest::run(console, &selftest::all::<P>(), &mut memory)?;
-                // Benchmarks only mean something on a kernel that passed its self-tests.
                 #[cfg(feature = "qemu-bench")]
                 if passed {
                     bench::run::<P, _>(console, &bench::all::<P>(), &mut memory)?;
@@ -797,7 +796,6 @@ pub(crate) mod tests {
             let frame = eggos_hal::memory::FRAME_SIZE as usize;
             let block = frame << memory::MAX_ORDER;
             let memory = vec![0u8; RAM_FRAMES as usize * frame + block].leak();
-            // The first address in `memory` congruent to `RAM_BASE` modulo `block`.
             let start = memory.as_mut_ptr() as usize;
             let base = RAM_BASE as usize % block;
             start + (base + block - start % block) % block
@@ -860,7 +858,6 @@ pub(crate) mod tests {
                 interrupt::handle::<Self>(Interrupt::Wakeup);
                 return;
             }
-            // Sleeping until the deadline: jump the clock there and take the interrupt.
             let deadline = DEADLINE.swap(u64::MAX, Ordering::Relaxed);
             if deadline != u64::MAX {
                 CLOCK.fetch_max(deadline, Ordering::Relaxed);
@@ -874,7 +871,6 @@ pub(crate) mod tests {
             if !CONSOLE_INPUT.lock().unwrap().is_empty() {
                 interrupt::handle::<Self>(Interrupt::ConsoleInput);
             }
-            // Time passes; the timer interrupt is taken once its deadline has.
             let now = CLOCK.fetch_add(1, Ordering::Relaxed);
             let deadline = DEADLINE.load(Ordering::Relaxed);
             if deadline != u64::MAX && now >= deadline {
@@ -898,8 +894,6 @@ pub(crate) mod tests {
             Self::physical_memory_offset()
         }
         fn kernel_image() -> eggos_hal::paging::KernelImage {
-            // Below the free RAM, in RAM the direct map covers (see `physical_memory`), as on
-            // real machines: the tables only describe it, nothing reaches it.
             eggos_hal::paging::KernelImage {
                 virtual_offset: 0xffff_ffff_8000_0000,
                 start: 0x8_0000,
@@ -921,7 +915,6 @@ pub(crate) mod tests {
             map
         }
         fn early_device_regions(region: &mut dyn FnMut(eggos_hal::PhysicalRange)) {
-            // Two register blocks in one page, as the paging code must allow.
             region(eggos_hal::PhysicalRange::from_start_length(0xa_0000, 0x100));
             region(eggos_hal::PhysicalRange::from_start_length(0xa_0800, 0x100));
         }
@@ -937,7 +930,6 @@ pub(crate) mod tests {
         unsafe fn run_user(
             context: &mut eggos_hal::user::UserContext,
         ) -> eggos_hal::user::UserExit {
-            // Plays the test program's part: its system calls, its faults and its spin.
             use eggos_hal::user::UserExit;
             let program = Self::user_test_program();
             let checks = crate::process::TEST_PROGRAM_ADDRESS + program.checks as u64;
@@ -972,8 +964,6 @@ pub(crate) mod tests {
                 crate::process::TEST_PROGRAM_ADDRESS + program.linux_move_and_discard as u64;
             match context.pc() {
                 pc if pc == stack_growth => loop {
-                    // Its stores, from the stack pointer's page down, each page's address in its
-                    // first word, until one faults: the stack pointer stands in for the walk.
                     let page = context.stack() & !(eggos_hal::memory::FRAME_SIZE - 1);
                     let tables = crate::paging::PageTables::<
                         <TestPlatform as Platform>::PageTableFormat,
@@ -1046,16 +1036,12 @@ pub(crate) mod tests {
                     UserExit::Interrupt
                 }
                 pc if (linux_start..linux_start + 64).contains(&pc) => {
-                    // Its calls, from what its stack holds, one per step.
                     let (number, arguments) =
                         linux_start_calls(context.stack())[(pc - linux_start) as usize];
                     context.simulate_syscall(number, arguments, pc + 1);
                     UserExit::Syscall
                 }
                 pc if (linux_thread_pointer..linux_thread_pointer + 64).contains(&pc) => {
-                    // getpid(), then its thread pointer set to the result << 12 and checked
-                    // after each sched_yield, then exit_group(0) if it started at zero and
-                    // stayed set.
                     use crate::linux::number;
                     static WRONG: AtomicU64 = AtomicU64::new(0);
                     let rounds = TestProgram::LINUX_THREAD_POINTER_ROUNDS;
@@ -1085,10 +1071,6 @@ pub(crate) mod tests {
                     UserExit::Syscall
                 }
                 pc if (linux_poll..linux_poll + 4).contains(&pc) => {
-                    // ppoll of descriptors 0 to 2 (POLLOUT on 1) with no wait, ioctl(1,
-                    // TIOCGWINSZ), ppoll of nothing for LINUX_POLL_WAIT_NS, then exit_group(0)
-                    // if each answered as the program checks; its structures below the stack
-                    // pointer.
                     use crate::linux::number;
                     static WRONG: AtomicU64 = AtomicU64::new(0);
                     let stack = context.stack();
@@ -1135,10 +1117,6 @@ pub(crate) mod tests {
                     UserExit::Syscall
                 }
                 pc if (linux_signals..linux_signals + 7).contains(&pc) => {
-                    // kill(0, SIGCHLD), rt_sigprocmask(SIG_BLOCK, SIGUSR1), getpid,
-                    // tgkill(pid, pid, SIGUSR1), rt_sigpending, rt_sigprocmask(SIG_UNBLOCK,
-                    // SIGUSR1), which must end it, else exit_group(1); each call's result
-                    // checked, as the program checks it.
                     use crate::linux::number;
                     let stack = context.stack();
                     let (set, pending) = (stack - 16, stack - 32);
@@ -1199,8 +1177,6 @@ pub(crate) mod tests {
                     move_and_discard_program(context, linux_move_and_discard)
                 }
                 pc if (linux_hello..linux_hello + 4).contains(&pc) => {
-                    // write(1, the line, its length), write(1, 0, 1), an unknown call, then
-                    // exit_group(0) if each returned what Linux returns.
                     use crate::linux::{Errno, number};
                     static WRONG: AtomicU64 = AtomicU64::new(0);
                     let hello = TestProgram::LINUX_HELLO.len() as u64;
@@ -1241,7 +1217,6 @@ pub(crate) mod tests {
                 spin: 16,
                 linux_hello: 21,
                 linux_start: 100,
-                // The whole code: the simulated programs run at their offsets, past it.
                 linux_start_end: 64,
                 linux_unknown_syscalls: 26,
                 stack_growth: 27,
@@ -1313,7 +1288,6 @@ pub(crate) mod tests {
             CPU_LOCAL.store(block, Ordering::Relaxed);
         }
         fn cpu_local() -> usize {
-            // The boot CPU's block from the first use on, as on a machine that booted.
             if CPU_LOCAL.load(Ordering::Relaxed) == 0 {
                 cpu::init_boot_cpu::<Self>();
             }
