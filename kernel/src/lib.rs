@@ -110,7 +110,12 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 #[cfg(feature = "virtio-rng")]
                 report_device_seed(console, devices::virtio::seed_random::<P>())?;
                 #[cfg(feature = "virtio-rng")]
-                let _ = devices::virtio::reseed_periodically::<P>();
+                let reseeding = devices::virtio::reseed_periodically::<P>();
+                #[cfg(not(feature = "virtio-rng"))]
+                let reseeding = false;
+                if !reseeding {
+                    let _ = random::reseed_from_cpu_periodically::<P>();
+                }
                 #[cfg(feature = "virtio-console")]
                 let _ = devices::virtio::start_host_console::<P>();
                 report_wall_clock(console, wall_clock::start::<P>())?;

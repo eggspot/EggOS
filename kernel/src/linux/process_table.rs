@@ -86,6 +86,13 @@ struct Entry {
     unannounced: Option<Announcement>,
     running: Option<Running>,
     name: Name,
+    /// The CPU time the process spent, in clock ticks, recorded as it ended (D553).
+    cpu_ticks: u64,
+    /// The CPU time of its reaped children and theirs, in clock ticks: what `RUSAGE_CHILDREN`
+    /// and `times`' children's fields report (D553).
+    children_cpu_ticks: u64,
+    /// The CPU time of the child it reaped last, children included, for that wait's `rusage`.
+    reaped_cpu_ticks: u64,
 }
 
 /// A child's change whose signal its parent is still to be sent: until [`Table::announce`]
@@ -394,6 +401,9 @@ impl Table {
             unannounced: None,
             running: None,
             name: inherited.map_or([0; NAME_LENGTH], |parent| parent.name),
+            cpu_ticks: 0,
+            children_cpu_ticks: 0,
+            reaped_cpu_ticks: 0,
         };
         self.entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         self.entries.insert(at, entry);
@@ -405,10 +415,31 @@ impl Table {
     }
 
     fn remove_at(&mut self, index: usize) {
-        let parent = self.entries.remove(index).parent;
-        if let Some(parent) = self.entry_mut(parent) {
+        let removed = self.entries.remove(index);
+        let spent = removed.cpu_ticks.saturating_add(removed.children_cpu_ticks);
+        if let Some(parent) = self.entry_mut(removed.parent) {
             parent.children = parent.children.saturating_sub(1);
+            parent.children_cpu_ticks = parent.children_cpu_ticks.saturating_add(spent);
+            parent.reaped_cpu_ticks = spent;
         }
+    }
+
+    /// Records the CPU time process `id` spent, as it ends, in clock ticks (D553).
+    pub fn set_cpu_ticks(&mut self, id: u32, ticks: u64) {
+        if let Some(entry) = self.entry_mut(id) {
+            entry.cpu_ticks = ticks;
+        }
+    }
+
+    /// The CPU time of process `id`'s reaped children and their reaped children, in ticks.
+    pub fn children_cpu_ticks(&self, id: u32) -> u64 {
+        self.entry(id).map_or(0, |entry| entry.children_cpu_ticks)
+    }
+
+    /// The CPU time of the child process `id` reaped last, children included, in ticks: read by
+    /// the wait that reaped it, under the same hold of the table's lock.
+    pub fn reaped_cpu_ticks(&self, id: u32) -> u64 {
+        self.entry(id).map_or(0, |entry| entry.reaped_cpu_ticks)
     }
 
     /// Adds process `id` as [`Self::add`] does for one the kernel started, unless it is in the

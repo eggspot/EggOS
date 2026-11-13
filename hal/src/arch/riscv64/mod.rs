@@ -160,6 +160,13 @@ const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;
 const BOOT_DIRECT_MAP_END: u64 = 0xffff_ffff_8000_0000 - DIRECT_MAP_OFFSET as u64;
 
 /// `sstatus.SUM`: S-mode may access U-mode pages (see `with_user_access`).
+/// The `seed` CSR's `OPST` field: 16 bits of entropy given (`ES16`), or the source failed for
+/// good (`DEAD`); the other states ask to read again.
+const SEED_ES16: u64 = 2;
+const SEED_DEAD: u64 = 3;
+/// Reads of the `seed` CSR for one sample before the hart counts as having none to give.
+const SEED_TRIES: usize = 100;
+
 /// `satp.ASID`, bits 59:44 in Sv39.
 const SATP_ASID_SHIFT: u32 = 44;
 const UNPROBED: u8 = 0;
@@ -277,6 +284,32 @@ unsafe fn sbi_call(extension: usize, function: usize, arguments: [usize; 3]) -> 
     }
     (error, value)
 }
+
+/// As [`sbi_call`], with a fourth argument in `a3`.
+///
+/// # Safety
+/// As [`sbi_call`].
+unsafe fn sbi_call4(extension: usize, function: usize, arguments: [usize; 4]) -> (isize, usize) {
+    let (error, value);
+    // SAFETY: as in `sbi_call`, with a3 the fourth argument.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inout("a0") arguments[0] => error,
+            inout("a1") arguments[1] => value,
+            in("a2") arguments[2],
+            in("a3") arguments[3],
+            in("a6") function,
+            in("a7") extension,
+            options(nostack),
+        );
+    }
+    (error, value)
+}
+
+/// SBI RFENCE extension (SBI spec v2.0, chapter 8): `sbi_remote_sfence_vma`.
+const SBI_EXT_RFENCE: usize = 0x5246_4e43;
+const SBI_RFENCE_REMOTE_SFENCE_VMA: usize = 1;
 
 /// SBI Base extension `sbi_probe_extension` (SBI spec v2.0, 4.8) and Hart State Management
 /// `sbi_hart_start` (9.1), with the errors `hart_start` gives (3.2).
@@ -649,6 +682,20 @@ impl Platform for Riscv64 {
         })
     }
 
+    fn drop_user_translations_everywhere(start: u64, length: u64) -> bool {
+        // SAFETY: the SBI RFENCE extension's `sbi_remote_sfence_vma` (SBI spec v2.0, 8.2) with
+        // `hart_mask_base` -1, every hart: the firmware runs `sfence.vma` over the range on each
+        // and returns once they have; it touches none of the kernel's memory.
+        let (error, _) = unsafe {
+            sbi_call4(
+                SBI_EXT_RFENCE,
+                SBI_RFENCE_REMOTE_SFENCE_VMA,
+                [0, usize::MAX, start as usize, length as usize],
+            )
+        };
+        error == SBI_SUCCESS
+    }
+
     fn drop_user_translations(start: u64, length: u64) {
         let pages = length / crate::memory::FRAME_SIZE;
         if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
@@ -706,6 +753,40 @@ impl Platform for Riscv64 {
         // before any other starts and between the HAL's other reads of the tree, which the
         // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
         unsafe { boot_memory::device_tree_take_seeds(device_tree(), seed) };
+        let mut bytes = [0u8; 32];
+        if Self::cpu_random(&mut bytes) {
+            seed(crate::random::SeedSource::CpuInstruction, &bytes);
+        }
+        crate::random::wipe(&mut bytes);
+    }
+
+    fn cpu_random(bytes: &mut [u8; 32]) -> bool {
+        if !timer::has_zkr() {
+            return false;
+        }
+        for pair in bytes.chunks_exact_mut(2) {
+            let mut sample = None;
+            for _ in 0..SEED_TRIES {
+                let value: u64;
+                // SAFETY: the `seed` CSR (0x015) exists with Zkr, which the device tree listed,
+                // and the firmware gives S-mode access to it there (`mseccfg.SSEED`); reading it
+                // with a write of zero only takes a sample.
+                unsafe { core::arch::asm!("csrrw {}, 0x015, zero", out(reg) value, options(nomem, nostack)) };
+                match value >> 30 & 3 {
+                    SEED_ES16 => {
+                        sample = Some(value as u16);
+                        break;
+                    }
+                    SEED_DEAD => return false,
+                    _ => {}
+                }
+            }
+            let Some(value) = sample else {
+                return false;
+            };
+            pair.copy_from_slice(&value.to_ne_bytes());
+        }
+        true
     }
 
     unsafe fn set_user_fp(on: bool) {

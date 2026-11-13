@@ -35,6 +35,9 @@ pub(super) extern "C" fn init() {
         if crate::fdt::riscv_has_extension(tree, b"svinval") {
             SVINVAL.store(true, core::sync::atomic::Ordering::Relaxed);
         }
+        if crate::fdt::riscv_has_extension(tree, b"zkr") {
+            ZKR.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(hertz) = crate::fdt::timebase_frequency(tree).filter(|&hertz| hertz != 0) {
             FREQUENCY.store(hertz, core::sync::atomic::Ordering::Relaxed);
         }
@@ -78,6 +81,13 @@ pub(super) fn now() -> u64 {
 }
 
 static SVINVAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+static ZKR: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether the harts have Zkr's `seed` CSR (D553).
+pub(super) fn has_zkr() -> bool {
+    ZKR.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// Whether the harts have Svinval (D552): ranged TLB invalidation without a fence per page.
 pub(super) fn has_svinval() -> bool {

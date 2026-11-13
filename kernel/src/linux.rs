@@ -824,9 +824,23 @@ fn out_of_line_call<P: Platform>(
         }
     };
     if process.has_ended() {
+        release_robust_list_at_end(process, thread);
         return ControlFlow::Break(());
     }
     flow
+}
+
+/// As a thread stops because its process ended (`exit_group`, a fatal signal, its last
+/// thread's `exit`): releases the robust locks it holds (D93, D553), whose words may be in
+/// memory another process maps (`MAP_SHARED`, a memory file), as Linux does at every thread's
+/// end. Only once: the list is forgotten after the walk.
+#[cold]
+fn release_robust_list_at_end<P: Platform>(process: &Process<P>, thread: &mut LinuxThread) {
+    let robust_list = thread.robust_list();
+    if robust_list != 0 {
+        thread.set_robust_list(0);
+        futex::release_robust_list(process, thread.id(), robust_list);
+    }
 }
 
 type CallSet = [u64; number::LAST as usize / 64 + 1];
@@ -964,8 +978,8 @@ fn out_of_line_result<P: Platform>(
         number::RT_SIGTIMEDWAIT => {
             signals::rt_sigtimedwait(process, thread, first, second, third, fourth)
         }
-        number::CLOCK_GETTIME => time::clock_gettime(process, first, second),
-        number::CLOCK_GETRES => time::clock_getres(process, first, second),
+        number::CLOCK_GETTIME => time::clock_gettime(process, thread.id(), first, second),
+        number::CLOCK_GETRES => time::clock_getres(process, thread.id(), first, second),
         number::GETRUSAGE => time::getrusage(process, first, second),
         number::TIMES => time::times(process, first),
         number::GETTIMEOFDAY => time::gettimeofday(process, first, second),
@@ -1095,10 +1109,7 @@ pub fn exit_thread<P: Platform>(
         }
         thread.signals(&mut signals).discard(u64::MAX);
     }
-    let robust_list = thread.robust_list();
-    if robust_list != 0 {
-        futex::release_robust_list(process, thread.id(), robust_list);
-    }
+    release_robust_list_at_end(process, thread);
     let address = thread.clear_child_tid();
     if address != 0 {
         clear_child_tid::<P>(process, address);
@@ -1123,6 +1134,31 @@ pub fn clear_child_tid_if_memory_shared<P: Platform>(process: &Process<P>, threa
     if address != 0 && process.shares_memory() {
         clear_child_tid::<P>(process, address);
     }
+}
+
+/// The futex key a launcher waits on for `process` to end ([`wait_for_end`]): a word in the
+/// kernel's half below every thread's sleep word, which no program's futex can name.
+fn end_key<P: Platform>(process: &Process<P>) -> futex::Key {
+    const END_WORD: u64 = !3 - (4 << 32);
+    futex::Key::new(process.futex_space(), END_WORD, false)
+}
+
+/// Waits until `process` has ended and returns how (D92, D553): what a launcher that joined
+/// the thread it started calls, since that thread may end (`pthread_exit`) while others go on.
+/// Call it as a blocking system call runs: interrupts masked, no lock held.
+pub fn wait_for_end<P: Platform>(process: &Process<P>) -> Option<ProcessExit> {
+    while process.exit_status().is_none() {
+        let _ = futex::wait::<P>(end_key(process), u32::MAX, u64::MAX, || {
+            match process.has_ended() {
+                true => Err(Errno::EAGAIN),
+                false => Ok(()),
+            }
+        });
+        if process.has_ended() {
+            break;
+        }
+    }
+    process.exit_status()
 }
 
 #[inline(never)]
@@ -1153,6 +1189,7 @@ pub fn end_process<P: Platform, C>(process: &Process<P>, how: ProcessExit) -> Co
     fork::release_vfork_parent::<P>(process);
     file_locks::process_ended(process.id().get());
     wait::process_ended::<P>(process, how);
+    futex::wake::<P>(end_key(process), u32::MAX, u32::MAX);
     if others {
         futex::wake_space::<P>(process.futex_space());
         crate::console::wake_input_waiters::<P>();

@@ -147,6 +147,38 @@ pub fn reseed_from_device<P: Platform>(bytes: &[u8]) -> bool {
     reseed::<P>()
 }
 
+/// Hashes 32 bytes from the CPU's random number instruction into the input, credited as a boot
+/// seed from it is (Linux's `random.trust_cpu`, on by default), then reseeds: on the virtio-rng
+/// schedule, and on its own where there is no such device (D553). Whether the generator is
+/// seeded; `None` on a CPU without the instruction.
+pub fn reseed_from_cpu<P: Platform>() -> Option<bool> {
+    let mut bytes = [0u8; 32];
+    if !P::cpu_random(&mut bytes) {
+        return None;
+    }
+    add_seed(SeedSource::CpuInstruction, &bytes);
+    eggos_hal::random::wipe(&mut bytes);
+    Some(reseed::<P>())
+}
+
+/// Starts the thread that reseeds from the CPU's instruction every [`CPU_RESEED_INTERVAL`] on a
+/// machine without a virtio entropy device (D553); whether the CPU has the instruction.
+pub fn reseed_from_cpu_periodically<P: Platform>() -> bool {
+    if reseed_from_cpu::<P>().is_none() {
+        return false;
+    }
+    crate::thread::spawn::<P, _>(|| {
+        loop {
+            crate::thread::sleep::<P>(CPU_RESEED_INTERVAL);
+            let _ = reseed_from_cpu::<P>();
+        }
+    })
+    .is_ok()
+}
+
+/// How often the generator is reseeded from the CPU's instruction: as from virtio-rng (D282).
+pub const CPU_RESEED_INTERVAL: core::time::Duration = core::time::Duration::from_secs(300);
+
 fn replace_previous_read(previous: &mut Option<[u8; blake2s::DIGEST_SIZE]>, bytes: &[u8]) -> bool {
     let mut hash = Blake2s::new();
     hash.update(bytes);

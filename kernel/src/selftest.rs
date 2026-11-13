@@ -1165,7 +1165,7 @@ fn linux_programs_write_and_exit<P: Platform>(memory: &mut Memory<P>) -> Result<
         linux::spawn::<P>(process.clone(), context)
             .map_err(|_| "could not start a Linux program's thread")?
             .join::<P>();
-        match process.exit_status() {
+        match linux::wait_for_end::<P>(&process) {
             Some(exit) if exit == expected => {}
             Some(ProcessExit::Exited(_)) => {
                 return Err("a Linux system call returned the wrong result");
@@ -1320,7 +1320,7 @@ fn linux_programs_start_from_elf_images<P: Platform>(
         linux::spawn::<P>(process.clone(), context)
             .map_err(|_| "could not start a Linux program's thread")?
             .join::<P>();
-        match process.exit_status() {
+        match linux::wait_for_end::<P>(&process) {
             Some(ProcessExit::Exited(2)) => {}
             Some(ProcessExit::Exited(255)) => {
                 return Err("the program's stack pointer is not 16-byte aligned");
@@ -1549,7 +1549,7 @@ fn linux_programs_keep_their_thread_pointers<P: Platform>(
         }
         for (process, thread) in programs {
             thread.join::<P>();
-            match process.exit_status() {
+            match linux::wait_for_end::<P>(&process) {
                 Some(ProcessExit::Exited(0)) => {}
                 Some(ProcessExit::Exited(_)) => {
                     return Err("a program's thread pointer changed, or a call failed");
@@ -1605,7 +1605,7 @@ fn linux_programs_poll_the_console<P: Platform>(
             .map_err(|_| "could not start a Linux program's thread")?
             .join::<P>();
         let elapsed = P::clock_ticks() - started;
-        match process.exit_status() {
+        match linux::wait_for_end::<P>(&process) {
             Some(ProcessExit::Exited(0)) => {}
             Some(ProcessExit::Exited(_)) => {
                 return Err("poll, ppoll or ioctl did not answer as on a Linux serial console");
@@ -1654,7 +1654,7 @@ fn linux_programs_signal_themselves<P: Platform>(
         linux::spawn::<P>(process.clone(), context)
             .map_err(|_| "could not start a Linux program's thread")?
             .join::<P>();
-        match process.exit_status() {
+        match linux::wait_for_end::<P>(&process) {
             Some(ProcessExit::Killed { signal: SIGUSR1 }) => {}
             Some(ProcessExit::Killed { .. }) => return Err("the program died of another signal"),
             Some(ProcessExit::Exited(_)) => {
@@ -2023,7 +2023,7 @@ fn run_rust_program<P: Platform>(
         if !descendants_end_and_are_reaped::<P>(&process) {
             return Err("a process the Rust program started did not end, or was not reaped");
         }
-        match process.exit_status() {
+        match linux::wait_for_end::<P>(&process) {
             Some(ProcessExit::Exited(0)) => {}
             Some(ProcessExit::Exited(status)) => {
                 return Err(program
@@ -2097,7 +2097,7 @@ fn run_handling_program<P: Platform>(
         linux::spawn::<P>(process.clone(), context)
             .map_err(|_| Other("could not start a Linux program's thread"))?
             .join::<P>();
-        match process.exit_status() {
+        match linux::wait_for_end::<P>(&process) {
             Some(ProcessExit::Exited(0)) => {}
             Some(ProcessExit::Exited(_)) => return Err(Failed),
             Some(ProcessExit::Killed { .. }) => return Err(Killed),

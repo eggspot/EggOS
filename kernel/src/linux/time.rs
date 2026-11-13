@@ -205,10 +205,11 @@ fn write<P: Platform>(process: &Process<P>, address: u64, bytes: &[u8]) -> Resul
 /// `tp` is not the program's writable memory.
 pub fn clock_gettime<P: Platform>(
     process: &Process<P>,
+    caller: u32,
     clock_id: u64,
     tp: u64,
 ) -> Result<u64, Errno> {
-    if let Some(spent) = cpu_clock(process, clock_id) {
+    if let Some(spent) = cpu_clock(process, caller, clock_id) {
         write(process, tp, &timespec(spent))?;
         return Ok(0);
     }
@@ -217,13 +218,38 @@ pub fn clock_gettime<P: Platform>(
     Ok(0)
 }
 
-fn cpu_clock<P: Platform>(process: &Process<P>, clock_id: u64) -> Option<u64> {
+fn cpu_clock<P: Platform>(process: &Process<P>, caller: u32, clock_id: u64) -> Option<u64> {
     let ticks = match clock_id as u32 as i32 {
         clock::PROCESS_CPUTIME_ID => process.cpu_ticks(true),
         clock::THREAD_CPUTIME_ID => crate::thread::running_thread_ticks::<P>(),
+        id if id < 0 => named_cpu_clock(process, caller, id)?,
         _ => return None,
     };
     Some(nanoseconds_at(ticks, nanoseconds_per_tick::<P>()))
+}
+
+/// Linux's CPU clock ids for a named process or thread (`clock_getcpuclockid`,
+/// `pthread_getcpuclockid`): the id is `~pid << 3`, bit 2 set for a thread, bits 1:0 the kind
+/// (2, `CPUCLOCK_SCHED`, is what both functions make; profiling and virtual time read the same
+/// here, as EggOS keeps no separate system time). The calling thread, the calling process and
+/// other processes by id (D553); another thread of the process is `EINVAL`, as its time is kept
+/// only by the scheduler that runs it.
+fn named_cpu_clock<P: Platform>(process: &Process<P>, caller: u32, id: i32) -> Option<u64> {
+    const PER_THREAD: i32 = 4;
+    const KIND: i32 = 3;
+    const KINDS: i32 = 3;
+    if id & KIND >= KINDS {
+        return None;
+    }
+    let named = !(id >> 3) as u32;
+    if id & PER_THREAD != 0 {
+        return (named == 0 || named == caller)
+            .then(crate::thread::running_thread_ticks::<P>);
+    }
+    if named == 0 || named == process.id().get() {
+        return Some(process.cpu_ticks(true));
+    }
+    super::proc::running_process::<P>(named).map(|other| other.cpu_ticks(false))
 }
 
 const RUSAGE_SELF: i64 = 0;
@@ -241,16 +267,38 @@ const USER_HZ: u64 = 100;
 /// `EINVAL` for another `who`, `EFAULT` for `usage` not the program's writable memory.
 pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Result<u64, Errno> {
     let nanoseconds = match who as i64 as i32 as i64 {
-        RUSAGE_SELF => cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0),
-        RUSAGE_THREAD => cpu_clock(process, clock::THREAD_CPUTIME_ID as u64).unwrap_or(0),
-        RUSAGE_CHILDREN => 0,
+        RUSAGE_SELF => cpu_clock(process, 0, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0),
+        RUSAGE_THREAD => cpu_clock(process, 0, clock::THREAD_CPUTIME_ID as u64).unwrap_or(0),
+        RUSAGE_CHILDREN => children_nanoseconds(process),
         _ => return Err(Errno::EINVAL),
     };
+    write(process, usage, &rusage_bytes(nanoseconds))?;
+    Ok(0)
+}
+
+fn rusage_bytes(nanoseconds: u64) -> [u8; RUSAGE_SIZE] {
     let mut bytes = [0u8; RUSAGE_SIZE];
     super::abi::put_word(&mut bytes, nanoseconds / NANOSECONDS_PER_SECOND);
     super::abi::put_word(&mut bytes[W..], nanoseconds % NANOSECONDS_PER_SECOND / 1000);
-    write(process, usage, &bytes)?;
-    Ok(0)
+    bytes
+}
+
+/// The CPU time of `process`'s reaped children and theirs (D553).
+fn children_nanoseconds<P: Platform>(process: &Process<P>) -> u64 {
+    let ticks = super::process_table::TABLE
+        .lock()
+        .children_cpu_ticks(process.id().get());
+    nanoseconds_at(ticks, nanoseconds_per_tick::<P>())
+}
+
+/// Writes a `struct rusage` holding `ticks` clock ticks of user time at `address`, unless it is
+/// null: what `wait4` and `waitid` report for the child they reaped (D553).
+pub fn write_rusage<P: Platform>(process: &Process<P>, address: u64, ticks: u64) -> Result<(), Errno> {
+    if address == 0 {
+        return Ok(());
+    }
+    let nanoseconds = nanoseconds_at(ticks, nanoseconds_per_tick::<P>());
+    write(process, address, &rusage_bytes(nanoseconds))
 }
 
 /// `times(buf)` (D198): writes the calling process's CPU time as user time in the `struct tms`
@@ -258,9 +306,11 @@ pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Res
 /// returns the ticks since boot.
 pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> {
     if buf != 0 {
-        let spent = cpu_clock(process, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0);
+        let spent = cpu_clock(process, 0, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0);
+        let children = children_nanoseconds(process);
         let mut bytes = [0u8; TMS_SIZE];
         super::abi::put_word(&mut bytes, spent / (NANOSECONDS_PER_SECOND / USER_HZ));
+        super::abi::put_word(&mut bytes[2 * W..], children / (NANOSECONDS_PER_SECOND / USER_HZ));
         write(process, buf, &bytes)?;
     }
     Ok(monotonic_nanoseconds::<P>() / (NANOSECONDS_PER_SECOND / USER_HZ))
@@ -272,10 +322,11 @@ pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> 
 /// then `EFAULT` if `res` is not the program's writable memory.
 pub fn clock_getres<P: Platform>(
     process: &Process<P>,
+    caller: u32,
     clock_id: u64,
     res: u64,
 ) -> Result<u64, Errno> {
-    if clock(clock_id).is_none() && cpu_clock(process, clock_id).is_none() {
+    if clock(clock_id).is_none() && cpu_clock(process, caller, clock_id).is_none() {
         return Err(Errno::EINVAL);
     }
     if res != 0 {

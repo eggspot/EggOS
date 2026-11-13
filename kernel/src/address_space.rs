@@ -59,6 +59,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering, fence};
 use eggos_hal::atomic::AtomicU64;
 use eggos_hal::Platform;
+use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::paging::{Attributes, Format};
 
 /// What `fork` gives the child of one page of the parent's
@@ -404,7 +405,9 @@ impl<P: Platform> AddressSpace<P> {
         }
         fence(Ordering::SeqCst);
         if spread {
-            shoot_down_elsewhere::<P>(cpu::CPUS.all(), here, root);
+            if !P::drop_user_translations_everywhere(virt, length) {
+                shoot_down_elsewhere::<P>(cpu::CPUS.all(), here, root, virt, length);
+            }
         } else {
             mark_stale_elsewhere(cpu::CPUS.all(), here, root);
         }
@@ -659,11 +662,17 @@ fn mark_stale_elsewhere(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
 /// meanwhile. Out of line: only processes with several threads take it.
 #[cold]
 #[inline(never)]
-fn shoot_down_elsewhere<P: Platform>(cpus: &[&'static Cpu], here: &'static Cpu, root: u64) {
+fn shoot_down_elsewhere<P: Platform>(
+    cpus: &[&'static Cpu],
+    here: &'static Cpu,
+    root: u64,
+    virt: u64,
+    length: u64,
+) {
     let mut asked = false;
     for &other in cpus {
         if !ptr::eq(other, here) && other.holds(root) {
-            other.request_shootdown();
+            other.request_shootdown(virt, length);
             cpu::wake::<P>(other);
             asked = true;
         }
@@ -1037,7 +1046,7 @@ mod tests {
                 std::hint::spin_loop();
             }
         });
-        shoot_down_elsewhere::<P>(&[here, holding, other, idle], here, root);
+        shoot_down_elsewhere::<P>(&[here, holding, other, idle], here, root, 0, FRAME_SIZE);
         assert_eq!(holding.shootdowns_served(), 1, "waited until it was served");
         assert_eq!(served.join().unwrap(), 1);
         for cpu in [here, other, idle] {
@@ -1051,7 +1060,7 @@ mod tests {
             root | cpu::STALE,
             "left as it was"
         );
-        shoot_down_elsewhere::<P>(&[here, other, idle], here, root);
+        shoot_down_elsewhere::<P>(&[here, other, idle], here, root, 0, FRAME_SIZE);
         assert_eq!(
             holding.shootdowns_requested(),
             1,
@@ -1063,8 +1072,8 @@ mod tests {
     fn a_cpu_serves_the_shootdowns_asked_of_it_up_to_when_it_looked() {
         let _state = crate::thread::host::lock_kernel_state_for_test();
         let cpu = Cpu::for_test(0);
-        cpu.request_shootdown();
-        cpu.request_shootdown();
+        cpu.request_shootdown(0, FRAME_SIZE);
+        cpu.request_shootdown(0, FRAME_SIZE);
         assert_eq!(
             (cpu.shootdowns_requested(), cpu.shootdowns_served()),
             (2, 0)

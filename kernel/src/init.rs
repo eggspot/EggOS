@@ -166,7 +166,7 @@ fn start_and_wait<P: Platform>(memory: &Memory<P>) -> Outcome {
         return Outcome::NotStarted("could not start process 1's thread");
     };
     thread.join::<P>();
-    match process.exit_status() {
+    match linux::wait_for_end::<P>(&process) {
         Some(exit) => Outcome::Ended(exit),
         None => Outcome::NotStarted("process 1's thread ended without ending it"),
     }

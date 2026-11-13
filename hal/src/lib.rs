@@ -533,6 +533,14 @@ pub trait Platform: 'static {
     /// them. Nothing at all on a machine with no source.
     fn random_seeds(seed: &mut dyn FnMut(random::SeedSource, &[u8]));
 
+    /// Fills `bytes` from the CPU's own random number instruction (x86's `RDSEED` or `RDRAND`,
+    /// AArch64's `RNDR`, RISC-V's Zkr `seed` CSR) and says whether it did; false on a CPU without
+    /// one. The kernel reseeds from it on the virtio-rng schedule (D553). Nothing by default.
+    fn cpu_random(bytes: &mut [u8; 32]) -> bool {
+        let _ = bytes;
+        false
+    }
+
     /// Makes the instructions just written as data at kernel virtual addresses
     /// `start..start + length` visible to instruction fetch on this CPU, at any virtual address
     /// that maps them: on AArch64 it cleans the data cache to the point of unification and
@@ -551,6 +559,16 @@ pub trait Platform: 'static {
     /// or its permissions change. The kernel's own translations are kept where the architecture
     /// tags them apart. Other CPUs are not told: the kernel sees to them.
     fn drop_user_translations(start: u64, length: u64);
+
+    /// Drops what every CPU's TLB cached of user pages `start..start + length` in every
+    /// address space, without interrupting them, where the architecture broadcasts
+    /// invalidation (AArch64's inner-shareable `TLBI`, RISC-V's SBI remote fence): true once
+    /// every CPU's translations are gone, false where it cannot, and the kernel then asks each
+    /// CPU itself (D94, D553). Nothing by default.
+    fn drop_user_translations_everywhere(start: u64, length: u64) -> bool {
+        let _ = (start, length);
+        false
+    }
 
     /// Whether an exception of `kind` with raw cause `code` ([`Exception::code`]) that a
     /// program took is a page fault, a translation the tables did not give (no valid entry, or

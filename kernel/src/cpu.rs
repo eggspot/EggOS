@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use eggos_hal::atomic::AtomicU64;
+use eggos_hal::memory::FRAME_SIZE;
 use eggos_hal::cpu::{
     CpuStart, HAL_CPU_LOCAL_OFFSET, HalCpuLocal, MAX_PAGE_TABLE_ROOTS, StartCpuError,
 };
@@ -75,6 +76,12 @@ pub struct Cpu {
     /// [`Self::shootdowns_requested`] as it was when this CPU last dropped its user
     /// translations for them ([`serve_shootdowns`]). Changed only by the CPU itself.
     shootdowns_served: AtomicU64,
+    /// The union of the user ranges the shootdowns not yet served ask for, as `start..end`
+    /// (D553): each request widens it before it counts in [`Self::shootdowns_requested`], and
+    /// the CPU empties it after reading that count, so a request it does not see in the range
+    /// is one it serves next time. Empty as `u64::MAX..0`.
+    shootdown_start: AtomicU64,
+    shootdown_end: AtomicU64,
     /// The CPU's part of the scheduler: its running, ready and sleeping threads (D43).
     pub(crate) scheduler: CpuScheduler,
     /// The CPU's key of the random number generator (D56). Only the CPU itself takes the lock.
@@ -115,6 +122,8 @@ impl Cpu {
             lazily_loaded: LeafSpinLock::new_leaf(None),
             shootdowns_requested: AtomicU64::new(0),
             shootdowns_served: AtomicU64::new(0),
+            shootdown_start: AtomicU64::new(u64::MAX),
+            shootdown_end: AtomicU64::new(0),
             scheduler: CpuScheduler::new(),
             random: LeafSpinLock::new_leaf(CpuKey::new()),
             frame_cache: LeafSpinLock::new_leaf(crate::memory::FrameCache::new()),
@@ -239,7 +248,10 @@ impl Cpu {
     /// CPU holds and will wait until it is served ([`Self::shootdowns_served`]): asks this CPU to
     /// drop every user translation it has cached. The page-table writes before it are seen
     /// by the CPU once it sees the request. The caller then sends the wake-up interrupt.
-    pub(crate) fn request_shootdown(&self) {
+    pub(crate) fn request_shootdown(&self, start: u64, length: u64) {
+        self.shootdown_start.fetch_min(start, Ordering::AcqRel);
+        self.shootdown_end
+            .fetch_max(start.saturating_add(length), Ordering::AcqRel);
         self.shootdowns_requested.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -388,7 +400,7 @@ pub fn stop_others<P: Platform>() {
     STOPPING.store(true, Ordering::Release);
     let here = current::<P>().index();
     for cpu in CPUS.all().iter().filter(|cpu| cpu.index() != here) {
-        cpu.request_shootdown();
+        cpu.request_shootdown(0, 0);
         wake::<P>(cpu);
     }
 }
@@ -422,7 +434,16 @@ pub(crate) fn serve_shootdowns_asked<P: Platform>(here: &Cpu, requested: u64) {
     if STOPPING.load(Ordering::Acquire) {
         P::halt()
     }
-    P::drop_user_translations(0, <P::PageTableFormat as Format>::USER_END);
+    let start = here.shootdown_start.swap(u64::MAX, Ordering::AcqRel);
+    let end = here.shootdown_end.swap(0, Ordering::AcqRel);
+    let user_end = <P::PageTableFormat as Format>::USER_END;
+    let start = start.min(user_end) & !(FRAME_SIZE - 1);
+    let end = end.min(user_end).next_multiple_of(FRAME_SIZE);
+    if start < end {
+        P::drop_user_translations(start, end - start);
+    } else {
+        P::drop_user_translations(0, user_end);
+    }
     here.shootdowns_served.store(requested, Ordering::Release);
 }
 

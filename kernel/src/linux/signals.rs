@@ -911,6 +911,30 @@ impl Signals {
         slot.cloned()
     }
 
+    fn wait_slot_arcs_but(
+        &self,
+        caller: u32,
+        first: u32,
+    ) -> impl Iterator<Item = &Arc<WaitSlot>> {
+        let block = self.actions_and_queue.as_deref().map(|[block]| block);
+        let first_slot = block
+            .filter(|_| caller != first)
+            .and_then(|block| block.first_thread_wait_slot.as_ref());
+        let others = block
+            .into_iter()
+            .flat_map(|block| &block.threads)
+            .filter(move |thread| thread.id != caller)
+            .map(|thread| &thread.wait_slot);
+        first_slot.into_iter().chain(others)
+    }
+
+    /// How many other threads' records the block keeps.
+    fn thread_records(&self) -> usize {
+        self.actions_and_queue
+            .as_deref()
+            .map_or(0, |[block]| block.threads.len())
+    }
+
     fn wait_slots_but(&self, caller: u32, first: u32) -> impl Iterator<Item = &WaitSlot> {
         let block = self.actions_and_queue.as_deref().map(|[block]| block);
         let first_slot = block
@@ -1758,10 +1782,7 @@ fn send_to_process<P: Platform>(
         process.set_sent_signals_waiting(true);
     }
     process.record_signal_sent();
-    let signals = process.signals().lock();
-    for slot in signals.wait_slots_but(thread.id(), process.id().get()) {
-        super::futex::interrupt::<P>(slot);
-    }
+    interrupt_threads_but::<P>(process, thread.id(), process.id().get());
     Ok(0)
 }
 
@@ -1796,8 +1817,27 @@ pub fn send_from_outside<P: Platform>(process: &Process<P>, first_thread: &WaitS
         false => process.record_signal_sent(),
     }
     super::futex::interrupt::<P>(first_thread);
-    let signals = process.signals().lock();
-    for slot in signals.wait_slots_but(NO_THREAD, process.id().get()) {
+    interrupt_threads_but::<P>(process, NO_THREAD, process.id().get());
+}
+
+/// Ends the waits of `process`'s threads but `caller` (`first` is its first thread's id), as a
+/// signal sent to the process asks: the slots are taken under the signals lock and interrupted
+/// after it is dropped, so the lock is not held for a time that grows with the thread count
+/// (D97, D553). With no memory for the list, they are interrupted under the lock, as before.
+fn interrupt_threads_but<P: Platform>(process: &Process<P>, caller: u32, first: u32) {
+    let slots = {
+        let signals = process.signals().lock();
+        let mut slots: Vec<Arc<WaitSlot>> = Vec::new();
+        if slots.try_reserve(signals.thread_records() + 1).is_err() {
+            for slot in signals.wait_slots_but(caller, first) {
+                super::futex::interrupt::<P>(slot);
+            }
+            return;
+        }
+        slots.extend(signals.wait_slot_arcs_but(caller, first).cloned());
+        slots
+    };
+    for slot in &slots {
         super::futex::interrupt::<P>(slot);
     }
 }
@@ -1825,10 +1865,7 @@ pub fn stop_other_threads<P: Platform>(process: &Process<P>, thread: &mut LinuxT
         return;
     }
     process.record_signal_sent();
-    let signals = process.signals().lock();
-    for slot in signals.wait_slots_but(thread.id(), id) {
-        super::futex::interrupt::<P>(slot);
-    }
+    interrupt_threads_but::<P>(process, thread.id(), id);
 }
 
 fn own_id<P: Platform>(process: &Process<P>) -> i32 {

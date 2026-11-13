@@ -78,7 +78,12 @@ fn child_wait_key(parent: u32) -> Key {
 #[inline(never)]
 pub fn process_ended<P: Platform>(process: &Process<P>, how: ProcessExit) {
     let uid = credentials::get_real(process, credentials::Kind::User) as u32;
-    let ended = TABLE.lock().end(process.id().get(), how, uid);
+    let ticks = process.cpu_ticks(true);
+    let ended = {
+        let mut table = TABLE.lock();
+        table.set_cpu_ticks(process.id().get(), ticks);
+        table.end(process.id().get(), how, uid)
+    };
     if let Some(notice) = ended.to_parent {
         notify::<P>(notice);
     }
@@ -263,9 +268,9 @@ pub fn wait4<P: Platform>(
         Err(error) => Err(error),
     };
     let result = found.and_then(|found| match found {
-        Some((id, _, reported)) => {
+        Some((id, _, reported, ticks)) => {
             let written = write_wait_status(process, status, reported)
-                .and_then(|()| write_zeros::<P, RUSAGE_SIZE>(process, rusage));
+                .and_then(|()| super::time::write_rusage(process, rusage, ticks));
             written.map(|()| u64::from(id))
         }
         None => Ok(0),
@@ -327,7 +332,7 @@ pub fn waitid<P: Platform>(
     };
     let result = found.and_then(|found| {
         write_child_info(process, infop, found)?;
-        write_zeros::<P, RUSAGE_SIZE>(process, rusage)?;
+        super::time::write_rusage(process, rusage, found.map_or(0, |found| found.3))?;
         Ok(0)
     });
     finish(process, thread, context, result)
@@ -344,7 +349,7 @@ fn finish<P: Platform>(
     signals::deliver(process, thread, context)
 }
 
-type Reaped = Option<(u32, u32, Reported)>;
+type Reaped = Option<(u32, u32, Reported, u64)>;
 
 fn wait_interruptibly<P: Platform>(
     process: &Arc<Process<P>>,
@@ -374,19 +379,29 @@ fn wait_or_sleep<P: Platform>(
     let caller = process.id().get();
     loop {
         let seen = CHILD_CHANGES.load(Ordering::Acquire);
-        let found = TABLE.lock().wait_for_change(
-            caller,
-            request.selector,
-            request.kind,
-            request.ends,
-            request.reports,
-        );
+        let (found, reaped_ticks) = {
+            let mut table = TABLE.lock();
+            let found = table.wait_for_change(
+                caller,
+                request.selector,
+                request.kind,
+                request.ends,
+                request.reports,
+            );
+            let reaped_ticks = match found {
+                Found::Ended { .. } if request.ends == Ends::Reap => table.reaped_cpu_ticks(caller),
+                _ => 0,
+            };
+            (found, reaped_ticks)
+        };
         let reported = match found {
-            Found::Ended { id, uid, exit } => Some((id, uid, Reported::Ended(exit))),
+            Found::Ended { id, uid, exit } => Some((id, uid, Reported::Ended(exit), reaped_ticks)),
             Found::Stopped { id, uid, signal } => {
-                Some((id, uid, Reported::Job(JobChange::Stopped(signal))))
+                Some((id, uid, Reported::Job(JobChange::Stopped(signal)), 0))
             }
-            Found::Continued { id, uid } => Some((id, uid, Reported::Job(JobChange::Continued))),
+            Found::Continued { id, uid } => {
+                Some((id, uid, Reported::Job(JobChange::Continued), 0))
+            }
             Found::NoChild => return ControlFlow::Continue(Some(Err(Errno::ECHILD))),
             Found::Announcing if !process.has_ended() => {
                 crate::thread::yield_now::<P>();
@@ -483,7 +498,7 @@ fn write_child_info<P: Platform>(
         return Ok(());
     }
     let mut bytes = [0; SIGINFO_SIZE];
-    if let Some((id, uid, reported)) = found {
+    if let Some((id, uid, reported, _)) = found {
         let info = match reported {
             Reported::Ended(exit) => Info::child_ended(super::signal::SIGCHLD, id, uid, exit),
             Reported::Job(change) => Info::child_job_change(id, uid, change),

@@ -628,7 +628,7 @@ fn described<P: Platform>(pid: u32) -> Option<Described<P>> {
     })
 }
 
-fn running_process<P: Platform>(pid: u32) -> Option<Arc<Process<P>>> {
+pub(super) fn running_process<P: Platform>(pid: u32) -> Option<Arc<Process<P>>> {
     described::<P>(pid)?.process
 }
 

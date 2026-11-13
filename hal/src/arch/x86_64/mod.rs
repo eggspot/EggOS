@@ -971,6 +971,10 @@ impl Platform for X86_64 {
         crate::random::wipe(&mut bytes);
     }
 
+    fn cpu_random(bytes: &mut [u8; 32]) -> bool {
+        random::fill(bytes)
+    }
+
     fn linux_hardware_capabilities() -> [u64; 2] {
         let features = core::arch::x86_64::__cpuid(1).edx;
         [u64::from(features), 0]

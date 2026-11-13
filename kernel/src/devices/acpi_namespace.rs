@@ -310,6 +310,38 @@ struct Events {
     blocks: Vec<GpeBlock>,
     controller: Option<(Path, Option<u16>)>,
     power_buttons: Vec<Path>,
+    /// The virtual machine generation counter (Microsoft's VM Generation ID, which QEMU and
+    /// Hyper-V give) and the physical address of its 16-byte id, if the machine has one (D553).
+    generation_counter: Option<(Path, u64)>,
+}
+
+/// The notification a VM generation counter sends when its id changes: the machine was
+/// restored from a snapshot or cloned.
+const GENERATION_CHANGED: u64 = 0x80;
+
+/// Finds the VM generation counter (`_CID` `VM_Gen_Counter`, `_HID` `QEMUVGID` on QEMU) and its
+/// id's address, from its `ADDR` method's two 32-bit halves.
+fn generation_counter(interpreter: &mut Interpreter<KernelHost>) -> Option<(Path, u64)> {
+    let path = [b"VM_Gen_Counter".as_slice(), b"QEMUVGID".as_slice()]
+        .into_iter()
+        .find_map(|id| interpreter.devices_with_string_id(id).into_iter().next())?;
+    let Ok(Some(Object::Package(halves))) = interpreter.evaluate_child(&path, b"ADDR", &[]) else {
+        return None;
+    };
+    let low = interpreter.to_integer(halves.first()?).ok()?;
+    let high = interpreter.to_integer(halves.get(1)?).ok()?;
+    Some((path, high << 32 | low & 0xffff_ffff))
+}
+
+/// Hashes the VM generation id at `address` into the random number generator's input and
+/// reseeds it, so a snapshot restored twice never repeats the generator's output (D553).
+fn mix_generation_id<P: Platform>(address: u64) {
+    let virt = (address as usize).wrapping_add(P::direct_map_offset()) as *const [u8; 16];
+    // SAFETY: the firmware reserves the id's 16 bytes in RAM, which the direct map maps; they
+    // are only read.
+    let id = unsafe { virt.read_volatile() };
+    crate::random::add_user_input(&id);
+    crate::random::reseed::<P>();
 }
 
 static NAMESPACE: SleepLock<Option<Box<Loaded>>> = SleepLock::new(None, Sleeping::spinning());
@@ -459,11 +491,21 @@ pub fn start_events<P: Platform>() -> Result<(), &'static str> {
             }
         }
         let power_buttons = interpreter.devices_with_id(&[b"PNP0C0C"]);
+        let generation_counter = generation_counter(interpreter);
         loaded.events = Some(Events {
             blocks,
             controller,
             power_buttons,
+            generation_counter,
         });
+    }
+    if let Some((_, address)) = NAMESPACE
+        .lock()
+        .as_ref()
+        .and_then(|loaded| loaded.events.as_ref())
+        .and_then(|events| events.generation_counter.clone())
+    {
+        mix_generation_id::<P>(address);
     }
     P::enable_system_control()?;
     crate::thread::spawn::<P, _>(|| {
@@ -544,7 +586,7 @@ fn set_event_enabled<P: Platform>(block: &GpeBlock, index: u16, enabled: bool) {
 }
 
 fn handle_events<P: Platform>() {
-    let (notified, power_buttons) = {
+    let (notified, power_buttons, generation_counter) = {
         let mut namespace = NAMESPACE.lock();
         let Some(loaded) = namespace.as_mut() else {
             return;
@@ -593,12 +635,19 @@ fn handle_events<P: Platform>() {
         }
         let notified = core::mem::take(&mut loaded.interpreter.host().pending);
         let power_buttons = events.power_buttons.clone();
+        let generation_counter = events.generation_counter.clone();
         loaded.events = Some(events);
-        (notified, power_buttons)
+        (notified, power_buttons, generation_counter)
     };
     for (path, value) in notified {
         if value == POWER_BUTTON_PRESSED && power_buttons.contains(&path) {
             crate::linux::reboot::power_button::<P>();
+        }
+        if let Some((counter, address)) = &generation_counter
+            && value == GENERATION_CHANGED
+            && *counter == path
+        {
+            mix_generation_id::<P>(*address);
         }
     }
 }

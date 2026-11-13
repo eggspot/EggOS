@@ -444,6 +444,9 @@ pub(super) fn madt() -> Option<&'static [u8]> {
 #[derive(Debug)]
 pub struct Aarch64;
 
+/// Times `RNDR` is asked for one value before the CPU counts as having none to give.
+const RNDR_TRIES: usize = 10;
+
 /// `TTBR0_EL1.ASID`, bits 63:48.
 const TTBR_ASID_SHIFT: u32 = 48;
 
@@ -864,6 +867,39 @@ impl Platform for Aarch64 {
         exception::page_fault(code)
     }
 
+    fn drop_user_translations_everywhere(start: u64, length: u64) -> bool {
+        let pages = length / crate::memory::FRAME_SIZE;
+        if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
+            // SAFETY: barriers and TLB invalidation change no memory contents. `VMALLE1IS` drops
+            // every stage-1 translation of every CPU in the inner shareable domain, the kernel's
+            // too (they are refilled), and the last `DSB ISH` waits until every CPU has.
+            unsafe {
+                core::arch::asm!(
+                    "dsb ishst",
+                    "tlbi vmalle1is",
+                    "dsb ish",
+                    "isb",
+                    options(nostack, preserves_flags)
+                )
+            };
+            return true;
+        }
+        // SAFETY: as above: `VAAE1IS` drops one page's translations in every ASID on every CPU
+        // of the inner shareable domain; the barriers order the table writes before and wait for
+        // the invalidations after.
+        unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
+        for page in 0..pages {
+            let operand = (start + page * crate::memory::FRAME_SIZE) >> 12;
+            // SAFETY: as above.
+            unsafe {
+                core::arch::asm!("tlbi vaae1is, {}", in(reg) operand, options(nostack, preserves_flags))
+            };
+        }
+        // SAFETY: as above.
+        unsafe { core::arch::asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+        true
+    }
+
     fn drop_user_translations(start: u64, length: u64) {
         let pages = length / crate::memory::FRAME_SIZE;
         let asid = current_asid();
@@ -925,6 +961,49 @@ impl Platform for Aarch64 {
         // before any other starts and between the HAL's other reads of the tree, which the
         // direct map keeps writable (RAM is mapped read-write in it, reserved or not).
         unsafe { boot_memory::device_tree_take_seeds(device_tree_address(), seed) };
+        let mut bytes = [0u8; 32];
+        if Self::cpu_random(&mut bytes) {
+            seed(crate::random::SeedSource::CpuInstruction, &bytes);
+        }
+        crate::random::wipe(&mut bytes);
+    }
+
+    fn cpu_random(bytes: &mut [u8; 32]) -> bool {
+        let features: u64;
+        // SAFETY: reading `ID_AA64ISAR0_EL1` has no side effects.
+        unsafe {
+            core::arch::asm!("mrs {}, id_aa64isar0_el1", out(reg) features, options(nomem, nostack, preserves_flags))
+        };
+        if features >> 60 == 0 {
+            return false;
+        }
+        for chunk in bytes.chunks_exact_mut(8) {
+            let mut sample = None;
+            for _ in 0..RNDR_TRIES {
+                let value: u64;
+                let failed: u64;
+                // SAFETY: `RNDR` (`S3_3_C2_C4_0`) exists, as `ID_AA64ISAR0_EL1.RNDR` says; it
+                // writes a random value and sets `PSTATE.Z` when it could not give one.
+                unsafe {
+                    core::arch::asm!(
+                        "mrs {value}, s3_3_c2_c4_0",
+                        "cset {failed}, eq",
+                        value = out(reg) value,
+                        failed = out(reg) failed,
+                        options(nomem, nostack),
+                    )
+                };
+                if failed == 0 {
+                    sample = Some(value);
+                    break;
+                }
+            }
+            let Some(value) = sample else {
+                return false;
+            };
+            chunk.copy_from_slice(&value.to_ne_bytes());
+        }
+        true
     }
 
     unsafe fn set_user_fp(on: bool) {

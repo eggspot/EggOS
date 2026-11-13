@@ -320,6 +320,36 @@ impl<H: Host> Interpreter<H> {
         }
     }
 
+    /// The devices whose `_HID` or one of whose `_CID`s is the string `id`, of any length (QEMU's
+    /// `QEMUVGID`, the `VM_Gen_Counter` compatible ID), as [`Self::devices_with_id`] does for
+    /// seven-character IDs.
+    pub fn devices_with_string_id(&mut self, id: &[u8]) -> Vec<Path> {
+        let devices: Vec<Path> = self
+            .namespace
+            .iter()
+            .filter(|(path, node)| {
+                matches!(self.namespace.get(*node), Some(Object::Device))
+                    && self.namespace.path_of(*node) == Some(*path)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        devices
+            .into_iter()
+            .filter(|path| {
+                let names = |object: &Object| matches!(object, Object::String(text) if text.as_slice() == id);
+                let hid = self.evaluate_child(path, b"_HID", &[]).ok().flatten();
+                if hid.as_ref().is_some_and(names) {
+                    return true;
+                }
+                match self.evaluate_child(path, b"_CID", &[]).ok().flatten() {
+                    Some(Object::Package(compatible)) => compatible.iter().any(names),
+                    Some(compatible) => names(&compatible),
+                    None => false,
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn invoke(
         &mut self,
         id: NodeId,

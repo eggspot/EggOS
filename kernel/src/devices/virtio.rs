@@ -1503,6 +1503,7 @@ mod entropy {
             loop {
                 crate::thread::sleep::<P>(RESEED_INTERVAL);
                 let _ = seed_random::<P>();
+                let _ = crate::random::reseed_from_cpu::<P>();
             }
         })
         .is_ok()
