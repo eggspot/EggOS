@@ -373,6 +373,7 @@ fn the_list_is_valid_json_with_annotations() {
             "wm_desktop_list",
             "download_list",
             "component_list",
+            "app_actions",
             "windows_registry_get"
         ]
     );

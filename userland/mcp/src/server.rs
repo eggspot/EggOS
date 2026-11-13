@@ -2166,7 +2166,10 @@ impl Server {
         if let Some(source) = arguments::source_text(&prepared.checked, buffers.content) {
             push_word(&mut words, &mut count, source);
         }
-        if tool.kind == Kind::Run {
+        if matches!(
+            tool.kind,
+            Kind::Run | Kind::WifiConnect | Kind::AppDo | Kind::AppDoConfirmed
+        ) {
             for word in prepared.checked.words.each(buffers.words) {
                 push_word(&mut words, &mut count, word);
             }
@@ -3822,6 +3825,25 @@ fn write_audit_arguments(
     if tool.kind == Kind::FileRemove {
         writer.key("recursive");
         writer.bool(checked.recursive);
+    }
+    if tool.kind == Kind::WifiConnect {
+        let mut words = checked.words.each(scratch.words).peekable();
+        let hidden = words.next_if_eq(&"--hidden").is_some();
+        words.next_if_eq(&"--");
+        writer.key("ssid");
+        shown_string(&mut writer, words.next().unwrap_or(""), cut);
+        writer.key("hidden");
+        writer.bool(hidden);
+        writer.key("passphrase");
+        writer.bool(words.next().is_some());
+    }
+    if matches!(tool.kind, Kind::AppDo | Kind::AppDoConfirmed) {
+        writer.key("command");
+        writer.begin_array();
+        for word in checked.words.each(scratch.words) {
+            shown_string(&mut writer, word, cut);
+        }
+        writer.end_array();
     }
     if tool.kind == Kind::FolderCreate {
         writer.key("parents");

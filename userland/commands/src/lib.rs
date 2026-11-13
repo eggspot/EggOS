@@ -568,31 +568,32 @@ pub const CORE_VERBS: [&str; 20] = [
     "run",
 ];
 
-/// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161 and D162),
-/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196), `download`'s (D225), `component`'s
-/// (D235), those of `wm desktop`, a noun of `wm` (D204), those of `windows registry` (D231), and
-/// `wifi`'s (D280).
-pub const NOUN_VERBS: [(&str, &[&str]); 9] = [
+/// The verbs a noun adds by a decision: `wm`'s (D128, D141, D147, D160, D161, D162 and D303),
+/// `disk`'s (D192), `agent`'s (D193), `app`'s (D196, D301), `download`'s (D225), `component`'s
+/// (D235, D300), those of `wm desktop`, a noun of `wm` (D204), those of `wm keyboard` (D303),
+/// those of `windows registry` (D231), and `wifi`'s (D280).
+pub const NOUN_VERBS: [(&str, &[&str]); 10] = [
     (
         "wm",
         &[
             "focus", "minimise", "maximise", "size", "move", "restore", "close", "capture",
-            "click", "type", "press", "scroll", "menu", "act", "drag",
+            "click", "type", "press", "scroll", "menu", "act", "drag", "home", "back", "keyboard",
         ],
     ),
     ("disk", &["format", "repair"]),
     ("agent", &["grant", "revoke", "forget", "pair", "network"]),
-    ("app", &["icon"]),
+    ("app", &["icon", "actions", "do"]),
     ("download", &["cancel", "clear"]),
-    ("component", &["remove"]),
+    ("component", &["remove", "edition", "update", "cancel"]),
     ("wm desktop", &["switch", "new"]),
+    ("wm keyboard", &["hide"]),
     ("windows registry", &["reset"]),
     ("wifi", &["connect", "forget"]),
 ];
 
 /// EggOS's kept names: commands that keep their name and exact behavior, with a full
 /// definition all the same (the spec's list, checked against the code).
-pub const KEPT_NAMES: [&str; 55] = [
+pub const KEPT_NAMES: [&str; 56] = [
     "agent",
     "agentlog",
     "app",
@@ -646,6 +647,7 @@ pub const KEPT_NAMES: [&str; 55] = [
     "uname",
     "uptime",
     "wc",
+    "wifi",
     "windows",
     "wm",
 ];

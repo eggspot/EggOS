@@ -862,7 +862,8 @@ fn the_json_records_carry_the_design_s_fields() {
     assert!(first.starts_with("{\"name\":\"desktop\",\"title\":\"Desktop\""));
     assert!(first.contains("\"state\":\"installed\""));
     assert!(first.contains("\"needed_by\":[\"Built-in apps\"]"));
-    assert!(console.error.starts_with("{\"store\":{\"file\":\"eggos-"));
+    assert!(console.error.starts_with("{\"updates_checked\":"));
+    assert!(console.error.contains(",\"store\":{\"file\":\"eggos-"));
 }
 
 #[test]
@@ -892,7 +893,7 @@ fn the_registry_s_examples_run_as_written() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 4);
+    assert_eq!(ran, 7);
 }
 
 #[test]

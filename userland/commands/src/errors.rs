@@ -154,14 +154,14 @@ pub const FIXED_BY_FORM: ErrorDefinition = error(
     "fixed_by_form",
     Category::Refused,
     "In the phone and TV forms each window fills the screen: show it with wm focus instead.",
-    Some("wm focus <id>"),
+    Some("wm list"),
 );
 /// `wm home` and `wm back`: the shell's form has no home screen or Back (D303).
 pub const NOT_IN_THIS_FORM: ErrorDefinition = error(
     "not_in_this_form",
     Category::Refused,
     "Home and Back belong to the phone form; settings get shell.form_in_use says which form shows.",
-    Some("settings get shell.form_in_use"),
+    Some("settings list"),
 );
 /// `wm`: there is no window server (`/dev/window` cannot be opened).
 pub const NO_WINDOW_SERVER: ErrorDefinition = error(

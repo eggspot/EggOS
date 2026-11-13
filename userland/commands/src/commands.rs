@@ -1988,10 +1988,16 @@ pub const COMPONENT_EDITION: CommandDefinition = CommandDefinition {
         exits(&INSTALL_FAILED, 1),
         exits(&PERMISSION_DENIED, 1),
     ],
-    examples: &[example(
-        "component edition",
-        "  server\tThe base alone: no desktop and no foreign apps.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
-    )],
+    examples: &[
+        example(
+            "component edition",
+            "* server\tThe base alone: no desktop and no foreign apps.\n  personal\tWindows and macOS apps beside EggOS's own.\n  professional\tPersonal, with every tool for work that the store offers.\n  enterprise\tProfessional, ready for managed fleets.\n",
+        ),
+        example(
+            "component edition --dry-run personal",
+            "Would install for Personal: windows-apps\n",
+        ),
+    ],
     surface: Surface::Gui("Settings: Components"),
 };
 
@@ -2079,7 +2085,10 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
         exits(&INSTALL_FAILED, 1),
         exits(&PERMISSION_DENIED, 1),
     ],
-    examples: &[],
+    examples: &[example(
+        "component update --dry-run --json",
+        "{\"updated\":[],\"fetched_bytes\":0}\n",
+    )],
     surface: COMPONENT_SURFACE,
 };
 
@@ -4325,12 +4334,12 @@ pub static COMMANDS: [CommandDefinition; 116] = [
     CHMOD,
     CLIP_GET,
     CLIP_SET,
-    COMPONENT_EDITION,
     COMPONENT_CANCEL,
+    COMPONENT_EDITION,
     COMPONENT_INSTALL,
-    COMPONENT_UPDATE,
     COMPONENT_LIST,
     COMPONENT_REMOVE,
+    COMPONENT_UPDATE,
     CP,
     DATE,
     DEVICE_LIST,

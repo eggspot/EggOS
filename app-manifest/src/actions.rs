@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(&out[..33], b"bin/paint\0--export\0/home/a b.png\0");
         let words = expand(&export, &[(b"file", b"x"), (b"scale", b"2")], &mut out).unwrap();
         assert_eq!(
-            (words, &out[..30]),
+            (words, &out[..31]),
             (4, &b"bin/paint\0--export\0x\0--scale=2\0"[..])
         );
         assert_eq!(expand(&export, &[], &mut out), Err(ExpandError::Missing));

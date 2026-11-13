@@ -746,11 +746,17 @@ pub fn check(
         )?);
     }
     if tool.twin.operand == Operand::Name {
-        checked.name = Some(match get("name") {
-            Some(Value::Str(text)) => AppName::of(text)?,
+        let required = tool
+            .definition
+            .arguments
+            .iter()
+            .any(|argument| argument.name == "name" && argument.required);
+        checked.name = match get("name") {
+            Some(Value::Str(text)) => Some(AppName::of(text)?),
             Some(_) => return Err(ArgumentProblem::WrongType("name")),
-            None => return Err(ArgumentProblem::Missing("name")),
-        });
+            None if required => return Err(ArgumentProblem::Missing("name")),
+            None => None,
+        };
     }
     if tool.kind == Kind::AppInstall {
         checked.archive_entry = archive_entry(get("entry"), decoded.words)?;
@@ -765,6 +771,32 @@ pub fn check(
     }
     if tool.kind == Kind::WindowsRegistryReset {
         checked.machine = flag(get("machine"), "machine")?;
+    }
+    if tool.kind == Kind::WifiConnect {
+        let hidden = flag(get("hidden"), "hidden")?;
+        let ssid = text_argument(get("ssid"), "ssid")?.ok_or(ArgumentProblem::Missing("ssid"))?;
+        let passphrase = text_argument(get("passphrase"), "passphrase")?;
+        let parts = [
+            hidden.then_some(Part::Fixed("--hidden")),
+            Some(Part::Fixed("--")),
+            Some(Part::Given(ssid)),
+            passphrase.map(Part::Given),
+        ];
+        checked.words = given_words(&parts, decoded.words)?;
+    }
+    if matches!(tool.kind, Kind::AppDo | Kind::AppDoConfirmed) {
+        let name = text_argument(get("name"), "name")?.ok_or(ArgumentProblem::Missing("name"))?;
+        let action =
+            text_argument(get("action"), "action")?.ok_or(ArgumentProblem::Missing("action"))?;
+        let values = text_argument(get("values"), "values")?;
+        let parts = [
+            values.map(|_| Part::Fixed("--values")),
+            values.map(Part::Given),
+            Some(Part::Fixed("--")),
+            Some(Part::Given(name)),
+            Some(Part::Given(action)),
+        ];
+        checked.words = given_words(&parts, decoded.words)?;
     }
     if tool.kind == Kind::Run {
         checked.words = words(get("arguments"), decoded.words)?;
@@ -1505,6 +1537,60 @@ fn words(value: Option<Value<'_>>, buffer: &mut [u8]) -> Result<Words, ArgumentP
             return Err(ArgumentProblem::BadWords);
         }
         used += word.len();
+        *words
+            .ends
+            .get_mut(words.count)
+            .ok_or(ArgumentProblem::BadWords)? = used;
+        words.count += 1;
+    }
+    Ok(words)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Part<'a> {
+    Fixed(&'static str),
+    Given(Str<'a>),
+}
+
+fn text_argument<'a>(
+    value: Option<Value<'a>>,
+    name: &'static str,
+) -> Result<Option<Str<'a>>, ArgumentProblem> {
+    match value {
+        None => Ok(None),
+        Some(Value::Str(text)) => Ok(Some(text)),
+        Some(_) => Err(ArgumentProblem::WrongType(name)),
+    }
+}
+
+fn given_words(parts: &[Option<Part<'_>>], buffer: &mut [u8]) -> Result<Words, ArgumentProblem> {
+    let mut words = Words::default();
+    let room = buffer.len().min(WORDS_BYTES);
+    let mut used = 0;
+    for part in parts.iter().flatten() {
+        if words.count == MAX_WORDS {
+            return Err(ArgumentProblem::BadWords);
+        }
+        let place = buffer
+            .get_mut(used..room)
+            .ok_or(ArgumentProblem::BadWords)?;
+        let length = match part {
+            Part::Fixed(word) => {
+                place
+                    .get_mut(..word.len())
+                    .ok_or(ArgumentProblem::BadWords)?
+                    .copy_from_slice(word.as_bytes());
+                word.len()
+            }
+            Part::Given(text) => {
+                let word = text.decode_into(place).ok_or(ArgumentProblem::BadWords)?;
+                if word.is_empty() || word.contains('\0') {
+                    return Err(ArgumentProblem::BadWords);
+                }
+                word.len()
+            }
+        };
+        used += length;
         *words
             .ends
             .get_mut(words.count)
