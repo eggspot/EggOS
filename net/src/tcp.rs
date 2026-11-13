@@ -18,7 +18,8 @@
 //! (RFC 9293 3.8.5, the urgent pointer pointing after the urgent byte as BSD and Linux do).
 
 use crate::checksum::{self, Completion};
-use crate::ipv4::{Ipv4Address, protocol};
+use crate::ip::{self, IpAddress};
+use crate::ipv4::protocol;
 
 /// Bytes of a header without options.
 pub const HEADER_BYTES: usize = 20;
@@ -161,14 +162,18 @@ impl Segment<'_> {
     }
 }
 
-fn pseudo_header(source: Ipv4Address, destination: Ipv4Address, length: usize) -> u32 {
-    let sum = checksum::add(checksum::add(0, &source.0), &destination.0);
-    sum + u32::from(protocol::TCP) + length as u32
+fn pseudo_header(source: IpAddress, destination: IpAddress, length: usize) -> u32 {
+    ip::pseudo_header(source, destination, protocol::TCP, length)
 }
 
 /// The segment `bytes` carries between `source` and `destination`: `None` when it is shorter
 /// than its header or its checksum is wrong.
-pub fn parse(source: Ipv4Address, destination: Ipv4Address, bytes: &[u8]) -> Option<Segment<'_>> {
+pub fn parse(
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
+    bytes: &[u8],
+) -> Option<Segment<'_>> {
+    let (source, destination) = (source.into(), destination.into());
     let fixed = bytes.first_chunk::<HEADER_BYTES>()?;
     let header_bytes = usize::from(fixed[12] >> 4) * 4;
     if header_bytes < HEADER_BYTES || header_bytes > bytes.len() {
@@ -245,8 +250,8 @@ fn parse_options(mut options: &[u8]) -> Options {
 /// when `out` is shorter.
 pub fn write_header(
     out: &mut [u8],
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     header: &Header,
     data_bytes: usize,
 ) -> Option<usize> {
@@ -263,12 +268,13 @@ pub fn write_header(
 /// [`write_header`], with the checksum written whole or left `completion` says.
 pub fn write_header_with(
     out: &mut [u8],
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     header: &Header,
     data_bytes: usize,
     completion: Completion,
 ) -> Option<usize> {
+    let (source, destination) = (source.into(), destination.into());
     let header_bytes = header_bytes(header);
     let length = header_bytes.checked_add(data_bytes)?;
     let segment = out.get_mut(..length)?;
@@ -322,8 +328,8 @@ pub fn write_header_with(
 /// one partial, as `completion` asks (D535).
 pub fn convert_checksum(
     segment: &mut [u8],
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     completion: Completion,
 ) {
     if segment.len() < HEADER_BYTES {
@@ -332,7 +338,11 @@ pub fn convert_checksum(
     match completion {
         Completion::Full => checksum::complete(segment, CHECKSUM_AT),
         Completion::Partial => {
-            let sum = checksum::partial(pseudo_header(source, destination, segment.len()));
+            let sum = checksum::partial(pseudo_header(
+                source.into(),
+                destination.into(),
+                segment.len(),
+            ));
             segment[CHECKSUM_AT..CHECKSUM_AT + 2].copy_from_slice(&sum.to_be_bytes());
         }
     }
@@ -357,8 +367,8 @@ pub fn header_bytes(header: &Header) -> usize {
 /// reset is never sent for it (it is a reset itself).
 pub fn write_reset_for(
     out: &mut [u8],
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     segment: &Segment<'_>,
 ) -> Option<usize> {
     if segment.has(flags::RST) {
@@ -494,8 +504,8 @@ const SCOREBOARD_BLOCKS: usize = 4;
 /// One TCP connection.
 #[derive(Debug, Clone)]
 pub struct Connection {
-    local: (Ipv4Address, u16),
-    remote: (Ipv4Address, u16),
+    local: (IpAddress, u16),
+    remote: (IpAddress, u16),
     state: State,
     error: Option<Error>,
     initial_sequence: u32,
@@ -563,8 +573,8 @@ impl Connection {
     /// [`Self::output`], with initial sequence number `initial_sequence` and a segment size of
     /// at most `mss` for what it receives.
     pub fn connect(
-        local: (Ipv4Address, u16),
-        remote: (Ipv4Address, u16),
+        local: (IpAddress, u16),
+        remote: (IpAddress, u16),
         initial_sequence: u32,
         mss: u16,
     ) -> Self {
@@ -577,8 +587,8 @@ impl Connection {
     /// ACK from `remote`: it answers with its SYN at the next [`Self::output`]. `None` for
     /// another segment.
     pub fn accept(
-        local: (Ipv4Address, u16),
-        remote: (Ipv4Address, u16),
+        local: (IpAddress, u16),
+        remote: (IpAddress, u16),
         syn: &Segment<'_>,
         initial_sequence: u32,
         mss: u16,
@@ -599,8 +609,8 @@ impl Connection {
     }
 
     fn new(
-        local: (Ipv4Address, u16),
-        remote: (Ipv4Address, u16),
+        local: (IpAddress, u16),
+        remote: (IpAddress, u16),
         initial_sequence: u32,
         mss: u16,
         state: State,
@@ -768,12 +778,12 @@ impl Connection {
     }
 
     /// Its own address and port.
-    pub fn local(&self) -> (Ipv4Address, u16) {
+    pub fn local(&self) -> (IpAddress, u16) {
         self.local
     }
 
     /// The peer's address and port.
-    pub fn remote(&self) -> (Ipv4Address, u16) {
+    pub fn remote(&self) -> (IpAddress, u16) {
         self.remote
     }
 

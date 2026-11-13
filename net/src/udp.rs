@@ -1,8 +1,10 @@
-//! UDP (RFC 768): ports, a length and a checksum over a pseudo-header of the IPv4 addresses,
-//! the protocol and the length, then the datagram.
+//! UDP (RFC 768): ports, a length and a checksum over a pseudo-header of the IP addresses,
+//! the protocol and the length, then the datagram; over IPv6 too, where the checksum is
+//! required (RFC 8200 8.1, D565).
 
 use crate::checksum::{self, Completion};
-use crate::ipv4::{Ipv4Address, protocol};
+use crate::ip::{self, IpAddress};
+use crate::ipv4::protocol;
 
 /// Bytes of the header.
 pub const HEADER_BYTES: usize = 8;
@@ -18,19 +20,19 @@ pub struct Header {
     pub destination_port: u16,
 }
 
-fn pseudo_header(source: Ipv4Address, destination: Ipv4Address, length: u16) -> u32 {
-    let sum = checksum::add(checksum::add(0, &source.0), &destination.0);
-    sum + u32::from(protocol::UDP) + u32::from(length)
+fn pseudo_header(source: IpAddress, destination: IpAddress, length: u16) -> u32 {
+    ip::pseudo_header(source, destination, protocol::UDP, usize::from(length))
 }
 
 /// The header and the data of the datagram `segment` carries between `source` and
 /// `destination`; `None` when its length field is out of range or its checksum, when it has
 /// one, is wrong.
 pub fn parse(
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     segment: &[u8],
 ) -> Option<(Header, &[u8])> {
+    let (source, destination) = (source.into(), destination.into());
     let header = segment.first_chunk::<HEADER_BYTES>()?;
     let length = u16::from_be_bytes([header[4], header[5]]);
     let datagram = segment.get(..usize::from(length))?;
@@ -38,6 +40,9 @@ pub fn parse(
         return None;
     }
     let carried = u16::from_be_bytes([header[6], header[7]]);
+    if carried == 0 && matches!(source, IpAddress::V6(_)) {
+        return None;
+    }
     if carried != 0
         && checksum::finish(checksum::add(
             pseudo_header(source, destination, length),
@@ -61,8 +66,8 @@ pub fn parse(
 /// shorter or the datagram longer than 65535 bytes.
 pub fn write_header(
     out: &mut [u8],
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     header: Header,
     data_bytes: usize,
 ) -> Option<usize> {
@@ -79,8 +84,8 @@ pub fn write_header(
 /// [`write_header`], with the checksum written whole or left `completion` says (D535).
 pub fn write_header_with(
     out: &mut [u8],
-    source: Ipv4Address,
-    destination: Ipv4Address,
+    source: impl Into<IpAddress>,
+    destination: impl Into<IpAddress>,
     header: Header,
     data_bytes: usize,
     completion: Completion,
@@ -91,7 +96,7 @@ pub fn write_header_with(
     datagram[2..4].copy_from_slice(&header.destination_port.to_be_bytes());
     datagram[4..6].copy_from_slice(&length.to_be_bytes());
     datagram[6..8].fill(0);
-    let pseudo = pseudo_header(source, destination, length);
+    let pseudo = pseudo_header(source.into(), destination.into(), length);
     let sum = match completion {
         Completion::Full => match checksum::finish(checksum::add(pseudo, datagram)) {
             0 => 0xffff,

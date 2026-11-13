@@ -18,6 +18,8 @@ pub mod ether_type {
     pub const IPV4: u16 = 0x0800;
     /// ARP.
     pub const ARP: u16 = 0x0806;
+    /// IPv6 (D565).
+    pub const IPV6: u16 = 0x86dd;
 }
 
 /// A 48-bit hardware address.
