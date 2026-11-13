@@ -21,7 +21,7 @@ pub struct ClockData {
     pub realtime_offset: i64,
 }
 
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 unsafe extern "C" {
     static __eggos_vvar: ClockData;
 }
@@ -170,7 +170,7 @@ mod arch {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 fn data() -> &'static ClockData {
     // SAFETY: the kernel maps its clock data page read-only just before this image, where the
     // linker script places `__eggos_vvar`.
@@ -179,7 +179,7 @@ fn data() -> &'static ClockData {
 
 /// The monotonic and realtime clocks in nanoseconds, read consistently; `None` when the counter
 /// cannot be read in user mode.
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 fn now() -> Option<(u64, i64)> {
     let data = data();
     loop {
@@ -209,7 +209,7 @@ fn now() -> Option<(u64, i64)> {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 fn clock_nanoseconds(clock: i32) -> Option<u64> {
     let (monotonic, offset) = now()?;
     match clock {
@@ -222,7 +222,7 @@ fn clock_nanoseconds(clock: i32) -> Option<u64> {
 }
 
 /// `clock_gettime(clock, tp)`.
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __vdso_clock_gettime(clock: i32, tp: *mut Timespec) -> i32 {
     match clock_nanoseconds(clock) {
@@ -241,7 +241,7 @@ pub extern "C" fn __vdso_clock_gettime(clock: i32, tp: *mut Timespec) -> i32 {
 }
 
 /// `gettimeofday(tv, tz)`.
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __vdso_gettimeofday(tv: *mut Timeval, tz: *mut u8) -> i32 {
     if !tz.is_null() {
@@ -265,7 +265,7 @@ pub extern "C" fn __vdso_gettimeofday(tv: *mut Timeval, tz: *mut u8) -> i32 {
 }
 
 /// `time(t)`.
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __vdso_time(t: *mut i64) -> i64 {
     let seconds = match clock_nanoseconds(CLOCK_REALTIME) {
@@ -288,38 +288,38 @@ pub extern "C" fn __vdso_time(t: *mut i64) -> i64 {
 }
 
 /// `clock_getres(clock, res)`: the system call's answer.
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __vdso_clock_getres(clock: i32, res: *mut Timespec) -> i32 {
     arch::syscall(arch::CLOCK_GETRES, clock as usize, res as usize, 0) as i32
 }
 
 /// `getcpu(cpu, node, cache)`: the system call's answer.
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __vdso_getcpu(cpu: *mut u32, node: *mut u32, cache: *mut u8) -> i32 {
     arch::syscall(arch::GETCPU, cpu as usize, node as usize, cache as usize) as i32
 }
 
-#[cfg(all(target_arch = "aarch64", not(test)))]
+#[cfg(all(target_arch = "aarch64", eggos_user))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __kernel_clock_gettime(clock: i32, tp: *mut Timespec) -> i32 {
     __vdso_clock_gettime(clock, tp)
 }
 
-#[cfg(all(target_arch = "aarch64", not(test)))]
+#[cfg(all(target_arch = "aarch64", eggos_user))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __kernel_gettimeofday(tv: *mut Timeval, tz: *mut u8) -> i32 {
     __vdso_gettimeofday(tv, tz)
 }
 
-#[cfg(all(target_arch = "aarch64", not(test)))]
+#[cfg(all(target_arch = "aarch64", eggos_user))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __kernel_clock_getres(clock: i32, res: *mut Timespec) -> i32 {
     __vdso_clock_getres(clock, res)
 }
 
-#[cfg(not(test))]
+#[cfg(eggos_user)]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {
