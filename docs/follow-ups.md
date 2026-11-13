@@ -104,8 +104,8 @@ and is not listed per item.
 
 ## M10 Userland, shell, utilities and the MCP server
 
-- [ ] `fetch`: proxies (`http_proxy`/`https_proxy`), basic authentication, cookies, gzip/deflate `Content-Encoding` (D158)
-- [ ] TLS: Ed25519 and ECDSA P-521 certificates (D159)
+- [x] `fetch`: proxies (`http_proxy`/`https_proxy`), basic authentication, cookies, gzip/deflate `Content-Encoding` (D158) — code written, unbuilt, D573
+- [x] TLS: Ed25519 and ECDSA P-521 certificates (D159) — code written, unbuilt, D573
 - [ ] Text Editor: syntax colouring (D149)
 - [ ] D-Bus: a session bus of our own (`eggos-dbus`, the wire protocol, `org.freedesktop.DBus` names) for single-instance apps, portals and accessibility (D176)
 - [x] eggsh: arithmetic expansion `$((...))` and `let` (D182) — code written, unbuilt, D572

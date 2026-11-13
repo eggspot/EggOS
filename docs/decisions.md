@@ -26429,3 +26429,31 @@ the license, by an explicit instruction recorded here.
   is noted below.
 - **Not yet.** Building and running; aliases that make syntax (`alias if=…`) and the
   trailing-space rule; `printf`'s `%f`/`%e`; `shutdown`'s times in the local zone.
+
+## D573 `fetch` through proxies, with basic authentication, cookies and compressed bodies; TLS with Ed25519 and P-521 (M10; D158's and D159's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from RFC 9110, 9112, 6265, 1950, 1952, 8032 and 8410, and FIPS 186)
+
+- **Requests.** `http::RequestOptions` and `write_request_with` add the absolute target a
+  proxy needs, `Authorization` and `Proxy-Authorization: Basic` (with `http::base64`), a
+  `Cookie` header and `Accept-Encoding: gzip, deflate`; `write_connect` asks a proxy for a
+  tunnel. `http::headers` reads every field of a name, `content_coding` the body's coding.
+- **Cookies.** `http::CookieJar` keeps up to 32 cookies a download's servers set (name and
+  value, the host or the `Domain` named, the `Path`, `Secure`; `Max-Age=0` removes), and gives
+  the `Cookie` value for each URL by domain, path and scheme; redirects carry them on.
+- **`fetch`.** `-u user:password`, `-b name=value`, `--compressed`, `--proxy url` and
+  `--no-proxy`; without `--proxy` it takes `http_proxy`/`https_proxy` (either case) and keeps
+  hosts in `no_proxy` (names and `.domain` suffixes, `*`) off it. An `http://` URL is asked
+  of the proxy whole; an `https://` one goes through a `CONNECT` tunnel, then TLS as usual. A
+  gzip or zlib body is read through its framing, its header checked, inflated through the PNG
+  crate's DEFLATE decoder with a 32 KiB window, and its trailer (CRC-32 and length, or
+  Adler-32) compared, as it is saved.
+- **TLS.** `eggos_crypto::ed25519::verify` checks Ed25519 signatures (RFC 8032, cofactorless,
+  extended coordinates over the bignum's Montgomery arithmetic); ECDSA gains P-521 (its
+  parameters from FIPS 186, the digest's leftmost bits). Certificates with Ed25519 or P-521
+  keys and signatures parse, chains check them, and the client offers and checks
+  `ecdsa_secp521r1_sha512` and `ed25519` in `CertificateVerify`.
+- **Decided by research.** The cookie jar lives for one `fetch` (redirects and the like): a
+  saved jar across runs is a browser's job, and a file of secrets nobody asked for is worse
+  than none. Proxies by environment, as curl and wget do, so a network's configuration reaches
+  every program the same way.
+- **Not yet.** Building and running; digest authentication; HTTPS proxies (TLS to the proxy);
+  `br` (Brotli) bodies.
