@@ -72,6 +72,23 @@ impl Number {
         }
     }
 
+    /// The number shifted right by `count` bits (D573).
+    pub fn shift_right(&self, count: usize) -> Self {
+        let mut shifted = Self::ZERO;
+        let (words, bits) = (count / 64, count % 64);
+        for index in 0..MAX_LIMBS {
+            let Some(&low) = self.limbs.get(index + words) else {
+                break;
+            };
+            let high = self.limbs.get(index + words + 1).copied().unwrap_or(0);
+            shifted.limbs[index] = match bits {
+                0 => low,
+                _ => low >> bits | high << (64 - bits),
+            };
+        }
+        shifted
+    }
+
     /// Whether the number is zero.
     pub fn is_zero(&self) -> bool {
         self.limbs.iter().all(|&limb| limb == 0)

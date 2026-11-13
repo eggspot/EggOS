@@ -53,8 +53,8 @@ pub(crate) const KEY_SHARE: u16 = 51;
 pub(crate) const X25519_GROUP: u16 = 0x001d;
 pub(crate) const TLS13: u16 = 0x0304;
 
-const SIGNATURE_SCHEMES: [u16; 8] = [
-    0x0403, 0x0503, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601,
+const SIGNATURE_SCHEMES: [u16; 10] = [
+    0x0403, 0x0503, 0x0603, 0x0807, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601,
 ];
 
 const RETRY_RANDOM: [u8; 32] = [
@@ -636,6 +636,7 @@ impl Transcript {
 enum KeyKind {
     Ec(Curve),
     Rsa,
+    Ed25519,
 }
 
 struct LeafKey {
@@ -660,6 +661,10 @@ impl LeafKey {
                 (point, &[])
             }
             PublicKey::Rsa { modulus, exponent } => (modulus, exponent),
+            PublicKey::Ed25519(point) => {
+                copied.kind = KeyKind::Ed25519;
+                (point, &[])
+            }
         };
         if first.len() + second.len() > copied.bytes.len() {
             return Err(unsupported);
@@ -681,6 +686,7 @@ impl LeafKey {
                 modulus: &self.bytes[..self.first],
                 exponent: &self.bytes[self.first..self.first + self.second],
             },
+            KeyKind::Ed25519 => PublicKey::Ed25519(&self.bytes[..self.first]),
         }
     }
 }
@@ -693,6 +699,10 @@ fn scheme_algorithm(scheme: u16, kind: KeyKind) -> Option<SignatureAlgorithm> {
         (0x0503, KeyKind::Ec(Curve::P384)) => {
             Some(SignatureAlgorithm::Ecdsa(HashAlgorithm::Sha384))
         }
+        (0x0603, KeyKind::Ec(Curve::P521)) => {
+            Some(SignatureAlgorithm::Ecdsa(HashAlgorithm::Sha512))
+        }
+        (0x0807, KeyKind::Ed25519) => Some(SignatureAlgorithm::Ed25519),
         (0x0804, KeyKind::Rsa) => Some(SignatureAlgorithm::RsaPss(HashAlgorithm::Sha256)),
         (0x0805, KeyKind::Rsa) => Some(SignatureAlgorithm::RsaPss(HashAlgorithm::Sha384)),
         (0x0806, KeyKind::Rsa) => Some(SignatureAlgorithm::RsaPss(HashAlgorithm::Sha512)),

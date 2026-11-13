@@ -24,6 +24,7 @@ pub mod chacha20poly1305;
 pub mod cmac;
 pub mod constant_time;
 pub mod ecdsa;
+pub mod ed25519;
 pub mod gcm;
 pub mod hmac;
 pub mod key_wrap;

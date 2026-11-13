@@ -16,6 +16,8 @@ const SHA512_WITH_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
 const EC_PUBLIC_KEY: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 const P256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 const P384: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x22];
+const P521: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x23];
+const ED25519: &[u8] = &[0x2b, 0x65, 0x70];
 const ECDSA_SHA256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
 const ECDSA_SHA384: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03];
 const ECDSA_SHA512: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x04];
@@ -44,6 +46,8 @@ pub enum SignatureAlgorithm {
     RsaPss(HashAlgorithm),
     /// ECDSA; the curve is the key's.
     Ecdsa(HashAlgorithm),
+    /// Ed25519 (RFC 8410, D573): the message itself is signed.
+    Ed25519,
 }
 
 /// A subject's public key.
@@ -56,6 +60,8 @@ pub enum PublicKey<'a> {
     },
     /// ECDSA on a curve: an uncompressed point.
     Ec { curve: Curve, point: &'a [u8] },
+    /// Ed25519: the 32-byte encoded point.
+    Ed25519(&'a [u8]),
 }
 
 /// The fields of a certificate a TLS client uses.
@@ -125,6 +131,7 @@ fn signature_algorithm(contents: &[u8]) -> Result<SignatureAlgorithm, ParseError
         ECDSA_SHA256 => SignatureAlgorithm::Ecdsa(HashAlgorithm::Sha256),
         ECDSA_SHA384 => SignatureAlgorithm::Ecdsa(HashAlgorithm::Sha384),
         ECDSA_SHA512 => SignatureAlgorithm::Ecdsa(HashAlgorithm::Sha512),
+        ED25519 => SignatureAlgorithm::Ed25519,
         RSA_PSS => {
             let mut parameters = Reader::new(reader.expect(SEQUENCE)?);
             let hash = Reader::new(parameters.expect(der::explicit(0))?).expect(SEQUENCE)?;
@@ -159,10 +166,12 @@ fn public_key(contents: &[u8]) -> Result<PublicKey<'_>, ParseError> {
             let curve = match algorithm.expect(OBJECT_IDENTIFIER)? {
                 P256 => Curve::P256,
                 P384 => Curve::P384,
+                P521 => Curve::P521,
                 _ => return Err(ParseError::UnsupportedAlgorithm),
             };
             Ok(PublicKey::Ec { curve, point: key })
         }
+        ED25519 if key.len() == eggos_crypto::ed25519::PUBLIC_KEY_BYTES => Ok(PublicKey::Ed25519(key)),
         _ => Err(ParseError::UnsupportedAlgorithm),
     }
 }
@@ -410,6 +419,9 @@ pub fn verify(
                 return false;
             };
             ecdsa::verify(*curve, point, digest(hash, message).as_bytes(), r, s)
+        }
+        (PublicKey::Ed25519(point), SignatureAlgorithm::Ed25519) => {
+            eggos_crypto::ed25519::verify(point, message, signature)
         }
         (PublicKey::Rsa { modulus, exponent }, SignatureAlgorithm::RsaPkcs1(hash)) => {
             rsa::PublicKey::new(modulus, exponent).is_ok_and(|key| {
