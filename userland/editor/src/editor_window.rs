@@ -16,6 +16,8 @@ use crate::document::{Full, TEXT_CAPACITY};
 use crate::editor::{Editor, Motion};
 use crate::file::{self, OpenProblem, SaveProblem, folder_of};
 use crate::find::{self, Wrap};
+use crate::highlight::{self, Language};
+use core::cell::RefCell;
 use core::fmt::Write;
 use eggos_app::files::{self, Files, Path};
 use eggos_app::messages::Line;
@@ -113,6 +115,7 @@ mod item {
     pub const COPY: u8 = 4;
     pub const PASTE: u8 = 5;
     pub const SELECT_ALL: u8 = 6;
+    pub const SYNTAX_COLOURS: u8 = 7;
 }
 
 /// A toolbar button.
@@ -198,6 +201,28 @@ enum Drag {
     Horizontal { grab: i32, start: i32 },
 }
 
+const STATE_CHECKPOINT_LINES: usize = 256;
+const STATE_CHECKPOINTS: usize = 256;
+
+#[derive(Debug)]
+struct LineStates {
+    checkpoints: [highlight::State; STATE_CHECKPOINTS],
+    known: usize,
+}
+
+impl LineStates {
+    const fn new() -> Self {
+        Self {
+            checkpoints: [highlight::State::Normal; STATE_CHECKPOINTS],
+            known: 1,
+        }
+    }
+
+    fn forget_from(&mut self, line: usize) {
+        self.known = self.known.min(line / STATE_CHECKPOINT_LINES + 1);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Notice {
     text: Line,
@@ -223,6 +248,9 @@ pub struct EditorWindow<'a> {
     scroll_x: i32,
     scroll_y: i32,
     widest: Option<usize>,
+    language: Option<Language>,
+    syntax_colours: bool,
+    line_states: RefCell<LineStates>,
     bar: Bar,
     focus: Focus,
     find_field: Field,
@@ -341,6 +369,9 @@ impl<'a> EditorWindow<'a> {
             scroll_x: 0,
             scroll_y: 0,
             widest: None,
+            language: None,
+            syntax_colours: true,
+            line_states: RefCell::new(LineStates::new()),
             bar: Bar::Closed,
             focus: Focus::Text,
             find_field: field("Find"),
@@ -396,6 +427,17 @@ impl<'a> EditorWindow<'a> {
         self.editor.take_shared_clipboard(fill);
     }
 
+    /// The language the document is coloured as, if its name says one and colouring is on.
+    pub fn coloured_as(&self) -> Option<Language> {
+        self.language.filter(|_| self.syntax_colours)
+    }
+
+    /// Turns syntax colouring on or off (D574).
+    pub fn set_syntax_colours(&mut self, shown: bool) {
+        self.syntax_colours = shown;
+        self.damage_all();
+    }
+
     /// The document's path, if it has one.
     pub fn path(&self) -> Option<&[u8]> {
         self.path.as_ref().map(Path::as_bytes)
@@ -445,6 +487,12 @@ impl<'a> EditorWindow<'a> {
     }
 
     fn update_title(&mut self) {
+        let name = self.path().map_or(&b""[..], files::file_name);
+        let language = Language::detect(name, self.editor.document().line(0));
+        if language != self.language {
+            self.language = language;
+            self.line_states.get_mut().forget_from(0);
+        }
         let title = title_of(self.name(), self.editor.is_modified());
         if title != self.title {
             self.title = title;
@@ -709,6 +757,10 @@ impl<'a> EditorWindow<'a> {
 
     fn changed_with_widest(&mut self, widest: Option<usize>) {
         self.widest = widest;
+        let (start, _) = self.editor.selection();
+        let document = self.editor.document();
+        let first = document.line_of(start.min(document.len())).min(self.editor.caret_line());
+        self.line_states.get_mut().forget_from(first.saturating_sub(1));
         self.keep_caret_visible();
         self.restart_caret();
         self.update_title();
@@ -1448,6 +1500,16 @@ impl<'a> EditorWindow<'a> {
                 enabled: !editor.document().is_empty(),
                 id: item::SELECT_ALL,
             },
+            Entry::Separator,
+            Entry::Item {
+                label: match self.syntax_colours {
+                    true => "Hide Syntax Colours",
+                    false => "Show Syntax Colours",
+                },
+                key: "",
+                enabled: self.language.is_some(),
+                id: item::SYNTAX_COLOURS,
+            },
         ];
         self.menu = Some(Menu::new(&entries, x, y, self.content()));
         self.damage_all();
@@ -1497,6 +1559,10 @@ impl<'a> EditorWindow<'a> {
             item::SELECT_ALL => {
                 self.editor.select_all();
                 self.moved();
+            }
+            item::SYNTAX_COLOURS => {
+                self.syntax_colours = !self.syntax_colours;
+                self.damage_all();
             }
             _ => {}
         }

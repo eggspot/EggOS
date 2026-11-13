@@ -1,8 +1,10 @@
 use super::{
     Bar, CELL_WIDTH, Drag, EditorWindow, FIND_FIELD, Focus, MATCH_CASE, MATCH_CASE_X, NEXT_BUTTON,
-    PREVIOUS_BUTTON, Part, RESULT_FROM_RIGHT, RESULT_LEFT, ROW_HEIGHT, TOOLBAR_HEIGHT, TOOLS,
+    PREVIOUS_BUTTON, Part, RESULT_FROM_RIGHT, RESULT_LEFT, ROW_HEIGHT, STATE_CHECKPOINT_LINES,
+    STATE_CHECKPOINTS, TOOLBAR_HEIGHT, TOOLS,
 };
 use crate::columns::TAB_COLUMNS;
+use crate::highlight::{self, Kind, Language, State};
 use core::fmt::Write;
 use eggos_app::messages::Line;
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
@@ -23,6 +25,7 @@ const NOTICE_TEXT_TOP: i32 = 12;
 const EDGE: i32 = 2;
 const NUMBER_END_FROM_GUTTER: i32 = 8;
 const CARET_WIDTH: i32 = 1;
+const PLAIN_TEXT: &str = "Plain Text";
 
 fn edged(canvas: &mut Canvas<'_>, rect: Rect) {
     canvas.rounded(
@@ -37,6 +40,26 @@ fn edged(canvas: &mut Canvas<'_>, rect: Rect) {
     );
     canvas.rounded(rect, &INSET_R6, colour::MENU);
     canvas.outline(rect, &INSET_R6, 1, colour::MENU_BORDER);
+}
+
+mod syntax_ink {
+    pub const CALL: u32 = 0x00f2_cc6d;
+    pub const NAME: u32 = 0x0072_d3e0;
+    pub const QUOTED: u32 = 0x0084_d48a;
+    pub const LITERAL: u32 = 0x00da_95e4;
+    pub const STRUCTURE: u32 = 0x007f_b0f0;
+}
+
+fn ink_of(kind: Kind) -> u32 {
+    match kind {
+        Kind::Plain => colour::TEXT,
+        Kind::Function | Kind::Macro => syntax_ink::CALL,
+        Kind::Type | Kind::Key | Kind::Link => syntax_ink::NAME,
+        Kind::String => syntax_ink::QUOTED,
+        Kind::Number | Kind::Escape | Kind::Attribute => syntax_ink::LITERAL,
+        Kind::Keyword | Kind::Tag | Kind::Heading => syntax_ink::STRUCTURE,
+        Kind::Comment => colour::TEXT_DIM,
+    }
 }
 
 fn mono(canvas: &mut Canvas<'_>, x: i32, y: i32, character: char, ink: u32) {
@@ -238,8 +261,9 @@ impl EditorWindow<'_> {
         canvas.restore(previous);
         let previous = canvas.narrow(view);
         let (start, end) = self.editor.selection();
+        let mut state = self.state_at(first);
         for line in first..last {
-            self.paint_line(canvas, line, (start, end));
+            state = self.paint_line(canvas, line, (start, end), state);
         }
         let caret_drawn =
             caret_shown && self.focus == Focus::Text && self.window_focused && self.panel.is_none();
@@ -267,11 +291,48 @@ impl EditorWindow<'_> {
         canvas.restore(previous);
     }
 
-    fn paint_line(&self, canvas: &mut Canvas<'_>, line: usize, (start, end): (usize, usize)) {
+    fn state_at(&self, line: usize) -> State {
+        let Some(language) = self.coloured_as() else {
+            return State::Normal;
+        };
+        let document = self.editor.document();
+        let mut states = self.line_states.borrow_mut();
+        let wanted = (line / STATE_CHECKPOINT_LINES).min(STATE_CHECKPOINTS - 1);
+        while states.known <= wanted {
+            let known = states.known;
+            let from = (known - 1) * STATE_CHECKPOINT_LINES;
+            let mut state = states.checkpoints[known - 1];
+            for at in from..from + STATE_CHECKPOINT_LINES {
+                state = highlight::line(language, document.line(at), state).1;
+            }
+            states.checkpoints[known] = state;
+            states.known = known + 1;
+        }
+        let mut state = states.checkpoints[wanted];
+        for at in wanted * STATE_CHECKPOINT_LINES..line {
+            state = highlight::line(language, document.line(at), state).1;
+        }
+        state
+    }
+
+    fn paint_line(
+        &self,
+        canvas: &mut Canvas<'_>,
+        line: usize,
+        (start, end): (usize, usize),
+        state: State,
+    ) -> State {
         let document = self.editor.document();
         let top = self.row_top(line);
         let line_start = document.line_start(line);
         let bytes = document.line(line);
+        let (runs, next_state) = match self.coloured_as() {
+            Some(language) => {
+                let (runs, next) = highlight::line(language, bytes, state);
+                (Some(runs), next)
+            }
+            None => (None, state),
+        };
         let right = canvas.clip().right();
         let mut column = 0;
         for (at, character) in core::str::from_utf8(bytes).unwrap_or("").char_indices() {
@@ -281,7 +342,7 @@ impl EditorWindow<'_> {
             };
             let left = self.column_left(column);
             if left >= right {
-                return;
+                return next_state;
             }
             let offset = line_start + at;
             let selected = offset >= start && offset < end;
@@ -294,7 +355,8 @@ impl EditorWindow<'_> {
                     );
                 }
                 if character != '\t' {
-                    mono(canvas, left, top, character, colour::TEXT);
+                    let ink = runs.as_ref().map_or(colour::TEXT, |runs| ink_of(runs.kind_at(at)));
+                    mono(canvas, left, top, character, ink);
                 }
             }
             column = next;
@@ -307,6 +369,7 @@ impl EditorWindow<'_> {
                 colour::SELECTION,
             );
         }
+        next_state
     }
 
     fn paint_scroll_bar(&self, canvas: &mut Canvas<'_>, track: Rect, thumb: Rect, part: Part) {
@@ -364,15 +427,20 @@ impl EditorWindow<'_> {
         let ending_x = self.width - STATUS_TEXT_X - text::width(ending);
         canvas.text(ending_x, y, ending, colour::TEXT_DIM, 1);
         let state = self.state_text();
+        let mut language_end = ending_x - STATE_GAP;
         if !state.is_empty() {
-            canvas.text(
-                ending_x - STATE_GAP - text::width(state),
-                y,
-                state,
-                colour::TEXT_DIM,
-                1,
-            );
+            let state_x = ending_x - STATE_GAP - text::width(state);
+            canvas.text(state_x, y, state, colour::TEXT_DIM, 1);
+            language_end = state_x - STATE_GAP;
         }
+        let language = self.language.map_or(PLAIN_TEXT, Language::name);
+        canvas.text(
+            language_end - text::width(language),
+            y,
+            language,
+            colour::TEXT_DIM,
+            1,
+        );
     }
 
     /// Where the notice shown is, if one is.

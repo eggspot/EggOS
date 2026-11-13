@@ -13,6 +13,8 @@ fn disk() -> MemoryFiles {
         .folder("/media/host")
         .file("/home/root/notes.txt", b"one egg\ntwo eggs\nEGG three\n", 5)
         .file("/home/root/dos.txt", b"a\r\nb\r\n", 5)
+        .file("/home/root/main.RS", b"fn main() {}\n", 5)
+        .file("/home/root/start", b"#!/bin/sh\necho hi\n", 5)
         .file("/home/root/photo.png", b"\x89PNG\r\n\x1a\n\0\0", 5)
         .file("/media/host/shared.txt", b"shared\n", 5)
         .read_only("/media/host");
@@ -566,4 +568,21 @@ fn an_agent_reads_the_text_as_a_text_field_and_sets_it() {
         Outcome::Disabled,
         "the save question is open"
     );
+}
+
+#[test]
+fn a_file_s_name_or_hash_bang_line_picks_its_colours_and_the_menu_turns_them_off() {
+    let mut owned = Owned::new(4096);
+    let driver = Driver::new(&mut owned, Some(b"/home/root/main.RS"));
+    assert_eq!(driver.window.coloured_as(), Some(Language::Rust));
+    let mut owned = Owned::new(4096);
+    let mut driver = Driver::new(&mut owned, Some(b"/home/root/start"));
+    assert_eq!(driver.window.coloured_as(), Some(Language::Shell));
+    driver.window.set_syntax_colours(false);
+    assert_eq!(driver.window.coloured_as(), None);
+    driver.window.set_syntax_colours(true);
+    assert_eq!(driver.window.coloured_as(), Some(Language::Shell));
+    let mut owned = Owned::new(4096);
+    let driver = Driver::new(&mut owned, Some(NOTES));
+    assert_eq!(driver.window.coloured_as(), None);
 }
