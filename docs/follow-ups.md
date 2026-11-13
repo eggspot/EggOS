@@ -83,15 +83,16 @@ and is not listed per item.
 
 ## M8 virtio and the network stack
 
-- [ ] virtio: event index (`VIRTIO_F_EVENT_IDX`) and indirect descriptors (D111)
-- [ ] virtio: used ring checked against the chains in flight, so a faulty device cannot return a descriptor twice (D111)
-- [ ] virtio-iommu, cache maintenance for non-coherent DMA, and the doorbell's ordering for real devices (`dmb osh`, `fence w,o`) (D111)
-- [ ] virtio-gpu: more than one scanout, display hot-unplug and teardown (D112)
-- [ ] virtio-input: keyboard LEDs through the status queue, more than four input devices, hot-plug (D113)
+- [x] virtio: event index (`VIRTIO_F_EVENT_IDX`) and indirect descriptors (D111) — code written, unbuilt, D563
+- [x] virtio: used ring checked against the chains in flight, so a faulty device cannot return a descriptor twice (D111) — code written, unbuilt, D563
+- [x] virtio-iommu, cache maintenance for non-coherent DMA, and the doorbell's ordering for real devices (`dmb osh`, `fence w,o`) (D111) — code written, unbuilt, D563 (doorbell ordering already done)
+- [x] virtio-gpu: more than one scanout, display hot-unplug and teardown (D112) — code written, unbuilt, D563 (mirroring)
+- [x] virtio-input: keyboard LEDs through the status queue, more than four input devices, hot-plug (D113) — code written, unbuilt, D563 (LEDs already done, D221; unplug here, arrival on the PCIe hot-plug line)
 - [ ] Network: IPv6 (addresses, NDP, SLAAC, ICMPv6, UDP and TCP over IPv6, `AF_INET6` sockets) (D157)
 - [ ] TCP: window scaling, selective acknowledgments, keep-alive probes, urgent data (D158)
 - [ ] virtio multiqueue: virtio-net's several queue pairs and virtio-blk's `num_queues`, each following its CPU (D540)
 - [ ] virtio-net: IPv6 and UDP segmentation offload and receive-side coalescing (`GUEST_TSO4`, mergeable buffers) (D541)
+- [ ] PCIe native hot-plug: slot presence events, BARs assigned from the bridge's windows, devices that arrive after boot probed and ones that leave released (D563)
 
 ## M9 More architectures
 

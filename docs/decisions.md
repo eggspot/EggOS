@@ -26176,3 +26176,48 @@ the license, by an explicit instruction recorded here.
   EggOS mounts its file systems at boot.
 - **Not yet.** Building and running; `MS_RDONLY` remounts; checking a mounted volume online and
   the checker's progress report (D192).
+
+## D563 The virtio core grows up: event index, indirect chains, a checked used ring, non-coherent DMA, the virtio IOMMU, several scanouts and unplugged devices (M8; D111's, D112's and D113's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **Event index.** `feature::RING_EVENT_IDX` (bit 29) is accepted by virtio-blk and virtio-net;
+  `SplitQueue::use_event_index` then writes `used_event` (the next used index while the driver
+  wants interrupts, one behind it while it polls) instead of relying on the flags, and
+  `should_notify` rings the doorbell only when the available index passed the device's
+  `avail_event` since the last call (`needs_event`, the spec's wrapping test).
+- **Indirect chains.** `SplitQueue::submit_indirect(chain, &IndirectTable)` writes the chain into
+  a table the driver owns and puts one `DESCRIPTOR_INDIRECT` descriptor in the ring.
+- **Used ring checked.** The queue keeps a bit per descriptor head it handed over; a used element
+  naming a head out of range, never made available or already returned is skipped and counted
+  (`rejected_used`), so a faulty device cannot make the driver free a chain twice.
+- **Doorbell ordering** was already there: every notify goes through the HAL's
+  `doorbell_barrier` (`dmb oshst`, `fence w, o`).
+- **Non-coherent DMA.** `DmaMemory` gains `cache_maintenance`, `prepare_for_device` and
+  `prepare_for_cpu` (nothing for coherent memory); the kernel's `DmaRegion::allocate_for(bytes,
+  coherence)` makes a region whose maintenance is the HAL's `write_back_for_device` (`clflush`,
+  `dc cvac`, Zicbom's `cbo.clean`) and `discard_for_cpu` (`clflush`, `dc civac`, `cbo.flush`),
+  or `None` when the CPU cannot do it (`can_maintain_for_devices`; RISC-V needs `zicbom` in the
+  device tree). Queues write back what they publish and drop what the device wrote before
+  reading it; virtio-blk and virtio-net do the same for their buffers, so non-coherent virtio-blk
+  and virtio-net devices are driven instead of refused.
+- **The virtio IOMMU** (device 23, `virtio-iommu` feature, on by default): `VirtioIommu` attaches
+  endpoints to domains and maps and unmaps ranges over its request queue. The kernel's driver
+  finds the endpoints behind it in the device tree (`iommus` on a node, `iommu-map` on a PCI
+  host for each PCI function present), puts them in one kernel domain and has
+  `dma::translate_through` map every DMA region there at its physical address (the regions
+  already given out first, then each new one; freed ones are unmapped). Endpoints left out
+  keep bypassing (`BYPASS_CONFIG`). Devices reach their buffers and nothing else.
+- **virtio-gpu.** `scanout_modes` reads all 16 scanouts; `follow_scanouts` (run on every
+  display event) shows the shown resource on every other enabled scanout too, which the device
+  scales (mirroring with no copy), and stops showing it on unplugged ones;
+  `detach_framebuffer` disables every scanout, detaches and destroys the resource and gives the
+  framebuffer back.
+- **Input.** The kernel takes 16 input devices; `InputDevice::is_gone` (a virtio device whose
+  status reads all ones or asks for a reset) drops a device that went away and stops a key
+  repeat it left running.
+- **Decided by research.** Mirroring before an extended desktop: one resource on several
+  scanouts costs nothing and is what a laptop plugged into a projector wants first; extended
+  desktops need the window server to own several outputs. One kernel domain rather than one per
+  device: it keeps devices out of all memory but their buffers without making every allocation
+  name its device; per-device domains come with that change.
+- **Not yet.** Building and running; an extended desktop over several scanouts; one domain per
+  device; devices added after boot (the new PCIe hot-plug line).
