@@ -64,11 +64,11 @@ and is not listed per item.
 - [x] Extended attributes: `setxattr`, `getxattr`, `listxattr`, `removexattr` and their `l`/`f` forms (D176) — code written, unbuilt, D557
 - [x] `prctl` `PR_SET_NAME`/`PR_GET_NAME` with `/proc/<pid>/comm` and `/proc/<pid>/task/<tid>/comm` (D176) — code written, unbuilt, D557
 - [x] `chown`, `fchown`, `lchown`, `fchownat` (D176) — code written, unbuilt, D557
-- [ ] `fanotify` (D179)
+- [x] `fanotify` (D179) — code written, unbuilt, D560
 - [x] `pidfd_open`, `pidfd_send_signal` and `pidfd_getfd` (D183) — code written, unbuilt, D557
 - [x] Address-space layout randomization of the `mmap` area, the break and the interpreter's base (D51, D53, D201) — code written, unbuilt, D558
 - [x] POSIX capabilities: `capget`/`capset`, the bounding and ambient sets, `PR_CAPBSET_*`, file capabilities not yet (D270) — code written, unbuilt, D557
-- [ ] RISC-V misaligned loads and stores emulated as Linux does on harts that trap them (D65)
+- [x] RISC-V misaligned loads and stores emulated as Linux does on harts that trap them (D65) — code written, unbuilt, D560
 - [x] `MAP_GROWSDOWN` and `MAP_POPULATE` (D53, D167) — code written, unbuilt, D558
 - [ ] `ptrace` for debuggers: `PTRACE_TRACEME`, `ATTACH`/`SEIZE`, `PEEK`/`POKE`, `GETREGS`/`SETREGS`, `CONT`, `SINGLESTEP` with `TRAP_TRACE`, hardware breakpoints with `TRAP_HWBKPT`, and the `PTRACE_MODE_READ` check on `/proc/<pid>` files (D65, D168)
 

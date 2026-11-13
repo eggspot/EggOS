@@ -26083,3 +26083,24 @@ the license, by an explicit instruction recorded here.
   program that asks then reads never finds it empty).
 - **Not yet.** Building and running; the second reserve tier; a lingering close that waits; multicast
   notifications of changes; IPv6 addresses (no IPv6 yet); a long echo written outside the lock.
+
+## D560 `fanotify`, open events, and RISC-V's misaligned accesses (M6; D65's and D179's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **`fanotify`** (`linux::fanotify`). `fanotify_init` (root only, the notification class) makes a
+  group; `fanotify_mark` adds, removes or flushes marks on a file, a directory (its entries with
+  `FAN_EVENT_ON_CHILD`, directories themselves with `FAN_ONDIR`) or the whole mount or file system
+  a path is on. The kernel's file events reach each group's marks; a read gives
+  `fanotify_event_metadata` records (version 3, 24 bytes), each with a descriptor opened read-only
+  on the file at the read, in the reader's table, and pid 0; a full queue (16384) ends in one
+  `FAN_Q_OVERFLOW`. Permission events are `EINVAL`: no program gets a veto over another's opens.
+  32-bit Arm's split mask is joined at the boundary.
+- **Open events.** `openat` now reports `IN_OPEN`, which `inotify` watches and `fanotify` marks see,
+  and the descriptor's last close reports `IN_CLOSE_*` to `fanotify` as to `inotify`.
+- **RISC-V's misaligned accesses.** A program's misaligned integer load or store that traps (harts
+  without hardware support for them; QEMU's do it in hardware) is decoded, 32-bit or compressed
+  (`lh`/`lw`/`ld`/`lhu`/`lwu`, `sh`/`sw`/`sd`, `c.lw`/`c.ld`/`c.sw`/`c.sd` and their stack forms),
+  done a byte at a time through the program's memory, and the program goes on past it, as Linux does.
+  Floating-point and atomic accesses still raise `SIGBUS`. The code lives with the RISC-V ABI
+  (`linux/abi/riscv_misaligned.rs`); `abi::emulate_misaligned` does nothing elsewhere.
+- **Not yet.** Building and running; `fanotify`'s permission events, file handles (`FAN_REPORT_FID`)
+  and the causing process's id; misaligned floating-point accesses.
