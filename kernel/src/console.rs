@@ -156,6 +156,35 @@ pub fn write<P: Platform>(bytes: &[u8]) {
     write_mirror(bytes);
 }
 
+/// What a program writes to the console (D559): thrown away while `VDISCARD` holds, waiting
+/// while `VSTOP` holds (until `VSTART`, a signal or the process's end ask the caller to stop:
+/// `false` then), processed as the settings say (`ONLCR`), and followed for its column, which
+/// a tab's rub-out counts from.
+pub fn write_from_program<P: Platform>(bytes: &[u8], stop_waiting: &dyn Fn() -> bool) -> bool {
+    loop {
+        let (stopped, discarded) = {
+            let discipline = LINE_DISCIPLINE.lock();
+            (discipline.output_stopped(), discipline.output_discarded())
+        };
+        if discarded {
+            return true;
+        }
+        if !stopped {
+            break;
+        }
+        if stop_waiting() {
+            return false;
+        }
+        crate::thread::sleep::<P>(core::time::Duration::from_millis(10));
+    }
+    let settings_copy = LINE_DISCIPLINE.lock().settings();
+    let mut processed = LineDiscipline::new();
+    processed.set_settings(settings_copy, false);
+    processed.process_output(bytes, &mut |piece| write::<P>(piece));
+    LINE_DISCIPLINE.lock().note_output(bytes);
+    true
+}
+
 type Mirror = fn(&[u8]);
 
 static MIRROR: LeafSpinLock<Option<Mirror>> = LeafSpinLock::new_leaf(None);

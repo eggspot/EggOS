@@ -389,6 +389,9 @@ pub enum Phase {
 pub struct Socket {
     phase: LeafSpinLock<Phase>,
     run: fn(),
+    /// `SO_LINGER` (D559): `None` when off, else the seconds `close` lingers; 0 resets the
+    /// connection at close instead of closing it.
+    linger: LeafSpinLock<Option<u32>>,
 }
 
 impl Socket {
@@ -396,6 +399,7 @@ impl Socket {
     pub fn new(run: fn()) -> Self {
         Self {
             phase: LeafSpinLock::new_leaf(Phase::Idle),
+            linger: LeafSpinLock::new_leaf(None),
             run,
         }
     }
@@ -429,12 +433,29 @@ impl Socket {
 impl Drop for Socket {
     fn drop(&mut self) {
         let phase = core::mem::replace(&mut *self.phase.lock(), Phase::Idle);
+        let reset = *self.linger.lock() == Some(0);
         match phase {
             Phase::Idle => return,
             Phase::Listening(listener) => listener.close(),
+            Phase::Connected(stream) if reset => {
+                stream.abort();
+                stream.release();
+            }
             Phase::Connected(stream) => stream.release(),
         }
         (self.run)();
+    }
+}
+
+impl Socket {
+    /// Sets `SO_LINGER` (D559).
+    pub fn set_linger(&self, linger: Option<u32>) {
+        *self.linger.lock() = linger;
+    }
+
+    /// `SO_LINGER` as set.
+    pub fn linger(&self) -> Option<u32> {
+        *self.linger.lock()
     }
 }
 

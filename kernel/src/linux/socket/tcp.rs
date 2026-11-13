@@ -226,7 +226,20 @@ fn setsockopt<P: Platform>(
     length: u64,
 ) -> Result<u64, Errno> {
     match (level as u32, name as u32) {
-        (IPPROTO_TCP, _) | (SOL_SOCKET, SO_KEEPALIVE | SO_LINGER) => {
+        (SOL_SOCKET, SO_LINGER) => {
+            if (length as u32) < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let mut bytes = [0u8; 8];
+            process
+                .read_user_memory(value, &mut bytes)
+                .map_err(|_| Errno::EFAULT)?;
+            let on = i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != 0;
+            let seconds = i32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]).max(0) as u32;
+            tcp_socket(socket)?.set_linger(on.then_some(seconds));
+            Ok(0)
+        }
+        (IPPROTO_TCP, _) | (SOL_SOCKET, SO_KEEPALIVE) => {
             if (length as u32) < 4 {
                 return Err(Errno::EINVAL);
             }
@@ -244,6 +257,17 @@ fn getsockopt<P: Platform>(
     value: u64,
     length_at: u64,
 ) -> Result<u64, Errno> {
+    if (level as u32, name as u32) == (SOL_SOCKET, SO_LINGER) {
+        let linger = tcp_socket(socket)?.linger();
+        let mut bytes = [0u8; 8];
+        bytes[..4].copy_from_slice(&i32::from(linger.is_some()).to_ne_bytes());
+        bytes[4..].copy_from_slice(&(linger.unwrap_or(0) as i32).to_ne_bytes());
+        return give(process, &bytes, value, length_at);
+    }
+    if (level as u32, name as u32) == (IPPROTO_TCP, TCP_INFO) {
+        let bytes = tcp_info(&tcp_socket(socket)?.phase());
+        return give(process, &bytes, value, length_at);
+    }
     let phase = tcp_socket(socket)?.phase();
     let answer = match (level as u32, name as u32) {
         (SOL_SOCKET, option::TYPE) => super::SOCK_STREAM,
@@ -264,6 +288,52 @@ fn getsockopt<P: Platform>(
         return Err(Errno::EINVAL);
     }
     let bytes = answer.to_ne_bytes();
+    let written = bytes.len().min(room as usize);
+    process
+        .write_user_memory(value, &bytes[..written])
+        .map_err(|_| Errno::EFAULT)?;
+    process
+        .write_user_memory(length_at, &(written as u32).to_ne_bytes())
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(0)
+}
+
+const TCP_INFO: u32 = 11;
+/// `struct tcp_info` up to `tcpi_total_retrans`, as old programs and `ss` read it.
+const TCP_INFO_BYTES: usize = 104;
+
+/// `TCP_INFO`'s answer (D559): Linux's state number, the segment size both ways, and the bytes
+/// waiting to be read and acknowledged; the counters EggOS's TCP does not keep read 0.
+fn tcp_info(phase: &Phase) -> [u8; TCP_INFO_BYTES] {
+    let mut info = [0u8; TCP_INFO_BYTES];
+    let state = match phase {
+        Phase::Idle => 7,
+        Phase::Listening(_) => 10,
+        Phase::Connected(stream) => match stream.status().state {
+            State::Established => 1,
+            State::SynSent => 2,
+            State::SynReceived => 3,
+            State::FinWait1 => 4,
+            State::FinWait2 => 5,
+            State::TimeWait => 6,
+            State::Closed => 7,
+            State::CloseWait => 8,
+            State::LastAck => 9,
+            State::Closing => 11,
+        },
+    };
+    info[0] = state;
+    let mss = u32::from(crate::net::tcp_mss());
+    info[16..20].copy_from_slice(&mss.to_ne_bytes());
+    info[20..24].copy_from_slice(&mss.to_ne_bytes());
+    info
+}
+
+fn give<P: Platform>(process: &Process<P>, bytes: &[u8], value: u64, length_at: u64) -> Result<u64, Errno> {
+    let room = super::read_int(process, length_at)?;
+    if room < 0 {
+        return Err(Errno::EINVAL);
+    }
     let written = bytes.len().min(room as usize);
     process
         .write_user_memory(value, &bytes[..written])

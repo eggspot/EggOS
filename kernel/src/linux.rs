@@ -78,6 +78,7 @@ pub mod limits;
 pub mod memfd;
 pub mod memory;
 pub mod memory_devices;
+pub mod out_of_memory;
 pub mod pidfd;
 pub mod pipe;
 pub mod poll;
@@ -641,12 +642,19 @@ fn user_exception<P: Platform>(
             let fault = fault::bus_error(process, &exception, context.stack());
             signals::deliver_fault(process, thread, context, &fault)
         }
-        Err(UnresolvedFault::OutOfMemory) => end_process(
-            process,
-            ProcessExit::Killed {
-                signal: signal::SIGKILL,
-            },
-        ),
+        Err(UnresolvedFault::OutOfMemory) => {
+            if out_of_memory::end_largest_other::<P>(process.id().get())
+                && process.resolve_page_fault(address, page_fault).is_ok()
+            {
+                return ControlFlow::Continue(());
+            }
+            end_process(
+                process,
+                ProcessExit::Killed {
+                    signal: signal::SIGKILL,
+                },
+            )
+        }
     }
 }
 
@@ -1734,7 +1742,10 @@ fn write_to_console<P: Platform>(process: &Process<P>, buffer: u64, count: u64) 
         if process.read_user_memory(address, bytes).is_err() {
             break;
         }
-        crate::console::write::<P>(bytes);
+        let stop_waiting = || process.has_ended() || process.sent_signals_waiting();
+        if !crate::console::write_from_program::<P>(bytes, &stop_waiting) {
+            break;
+        }
         written += length as u64;
         crate::thread::preemption_point::<P>();
         process.interrupt_here_if_sent_signals_wait();

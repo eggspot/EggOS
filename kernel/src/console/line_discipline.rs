@@ -29,8 +29,10 @@ pub mod input {
     pub const IGNCR: u32 = 0o200;
     /// Read carriage return as newline.
     pub const ICRNL: u32 = 0o400;
-    /// Start and stop output with `VSTART` and `VSTOP` (kept, not acted on).
+    /// Start and stop output with `VSTART` and `VSTOP` (D559).
     pub const IXON: u32 = 0o2000;
+    /// Any typed character starts output stopped with `VSTOP` (D559).
+    pub const IXANY: u32 = 0o4000;
     /// Input is UTF-8: an erase removes a whole character.
     pub const IUTF8: u32 = 0o40000;
 }
@@ -228,6 +230,8 @@ pub struct Received {
     pub quit: bool,
     /// `VSUSP` was typed: the foreground program is sent `SIGTSTP` (D181).
     pub suspend: bool,
+    /// `VSTART` was typed: writers waiting for output to start again go on (D559).
+    pub output_restarted: bool,
 }
 
 impl core::ops::BitOrAssign for Received {
@@ -236,6 +240,7 @@ impl core::ops::BitOrAssign for Received {
         self.interrupt |= other.interrupt;
         self.quit |= other.quit;
         self.suspend |= other.suspend;
+        self.output_restarted |= other.output_restarted;
     }
 }
 
@@ -272,6 +277,15 @@ pub struct LineDiscipline {
     marker_count: usize,
     literal_next: bool,
     dropped: u64,
+    /// `VSTOP` stopped output, until `VSTART` (with `IXON`, D559).
+    output_stopped: bool,
+    /// `VDISCARD` turned output off, until typed again (D559).
+    output_discarded: bool,
+    /// The output's column when the line being edited began, so a tab rubs out to where the
+    /// output put it (after a prompt, D559).
+    line_start_column: usize,
+    /// The output's column now, as [`Self::note_output`] follows it.
+    output_column: usize,
 }
 
 impl Default for LineDiscipline {
@@ -296,7 +310,58 @@ impl LineDiscipline {
             marker_count: 0,
             literal_next: false,
             dropped: 0,
+            output_stopped: false,
+            output_discarded: false,
+            line_start_column: 0,
+            output_column: 0,
         }
+    }
+
+    /// Whether output waits for `VSTART` (D559).
+    pub fn output_stopped(&self) -> bool {
+        self.output_stopped
+    }
+
+    /// Whether output is being thrown away (`VDISCARD`, D559).
+    pub fn output_discarded(&self) -> bool {
+        self.output_discarded
+    }
+
+    /// Follows the output's column through `bytes` written to the terminal (D559): a newline or
+    /// carriage return goes back to 0, a tab to the next stop, a backspace back one.
+    pub fn note_output(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.output_column = match byte {
+                b'\n' | b'\r' => 0,
+                b'\t' => self.output_column + TAB_WIDTH - self.output_column % TAB_WIDTH,
+                0x08 => self.output_column.saturating_sub(1),
+                0x80..=0xbf if self.settings.input & input::IUTF8 != 0 => self.output_column,
+                byte if is_control(byte) => self.output_column,
+                _ => self.output_column + 1,
+            };
+        }
+        if self.end == self.committed {
+            self.line_start_column = self.output_column;
+        }
+    }
+
+    /// Output processing (D559): with `OPOST` and `ONLCR`, a newline becomes `\r\n`; `write`
+    /// gets each piece of the output to send, in order.
+    pub fn process_output(&self, bytes: &[u8], write: &mut impl FnMut(&[u8])) {
+        let settings = self.settings;
+        if settings.output & output::OPOST == 0 || settings.output & output::ONLCR == 0 {
+            write(bytes);
+            return;
+        }
+        let mut start = 0;
+        for (index, &byte) in bytes.iter().enumerate() {
+            if byte == b'\n' {
+                write(&bytes[start..index]);
+                write(b"\r\n");
+                start = index + 1;
+            }
+        }
+        write(&bytes[start..]);
     }
 
     pub fn settings(&self) -> Termios {
@@ -481,6 +546,22 @@ impl LineDiscipline {
         } else if byte == b'\n' && settings.input & input::INLCR != 0 {
             byte = b'\r';
         }
+        if settings.input & input::IXON != 0 {
+            if settings.is(byte, index::VSTOP) {
+                self.output_stopped = true;
+                return Received::default();
+            }
+            if settings.is(byte, index::VSTART) {
+                self.output_stopped = false;
+                return Received {
+                    output_restarted: true,
+                    ..Received::default()
+                };
+            }
+            if self.output_stopped && settings.input & input::IXANY != 0 {
+                self.output_stopped = false;
+            }
+        }
         if settings.has(local::ISIG) {
             let interrupt = settings.is(byte, index::VINTR);
             let quit = settings.is(byte, index::VQUIT);
@@ -497,6 +578,7 @@ impl LineDiscipline {
                     interrupt,
                     quit,
                     suspend,
+                    output_restarted: false,
                 };
             }
         }
@@ -510,6 +592,22 @@ impl LineDiscipline {
             self.erase(Erase::Line, byte, echo);
         } else if extended && settings.is(byte, index::VWERASE) {
             self.erase(Erase::Word, byte, echo);
+        } else if extended && settings.is(byte, index::VREPRINT) {
+            if settings.has(local::ECHO) {
+                self.echo_character(byte, echo);
+                echo(b"\n");
+                let mut at = self.committed;
+                while at != self.end {
+                    let typed = self.bytes[at % CAPACITY];
+                    self.echo_character(typed, echo);
+                    at = at.wrapping_add(1);
+                }
+            }
+        } else if extended && settings.is(byte, index::VDISCARD) {
+            self.output_discarded = !self.output_discarded;
+            if settings.has(local::ECHO) {
+                self.echo_character(byte, echo);
+            }
         } else if extended && settings.is(byte, index::VLNEXT) {
             self.literal_next = true;
             if settings.has(local::ECHO | local::ECHOCTL) {
@@ -650,7 +748,7 @@ impl LineDiscipline {
     }
 
     fn column_at(&self, position: usize) -> usize {
-        let mut column = 0;
+        let mut column = self.line_start_column;
         let mut at = self.committed;
         while at != position {
             let byte = self.bytes[at % CAPACITY];
@@ -925,7 +1023,8 @@ mod tests {
                 readable: false,
                 interrupt: true,
                 quit: false,
-                suspend: false
+                suspend: false,
+                output_restarted: false,
             }
         );
         assert_eq!(console.echo(), b"unread\ndoomed^C");
