@@ -207,8 +207,47 @@ pub fn write_ranged_request(
     user_agent: &[u8],
     range: Option<ByteRange>,
 ) -> Option<usize> {
+    let options = RequestOptions {
+        range,
+        ..RequestOptions::default()
+    };
+    write_request_with(out, url, user_agent, &options)
+}
+
+/// What a request carries beyond its URL (D573).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RequestOptions<'a> {
+    /// Only these bytes of the resource.
+    pub range: Option<ByteRange>,
+    /// The request goes to a proxy: its target is the whole URL (`http://host:port/path`).
+    pub through_proxy: bool,
+    /// `user:password` for the server's basic authentication.
+    pub credentials: Option<&'a [u8]>,
+    /// `user:password` for the proxy's.
+    pub proxy_credentials: Option<&'a [u8]>,
+    /// The `Cookie` header's value.
+    pub cookies: Option<&'a [u8]>,
+    /// Ask for a compressed body (`gzip`, `deflate`).
+    pub compressed: bool,
+}
+
+/// Writes the `GET` request for `url` with `options` to `out`: its length, or `None` when
+/// `out` is shorter.
+pub fn write_request_with(
+    out: &mut [u8],
+    url: &Url<'_>,
+    user_agent: &[u8],
+    options: &RequestOptions<'_>,
+) -> Option<usize> {
+    let range = options.range;
     let mut writer = Writer { out, length: 0 };
     writer.put(b"GET ")?;
+    if options.through_proxy {
+        writer.put(if url.secure { b"https://" } else { b"http://" })?;
+        writer.put(url.host)?;
+        writer.put(b":")?;
+        writer.put_number(u64::from(url.port))?;
+    }
     writer.put(url.target)?;
     writer.put(b" HTTP/1.1\r\nHost: ")?;
     writer.put(url.host)?;
@@ -240,8 +279,266 @@ pub fn write_ranged_request(
         writer.put(b"-")?;
         writer.put_number(range.last)?;
     }
-    writer.put(b"\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")?;
+    if let Some(credentials) = options.credentials {
+        writer.put(b"\r\nAuthorization: Basic ")?;
+        writer.put_base64(credentials)?;
+    }
+    if let Some(credentials) = options.proxy_credentials {
+        writer.put(b"\r\nProxy-Authorization: Basic ")?;
+        writer.put_base64(credentials)?;
+    }
+    if let Some(cookies) = options.cookies {
+        writer.put(b"\r\nCookie: ")?;
+        writer.put(cookies)?;
+    }
+    writer.put(b"\r\nAccept: */*\r\nAccept-Encoding: ")?;
+    writer.put(match options.compressed {
+        true => b"gzip, deflate",
+        false => b"identity",
+    })?;
+    writer.put(b"\r\nConnection: close\r\n\r\n")?;
     Some(writer.length)
+}
+
+/// Writes the `CONNECT` request that asks a proxy for a tunnel to `host`:`port` (for an
+/// `https://` URL), with the proxy's `credentials`: its length.
+pub fn write_connect(
+    out: &mut [u8],
+    host: &[u8],
+    port: u16,
+    credentials: Option<&[u8]>,
+) -> Option<usize> {
+    let mut writer = Writer { out, length: 0 };
+    writer.put(b"CONNECT ")?;
+    writer.put(host)?;
+    writer.put(b":")?;
+    writer.put_number(u64::from(port))?;
+    writer.put(b" HTTP/1.1\r\nHost: ")?;
+    writer.put(host)?;
+    writer.put(b":")?;
+    writer.put_number(u64::from(port))?;
+    if let Some(credentials) = credentials {
+        writer.put(b"\r\nProxy-Authorization: Basic ")?;
+        writer.put_base64(credentials)?;
+    }
+    writer.put(b"\r\n\r\n")?;
+    Some(writer.length)
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Writes `bytes` in base64 (RFC 4648) to `out`: the length, or `None` when `out` is shorter.
+pub fn base64(bytes: &[u8], out: &mut [u8]) -> Option<usize> {
+    let length = bytes.len().div_ceil(3) * 4;
+    let out = out.get_mut(..length)?;
+    for (index, chunk) in bytes.chunks(3).enumerate() {
+        let word = u32::from(chunk[0]) << 16
+            | u32::from(*chunk.get(1).unwrap_or(&0)) << 8
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        let at = index * 4;
+        for slot in 0..4 {
+            out[at + slot] = match slot <= chunk.len() {
+                true => BASE64[(word >> (18 - 6 * slot) & 63) as usize],
+                false => b'=',
+            };
+        }
+    }
+    Some(length)
+}
+
+/// Every header field called `name` (any case) in `head`, in order, trimmed of spaces.
+pub fn headers<'a>(head: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
+    head.split(|&byte| byte == b'\n')
+        .skip(1)
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .take_while(|line| !line.is_empty())
+        .filter_map(move |line| {
+            let colon = line.iter().position(|&byte| byte == b':')?;
+            line[..colon]
+                .eq_ignore_ascii_case(name)
+                .then(|| trimmed(&line[colon + 1..]))
+        })
+}
+
+/// How a body is compressed (`Content-Encoding`, D573).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coding {
+    /// As it is.
+    Identity,
+    /// gzip (RFC 1952).
+    Gzip,
+    /// zlib (RFC 1950), HTTP's "deflate".
+    Deflate,
+    /// A coding the client does not take.
+    Other,
+}
+
+/// The coding `head`'s `Content-Encoding` names.
+pub fn content_coding(head: &[u8]) -> Coding {
+    match header(head, b"content-encoding") {
+        None => Coding::Identity,
+        Some(value) if value.eq_ignore_ascii_case(b"identity") => Coding::Identity,
+        Some(value) if value.eq_ignore_ascii_case(b"gzip") || value.eq_ignore_ascii_case(b"x-gzip") => {
+            Coding::Gzip
+        }
+        Some(value) if value.eq_ignore_ascii_case(b"deflate") => Coding::Deflate,
+        Some(_) => Coding::Other,
+    }
+}
+
+/// The most cookies a [`CookieJar`] keeps.
+pub const MAX_COOKIES: usize = 32;
+const COOKIE_BYTES: usize = 4096;
+
+/// The cookies servers set during one download (RFC 6265, D573): kept by host (or the
+/// `Domain` they name) and path, sent back to the URLs they match; `Secure` ones only over
+/// `https://`.
+#[derive(Debug, Clone)]
+pub struct CookieJar {
+    bytes: [u8; COOKIE_BYTES],
+    length: usize,
+    cookies: [Cookie; MAX_COOKIES],
+    count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Cookie {
+    pair: (usize, usize),
+    name_length: usize,
+    domain: (usize, usize),
+    host_only: bool,
+    path: (usize, usize),
+    secure: bool,
+}
+
+impl Default for CookieJar {
+    fn default() -> Self {
+        Self {
+            bytes: [0; COOKIE_BYTES],
+            length: 0,
+            cookies: [Cookie::default(); MAX_COOKIES],
+            count: 0,
+        }
+    }
+}
+
+impl CookieJar {
+    fn slice(&self, range: (usize, usize)) -> &[u8] {
+        &self.bytes[range.0..range.1]
+    }
+
+    fn keep(&mut self, bytes: &[u8]) -> Option<(usize, usize)> {
+        let end = self.length.checked_add(bytes.len())?;
+        self.bytes.get_mut(self.length..end)?.copy_from_slice(bytes);
+        let range = (self.length, end);
+        self.length = end;
+        Some(range)
+    }
+
+    /// Takes the `Set-Cookie` header `value` that `url`'s server sent.
+    pub fn take(&mut self, url: &Url<'_>, value: &[u8]) {
+        let mut parts = value.split(|&byte| byte == b';');
+        let Some(pair) = parts.next().map(trimmed) else {
+            return;
+        };
+        let Some(equals) = pair.iter().position(|&byte| byte == b'=') else {
+            return;
+        };
+        let name_length = trimmed(&pair[..equals]).len();
+        if name_length == 0 {
+            return;
+        }
+        let mut domain: Option<&[u8]> = None;
+        let mut path: &[u8] = b"/";
+        let mut secure = false;
+        let mut expired = false;
+        for attribute in parts.map(trimmed) {
+            let (key, attribute_value) = match attribute.iter().position(|&byte| byte == b'=') {
+                Some(at) => (&attribute[..at], trimmed(&attribute[at + 1..])),
+                None => (attribute, &b""[..]),
+            };
+            if key.eq_ignore_ascii_case(b"domain") && !attribute_value.is_empty() {
+                let wanted = attribute_value.strip_prefix(b".").unwrap_or(attribute_value);
+                let matches = url.host.eq_ignore_ascii_case(wanted)
+                    || (url.host.len() > wanted.len()
+                        && url.host[url.host.len() - wanted.len()..].eq_ignore_ascii_case(wanted)
+                        && url.host[url.host.len() - wanted.len() - 1] == b'.');
+                if !matches {
+                    return;
+                }
+                domain = Some(wanted);
+            } else if key.eq_ignore_ascii_case(b"path") && attribute_value.starts_with(b"/") {
+                path = attribute_value;
+            } else if key.eq_ignore_ascii_case(b"secure") {
+                secure = true;
+            } else if key.eq_ignore_ascii_case(b"max-age") {
+                expired = attribute_value.first() == Some(&b'-') || attribute_value == b"0";
+            }
+        }
+        let name = &pair[..name_length];
+        let existing = (0..self.count).find(|&index| {
+            let cookie = self.cookies[index];
+            &self.slice(cookie.pair)[..cookie.name_length] == name
+                && self.slice(cookie.domain).eq_ignore_ascii_case(domain.unwrap_or(url.host))
+                && self.slice(cookie.path) == path
+        });
+        if let Some(index) = existing {
+            self.cookies.copy_within(index + 1..self.count, index);
+            self.count -= 1;
+        }
+        if expired || self.count == MAX_COOKIES {
+            return;
+        }
+        let Some(pair_range) = self.keep(pair) else {
+            return;
+        };
+        let Some(domain_range) = self.keep(domain.unwrap_or(url.host)) else {
+            return;
+        };
+        let Some(path_range) = self.keep(path) else {
+            return;
+        };
+        self.cookies[self.count] = Cookie {
+            pair: pair_range,
+            name_length,
+            domain: domain_range,
+            host_only: domain.is_none(),
+            path: path_range,
+            secure,
+        };
+        self.count += 1;
+    }
+
+    /// Writes the `Cookie` header's value for `url` into `out`: its length (0 for none).
+    pub fn header_for(&self, url: &Url<'_>, out: &mut [u8]) -> usize {
+        let mut length = 0;
+        for cookie in &self.cookies[..self.count] {
+            let domain = self.slice(cookie.domain);
+            let host_matches = url.host.eq_ignore_ascii_case(domain)
+                || (!cookie.host_only
+                    && url.host.len() > domain.len()
+                    && url.host[url.host.len() - domain.len()..].eq_ignore_ascii_case(domain)
+                    && url.host[url.host.len() - domain.len() - 1] == b'.');
+            let path = self.slice(cookie.path);
+            let path_matches = url.target.starts_with(path)
+                && (path.ends_with(b"/")
+                    || url.target.len() == path.len()
+                    || matches!(url.target[path.len()], b'/' | b'?'));
+            if !host_matches || !path_matches || (cookie.secure && !url.secure) {
+                continue;
+            }
+            let pair = self.slice(cookie.pair);
+            let separator: &[u8] = if length > 0 { b"; " } else { b"" };
+            if length + separator.len() + pair.len() > out.len() {
+                break;
+            }
+            out[length..length + separator.len()].copy_from_slice(separator);
+            length += separator.len();
+            out[length..length + pair.len()].copy_from_slice(pair);
+            length += pair.len();
+        }
+        length
+    }
 }
 
 struct Writer<'o> {
@@ -254,6 +551,12 @@ impl Writer<'_> {
         let end = self.length.checked_add(bytes.len())?;
         self.out.get_mut(self.length..end)?.copy_from_slice(bytes);
         self.length = end;
+        Some(())
+    }
+
+    fn put_base64(&mut self, bytes: &[u8]) -> Option<()> {
+        let length = base64(bytes, self.out.get_mut(self.length..)?)?;
+        self.length += length;
         Some(())
     }
 

@@ -598,6 +598,20 @@ impl System for Linux {
             .map(|(bytes, length)| &bytes[..*length])
     }
 
+    fn variable(&self, name: &[u8]) -> Option<&[u8]> {
+        self.started_environment
+            .iter()
+            .take_while(|pointer| !pointer.is_null())
+            .find_map(|&pointer| {
+                // SAFETY: the started environment's pointers are the kernel's NUL-terminated
+                // `NAME=value` strings on the stack, alive for the whole program.
+                let entry = unsafe { CStr::from_ptr(pointer.cast()) }.to_bytes();
+                entry
+                    .strip_prefix(name)
+                    .and_then(|rest| rest.strip_prefix(b"="))
+            })
+    }
+
     fn now(&mut self) -> u64 {
         self.now_with_nanoseconds().seconds
     }

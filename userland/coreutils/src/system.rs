@@ -254,6 +254,10 @@ pub trait System {
     fn time_zone_variable(&self) -> Option<&[u8]> {
         None
     }
+    /// The value of environment variable `name`, if the program was started with it (D573).
+    fn variable(&self, _name: &[u8]) -> Option<&[u8]> {
+        None
+    }
     fn wants_coded_errors(&self) -> bool {
         false
     }
@@ -437,6 +441,10 @@ impl<T: System + ?Sized> System for &mut T {
 
     fn time_zone_variable(&self) -> Option<&[u8]> {
         (**self).time_zone_variable()
+    }
+
+    fn variable(&self, name: &[u8]) -> Option<&[u8]> {
+        (**self).variable(name)
     }
 
     fn wants_coded_errors(&self) -> bool {
