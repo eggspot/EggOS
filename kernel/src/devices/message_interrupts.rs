@@ -61,6 +61,17 @@ pub fn connect(
         .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let command = config.read32(function.address, COMMAND);
     config.write32(function.address, COMMAND, command | COMMAND_INTX_DISABLE);
+    if table.is_none()
+        && let Some(capability) = found_msi
+    {
+        interrupts::record_msi_function(
+            line,
+            interrupts::MsiFunction {
+                address: function.address,
+                capability,
+            },
+        );
+    }
     finish(probe, id, line, events, table)
 }
 

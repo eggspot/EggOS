@@ -1379,6 +1379,43 @@ pub fn supervisor_aplic(blob: &[u8]) -> Option<(u64, u64)> {
         .and_then(|node| node.reg_entries().next())
 }
 
+/// The supervisor-level APLIC in direct mode that `blob` describes (D555): an enabled
+/// `riscv,aplic` with no `msi-parent` and no child domains, which signals the harts itself; its
+/// registers' address and length.
+pub fn supervisor_direct_aplic(blob: &[u8]) -> Option<(u64, u64)> {
+    const APLIC: &[u8] = b"riscv,aplic";
+    let tree = Fdt::new(blob).ok()?;
+    tree.nodes()
+        .map_while(Result::ok)
+        .find(|node| {
+            node.enabled
+                && node.is_compatible(APLIC)
+                && node.msi_parent.is_none()
+                && node.aia_children.is_empty()
+                && !node.interrupts_extended.is_empty()
+        })
+        .and_then(|node| node.reg_entries().next())
+}
+
+/// The supervisor-level IMSICs' first interrupt file that `blob` describes (D555): the
+/// registers of the enabled `riscv,imsics` node a supervisor APLIC names as its `msi-parent`.
+/// Hart `n`'s file is 4 KiB after the previous one's.
+pub fn supervisor_imsic_base(blob: &[u8]) -> Option<u64> {
+    const APLIC: &[u8] = b"riscv,aplic";
+    const IMSICS: &[u8] = b"riscv,imsics";
+    let tree = Fdt::new(blob).ok()?;
+    let parent = tree
+        .nodes()
+        .map_while(Result::ok)
+        .find(|node| node.enabled && node.is_compatible(APLIC) && node.aia_children.is_empty())
+        .and_then(|node| node.msi_parent)?;
+    tree.nodes()
+        .map_while(Result::ok)
+        .find(|node| node.enabled && node.is_compatible(IMSICS) && node.phandle == Some(parent))
+        .and_then(|node| node.reg_entries().next())
+        .map(|(address, _)| address)
+}
+
 /// The framebuffer the firmware lit that `blob` describes as an enabled `simple-framebuffer`
 /// (D542), as m1n1 on Apple silicon and U-Boot on other Arm and RISC-V boards leave it: its
 /// memory, size in pixels, stride and pixel order; `None` when there is none or its pixels are

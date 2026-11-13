@@ -744,6 +744,11 @@ pub fn discover_and_probe<P: Platform>(memory: &mut Memory<P>) -> Report {
         report.discovery_error = Some(error);
     }
     probe_all(&mut probe, BUILTIN);
+    match (probe.ecam.take(), probe.firmware) {
+        (Some(ecam), _) => interrupts::keep_configuration(alloc::boxed::Box::leak(alloc::boxed::Box::new(ecam))),
+        (None, Some(firmware)) => interrupts::keep_configuration(firmware),
+        (None, None) => {}
+    }
     table.nodes.shrink_to_fit();
     summarize(table, report)
 }

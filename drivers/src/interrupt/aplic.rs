@@ -18,6 +18,17 @@ const SOURCE_CONFIGURATIONS: usize = 0x0004;
 const SET_ENABLE_NUMBER: usize = 0x1edc;
 const CLEAR_ENABLE_NUMBER: usize = 0x1fdc;
 const TARGETS: usize = 0x3004;
+/// Each hart's interrupt delivery control in direct mode: 32 bytes at 0x4000 + 32 × its index.
+const DELIVERY_CONTROLS: usize = 0x4000;
+const DELIVERY_CONTROL_SIZE: usize = 32;
+const IDELIVERY: usize = 0x00;
+const ITHRESHOLD: usize = 0x08;
+const CLAIMI: usize = 0x1c;
+const CLAIM_IDENTITY_SHIFT: u32 = 16;
+/// The register block with the delivery controls of `harts` harts, for direct mode.
+pub const fn direct_block_size(harts: usize) -> usize {
+    DELIVERY_CONTROLS + DELIVERY_CONTROL_SIZE * harts
+}
 const INTERRUPTS_ENABLED: u32 = 1 << 8;
 const MSI_DELIVERY: u32 = 1 << 2;
 const HART_INDEX_SHIFT: u32 = 18;
@@ -86,6 +97,35 @@ impl<R: RegisterIo> Aplic<R> {
 
     /// Has `source` arrive at hart index `hart` as identity `identity` from now on, leaving its
     /// mode and enable alone (D536).
+    /// Turns the domain on in direct delivery mode (D555): the APLIC raises each hart's
+    /// external interrupt itself, through the hart's delivery control.
+    pub fn enable_direct_delivery(&self) {
+        self.regs.write32(DOMAIN_CONFIGURATION, INTERRUPTS_ENABLED);
+    }
+
+    /// Turns delivery to hart `hart` on in direct mode, taking every priority.
+    pub fn enable_hart_delivery(&self, hart: u32) {
+        let control = DELIVERY_CONTROLS + DELIVERY_CONTROL_SIZE * hart as usize;
+        self.regs.write32(control + ITHRESHOLD, 0);
+        self.regs.write32(control + IDELIVERY, 1);
+    }
+
+    /// In direct mode: claims hart `hart`'s highest pending source, which stops pending (a level
+    /// source pends again while asserted); `None` when none pends.
+    pub fn claim(&self, hart: u32) -> Option<u32> {
+        let control = DELIVERY_CONTROLS + DELIVERY_CONTROL_SIZE * hart as usize;
+        let claimed = self.regs.read32(control + CLAIMI) >> CLAIM_IDENTITY_SHIFT;
+        (claimed != 0).then_some(claimed)
+    }
+
+    /// In direct mode: `source` delivers to hart `hart` at priority `priority` (1 the highest).
+    pub fn route_direct(&self, source: u32, mode: SourceMode, hart: u32, priority: u8) {
+        self.regs
+            .write32(Self::per_source(SOURCE_CONFIGURATIONS, source), mode as u32);
+        self.set_target(source, hart, u32::from(priority.max(1)));
+        self.regs.write32(SET_ENABLE_NUMBER, source);
+    }
+
     pub fn set_target(&self, source: u32, hart: u32, identity: u32) {
         self.regs.write32(
             Self::per_source(TARGETS, source),

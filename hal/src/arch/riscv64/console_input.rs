@@ -34,6 +34,21 @@ static CONTEXT: AtomicUsize = AtomicUsize::new(NO_CONTEXT);
 static DEVICE_LINES: SourceLines = SourceLines::new();
 
 static APLIC_BASE: AtomicUsize = AtomicUsize::new(0);
+/// The supervisor APLIC delivers directly, not through IMSICs (D555).
+static APLIC_DIRECT: AtomicBool = AtomicBool::new(false);
+/// The physical address of hart 0's supervisor IMSIC interrupt file, where PCI functions send
+/// their MSIs (D555); 0 without IMSICs.
+static IMSIC_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// The harts whose delivery controls the kernel maps in direct mode.
+const DIRECT_HARTS: usize = 64;
+/// Identities PCI MSIs take, below the ones every hart enables so they can be steered.
+const FIRST_MSI_IDENTITY: u32 = 128;
+const IMSIC_FILE_SIZE: u64 = 0x1000;
+/// MSI lines' identities, by line; 0 for none.
+static MSI_IDENTITIES: [core::sync::atomic::AtomicU32; crate::DeviceLine::COUNT] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; crate::DeviceLine::COUNT];
+static NEXT_MSI_IDENTITY: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(FIRST_MSI_IDENTITY);
 static AIA_READY: AtomicBool = AtomicBool::new(false);
 const EXTERNAL_DELIVERY: u64 = 0x70;
 const EXTERNAL_THRESHOLD: u64 = 0x72;
@@ -55,10 +70,22 @@ pub(super) fn uses_aia() -> bool {
 
 fn aplic() -> Option<Aplic<Mmio>> {
     let base = APLIC_BASE.load(Ordering::Relaxed);
+    let size = match APLIC_DIRECT.load(Ordering::Relaxed) {
+        true => aplic::direct_block_size(DIRECT_HARTS),
+        false => aplic::REGISTER_BLOCK_SIZE,
+    };
     // SAFETY: `APLIC_BASE` is the supervisor APLIC's registers in the direct map, which
-    // `device_regions` gave the kernel's page tables as device memory; only this module drives
-    // the APLIC.
-    (base != 0).then(|| Aplic::new(unsafe { Mmio::new(base, aplic::REGISTER_BLOCK_SIZE) }))
+    // `device_regions` gave the kernel's page tables as device memory, the delivery controls
+    // included in direct mode; only this module drives the APLIC.
+    (base != 0).then(|| Aplic::new(unsafe { Mmio::new(base, size) }))
+}
+
+fn direct() -> bool {
+    APLIC_DIRECT.load(Ordering::Relaxed)
+}
+
+fn this_hart() -> u32 {
+    super::current_hart() as u32
 }
 
 fn write_indirect(select: u64, value: u64) {
@@ -101,6 +128,16 @@ fn claim_identity() -> u32 {
 
 fn aia_ready() {
     if !AIA_READY.swap(true, Ordering::Relaxed) {
+        if direct() {
+            if let Some(aplic) = aplic() {
+                aplic.enable_direct_delivery();
+                aplic.enable_hart_delivery(this_hart());
+            }
+            // SAFETY: setting `sie.SEIE` only lets this hart take the external interrupts its
+            // APLIC delivery control raises, which `interrupt` handles.
+            unsafe { core::arch::asm!("csrs sie, {}", in(reg) SIE_SEIE, options(nomem, nostack)) };
+            return;
+        }
         if let Some(aplic) = aplic() {
             aplic.enable_msi_delivery();
         }
@@ -118,8 +155,56 @@ fn aia_route(source: u32, mode: aplic::SourceMode) {
     };
     aia_ready();
     let hart = super::BOOT_HART.load(Ordering::Relaxed) as u32;
+    if direct() {
+        aplic.route_direct(source, mode, hart, 1);
+        return;
+    }
     enable_identity(source, true);
     aplic.route(source, mode, hart, source);
+}
+
+/// A device line for a PCI function's MSI (D555): an IMSIC identity of its own, enabled on the
+/// boot hart, and the message that raises it there (the boot hart's supervisor interrupt file,
+/// the identity as data). Refused without IMSICs.
+pub(super) fn take_message() -> Result<(crate::DeviceLine, crate::InterruptMessage), &'static str> {
+    let base = IMSIC_BASE.load(Ordering::Relaxed);
+    if base == 0 || direct() {
+        return Err("no IMSIC takes message-signalled interrupts");
+    }
+    let identity = NEXT_MSI_IDENTITY.fetch_add(1, Ordering::Relaxed);
+    if identity >= PREPARED_IDENTITIES {
+        return Err("every MSI identity is taken");
+    }
+    let (line, _) = DEVICE_LINES
+        .claim(identity)
+        .ok_or("every device interrupt line is taken")?;
+    MSI_IDENTITIES[line.index()].store(identity, Ordering::Release);
+    aia_ready();
+    enable_identity(identity, true);
+    let hart = super::BOOT_HART.load(Ordering::Relaxed);
+    Ok((
+        line,
+        crate::InterruptMessage {
+            address: base + hart * IMSIC_FILE_SIZE,
+            data: identity,
+        },
+    ))
+}
+
+/// The message that raises MSI line `line` on hart `hart` (D555).
+pub(super) fn message_for(
+    line: crate::DeviceLine,
+    hart: u64,
+) -> Result<crate::InterruptMessage, &'static str> {
+    let identity = MSI_IDENTITIES[line.index()].load(Ordering::Acquire);
+    let base = IMSIC_BASE.load(Ordering::Relaxed);
+    if identity == 0 || base == 0 {
+        return Err("the line is not an MSI line");
+    }
+    Ok(crate::InterruptMessage {
+        address: base + hart * IMSIC_FILE_SIZE,
+        data: identity,
+    })
 }
 
 /// The PLIC pages the kernel maps: the source priorities and the enables up to the last mapped
@@ -131,6 +216,16 @@ pub(super) fn device_regions(region: &mut dyn FnMut(PhysicalRange)) {
     {
         let bytes = bytes.min(aplic::REGISTER_BLOCK_SIZE as u64);
         region(PhysicalRange::from_start_length(address, bytes));
+        APLIC_BASE.store(DIRECT_MAP_OFFSET + address as usize, Ordering::Relaxed);
+        if let Some(imsic) = super::device_tree_bytes().and_then(crate::fdt::supervisor_imsic_base) {
+            IMSIC_BASE.store(imsic, Ordering::Relaxed);
+        }
+    } else if let Some((address, bytes)) =
+        super::device_tree_bytes().and_then(crate::fdt::supervisor_direct_aplic)
+    {
+        let bytes = bytes.min(aplic::direct_block_size(DIRECT_HARTS) as u64);
+        region(PhysicalRange::from_start_length(address, bytes));
+        APLIC_DIRECT.store(true, Ordering::Relaxed);
         APLIC_BASE.store(DIRECT_MAP_OFFSET + address as usize, Ordering::Relaxed);
     }
     region(PhysicalRange::from_start_length(
@@ -177,7 +272,11 @@ fn context_plic(context: Option<usize>) -> Result<Plic<Mmio>, &'static str> {
 /// Sets the calling secondary hart, whose supervisor-mode context is `context`, up to take the
 /// device lines the kernel steers to it (D536), with interrupts still masked.
 pub(super) fn prepare_hart(context: Option<usize>) {
-    if uses_aia() {
+    if direct() {
+        if let Some(aplic) = aplic() {
+            aplic.enable_hart_delivery(this_hart());
+        }
+    } else if uses_aia() {
         write_indirect(EXTERNAL_DELIVERY, 1);
         write_indirect(EXTERNAL_THRESHOLD, 0);
         for register in 0..PREPARED_IDENTITIES / ENABLE_BITS {
@@ -204,6 +303,11 @@ pub(super) fn steer_device(
         .source_of(line)
         .ok_or("the line is not routed")?;
     if let Some(aplic) = aplic() {
+        let hart_index = u32::try_from(hart).map_err(|_| "the hart's index is past the APLIC's")?;
+        if direct() {
+            aplic.set_target(source, hart_index, 1);
+            return Ok(());
+        }
         if source >= PREPARED_IDENTITIES {
             return Err("the source's identity is past the ones every hart enables");
         }
@@ -272,9 +376,15 @@ pub(super) fn release_device(line: crate::DeviceLine) {
     let Some(source) = DEVICE_LINES.release(line) else {
         return;
     };
+    if MSI_IDENTITIES[line.index()].swap(0, Ordering::AcqRel) != 0 {
+        enable_identity(source, false);
+        return;
+    }
     if let Some(aplic) = aplic() {
         aplic.disable(source);
-        enable_identity(source, false);
+        if !direct() {
+            enable_identity(source, false);
+        }
         return;
     }
     let context = match steered {
@@ -303,6 +413,15 @@ fn this_hart_context() -> usize {
 #[cold]
 #[inline(never)]
 pub(super) fn interrupt(pc: u64) {
+    if direct() {
+        let Some(aplic) = aplic() else {
+            return;
+        };
+        while let Some(source) = aplic.claim(this_hart()) {
+            deliver_source(source, pc);
+        }
+        return;
+    }
     if uses_aia() {
         loop {
             let identity = claim_identity();

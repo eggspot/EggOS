@@ -51,6 +51,52 @@ static HANDLERS: [AtomicPtr<Handler>; DeviceLine::COUNT] =
 static MESSAGE_TABLES: [AtomicPtr<MessageTable>; DeviceLine::COUNT] =
     [const { AtomicPtr::new(core::ptr::null_mut()) }; DeviceLine::COUNT];
 
+/// A PCI function whose plain MSI capability carries a line (D555): moving the line rewrites
+/// the capability's address and data through the configuration space kept after probing.
+#[derive(Debug, Clone, Copy)]
+pub struct MsiFunction {
+    pub address: eggos_drivers::pci::Address,
+    pub capability: eggos_drivers::pci::msi::Msi,
+}
+
+static MSI_FUNCTIONS: [AtomicPtr<MsiFunction>; DeviceLine::COUNT] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; DeviceLine::COUNT];
+
+struct KeptConfiguration(Option<&'static dyn eggos_drivers::pci::ConfigSpace>);
+
+// SAFETY: the configuration space is a mapped ECAM window or the firmware's accessor, both made
+// for the whole kernel's life and used under this lock only once probing is over.
+unsafe impl Send for KeptConfiguration {}
+
+static CONFIGURATION: crate::sync::LeafSpinLock<KeptConfiguration> =
+    crate::sync::LeafSpinLock::new_leaf(KeptConfiguration(None));
+
+/// Keeps the PCI configuration space probing used, for moving plain-MSI lines afterwards (D555).
+pub fn keep_configuration(space: &'static dyn eggos_drivers::pci::ConfigSpace) {
+    CONFIGURATION.lock().0 = Some(space);
+}
+
+/// Records that `line` reaches its CPU through `function`'s plain MSI capability, so [`steer`]
+/// can move it (D555). The record's few words stay allocated for good, as a handler's do.
+pub fn record_msi_function(line: DeviceLine, function: MsiFunction) {
+    let record = Box::into_raw(Box::new(function));
+    MSI_FUNCTIONS[line.index()].store(record, Ordering::Release);
+}
+
+fn steer_msi<P: Platform>(line: DeviceLine, cpu: u64) -> Option<bool> {
+    let function = MSI_FUNCTIONS[line.index()].load(Ordering::Acquire);
+    // SAFETY: a stored record is a leaked box `record_msi_function` made, never freed.
+    let function = unsafe { function.as_ref() }.copied()?;
+    let configuration = CONFIGURATION.lock();
+    let space = configuration.0?;
+    let message = P::message_for(line, cpu).ok()?;
+    Some(
+        function
+            .capability
+            .enable(space, function.address, message.address, message.data as u16),
+    )
+}
+
 static SPREADING: AtomicBool = AtomicBool::new(false);
 
 static NEXT_CPU: AtomicUsize = AtomicUsize::new(1);
@@ -118,6 +164,9 @@ pub fn disconnect<P: Platform>(line: DeviceLine) {
     if let Some(slot) = MESSAGE_TABLES.get(line.index()) {
         slot.store(core::ptr::null_mut(), Ordering::Release);
     }
+    if let Some(slot) = MSI_FUNCTIONS.get(line.index()) {
+        slot.store(core::ptr::null_mut(), Ordering::Release);
+    }
     P::release_device_interrupt(line);
 }
 
@@ -180,7 +229,10 @@ pub fn steer<P: Platform>(line: DeviceLine, cpu: u64) -> bool {
             let entries = MsixTable::new(registers, table.entries);
             entries.set(table.entry, message.address, message.data)
         }),
-        None => P::steer_device_interrupt(line, cpu).is_ok(),
+        None => match steer_msi::<P>(line, cpu) {
+            Some(moved) => moved,
+            None => P::steer_device_interrupt(line, cpu).is_ok(),
+        },
     };
     let handler = HANDLERS[line.index()].load(Ordering::Acquire);
     // SAFETY: a connected handler is a leaked box, never changed or freed.

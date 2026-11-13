@@ -167,6 +167,23 @@ const SEED_DEAD: u64 = 3;
 /// Reads of the `seed` CSR for one sample before the hart counts as having none to give.
 const SEED_TRIES: usize = 100;
 
+/// The calling hart's id (D555): what `set_cpu_local` recorded in its per-CPU block, or the
+/// boot hart's before there is one.
+pub(super) fn current_hart() -> u64 {
+    let block = <Riscv64 as Platform>::cpu_local();
+    if block == 0 {
+        return BOOT_HART.load(Ordering::Relaxed);
+    }
+    // SAFETY: a non-zero `tp` is this hart's per-CPU block, with a `HalCpuLocal` at its offset.
+    let local = unsafe {
+        &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal)
+    };
+    match local.hart_id.load(Ordering::Relaxed) {
+        u64::MAX => BOOT_HART.load(Ordering::Relaxed),
+        hart => hart,
+    }
+}
+
 /// `satp.ASID`, bits 59:44 in Sv39.
 const SATP_ASID_SHIFT: u32 = 44;
 const UNPROBED: u8 = 0;
@@ -422,6 +439,17 @@ impl Platform for Riscv64 {
 
     fn release_device_interrupt(line: crate::DeviceLine) {
         console_input::release_device(line);
+    }
+
+    fn message_interrupt() -> Result<(crate::DeviceLine, crate::InterruptMessage), &'static str> {
+        console_input::take_message()
+    }
+
+    fn message_for(
+        line: crate::DeviceLine,
+        cpu: u64,
+    ) -> Result<crate::InterruptMessage, &'static str> {
+        console_input::message_for(line, cpu)
     }
 
     fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
@@ -883,6 +911,7 @@ impl Platform for Riscv64 {
             &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal)
         };
         local.plic_context.store(context, Ordering::Relaxed);
+        local.hart_id.store(hart, Ordering::Relaxed);
     }
 
     #[inline]
