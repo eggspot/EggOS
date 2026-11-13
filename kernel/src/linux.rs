@@ -88,6 +88,7 @@ pub mod process_ids;
 pub mod process_table;
 pub mod properties;
 pub mod pseudo_terminal;
+pub mod ptrace;
 pub mod random;
 pub mod reboot;
 pub mod render_node;
@@ -161,6 +162,7 @@ pub mod number {
             #[cfg(linux_abi_legacy_calls)]
             RENAME,
             UMASK,
+            PTRACE,
             FANOTIFY_INIT,
             FANOTIFY_MARK,
             CAPGET,
@@ -961,6 +963,7 @@ fn out_of_line_result<P: Platform>(
         number::MEMFD_CREATE => memfd::memfd_create(process, thread, first, second),
         number::MKDIRAT => file_changes::mkdirat(process, thread, first, second, third),
         number::UMASK => Ok(file_changes::umask(process, first)),
+        number::PTRACE => ptrace::ptrace(process, thread, context.syscall_arguments()),
         number::FANOTIFY_INIT => fanotify::fanotify_init(process, thread, first, second),
         number::FANOTIFY_MARK => {
             let arguments = context.syscall_arguments();

@@ -66,6 +66,11 @@ pub use x86_64::*;
 #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 mod riscv_misaligned;
 
+mod ptrace_registers;
+pub use ptrace_registers::{
+    PTRACE_REGISTERS_BYTES, SINGLE_STEPS, ptrace_registers, set_ptrace_registers, set_single_step,
+};
+
 /// Does a misaligned load or store a program's instruction trapped on, where the architecture
 /// leaves that to the kernel (RISC-V, D560): whether it did. Never elsewhere.
 pub fn emulate_misaligned(

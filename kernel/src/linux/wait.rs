@@ -85,6 +85,7 @@ pub fn process_ended<P: Platform>(process: &Process<P>, how: ProcessExit) {
         table.end(process.id().get(), how, uid)
     };
     super::pidfd::process_ended();
+    super::ptrace::process_ended(process.id().get());
     if let Some(notice) = ended.to_parent {
         notify::<P>(notice);
     }
@@ -380,6 +381,19 @@ fn wait_or_sleep<P: Platform>(
     let caller = process.id().get();
     loop {
         let seen = CHILD_CHANGES.load(Ordering::Acquire);
+        let selected = |pid: u32| match request.selector {
+            Selector::Any => true,
+            Selector::Process(wanted) => wanted == pid,
+            Selector::Group(_) => false,
+        };
+        if let Some((id, signal)) = super::ptrace::take_stop_report(caller, selected) {
+            return ControlFlow::Continue(Some(Ok(Some((
+                id,
+                0,
+                Reported::Job(JobChange::Stopped(signal)),
+                0,
+            )))));
+        }
         let (found, reaped_ticks) = {
             let mut table = TABLE.lock();
             let found = table.wait_for_change(
@@ -403,6 +417,7 @@ fn wait_or_sleep<P: Platform>(
             Found::Continued { id, uid } => {
                 Some((id, uid, Reported::Job(JobChange::Continued), 0))
             }
+            Found::NoChild if super::ptrace::traces_any(caller, selected) => None,
             Found::NoChild => return ControlFlow::Continue(Some(Err(Errno::ECHILD))),
             Found::Announcing if !process.has_ended() => {
                 crate::thread::yield_now::<P>();

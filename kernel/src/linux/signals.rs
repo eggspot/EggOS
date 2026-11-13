@@ -2587,6 +2587,21 @@ fn deliver_with<P: Platform>(
             let mut signals = thread.signals(&mut guard);
             (signals.next_delivery(), signals.thread())
         };
+        let traced_signal = match &delivery {
+            Some(Delivery::Kill(signal) | Delivery::Stop(signal)) => Some(*signal),
+            Some(Delivery::Handler { signal, .. }) => Some(*signal),
+            _ => None,
+        };
+        if let Some(signal) = traced_signal
+            && let Some(given) =
+                super::ptrace::stop_for_signal(process, thread, context, signal as u8)?
+            && u32::from(given) != signal
+        {
+            if given != 0 {
+                send_from_kernel_to_self(process, thread, u32::from(given));
+            }
+            continue;
+        }
         match delivery {
             None => return ControlFlow::Continue(started_handler),
             Some(Delivery::Kill(signal)) => {

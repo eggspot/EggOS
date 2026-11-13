@@ -1437,6 +1437,7 @@ fn start<P: Platform>(
         table.set_no_stop_notices(id, false);
     });
     *context = started;
+    super::ptrace::after_exec(&image, thread);
     image
 }
 
