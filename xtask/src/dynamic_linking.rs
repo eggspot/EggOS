@@ -395,11 +395,11 @@ mod tests {
 
     #[test]
     fn every_architecture_has_its_glibc_and_musl_names() {
-        for arch in crate::ARCHES {
-            let glibc = glibc(arch.name).unwrap();
-            assert!(glibc.target.starts_with(arch.name));
+        for arch in ["aarch64", "riscv64", "x86_64"] {
+            let glibc = glibc(arch).unwrap();
+            assert!(glibc.target.starts_with(arch));
             assert!(glibc.linker.0.ends_with("_LINKER"));
-            assert!(musl_loader(arch.name).starts_with("ld-musl-"));
+            assert!(musl_loader(arch).starts_with("ld-musl-"));
         }
         assert_eq!(glibc("mips64"), None);
         assert!(GLIBC_LIBRARY_FOLDER.starts_with('/'));

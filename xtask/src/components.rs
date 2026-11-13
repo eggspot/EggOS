@@ -251,12 +251,22 @@ mod tests {
             base_links("x86_64"),
             [
                 (
+                    "usr/libexec/builtin-apps".to_string(),
+                    "/var/lib/eggos/components/builtin-apps/root/usr/libexec/builtin-apps"
+                        .to_string()
+                ),
+                (
                     "usr/lib/eggos/windows".to_string(),
                     "/var/lib/eggos/components/windows-apps/root/usr/lib/eggos/windows".to_string()
                 ),
                 (
                     "usr/lib/eggos/macos".to_string(),
                     "/var/lib/eggos/components/mac-apps/root/usr/lib/eggos/macos".to_string()
+                ),
+                (
+                    "usr/lib/eggos/android".to_string(),
+                    "/var/lib/eggos/components/android-apps/root/usr/lib/eggos/android"
+                        .to_string()
                 ),
                 (
                     "usr/lib/firmware/intel/iwlwifi".to_string(),
@@ -270,7 +280,18 @@ mod tests {
                 ),
             ]
         );
-        assert!(base_links("riscv64").is_empty());
-        assert!(offered("riscv64").next().is_none());
+        assert_eq!(
+            base_links("riscv64"),
+            [(
+                "usr/libexec/builtin-apps".to_string(),
+                "/var/lib/eggos/components/builtin-apps/root/usr/libexec/builtin-apps".to_string()
+            )]
+        );
+        assert_eq!(
+            offered("riscv64")
+                .map(|offered| offered.name)
+                .collect::<Vec<_>>(),
+            ["desktop", "builtin-apps"]
+        );
     }
 }

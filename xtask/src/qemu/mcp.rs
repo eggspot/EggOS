@@ -90,7 +90,7 @@ const ACTED: &str = "Acted on an element of window";
 /// Every call of a reading tool the check makes with its twin running: the tool, its
 /// arguments and a text its output must hold. A tool missing here and from [`GRANTED_TOOLS`]
 /// fails `every_tool_is_called_by_the_check`.
-pub const TWIN_CALLS: [(&str, &str, &str); 19] = [
+pub const TWIN_CALLS: [(&str, &str, &str); 21] = [
     ("ls", r#"{"path":"/media/host"}"#, "readme.txt"),
     (
         "cat",
@@ -122,6 +122,8 @@ pub const TWIN_CALLS: [(&str, &str, &str); 19] = [
     ("wm_desktop_list", "{}", r#""current":true"#),
     ("download_list", "{}", ""),
     ("component_list", "{}", ""),
+    ("app_actions", "{}", ""),
+    ("wifi_list", "{}", "no Intel Wi-Fi adapter"),
 ];
 
 /// Every call of a reading tool whose answer is checked whether it succeeded or not: the tool,
@@ -129,7 +131,7 @@ pub const TWIN_CALLS: [(&str, &str, &str); 19] = [
 /// the network the machine was started on (D158); `.invalid` names never exist (RFC 6761), so
 /// it answers whether or not the host reaches the internet. The app tools ask about an app
 /// that is never installed, as no app is installed when they run.
-pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 3] = [
+pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 4] = [
     (
         "net_lookup",
         r#"{"host":"eggos-mcp.invalid"}"#,
@@ -145,6 +147,7 @@ pub const ANSWERED_CALLS: [(&str, &str, &[&str]); 3] = [
         r#"{"name":"eggos-mcp-absent"}"#,
         &["eggos-mcp-absent is not installed"],
     ),
+    ("wm_keyboard", "{}", &["hidden", "shown"]),
 ];
 
 /// `fetch`'s arguments in both boots: a port on the host where nothing listens, so the
@@ -156,7 +159,7 @@ pub const FETCH_FAILURE: &str = "fetch: 10.0.2.2:1: ";
 
 /// Every tool that needs a grant, with the arguments the first boot calls it with, refused for
 /// its grant, and that grant; the second boot runs only some of them with the grant.
-pub const GRANTED_TOOLS: [(&str, &str, &str); 46] = [
+pub const GRANTED_TOOLS: [(&str, &str, &str); 57] = [
     (
         "ln",
         r#"{"target":"x","link":"/home/root/x-link"}"#,
@@ -279,6 +282,33 @@ pub const GRANTED_TOOLS: [(&str, &str, &str); 46] = [
         r#"{"name":"windows-apps","confirm":true}"#,
         "install",
     ),
+    ("wm_home", "{}", "run"),
+    ("wm_back", "{}", "run"),
+    ("wm_keyboard_show", "{}", "run"),
+    ("wm_keyboard_hide", "{}", "run"),
+    (
+        "disk_install",
+        r#"{"device":"/dev/vdd","confirm":true}"#,
+        "write",
+    ),
+    ("component_edition", r#"{"name":"server"}"#, "install"),
+    ("component_update", "{}", "install"),
+    (
+        "app_do",
+        r#"{"name":"eggos-mcp-absent","action":"x"}"#,
+        "install",
+    ),
+    (
+        "app_do_confirmed",
+        r#"{"name":"eggos-mcp-absent","action":"x","confirm":true}"#,
+        "install",
+    ),
+    (
+        "wifi_connect",
+        r#"{"ssid":"eggos-mcp","confirm":true}"#,
+        "run",
+    ),
+    ("wifi_forget", r#"{"confirm":true}"#, "run"),
 ];
 
 const REFUSED_PATHS: [&str; 2] = [

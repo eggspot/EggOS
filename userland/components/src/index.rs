@@ -28,7 +28,7 @@ pub const MAX_NAME_BYTES: usize = 32;
 /// The longest title, summary or remove note.
 pub const MAX_TEXT_BYTES: usize = 96;
 /// The only folders a component's files may be in: the base links into them.
-pub const ALLOWED_PREFIXES: [&str; 2] = ["usr/lib/eggos/", "usr/lib/firmware/"];
+pub const ALLOWED_PREFIXES: [&str; 3] = ["usr/lib/eggos/", "usr/lib/firmware/", "usr/libexec/"];
 /// The block size a store image is padded to, so the kernel can attach it as a disk.
 pub const STORE_BLOCK: usize = 4096;
 /// The first line of an index.
@@ -376,7 +376,7 @@ fn parse_block<'a>(
     let mut seen = 0u8;
     for (number, line) in lines.by_ref() {
         if line == "end" {
-            if seen != NEEDED_FIELDS || component.files.is_empty() {
+            if seen != NEEDED_FIELDS {
                 return Err(IndexError::Line(number));
             }
             return Ok(Some(component));

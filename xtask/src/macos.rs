@@ -741,7 +741,7 @@ mod tests {
         assert!(arguments.contains(&"-Werror".to_owned()));
         assert_eq!(&arguments[arguments.len() - 2..], ["out", "main.m"]);
         let names: Vec<&str> = OBJC_PROGRAMS.iter().map(|program| program.name).collect();
-        assert_eq!(names, ["macos-objc", "mac-paint", "mac-nib"]);
+        assert_eq!(names, ["macos-objc", "mac-paint", "mac-nib", "mac-views"]);
         let nib_app = objc_program(NIB_APP).expect("mac-nib is an Objective-C program");
         assert!(source_folder(&nib_app).join(NIB_SOURCE).is_file());
         assert!(source_folder(&nib_app).join(INFO_PLIST).is_file());
