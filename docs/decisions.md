@@ -26311,3 +26311,29 @@ the license, by an explicit instruction recorded here.
   once (that change would take `num_queues` with it).
 - **Not yet.** Building and running; the kernel sending large TCP segments over IPv6 or large
   UDP datagrams (`UDP_SEGMENT`); a receive interrupt per pair.
+
+## D567 PCI Express native hot-plug (M8; D563's new line; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the PCI Express base specification's slot registers; the pre-mapped windows decided by research)
+
+- **Ports.** `pci::hotplug::HotPlugPort` finds a bridge whose PCI Express capability says its
+  slot is hot-plug capable, turns on presence and link change reports (the interrupt stays
+  off: the slots are polled), reads and clears the slot's change bits (`take_events`), and
+  reads the memory windows the port forwards (`windows`, the prefetchable one 64-bit when it
+  says so).
+- **BARs.** `WindowAllocator` places each memory BAR of an arriving card in the port's windows,
+  aligned to its size, prefetchable BARs in the prefetchable window first, 32-bit ones below
+  4 GiB, after the BARs of the cards already there (`note_used`); `assign_function` writes them
+  and turns memory decoding and bus mastering on.
+- **The kernel.** After probing, `devices::pci_hotplug::prepare` finds the ports, maps their
+  windows once and starts from what is there; a thread looks at the slots every 500 ms. A card
+  that arrives (present and link up) has its functions enumerated, placed, added to the device
+  table and offered to the built-in drivers through a probe whose `map_window` hands out
+  addresses inside the mapped windows; a card that leaves has its devices marked refused
+  ("taken out"), and drivers that check (virtio input, D563) drop them.
+- **Decided by research.** Mapping each hot-plug port's windows at boot: windows may only be
+  mapped on the boot CPU before the others start, and a port's windows are what any card
+  behind it can use (QEMU's root ports forward 2 MiB by default), so later cards need no new
+  mapping. Polling every half second instead of the port's MSI: a person plugging a card waits
+  far longer than that, and the interrupt needs a line per port.
+- **Not yet.** Building and running; the slot interrupt; the attention button and power
+  controller (surprise removal only); I/O BARs; bridges behind a hot-plugged card; drivers
+  other than virtio input letting go of a removed card.

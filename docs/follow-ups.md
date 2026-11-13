@@ -92,7 +92,7 @@ and is not listed per item.
 - [x] TCP: window scaling, selective acknowledgments, keep-alive probes, urgent data (D158) — code written, unbuilt, D564
 - [x] virtio multiqueue: virtio-net's several queue pairs and virtio-blk's `num_queues`, each following its CPU (D540) — code written, unbuilt, D566 (virtio-blk keeps one queue, decided by research)
 - [x] virtio-net: IPv6 and UDP segmentation offload and receive-side coalescing (`GUEST_TSO4`, mergeable buffers) (D541) — code written, unbuilt, D566
-- [ ] PCIe native hot-plug: slot presence events, BARs assigned from the bridge's windows, devices that arrive after boot probed and ones that leave released (D563)
+- [x] PCIe native hot-plug: slot presence events, BARs assigned from the bridge's windows, devices that arrive after boot probed and ones that leave released (D563) — code written, unbuilt, D567
 
 ## M9 More architectures
 
