@@ -239,7 +239,6 @@ const UART_CLEAR: usize = 0x44;
 const UART_RECEIVE_EMPTY: u32 = 1 << 4;
 const UART_RECEIVE_INTERRUPTS: u32 = 1 << 4 | 1 << 6;
 const UART_SOURCE: u32 = 32 + 1;
-const SHARED_FIRST: u32 = 32;
 const TARGETS: usize = 0x800;
 const SOFTWARE_GENERATED: usize = 0xf00;
 const WAKE_UP: u32 = 0;
@@ -484,14 +483,8 @@ impl crate::Platform for Arm {
     fn route_device_interrupt(
         specifier: &crate::fdt::InterruptSpecifier,
     ) -> Result<crate::DeviceLine, &'static str> {
-        let cells = specifier.cells();
-        let &[kind, number, ..] = cells else {
-            return Err("a GIC specifier has three cells");
-        };
-        if kind != 0 {
-            return Err("only shared peripheral interrupts are routed");
-        }
-        let id = SHARED_FIRST + number;
+        let (id, _) =
+            eggos_drivers::interrupt::gicv2::shared_interrupt_of_specifier(specifier.cells())?;
         if id == UART_SOURCE {
             return Err("the interrupt is the console's");
         }
