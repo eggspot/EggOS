@@ -42,8 +42,9 @@ use eggos_settings_file::{KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
 
 pub use eggos_drivers::input::keymap::Modifiers;
 
-/// Input devices the kernel takes, at most.
-pub const MAX_DEVICES: usize = 4;
+/// Input devices the kernel takes, at most (D563: room for a laptop's keyboard, touchpad and
+/// touch screen with several USB and virtio devices beside them).
+pub const MAX_DEVICES: usize = 16;
 /// Events the queue holds; more are dropped and counted ([`dropped_events`]).
 pub const EVENT_QUEUE_CAPACITY: usize = 256;
 /// How long a key is held before it repeats.
@@ -74,6 +75,11 @@ pub trait InputDevice: Send {
     /// could not take every change now, so it is asked again at the next poll.
     fn set_lock_lights(&mut self, _lights: LockLights) -> bool {
         true
+    }
+    /// Whether the device went away (unplugged, D563): the input thread then drops it and
+    /// frees its slot for the next device. Never by default.
+    fn is_gone(&self) -> bool {
+        false
     }
 }
 
@@ -867,6 +873,11 @@ impl InputState {
             accepted,
             sink,
         );
+    }
+
+    /// Stops repeating the key held down: its device went away before it was let go (D563).
+    pub fn stop_repeating(&mut self) {
+        self.repeat = KeyRepeat::new();
     }
 
     /// Has the arrow keys send `mode`'s forms, as the terminal's program asked.
@@ -1871,6 +1882,12 @@ fn poll_devices<P: Platform>(
             let (layouts, switch_key) = unpacked_layout_set(wanted_word);
             input.state.set_layouts(layouts, switch_key);
             let mut more = false;
+            for slot in input.sources.iter_mut() {
+                if slot.as_ref().is_some_and(|source| source.device.is_gone()) {
+                    *slot = None;
+                    input.state.stop_repeating();
+                }
+            }
             for source in input.sources.iter_mut().flatten() {
                 let budget = (POLL_BUDGET_BYTES - sink.length) / KeyBytes::CAPACITY;
                 let Source {

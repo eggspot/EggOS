@@ -169,7 +169,11 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     answered_three_d: usize,
     posted_streams: [Option<PostedStream>; STREAM_SLOTS],
     refused_streams: u64,
+    mirrored: u16,
 }
+
+/// The most scanouts a virtio GPU has (virtio 1.2, 5.7.4: `VIRTIO_GPU_MAX_SCANOUTS`).
+pub const MAX_SCANOUTS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PostedThreeD {
@@ -264,6 +268,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             answered_three_d: 0,
             posted_streams: [None; STREAM_SLOTS],
             refused_streams: 0,
+            mirrored: 0,
         };
         match gpu.query_display(keep_waiting) {
             Ok(mode) => {
@@ -446,6 +451,112 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     pub fn clear_display_event(&self) {
         self.transport
             .write_config8(CONFIG_EVENTS_CLEAR_OFFSET, EVENT_DISPLAY as u8);
+    }
+
+    /// Every scanout's mode as the device reports it (D563): `None` for a scanout that is not
+    /// enabled (no monitor, or unplugged).
+    pub fn scanout_modes(
+        &mut self,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<[Option<Mode>; MAX_SCANOUTS], Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        self.header(0, command::GET_DISPLAY_INFO);
+        self.put32(DISPLAY_INFO, 0);
+        self.post(REQUESTS, HEADER_BYTES, DISPLAY_INFO, DISPLAY_INFO_BYTES)?;
+        self.wait(1, keep_waiting)?;
+        let mut modes = [None; MAX_SCANOUTS];
+        if self.get32(DISPLAY_INFO) != response::OK_DISPLAY_INFO {
+            return Ok(modes);
+        }
+        let count = (self.transport.read_config32(CONFIG_NUM_SCANOUTS_OFFSET) as usize).min(MAX_SCANOUTS);
+        for (index, mode) in modes.iter_mut().enumerate().take(count) {
+            let entry = DISPLAY_INFO + HEADER_BYTES + index * 24;
+            let (width, height) = (self.get32(entry + 8), self.get32(entry + 12));
+            if self.get32(entry + 16) != 0 && width > 0 && height > 0 {
+                *mode = Some(Mode::new(width, height));
+            }
+        }
+        Ok(modes)
+    }
+
+    /// The scanouts besides scanout 0 that show its framebuffer, a bit each.
+    pub fn mirrored_scanouts(&self) -> u16 {
+        self.mirrored
+    }
+
+    /// Shows the shown framebuffer on every other enabled scanout too, which the device scales
+    /// to each monitor (mirroring: no copy, one resource on several scanouts), and stops
+    /// showing it on the ones that were unplugged (D563). Called when the device reports a
+    /// display change. Returns the scanouts mirrored after it.
+    pub fn follow_scanouts(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<u16, Error> {
+        let Some((resource, mode)) = self.shown().map(|scanout| (scanout.resource, scanout.mode))
+        else {
+            return Ok(self.mirrored);
+        };
+        let modes = self.scanout_modes(keep_waiting)?;
+        for (index, scanout_mode) in modes.iter().enumerate().skip(1) {
+            let bit = 1u16 << index;
+            match (scanout_mode.is_some(), self.mirrored & bit != 0) {
+                (true, false) => {
+                    self.set_scanout(index as u32, resource, mode, keep_waiting)?;
+                    self.mirrored |= bit;
+                }
+                (false, true) => {
+                    self.set_scanout(index as u32, 0, Mode::new(0, 0), keep_waiting)?;
+                    self.mirrored &= !bit;
+                }
+                _ => {}
+            }
+        }
+        Ok(self.mirrored)
+    }
+
+    fn set_scanout(
+        &mut self,
+        scanout: u32,
+        resource: u32,
+        mode: Mode,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let request = self.header(0, command::SET_SCANOUT);
+        self.put_rect(request + 24, mode.rect());
+        self.put32(request + 40, scanout);
+        self.put32(request + 44, resource);
+        self.run(1, SET_SCANOUT_BYTES, keep_waiting)
+    }
+
+    /// Stops showing the framebuffer on every scanout and gives it back once the device let
+    /// go of it (its resource detached and destroyed, D563): for a display that was unplugged,
+    /// or a driver that hands the GPU over. `None` when nothing is attached.
+    pub fn detach_framebuffer(
+        &mut self,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<M>, Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        let Some(resource) = self.scanout.as_ref().map(|scanout| scanout.resource) else {
+            return Ok(None);
+        };
+        for index in 1..MAX_SCANOUTS {
+            if self.mirrored & 1 << index != 0 {
+                self.set_scanout(index as u32, 0, Mode::new(0, 0), keep_waiting)?;
+            }
+        }
+        self.mirrored = 0;
+        self.set_scanout(SCANOUT_ID, 0, Mode::new(0, 0), keep_waiting)?;
+        if let Some(scanout) = self.scanout.as_mut() {
+            scanout.shown = false;
+        }
+        let request = self.header(0, command::RESOURCE_DETACH_BACKING);
+        self.put32(request + 24, resource);
+        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting)?;
+        let request = self.header(0, command::RESOURCE_UNREF);
+        self.put32(request + 24, resource);
+        self.run(1, RESOURCE_ONLY_BYTES, keep_waiting)?;
+        Ok(self.scanout.take().map(|scanout| scanout.framebuffer))
     }
 
     /// Asks the device for scanout 0's preferred mode again, as [`Self::new`] did.

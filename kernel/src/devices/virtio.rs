@@ -690,6 +690,7 @@ mod gpu {
                 return Some(self.gpu.display_mode());
             }
             self.gpu.clear_display_event();
+            let _ = self.gpu.follow_scanouts(&mut || deadline.keep_waiting());
             self.gpu
                 .preferred_mode(&mut || deadline.keep_waiting())
                 .ok()
@@ -911,6 +912,11 @@ mod input {
 
         fn set_lock_lights(&mut self, lights: LockLights) -> bool {
             self.0.set_lock_lights(lights)
+        }
+
+        fn is_gone(&self) -> bool {
+            let status = self.0.transport().status();
+            status == u8::MAX || status & virtio::status::DEVICE_NEEDS_RESET != 0
         }
     }
 
