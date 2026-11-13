@@ -12,6 +12,7 @@
 //! [`crate::Platform`] (D481).
 
 mod fp;
+mod plic;
 mod test_program;
 mod thread;
 mod user;
@@ -104,6 +105,14 @@ _start:
     ori     t4, t4, {megapage}
     sw      t4, 0(t3)
 
+    li      t1, {plic}
+    srli    t3, t1, {megapage_shift}
+    slli    t3, t3, 2
+    add     t3, t3, t0
+    srli    t4, t1, 2
+    ori     t4, t4, {megapage}
+    sw      t4, 0(t3)
+
     srli    t0, t0, 12
     li      t1, {satp_mode}
     or      t0, t0, t1
@@ -125,9 +134,38 @@ _start:
     call    kernel_main
 5:  wfi
     j       5b
+
+    .global eggos_secondary_start
+eggos_secondary_start:
+    mv      s1, a1
+    mv      s2, a0
+    lla     t0, {boot_root}
+    srli    t0, t0, 12
+    li      t1, {satp_mode}
+    or      t0, t0, t1
+    sfence.vma
+    csrw    satp, t0
+    sfence.vma
+    lla     t0, 6f
+    li      t1, {offset}
+    add     t0, t0, t1
+    jr      t0
+6:  lw      sp, {start_stack_top}(s1)
+    li      t0, (3 << 13) | (3 << 9)
+    csrc    sstatus, t0
+    lla     t0, riscv32_trap_entry
+    csrw    stvec, t0
+    mv      a0, s1
+    mv      a1, s2
+    call    {secondary_main}
+7:  wfi
+    j       7b
 "#,
     device_tree = sym DEVICE_TREE,
     boot_hart = sym BOOT_HART,
+    plic = const plic::PLIC,
+    start_stack_top = const core::mem::offset_of!(CpuStart, stack_top),
+    secondary_main = sym secondary_main,
     boot_root = sym BOOT_ROOT,
     ram_start = const RAM_START,
     direct_first = const (RAM_START + DIRECT_MAP_OFFSET) >> MEGAPAGE_SHIFT,
@@ -154,6 +192,7 @@ pub struct TrapFrame {
 
 const INTERRUPT: u32 = 1 << 31;
 const SUPERVISOR_TIMER: u32 = 5;
+const SUPERVISOR_EXTERNAL: u32 = 9;
 const SUPERVISOR_SOFTWARE: u32 = 1;
 const SOFTWARE_PENDING: usize = 1 << 1;
 const TIMER_ENABLE: usize = 1 << 5;
@@ -161,7 +200,12 @@ const SOFTWARE_ENABLE: usize = 1 << 1;
 const INTERRUPTS_ENABLE: usize = 1 << 1;
 const USER_MEMORY_ACCESS: usize = 1 << 18;
 const SBI_IPI: usize = 0x0073_5049;
-const SECONDARY_HARTS_NOT_YET: i64 = 0;
+const SBI_HSM: usize = 0x0048_534d;
+const SBI_HSM_HART_START: usize = 0;
+const SBI_ERR_INVALID_PARAM: isize = -3;
+const SBI_ERR_ALREADY_AVAILABLE: isize = -6;
+static BOOT_CPU_LOCAL_SET: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 const DEVICE_WINDOW: core::ops::Range<u64> = 0xff80_0000..0xffc0_0000;
 
 /// Handles interrupt `cause` (`scause`), from the kernel or from user mode: the timer's is
@@ -177,9 +221,43 @@ pub(super) fn interrupt(cause: u32) {
             unsafe { core::arch::asm!("csrc sip, {}", in(reg) SOFTWARE_PENDING) };
             crate::interrupt::deliver(Interrupt::Wakeup);
         }
+        SUPERVISOR_EXTERNAL => plic::interrupt(current_hart()),
         _ => {}
     }
 }
+
+/// The calling hart's id: what `set_cpu_local` recorded, or the boot hart's before (D569).
+fn current_hart() -> usize {
+    let block = <Riscv32 as Platform>::cpu_local();
+    if block == 0 {
+        return BOOT_HART.load(Ordering::Relaxed);
+    }
+    // SAFETY: a non-zero `tp` is this hart's per-CPU block, with a `HalCpuLocal` at its offset.
+    let local = unsafe {
+        &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal)
+    };
+    match local.hart_id.load(Ordering::Relaxed) {
+        u64::MAX => BOOT_HART.load(Ordering::Relaxed),
+        hart => hart as usize,
+    }
+}
+
+/// Called by `eggos_secondary_start` on the `CpuStart`'s stack, at the kernel's virtual address
+/// with the boot table, with the hart's id (D569): switches to the kernel's tables, sets the
+/// timer, wake-up and external interrupts up, leaves the id in `sscratch` for
+/// `set_cpu_local`, then calls the entry.
+extern "C" fn secondary_main(start: &CpuStart, hart: usize) -> ! {
+    // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map what
+    // this hart uses where it uses it now; interrupts are masked (HSM starts it with SIE clear).
+    unsafe { Riscv32::activate_page_tables(&start.page_table_roots[..1]) };
+    enable_timer_and_wake_ups();
+    plic::prepare_hart(hart);
+    // SAFETY: `sscratch` holds a user context only once this hart first enters user mode.
+    unsafe { core::arch::asm!("csrw sscratch, {}", in(reg) hart) };
+    (start.entry)(start.argument)
+}
+
+static SSTC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn trap(frame: &mut TrapFrame) {
     match frame.cause & INTERRUPT != 0 {
@@ -195,6 +273,10 @@ extern "C" fn trap(frame: &mut TrapFrame) {
 }
 
 extern "C" fn enable_timer_and_wake_ups() {
+    let tree = <Riscv32 as Platform>::device_tree();
+    if tree.is_some_and(|tree| crate::fdt::riscv_has_extension(tree, b"sstc")) {
+        SSTC.store(true, Ordering::Relaxed);
+    }
     set_timer_deadline(u64::MAX);
     // SAFETY: sets `sie.STIE` and `sie.SSIE`; the trap vector is installed, and `sstatus.SIE`
     // stays clear but in `wait_for_interrupt`.
@@ -351,6 +433,21 @@ fn sbi(extension: usize, function: usize, first: usize, second: usize) -> isize 
 /// Asks for the timer interrupt at `deadline` ticks, the 64-bit value split across `a0`
 /// and `a1` as RV32's SBI takes it.
 pub fn set_timer_deadline(deadline: u64) {
+    if SSTC.load(Ordering::Relaxed) {
+        // SAFETY: with Sstc, `stimecmp` and `stimecmph` are the supervisor timer's compare
+        // value (D569); the high half goes to all ones first so no half-written value fires.
+        unsafe {
+            core::arch::asm!(
+                "csrw stimecmph, {all}",
+                "csrw stimecmp, {low}",
+                "csrw stimecmph, {high}",
+                all = in(reg) u32::MAX,
+                low = in(reg) deadline as u32,
+                high = in(reg) (deadline >> 32) as u32,
+            )
+        };
+        return;
+    }
     sbi(
         SBI_TIME,
         0,
@@ -435,7 +532,24 @@ impl Platform for Riscv32 {
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        Err("RV32 has no console input interrupt yet")
+        plic::enable_console(BOOT_HART.load(Ordering::Relaxed))?;
+        uart().enable_receive_interrupt();
+        Ok(())
+    }
+
+    fn route_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        let source = eggos_drivers::interrupt::plic::source_of_specifier(specifier.cells())?;
+        plic::route_device(current_hart(), source)
+    }
+
+    fn release_device_interrupt(line: crate::DeviceLine) {
+        plic::release_device(line);
+    }
+
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        plic::steer_device(line, cpu as usize)
     }
 
     fn exit(_status: ExitStatus) -> ! {
@@ -524,6 +638,10 @@ impl Platform for Riscv32 {
         region(PhysicalRange::from_start_length(
             u64::from(UART),
             UART_BYTES as u64,
+        ));
+        region(PhysicalRange::from_start_length(
+            u64::from(plic::PLIC),
+            1 << MEGAPAGE_SHIFT,
         ));
     }
 
@@ -670,13 +788,42 @@ impl Platform for Riscv32 {
         BOOT_HART.load(Ordering::Relaxed) as u64
     }
 
-    unsafe fn start_cpu(_cpu: u64, _start: &CpuStart) -> Result<(), StartCpuError> {
-        Err(StartCpuError::Refused(SECONDARY_HARTS_NOT_YET))
+    unsafe fn start_cpu(cpu: u64, start: &CpuStart) -> Result<(), StartCpuError> {
+        unsafe extern "C" {
+            fn eggos_secondary_start();
+        }
+        let entry = (eggos_secondary_start as *const () as usize)
+            .wrapping_sub(KERNEL_VIRTUAL_OFFSET as usize);
+        let opaque = core::ptr::from_ref(start) as usize;
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let (error, _) = sbi_call(SBI_HSM, SBI_HSM_HART_START, [cpu as usize, entry, opaque]);
+        match error {
+            0 => Ok(()),
+            SBI_ERR_INVALID_PARAM => Err(StartCpuError::InvalidCpu),
+            SBI_ERR_ALREADY_AVAILABLE => Err(StartCpuError::AlreadyRunning),
+            error => Err(StartCpuError::Refused(error as i64)),
+        }
     }
 
     unsafe fn set_cpu_local(block: usize) {
         // SAFETY: the kernel keeps no thread-local storage, so `tp` is free for the block.
         unsafe { core::arch::asm!("mv tp, {}", in(reg) block) };
+        let hart = match BOOT_CPU_LOCAL_SET.swap(true, Ordering::Relaxed) {
+            false => BOOT_HART.load(Ordering::Relaxed),
+            true => {
+                let hart: usize;
+                // SAFETY: reading `sscratch`, which on a secondary hart still holds the id
+                // `secondary_main` left there.
+                unsafe { core::arch::asm!("csrr {}, sscratch", out(reg) hart) };
+                hart
+            }
+        };
+        // SAFETY: the caller guarantees `block` is a lasting per-CPU block with a
+        // `HalCpuLocal` at `HAL_CPU_LOCAL_OFFSET`, which only the HAL uses.
+        let local = unsafe {
+            &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal)
+        };
+        local.hart_id.store(hart as u64, Ordering::Relaxed);
     }
 
     fn cpu_local() -> usize {
