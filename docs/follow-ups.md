@@ -88,7 +88,7 @@ and is not listed per item.
 - [x] virtio-iommu, cache maintenance for non-coherent DMA, and the doorbell's ordering for real devices (`dmb osh`, `fence w,o`) (D111) — code written, unbuilt, D563 (doorbell ordering already done)
 - [x] virtio-gpu: more than one scanout, display hot-unplug and teardown (D112) — code written, unbuilt, D563 (mirroring)
 - [x] virtio-input: keyboard LEDs through the status queue, more than four input devices, hot-plug (D113) — code written, unbuilt, D563 (LEDs already done, D221; unplug here, arrival on the PCIe hot-plug line)
-- [ ] Network: IPv6 (addresses, NDP, SLAAC, ICMPv6, UDP and TCP over IPv6, `AF_INET6` sockets) (D157)
+- [x] Network: IPv6 (addresses, NDP, SLAAC, ICMPv6, UDP and TCP over IPv6, `AF_INET6` sockets) (D157) — code written, unbuilt, D565
 - [x] TCP: window scaling, selective acknowledgments, keep-alive probes, urgent data (D158) — code written, unbuilt, D564
 - [ ] virtio multiqueue: virtio-net's several queue pairs and virtio-blk's `num_queues`, each following its CPU (D540)
 - [ ] virtio-net: IPv6 and UDP segmentation offload and receive-side coalescing (`GUEST_TSO4`, mergeable buffers) (D541)

@@ -26256,3 +26256,35 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; `SIGURG` to a socket's owner and `SIOCATMARK` (they need
   `F_SETOWN`, a new line in the leftovers); timestamps (RFC 7323's other half); `TCP_INFO`'s
   counters.
+
+## D565 IPv6: addresses, neighbour discovery, SLAAC, ICMPv6, UDP and TCP over IPv6, and `AF_INET6` sockets (M8; D157's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; dual-stack sockets decided by research)
+
+- **The net crate.** `ipv6` (addresses with RFC 5952 text, solicited-node and multicast MAC
+  addresses, modified EUI-64 interface identifiers, the header, extension headers skipped,
+  fragments dropped as for IPv4, the pseudo-header sum), `icmpv6` (echo, router and neighbour
+  solicitations and advertisements with their link-layer, prefix and MTU options; discovery
+  messages need hop limit 255), `ndp` (a 16-entry neighbour cache, the link-local address,
+  three router solicitations at start, a global address from an autonomous /64 prefix and the
+  advertising router as default route) and `ip::IpAddress`, the version-neutral address with
+  the pseudo-header of either version. TCP and UDP now take `IpAddress` endpoints (UDP over
+  IPv6 refuses a zero checksum).
+- **The interface.** Frames to `33:33:…` multicast are taken; IPv6 packets to its own or
+  solicited-node addresses are answered (neighbour advertisements, echo replies) or handed up
+  (UDP, TCP, echo replies) as `Delivery` values whose addresses are now `IpAddress`.
+  `send_udp6`, `send_echo6` and `send_tcp6` resolve the next hop (on-link, or the router)
+  through neighbour solicitations, queueing packets as ARP does; `tcp_mss6` follows the
+  advertised MTU.
+- **The kernel.** `route6` picks the adapter; `send_tcp`, `send_udp`, `send_echo`,
+  `is_local`, `tcp_mss_for` and `source_for_any` take either version; the TCP table, listeners
+  and UDP endpoints keep `IpAddress` (IPv4-mapped addresses are stored as IPv4).
+- **Sockets.** `socket(AF_INET6, …)` makes stream, UDP and `IPPROTO_ICMPV6` ping sockets with
+  `struct sockaddr_in6`; a v6 socket also reaches IPv4 peers through `::ffff:a.b.c.d` unless
+  `IPV6_V6ONLY`; `IPV6_UNICAST_HOPS` sets the hop limit.
+- **Decided by research.** Dual-stack sockets by default (`IPV6_V6ONLY` off), as Linux's
+  `bindv6only=0`, so programs written for `::` serve both versions; an IPv4-mapped address is
+  unmapped at the socket edge so the network layers only ever see one form of each address.
+  Global addresses from the MAC address (EUI-64) rather than RFC 8981's random ones: simplest
+  first; temporary addresses are listed below.
+- **Not yet.** Building and running; duplicate address detection; DHCPv6 and RDNSS (DNS over
+  IPv6 servers); privacy (temporary) addresses; IPv6 in `ip`, `/proc/net`, netlink and the
+  network status; `IPV6_V6ONLY` on listeners; fragments and path MTU discovery.
