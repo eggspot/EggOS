@@ -85,10 +85,12 @@ _start:
     la.pcrel    $t0, {boot_root}
     la.pcrel    $t1, {boot_direct}
     bstrpick.d  $t3, $t1, 47, 0
-    st.d        $t3, $t0, {direct_map_slot}
+    li.d        $t5, {direct_map_slot}
+    stx.d       $t3, $t0, $t5
     la.pcrel    $t1, {boot_kernel}
     bstrpick.d  $t3, $t1, 47, 0
-    st.d        $t3, $t0, {kernel_root_slot}
+    li.d        $t5, {kernel_root_slot}
+    stx.d       $t3, $t0, $t5
     la.pcrel    $t1, {boot_direct}
     li.d        $t3, {direct_leaf}
     li.d        $t4, 1 << 30
@@ -100,7 +102,8 @@ _start:
     bnez        $t5, 9b
     la.pcrel    $t1, {boot_kernel}
     li.d        $t3, {kernel_leaf}
-    st.d        $t3, $t1, {kernel_gigabyte_slot}
+    li.d        $t5, {kernel_gigabyte_slot}
+    stx.d       $t3, $t1, $t5
 
     bl          loongarch64_boot_walker
     la.pcrel    $t0, 10f

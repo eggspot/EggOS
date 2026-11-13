@@ -569,7 +569,8 @@ impl Platform for Powerpc64 {
         // the two, through the entry installed at boot, which restores every register.
         unsafe {
             core::arch::asm!(
-                "li {value}, {enable}",
+                "li {value}, 0",
+                "ori {value}, {value}, {enable}",
                 "mtmsrd {value}, 1",
                 "li {value}, {recoverable}",
                 "mtmsrd {value}, 1",
@@ -1030,3 +1031,12 @@ mod memory_functions {
         unsafe { memcmp(first, second, length) }
     }
 }
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+extern "C" fn _Unwind_Resume(_: *mut u8) -> ! {
+    panic!("the kernel tried to unwind")
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rust_eh_personality() {}

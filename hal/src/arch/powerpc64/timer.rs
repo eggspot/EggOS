@@ -6,6 +6,12 @@
 pub(super) const FREQUENCY: u64 = 512_000_000;
 const LONGEST_COUNT: u64 = 0x7fff_ffff;
 const HYPERVISOR_DOORBELL: u64 = 5 << 27;
+const MSGSND_R3: u32 = x_form(206, 3);
+const MSGCLR_R3: u32 = x_form(238, 3);
+
+const fn x_form(extended_opcode: u32, rb: u32) -> u32 {
+    (31 << 26) | (rb << 11) | (extended_opcode << 1)
+}
 
 /// The time base.
 #[inline]
@@ -42,14 +48,27 @@ pub(super) fn end_timer_interrupt() {
 pub(super) fn wake(cpu: u64) {
     // SAFETY: a doorbell only raises interrupt 0xe80 on the CPU whose PIR is `cpu`.
     unsafe {
-        core::arch::asm!("sync", "msgsnd {}", in(reg) HYPERVISOR_DOORBELL | cpu, options(nostack))
+        core::arch::asm!(
+            "sync",
+            ".long {msgsnd_r3}",
+            msgsnd_r3 = const MSGSND_R3,
+            in("r3") HYPERVISOR_DOORBELL | cpu,
+            options(nostack),
+        )
     };
 }
 
 /// This CPU's doorbell was taken: it is cleared.
 pub(super) fn end_wakeup() {
     // SAFETY: clears this CPU's pending hypervisor doorbell only.
-    unsafe { core::arch::asm!("msgclr {}", in(reg) HYPERVISOR_DOORBELL, options(nomem, nostack)) };
+    unsafe {
+        core::arch::asm!(
+            ".long {msgclr_r3}",
+            msgclr_r3 = const MSGCLR_R3,
+            in("r3") HYPERVISOR_DOORBELL,
+            options(nomem, nostack),
+        )
+    };
 }
 
 /// Stops this CPU until an interrupt condition, resuming at the next instruction (`PSSCR` 0:
