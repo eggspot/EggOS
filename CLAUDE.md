@@ -222,9 +222,13 @@ Still the owner's: anything that needs new accounts, signing keys or other crede
   terms, no proprietary edition, no CLA. Only the owner can change the license, by an explicit
   instruction recorded in docs/decisions.md. Keep everything in the repo compatible with both
   licenses.
-- Clean-room only: never copy or translate code from GPL/LGPL/copyleft projects, including the Linux kernel
-  (GPL-2.0). Implement Linux compatibility from public specifications, man pages and observed behaviour,
-  not from Linux source.
+- Written by us (owner, 2026-11-13: "all code here we write ourself only, could we read other code or
+  learn from them"): every line of EggOS is our own code. Any source may be read to learn how hardware,
+  formats and other systems work, GPL/LGPL/copyleft projects such as the Linux kernel included, next to
+  public specifications, man pages and observed behaviour. Never copy, paste or line-by-line translate
+  their code, and never add their files, tables or comments: write our own design, names and structure.
+  When a part was learned from someone else's code, name that source in its decision and in a NOTICE
+  file next to the module.
 
 ## Open questions: research them yourself
 Don't stop work to wait for the owner. When a question comes up (a design tradeoff, an assumption about
