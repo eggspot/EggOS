@@ -604,17 +604,16 @@ fn a_deep_key_s_row_still_shows_its_name() {
         .iter()
         .position(|row| row.ends_with("Level13"))
         .unwrap();
-    let shown = &table_cells(&window, ids(&window).keys, row)[0];
+    let shown = &rows[row];
     assert!(shown.ends_with("Level13"), "{shown}");
     assert!(shown.starts_with(&format!("{}{DEEPER}", INDENT.repeat(DEEPEST_INDENTED - 1))));
-    let keys = ids(&window).keys;
     let at = |leaf: &str| rows.iter().position(|row| row.ends_with(leaf)).unwrap();
     assert_eq!(
-        table_cells(&window, keys, at(" Level3"))[0],
+        rows[at(" Level3")],
         format!("{}- Level3", INDENT.repeat(DEEPEST_INDENTED))
     );
     assert_eq!(
-        table_cells(&window, keys, at(" Level4"))[0],
+        rows[at(" Level4")],
         format!("{}{DEEPER}- Level4", INDENT.repeat(DEEPEST_INDENTED - 1))
     );
 }
@@ -658,6 +657,7 @@ fn a_phone_browses_one_level_a_page_and_goes_up_by_the_dot_dot_row() {
     let mut window = opened(&store);
     let widgets = ids(&window);
     window.set_form_factor(crate::settings_window::SettingsForm::Phone, 360);
+    assert_eq!(window.open_pane(WINDOWS), None);
     assert_eq!(rect(&window, widgets.keys).width, 328);
     assert_eq!(window.windows_pane().key_rows(), ["..", "  Software"]);
     window.tree().set_focus(Some(widgets.keys), 0);
