@@ -106,7 +106,7 @@ fn a_syn_from_the_network_makes_a_connection_without_the_adapter_lock_its_receiv
     };
     let remote = Ipv4Address::new(10, 0, 2, 2);
     let local = Ipv4Address::new(10, 0, 2, 15);
-    let held = crate::net::ADAPTER.lock();
+    let held = crate::net::ADAPTERS.lock();
     assert!(deliver::<P>(remote, local, &syn, 1_460));
     drop(held);
     assert_eq!(listener.state.lock().pending, 1);

@@ -319,12 +319,14 @@ enum HiddenNote {
 }
 
 /// What the section did with an input.
+#[derive(Debug)]
 pub enum Reply {
     NotMine,
     Done(Option<Request>),
 }
 
 /// The Wi-Fi section's widgets and what they show.
+#[derive(Debug)]
 pub struct WifiSection {
     widgets: Widgets,
     default_button: WidgetId,

@@ -1341,6 +1341,7 @@ fn macos_program_output(arch: &str) -> [Vec<Line>; MACOS_PROGRAM_SESSION.len()] 
             refused("macos-process"),
             refused("macos-text"),
             refused("macos-legacy"),
+            refused("macos-cxx"),
             end,
         ];
     }

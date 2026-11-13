@@ -488,6 +488,14 @@ impl PartialEq for Context {
 
 impl Eq for Context {}
 
+impl PartialEq for Buffer {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Buffer {}
+
 fn end_context<P: Platform>(context: u32, resources: &[u32], created: bool) {
     if !created {
         return;

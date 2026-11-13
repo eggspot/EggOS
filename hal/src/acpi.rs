@@ -1080,13 +1080,15 @@ mod tests {
         memory[..RSDP_V2_LENGTH].copy_from_slice(&rsdp);
         let mut xsdt = vec![0u8; TABLE_HEADER_LENGTH + 8];
         xsdt[..4].copy_from_slice(b"XSDT");
-        xsdt[4..8].copy_from_slice(&(xsdt.len() as u32).to_le_bytes());
+        let xsdt_length = xsdt.len() as u32;
+        xsdt[4..8].copy_from_slice(&xsdt_length.to_le_bytes());
         xsdt[TABLE_HEADER_LENGTH..].copy_from_slice(&0x2000u64.to_le_bytes());
         fix_checksum(&mut xsdt, 9);
         memory[0x1000..0x1000 + xsdt.len()].copy_from_slice(&xsdt);
         let mut spcr = vec![0u8; SPCR_MINIMUM_LENGTH];
         spcr[..4].copy_from_slice(b"SPCR");
-        spcr[4..8].copy_from_slice(&(spcr.len() as u32).to_le_bytes());
+        let spcr_length = spcr.len() as u32;
+        spcr[4..8].copy_from_slice(&spcr_length.to_le_bytes());
         fix_checksum(&mut spcr, 9);
         memory[0x2000..0x2000 + spcr.len()].copy_from_slice(&spcr);
         let memory: &'static [u8] = Box::leak(memory.into_boxed_slice());

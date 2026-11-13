@@ -1765,7 +1765,7 @@ impl Settings {
                     .and_then(|files| storage::install(&mut disks, device, &files))
                     .map(|_| ());
                 self.window.show_disks(storage::list(&mut disks));
-                self.window.show_installed(device, result, now_ms);
+                self.window.show_disk_installed(device, result, now_ms);
             }
         }
     }

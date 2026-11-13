@@ -2791,16 +2791,13 @@ fn leave_program<P: Platform>(
     next
 }
 
-/// Asks every other online CPU to look at its scheduler and interrupts it: a thread of an ended
-/// process that runs there in user mode comes back to the kernel, and one about to return to
-/// user mode, or switched in there next, looks first ([`run`]).
-#[cold]
-#[inline(never)]
 impl<P: Platform> Process<P> {
     /// Interrupts the other CPUs that have the process's address space loaded (D295): only
     /// they can be running its program, so a thread there comes back to the kernel to see an
     /// exit or a signal; a CPU that loads it later looks before it runs the program
     /// ([`Self::after_look`]). The rest of the machine is left alone.
+    #[cold]
+    #[inline(never)]
     fn interrupt_cpus_running_it(&self) {
         let root = self.memory.space.root();
         let here = cpu::current::<P>();

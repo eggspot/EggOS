@@ -140,7 +140,7 @@ pub trait Scanout: Send {
 }
 
 /// What [`Display::start_flush`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum FlushStart {
     /// The flush is done (or there was nothing to show): this many rectangles.
     Done(usize),

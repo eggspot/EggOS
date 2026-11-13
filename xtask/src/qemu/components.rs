@@ -189,11 +189,6 @@ fn boot(arch: &Arch, kernel: &Path, args: &[String], session: &[String]) -> Resu
     }
 }
 
-fn console_text(boot: &mut Boot<'_>) -> String {
-    boot.console.extend(boot.output.try_iter().flatten());
-    String::from_utf8_lossy(&boot.console).into_owned()
-}
-
 fn type_text(boot: &mut Boot<'_>, text: &str) -> Result<(), String> {
     boot.keyboard
         .write_all(text.as_bytes())
@@ -217,13 +212,13 @@ fn step_result(console: &str, step: &str) -> Option<(String, i32)> {
 }
 
 fn run_step(boot: &mut Boot<'_>, command: &str, step: &str) -> Result<(String, i32), String> {
-    console_text(boot);
+    boot.console_text();
     let prompts = boot.prompts();
     let from = boot.console.len();
     type_text(boot, &format!("{command}; echo {STEP_PREFIX}{step} $?\r"))?;
     let started = Instant::now();
     loop {
-        console_text(boot);
+        boot.console_text();
         let typed_since = String::from_utf8_lossy(&boot.console[from..]).into_owned();
         if let Some(result) = step_result(&typed_since, step) {
             boot.wait_for_prompts(prompts + 1)?;
@@ -251,7 +246,7 @@ fn succeeds(boot: &mut Boot<'_>, command: &str, step: &str) -> Result<String, St
 }
 
 fn start_in_background(boot: &mut Boot<'_>, command: &str) -> Result<(), String> {
-    console_text(boot);
+    boot.console_text();
     let prompts = boot.prompts();
     type_text(boot, &format!("{command} > {BACKGROUND_LOG} 2>&1 &\r"))?;
     boot.wait_for_prompts(prompts + 1)

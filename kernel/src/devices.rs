@@ -520,14 +520,6 @@ impl DeviceTable {
     pub fn dropped(&self) -> usize {
         self.dropped
     }
-
-    /// Every device with its id, in order.
-    pub fn iter(&self) -> impl Iterator<Item = (DeviceId, &DeviceNode)> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .map(|(index, node)| (DeviceId(index as u16), node))
-    }
 }
 
 impl Default for DeviceTable {

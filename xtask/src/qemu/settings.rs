@@ -135,6 +135,11 @@ pub(super) struct Boot<'a> {
 }
 
 impl<'a> Boot<'a> {
+    pub(super) fn console_text(&mut self) -> String {
+        self.console.extend(self.output.try_iter().flatten());
+        String::from_utf8_lossy(&self.console).into_owned()
+    }
+
     pub(super) fn start(arch: &'a Arch, kernel: &Path, args: &[String]) -> Result<Self, String> {
         eprintln!("xtask: booting {} in {} (settings)", arch.name, arch.qemu);
         let port = qmp::free_port()?;

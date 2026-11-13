@@ -154,9 +154,9 @@ impl<F: Files> PickerWindow<F> {
         self.add(sidebar, Place::at(12, 8, Length::Px(SIDEBAR - 24), Length::Px(16)), Kind::label("Places", Token::TextDim));
         self.ids.places = self.add(sidebar, Place::at(0, 28, Length::Fill(0), Length::Fill(0)), Kind::list(&PLACE_NAMES, ROW, 8, 24));
         let columns = [
-            TableColumn { title: "Name", width: NAME_COLUMN, min_width: NAME_COLUMN, align: Align::Left, sortable: true },
+            TableColumn { title: "Name", width: NAME_COLUMN, min_width: NAME_COLUMN, align: Align::Start, sortable: true },
             TableColumn { title: "Size", width: SIZE_COLUMN, min_width: SIZE_COLUMN, align: Align::End, sortable: true },
-            TableColumn { title: "Modified", width: MODIFIED_COLUMN, min_width: MODIFIED_COLUMN, align: Align::Left, sortable: true },
+            TableColumn { title: "Modified", width: MODIFIED_COLUMN, min_width: MODIFIED_COLUMN, align: Align::Start, sortable: true },
         ];
         self.ids.table = self.add(root, Place::at(SIDEBAR, TOOLBAR, Length::Fill(0), middle), Kind::table("Entries", &columns, 0, cell, 0));
         self.ids.empty = self.add(root, Place::at(SIDEBAR + 28, TOOLBAR + 32, Length::Fill(8), Length::Px(16)), Kind::label("", Token::TextDim));

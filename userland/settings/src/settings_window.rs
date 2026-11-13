@@ -2360,7 +2360,12 @@ impl SettingsWindow {
     }
 
     /// Shows on the Storage pane how installing EggOS on `device` went, at `now_ms`.
-    pub fn show_installed(&mut self, device: &'static str, result: Result<(), StorageError>, now_ms: u32) {
+    pub fn show_disk_installed(
+        &mut self,
+        device: &'static str,
+        result: Result<(), StorageError>,
+        now_ms: u32,
+    ) {
         self.storage
             .show_installed(&mut self.tree, device, result, now_ms);
     }
@@ -3677,7 +3682,8 @@ mod form_tests {
         assert_eq!(window.page(), Page::List);
         assert_eq!(window.widgets().focus(), Some(window.widgets.list));
         assert!(!window.go_back());
-        window.tree().set_text(window.widgets.search, "dis");
+        let search = window.widgets.search;
+        window.tree().set_text(search, "dis");
         assert!(window.go_back());
         assert_eq!(window.widgets().text_of(window.widgets.search), Some(""));
     }

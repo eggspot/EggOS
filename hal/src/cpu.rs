@@ -26,8 +26,6 @@
 #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 use crate::atomic::AtomicU64;
 use core::cell::UnsafeCell;
-#[cfg(target_arch = "x86_64")]
-
 
 /// What a secondary CPU starts with. The kernel keeps it allocated and unchanged until the CPU
 /// has called [`CpuStart::entry`]; the architecture's entry code reads it through the boot

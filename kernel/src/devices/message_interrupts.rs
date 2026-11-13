@@ -122,6 +122,9 @@ fn connect_pin(
         ));
     }
     let line = probe.legacy_interrupt(input)?;
+    let config = probe
+        .pci_config()
+        .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let command = config.read32(address, COMMAND);
     config.write32(address, COMMAND, command & !COMMAND_INTX_DISABLE);
     events.set_masked_line(line);

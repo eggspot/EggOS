@@ -78,11 +78,6 @@ fn listed_line(arch: &str) -> String {
     format!("{APP}\tlinux\t{arch}\t/Applications/{APP}/{APP}\t-")
 }
 
-fn console_text(boot: &mut Boot<'_>) -> String {
-    boot.console.extend(boot.output.try_iter().flatten());
-    String::from_utf8_lossy(&boot.console).into_owned()
-}
-
 fn wait_for_window(
     boot: &mut Boot<'_>,
     screen: &mut Screen,
@@ -313,7 +308,7 @@ pub fn check(arch: &Arch, kernel: &Path, folder: &Path) -> Result<(), String> {
     boot.wait_for_prompts(3)?;
     type_line(&mut boot, &schemas_line(arch.name))?;
     boot.wait_for_prompts(4)?;
-    let console = console_text(&mut boot);
+    let console = boot.console_text();
     if !has_line(&console, &format!("{STATUS_PREFIX}schemas 0")) {
         return Err(boot.fail(format!(
             "{}: glib-compile-schemas did not compile Mousepad's schemas inside EggOS",

@@ -346,7 +346,10 @@ pub trait Platform: 'static {
     /// The framebuffer the firmware's graphics output left set up, when EggOS's UEFI loader
     /// started the kernel and found one it can draw into (D236), else the device tree's
     /// `simple-framebuffer` (D542); `None` otherwise.
-    fn boot_framebuffer() -> Option<handoff::Framebuffer> {
+    fn boot_framebuffer() -> Option<handoff::Framebuffer>
+    where
+        Self: Sized,
+    {
         handoff::handoff::<Self>()
             .map(|handoff| handoff.framebuffer)
             .filter(handoff::Framebuffer::is_usable)
@@ -356,7 +359,10 @@ pub trait Platform: 'static {
 
     /// The GPT unique partition GUID of the partition EggOS's UEFI loader was read from (D236),
     /// for the installer to find the disk it runs from; `None` when unknown.
-    fn boot_partition() -> Option<[u8; 16]> {
+    fn boot_partition() -> Option<[u8; 16]>
+    where
+        Self: Sized,
+    {
         handoff::handoff::<Self>()
             .filter(handoff::Handoff::knows_boot_partition)
             .map(|handoff| handoff.boot_partition)
@@ -364,7 +370,10 @@ pub trait Platform: 'static {
 
     /// A file EggOS's UEFI loader read from the boot partition and kept (D241), for the
     /// installer; `None` when the kernel was started another way.
-    fn boot_file(file: handoff::BootFile) -> Option<&'static [u8]> {
+    fn boot_file(file: handoff::BootFile) -> Option<&'static [u8]>
+    where
+        Self: Sized,
+    {
         handoff::file::<Self>(&handoff::handoff::<Self>()?, file)
     }
 

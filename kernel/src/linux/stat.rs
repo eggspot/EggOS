@@ -730,8 +730,6 @@ mod tests {
             group: 100,
             size: 0,
             modified: 0,
-            accessed: 0,
-    accessed: 0,
         };
         let ids = |id| Ids {
             real: id,
