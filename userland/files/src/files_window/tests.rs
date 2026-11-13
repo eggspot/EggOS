@@ -1058,6 +1058,7 @@ fn a_link_rows_menu_shows_the_original_and_makes_links_in_each_profiles_words() 
         [
             ("Open", true),
             ("Show Original", true),
+            ("Change Target...", true),
             ("Cut", true),
             ("Copy", true),
             ("Paste", false),
@@ -1073,6 +1074,7 @@ fn a_link_rows_menu_shows_the_original_and_makes_links_in_each_profiles_words() 
         [
             ("Open", true),
             ("Show Original", false),
+            ("Change Target...", true),
             ("Cut", true),
             ("Copy", true),
             ("Make Link", true),
@@ -1094,6 +1096,7 @@ fn a_link_rows_menu_shows_the_original_and_makes_links_in_each_profiles_words() 
         [
             ("Open", true),
             ("Open file location", true),
+            ("Change Target...", true),
             ("Cut", true),
             ("Copy", true),
             ("Create shortcut", true),
