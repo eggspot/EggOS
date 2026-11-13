@@ -13,7 +13,7 @@
 #![cfg_attr(eggos_user, no_std, no_main)]
 #![cfg_attr(test, allow(dead_code))]
 
-#[cfg(any(test, all(eggos_user, target_arch = "aarch64")))]
+#[cfg(any(test, all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64"))))]
 extern crate alloc;
 
 #[cfg(all(eggos_user, any(target_arch = "aarch64", target_arch = "x86_64")))]

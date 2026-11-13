@@ -205,7 +205,7 @@ pub fn allocate_aligned(alignment: usize, size: usize) -> *mut u8 {
     write_header(aligned - HEADER_SIZE, ALIGNED, aligned - inner as usize)
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 mod layer_allocator {
     use core::alloc::{GlobalAlloc, Layout};
 

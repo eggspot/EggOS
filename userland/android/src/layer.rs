@@ -1410,7 +1410,7 @@ pub fn run(startup: &Startup) -> i32 {
     let targets: Vec<Target> = (0..dex.method_count())
         .map(|method| framework::resolve(&dex, method, &compiled))
         .collect();
-    let state = State {
+    let initial = State {
         dex,
         content: None,
         base,
@@ -1424,7 +1424,7 @@ pub fn run(startup: &Startup) -> i32 {
         activity: 0,
         table: 0,
     };
-    STATE.store(Box::leak(Box::new(state)), Ordering::Release);
+    STATE.store(Box::leak(Box::new(initial)), Ordering::Release);
     let mut entries: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
     entries.extend(targets.into_iter().map(target_address));
     entries[helper::PENDING_EXCEPTION] = 0;
