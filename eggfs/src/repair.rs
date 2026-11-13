@@ -3,8 +3,10 @@ use crate::journal::{count_clear, replay};
 use crate::layout::{
     BITS_PER_BLOCK, BLOCK_SIZE, Block, DESCRIPTOR_MAGIC, Descriptor, FIRST_FREE_INODE, Geometry,
     Inode, InodeKind, MAGIC, MAX_DIRECTORY_BLOCKS, MAX_LINK_TARGET, POINTERS_PER_BLOCK, ROOT_INODE,
-    Record, VERSION, put_u32, put_u64, record_at, u32_at, write_record, zeroed_block,
+    Record, VERSION_WITH_LINKS, VERSION_WITH_NAME_INDEX, put_u32, put_u64, record_at, u32_at, write_record, zeroed_block,
 };
+use crate::index::name_hash;
+use crate::name_index::{bucket_len, bucket_of, bucket_pointer, holds, root_buckets};
 use crate::volume::{MAX_FILE_BYTES, Volume, tree_first};
 use crate::{Disk, DiskError, Error, Kind, MountError, inode_of, kind_of};
 use alloc::boxed::Box;
@@ -86,6 +88,9 @@ pub enum Problem {
     InodeBitmap,
     /// A version 1 volume holds symbolic links or hard links; it is upgraded to version 2.
     OldVersion,
+    /// A directory's on-disk name index is malformed, shares a block or misses a name; it is
+    /// dropped, and rebuilt when the directory next grows (D562).
+    DamagedNameIndex,
     /// An unreachable inode could not be given a name in `lost+found`.
     LostAndFoundFull,
     /// The repair stopped on an error; nothing more could be done.
@@ -126,6 +131,7 @@ impl Problem {
             Problem::BlockBitmap => "block-bitmap",
             Problem::InodeBitmap => "inode-bitmap",
             Problem::OldVersion => "old-version",
+            Problem::DamagedNameIndex => "damaged-name-index",
             Problem::LostAndFoundFull => "lost-and-found-full",
             Problem::RepairFailed => "repair-failed",
             Problem::RepairIncomplete => "repair-incomplete",
@@ -163,6 +169,7 @@ impl Problem {
             Problem::BlockBitmap => "the block bitmap does not match what is used",
             Problem::InodeBitmap => "the inode bitmap does not match what is used",
             Problem::OldVersion => "a version 1 volume holds version 2 features",
+            Problem::DamagedNameIndex => "a directory's name index is damaged",
             Problem::LostAndFoundFull => "an unreachable inode could not be put in lost+found",
             Problem::RepairFailed => "the repair stopped on an error",
             Problem::RepairIncomplete => "the volume is still inconsistent after the repair",
@@ -631,7 +638,7 @@ impl<D: Disk> Volume<D> {
             scan.found(Problem::OrphanLeft, number, 0);
         }
         self.fix_names(scan)?;
-        if geometry.version < VERSION && scan.needs_version_2 {
+        if geometry.version < VERSION_WITH_LINKS && scan.needs_version_2 {
             scan.found(Problem::OldVersion, 0, 0);
             self.ensure_room()?;
             self.upgrade()?;
@@ -813,6 +820,10 @@ impl<D: Disk> Volume<D> {
             InodeKind::Regular => {}
         }
         let original = inode;
+        if inode.name_index != 0 {
+            scan.found(Problem::DamagedNameIndex, number, inode.name_index);
+            inode.name_index = 0;
+        }
         if inode.size > MAX_FILE_BYTES {
             scan.found(Problem::FileTooLarge, number, 0);
             inode.size = MAX_FILE_BYTES;
@@ -961,6 +972,10 @@ impl<D: Disk> Volume<D> {
             scan.found(Problem::DirectoryHole, number, 0);
         }
         let (entries, subdirectories) = self.sweep_records(number, &blocks, scan)?;
+        if inode.name_index != 0 && !self.name_index_holds(&inode, &blocks, scan)? {
+            scan.found(Problem::DamagedNameIndex, number, inode.name_index);
+            inode.name_index = 0;
+        }
         if (entries, subdirectories) != (inode.entries, inode.child_directories) {
             scan.found(Problem::DirectoryCounts, number, 0);
             inode.entries = entries;
@@ -984,6 +999,56 @@ impl<D: Disk> Volume<D> {
             self.write_inode(number, &inode)?;
         }
         Ok(())
+    }
+
+    fn name_index_holds(
+        &mut self,
+        inode: &Inode,
+        blocks: &[(u64, u32)],
+        scan: &mut Scan,
+    ) -> Result<bool, Error> {
+        let geometry = self.geometry;
+        let root = inode.name_index;
+        let claimable = |block: u32, scan: &Scan| geometry.is_data_block(block) && !scan.used.get(block);
+        if geometry.version < VERSION_WITH_NAME_INDEX || !claimable(root, scan) {
+            return Ok(false);
+        }
+        let mut pointers = zeroed_block();
+        pointers.copy_from_slice(&self.cache.get(&mut self.disk, root)?[..]);
+        let Some(buckets) = root_buckets(&pointers[..]) else {
+            return Ok(false);
+        };
+        let mut contents = Vec::with_capacity(buckets as usize);
+        let mut claimed = BTreeSet::new();
+        for bucket in 0..buckets {
+            let block = bucket_pointer(&pointers[..], bucket);
+            if block == root || !claimable(block, scan) || !claimed.insert(block) {
+                return Ok(false);
+            }
+            let mut data = zeroed_block();
+            data.copy_from_slice(&self.cache.get(&mut self.disk, block)?[..]);
+            if bucket_len(&data[..]).is_none() {
+                return Ok(false);
+            }
+            contents.push(data);
+        }
+        for &(block_index, block) in blocks {
+            let data = self.cache.get(&mut self.disk, block)?;
+            let mut offset = 0;
+            while let Ok(Some(record)) = record_at(&data[..], offset) {
+                let hash = name_hash(record.name);
+                let bucket = &contents[bucket_of(hash, buckets) as usize];
+                if !holds(&bucket[..], hash, block_index as u32) {
+                    return Ok(false);
+                }
+                offset += record.length;
+            }
+        }
+        scan.used.set(root);
+        for block in claimed {
+            scan.used.set(block);
+        }
+        Ok(true)
     }
 
     fn named_directories(&mut self, number: u32, named: &mut BTreeSet<u32>) -> Result<(), Error> {

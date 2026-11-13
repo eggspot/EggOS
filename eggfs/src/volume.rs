@@ -9,6 +9,10 @@ use crate::layout::{
     ROOT_INODE, VERSION, put_u32, record_at, record_length, records_end, remove_record, u32_at,
     write_record, zeroed_block,
 };
+use crate::name_index::{
+    MAX_BUCKETS, PAIRS_PER_BUCKET, bucket_len, bucket_of, bucket_pointer, buckets_for, pair, push_pair,
+    root_buckets, write_root,
+};
 use crate::{Disk, Error, GENERATION_MASK, Kind, generation_of, inode_of, kind_of, node_number};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -727,6 +731,155 @@ impl<D: Disk> Volume<D> {
             .and_then(|index| index.candidates(name_hash(name), &mut out[..])))
     }
 
+    fn stored_candidates(
+        &mut self,
+        directory: &Inode,
+        name: &[u8],
+        out: &mut [u64; MAX_CANDIDATES],
+    ) -> Result<Option<usize>, Error> {
+        if directory.name_index == 0 {
+            return Ok(None);
+        }
+        if !self.geometry.is_data_block(directory.name_index) {
+            return Err(Error::Corrupt);
+        }
+        let hash = name_hash(name);
+        let root = self.cache.get(&mut self.disk, directory.name_index)?;
+        let buckets = root_buckets(&root[..]).ok_or(Error::Corrupt)?;
+        let bucket = bucket_pointer(&root[..], bucket_of(hash, buckets));
+        if !self.geometry.is_data_block(bucket) {
+            return Err(Error::Corrupt);
+        }
+        let data = self.cache.get(&mut self.disk, bucket)?;
+        let length = bucket_len(&data[..]).ok_or(Error::Corrupt)?;
+        let mut found = 0;
+        for position in 0..length {
+            let (stored, block_index) = pair(&data[..], position);
+            if stored != hash {
+                continue;
+            }
+            let Some(slot) = out.get_mut(found) else {
+                return Ok(None);
+            };
+            *slot = u64::from(block_index);
+            found += 1;
+        }
+        Ok(Some(found))
+    }
+
+    fn name_index_room(&self) -> u32 {
+        let capacity = self.geometry.transaction_capacity() as usize;
+        let free = capacity.saturating_sub(self.cache.dirty_count() + OPERATION_RESERVE / 4);
+        match u32::try_from(free).unwrap_or(u32::MAX).min(MAX_BUCKETS) {
+            0 | 1 => 0,
+            room => 1 << (31 - (room - 1).leading_zeros()),
+        }
+    }
+
+    fn build_name_index(&mut self, directory: &mut Inode, blocks: u64) -> Result<(), Error> {
+        let buckets = buckets_for(directory.entries.saturating_add(1));
+        if buckets > MAX_BUCKETS || buckets + 1 > self.name_index_room() {
+            return Ok(());
+        }
+        let mut pairs = Vec::with_capacity(directory.entries as usize + 1);
+        for block_index in 0..blocks {
+            let block = self.directory_block(directory, block_index)?;
+            let data = self.cache.get(&mut self.disk, block)?;
+            let mut offset = 0;
+            while let Some(record) = record_at(&data[..], offset).map_err(|()| Error::Corrupt)? {
+                pairs.push((name_hash(record.name), block_index as u32));
+                offset += record.length;
+            }
+        }
+        if pairs.len() as u64 * 2 > u64::from(buckets) * u64::from(PAIRS_PER_BUCKET) {
+            return Ok(());
+        }
+        self.upgrade()?;
+        let mut pointers = Vec::with_capacity(buckets as usize);
+        for _ in 0..buckets {
+            match self.allocate_block() {
+                Ok(block) => {
+                    self.cache.insert_zeroed(block);
+                    pointers.push(block);
+                }
+                Err(error) => {
+                    for &block in &pointers {
+                        self.free_block(block)?;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        for &(hash, block_index) in &pairs {
+            let bucket = pointers[bucket_of(hash, buckets) as usize];
+            let data = self.cache.get_mut(&mut self.disk, bucket, false)?;
+            if !push_pair(&mut data[..], hash, block_index) {
+                for &block in &pointers {
+                    self.free_block(block)?;
+                }
+                return Ok(());
+            }
+        }
+        let root = match self.allocate_block() {
+            Ok(root) => root,
+            Err(error) => {
+                for &block in &pointers {
+                    self.free_block(block)?;
+                }
+                return Err(error);
+            }
+        };
+        write_root(&mut self.cache.insert_zeroed(root)[..], &pointers);
+        directory.name_index = root;
+        self.changes += 1;
+        Ok(())
+    }
+
+    fn drop_name_index(&mut self, directory: &mut Inode) -> Result<(), Error> {
+        let root = core::mem::take(&mut directory.name_index);
+        if root == 0 || !self.geometry.is_data_block(root) {
+            return Ok(());
+        }
+        let mut data = zeroed_block();
+        data.copy_from_slice(&self.cache.get(&mut self.disk, root)?[..]);
+        if let Some(buckets) = root_buckets(&data[..]) {
+            for bucket in 0..buckets {
+                let block = bucket_pointer(&data[..], bucket);
+                if self.geometry.is_data_block(block) {
+                    self.free_block(block)?;
+                }
+            }
+        }
+        self.free_block(root)?;
+        self.changes += 1;
+        Ok(())
+    }
+
+    fn note_in_name_index(
+        &mut self,
+        directory: &mut Inode,
+        name: &[u8],
+        block_index: u64,
+    ) -> Result<(), Error> {
+        if directory.name_index == 0 {
+            return Ok(());
+        }
+        let hash = name_hash(name);
+        let root = self.cache.get(&mut self.disk, directory.name_index)?;
+        let Some(buckets) = root_buckets(&root[..]) else {
+            return self.drop_name_index(directory);
+        };
+        let bucket = bucket_pointer(&root[..], bucket_of(hash, buckets));
+        if !self.geometry.is_data_block(bucket) {
+            return self.drop_name_index(directory);
+        }
+        let data = self.cache.get_mut(&mut self.disk, bucket, false)?;
+        if push_pair(&mut data[..], hash, block_index as u32) {
+            return Ok(());
+        }
+        self.drop_name_index(directory)
+    }
+
     fn find_entry(
         &mut self,
         number: u32,
@@ -736,9 +889,12 @@ impl<D: Disk> Volume<D> {
     ) -> Result<Option<Found>, Error> {
         let blocks = Self::directory_blocks(directory)?;
         let mut candidates = [0u64; MAX_CANDIDATES];
-        if let Some(count) =
-            self.indexed_candidates(number, directory, blocks, name, &mut candidates)?
-        {
+        let stored = self.stored_candidates(directory, name, &mut candidates)?;
+        let indexed = match stored {
+            Some(count) => Some(count),
+            None => self.indexed_candidates(number, directory, blocks, name, &mut candidates)?,
+        };
+        if let Some(count) = indexed {
             for &index in candidates[..count].iter().filter(|&&index| index < blocks) {
                 if let Some(found) = self.find_in_block(directory, index, name, inode)? {
                     return Ok(Some(found));
@@ -837,6 +993,7 @@ impl<D: Disk> Volume<D> {
                 let data = self.cache.get_mut(&mut self.disk, block, false)?;
                 write_record(&mut data[..], end, inode, kind, name);
                 self.indexes.note_entry(key, name, index);
+                self.note_in_name_index(directory, name, index)?;
                 self.changes += 1;
                 return Ok(());
             }
@@ -853,6 +1010,11 @@ impl<D: Disk> Volume<D> {
         }
         directory.size += BLOCK_SIZE as u64;
         self.indexes.note_entry(key, name, blocks);
+        match directory.name_index {
+            0 if blocks + 1 > INDEXED_ABOVE_BLOCKS => self.build_name_index(directory, blocks + 1)?,
+            0 => {}
+            _ => self.note_in_name_index(directory, name, blocks)?,
+        }
         self.changes += 1;
         Ok(())
     }
@@ -1454,6 +1616,7 @@ impl<D: Disk> Volume<D> {
 
     fn release_contents(&mut self, number: u32) -> Result<(), Error> {
         let mut inode = self.inode(number)?;
+        self.drop_name_index(&mut inode)?;
         self.release_from(number, &mut inode, 0)?;
         inode.size = 0;
         self.write_inode(number, &inode)

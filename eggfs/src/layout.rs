@@ -12,7 +12,9 @@ pub const MAGIC: [u8; 8] = *b"EGGFS\0\0\0";
 pub const FORMATTING_MAGIC: [u8; 8] = *b"EGGFSFMT";
 /// The on-disk format version [`crate::format`] writes; version 1 volumes still mount and are
 /// upgraded by the first change that needs version 2.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
+pub const VERSION_WITH_LINKS: u32 = 2;
+pub const VERSION_WITH_NAME_INDEX: u32 = 3;
 pub const OLDEST_VERSION: u32 = 1;
 /// The longest target a symbolic link holds, in bytes.
 pub const MAX_LINK_TARGET: usize = 4095;
@@ -306,6 +308,7 @@ const ORPHAN_FLAG: u8 = 1;
 const MORE_NAMES_AT: usize = 104;
 const NEXT_ORPHAN_AT: usize = 108;
 const ACCESSED_AT: usize = 112;
+const NAME_INDEX_AT: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inode {
@@ -325,6 +328,7 @@ pub struct Inode {
     pub more_names: u32,
     pub orphan: bool,
     pub next_orphan: u32,
+    pub name_index: u32,
 }
 
 const INODE_CHECKSUM: usize = INODE_SIZE - 4;
@@ -348,6 +352,7 @@ impl Inode {
             more_names: 0,
             orphan: false,
             next_orphan: 0,
+            name_index: 0,
         }
     }
 
@@ -371,6 +376,7 @@ impl Inode {
         put_u32(out, MORE_NAMES_AT, self.more_names);
         put_u32(out, NEXT_ORPHAN_AT, self.next_orphan);
         put_u64(out, ACCESSED_AT, self.accessed);
+        put_u32(out, NAME_INDEX_AT, self.name_index);
         let checksum = inode_checksum(number, &out[..INODE_CHECKSUM]);
         put_u32(out, INODE_CHECKSUM, checksum);
     }
@@ -409,6 +415,7 @@ impl Inode {
             more_names: u32_at(bytes, MORE_NAMES_AT),
             orphan: bytes[1] & ORPHAN_FLAG != 0,
             next_orphan: u32_at(bytes, NEXT_ORPHAN_AT),
+            name_index: u32_at(bytes, NAME_INDEX_AT),
         })
     }
 }

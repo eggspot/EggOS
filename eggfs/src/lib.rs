@@ -22,13 +22,19 @@
 //! - **Checking and formatting disks** (D192): [`check_disk`] checks an unmounted volume and
 //!   finds every problem, read-only or repairing what is safe; [`format_with`] formats part
 //!   of a disk with a label, which [`Volume::label`] reads back.
-//! - **Big directories.** A directory of more than four blocks gets an index in memory,
-//!   built at its first lookup, so looking a name up reads one block, not all of them.
+//! - **Big directories.** A directory of more than four blocks gets a name index on disk
+//!   when it grows past them (version 3, D562): hash buckets of name hashes and block
+//!   numbers, kept in the same transaction as each new entry and dropped when a bucket
+//!   fills, so even the first lookup after mounting reads one block, not all of them. A
+//!   directory without one gets an index in memory at its first lookup.
 //! - **Files removed while open.** [`Volume::hold`] keeps a file from being freed when its
 //!   last name goes: it becomes an orphan, still usable through its node until
 //!   [`Volume::release`] lets go of its last hold; mounting frees the orphans a crash left.
-//! - **Versions.** [`format`] writes version [`VERSION`]; a version 1 volume mounts and is
-//!   upgraded, in the same transaction, by the first change that needs version 2.
+//! - **Versions.** [`format`] writes version [`VERSION`]; an older volume mounts and is
+//!   upgraded, in the same transaction, by the first change that needs a newer version
+//!   (links and orphans need 2, a name index 3).
+//! - **Backup superblock** (D562): a volume formatted now keeps a copy of its superblock in
+//!   its last block, which [`check_disk`] repairs a damaged superblock from.
 //! - **Work disks** (D166): [`make_work_disk`] marks a volume as a host's folder for `/work`,
 //!   [`is_work_disk`] tells one apart and [`work_folder`] finds its folder.
 //!
@@ -45,6 +51,7 @@ mod index;
 mod journal;
 mod layout;
 pub mod memory;
+mod name_index;
 mod repair;
 mod volume;
 mod work_disk;

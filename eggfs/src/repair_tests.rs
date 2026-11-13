@@ -535,3 +535,42 @@ fn format_with_writes_a_label_and_uses_only_the_blocks_asked_for() {
     format(&mut plain, NOW).unwrap();
     assert_eq!(Volume::mount(plain).unwrap().0.label(), b"");
 }
+
+fn formatted_disk(blocks: usize) -> MemoryDisk {
+    let mut disk = MemoryDisk::new(blocks);
+    format(&mut disk, NOW).unwrap();
+    disk
+}
+
+#[test]
+fn a_big_directory_keeps_its_name_index_on_disk_across_a_remount() {
+    let mut volume = Volume::mount(formatted_disk(8192)).unwrap().0;
+    let root = volume.root();
+    let names: Vec<Vec<u8>> = (0..600).map(|n| format!("file-{n:04}").into_bytes()).collect();
+    for name in &names {
+        volume.create(root, name, Kind::Regular, 0o644, NOW).unwrap();
+    }
+    volume.commit().unwrap();
+    assert_ne!(volume.inode(inode_of(root)).unwrap().name_index, 0);
+    volume.check().unwrap();
+    let mut volume = Volume::mount(MemoryDisk::from_image(volume.into_disk().image().to_vec()))
+        .unwrap()
+        .0;
+    for name in &names {
+        assert!(volume.lookup(root, name).unwrap().is_some());
+    }
+    assert!(volume.lookup(root, b"missing").unwrap().is_none());
+    let mut disk = volume.into_disk();
+    assert!(check_disk(&mut disk, CheckMode::Repair, NOW).unwrap().is_clean());
+}
+
+#[test]
+fn a_damaged_superblock_is_restored_from_its_backup() {
+    let disk = formatted_disk(4096);
+    let mut image = disk.image().to_vec();
+    image[100] ^= 0xff;
+    let mut disk = MemoryDisk::from_image(image);
+    let fixed = check_disk(&mut disk, CheckMode::Repair, NOW).unwrap();
+    assert!(has(&fixed, Problem::DamagedSuperblock), "{fixed:?}");
+    assert!(Volume::mount(disk).is_ok());
+}

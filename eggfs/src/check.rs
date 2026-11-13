@@ -1,8 +1,9 @@
 use crate::layout::{
     BITS_PER_BLOCK, BLOCK_SIZE, Block, DIRECT_POINTERS, FIRST_FREE_INODE, Geometry, Inode,
     InodeKind, MAX_DIRECTORY_BLOCKS, MAX_LINK_TARGET, MAX_NAME, POINTERS_PER_BLOCK, ROOT_INODE,
-    VERSION, record_at, u32_at,
+    VERSION_WITH_LINKS, VERSION_WITH_NAME_INDEX, record_at, u32_at,
 };
+use crate::name_index::{bucket_len, bucket_of, bucket_pointer, holds, root_buckets};
 use crate::volume::{MAX_FILE_BYTES, Volume, tree_first};
 use crate::{Disk, Error};
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -156,6 +157,37 @@ impl<D: Disk> Volume<D> {
             if root != 0 {
                 mark(used, &geometry, root, number)?;
                 self.walk_tree(number, root, level, tree_first(level), used, visit)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_name_index(
+        &mut self,
+        number: u32,
+        root: u32,
+        indexed: &[(u32, u32)],
+        used: &mut Bits,
+    ) -> Result<(), Inconsistency> {
+        let geometry = self.geometry;
+        mark(used, &geometry, root, number)?;
+        let pointers = self.copy_block(root, number)?;
+        let buckets = root_buckets(&pointers)
+            .ok_or_else(|| wrong("a directory's name index is malformed", number, root))?;
+        let mut contents = Vec::with_capacity(buckets as usize);
+        for bucket in 0..buckets {
+            let block = bucket_pointer(&pointers, bucket);
+            mark(used, &geometry, block, number)?;
+            let data = self.copy_block(block, number)?;
+            if bucket_len(&data).is_none() {
+                return Err(wrong("a directory's name index is malformed", number, block));
+            }
+            contents.push(data);
+        }
+        for &(hash, block_index) in indexed {
+            let bucket = &contents[bucket_of(hash, buckets) as usize];
+            if !holds(bucket, hash, block_index) {
+                return Err(wrong("a directory's name index misses a name", number, root));
             }
         }
         Ok(())
@@ -371,6 +403,9 @@ impl<D: Disk> Volume<D> {
                     };
                     named.insert(number, names);
                 }
+                if inode.name_index != 0 {
+                    return Err(wrong("a file has a name index", number, inode.name_index));
+                }
                 self.check_contents(number, &inode, &mut used)?;
                 continue;
             }
@@ -413,8 +448,9 @@ impl<D: Disk> Volume<D> {
                 return Err(wrong("a directory has a hole", number, 0));
             }
             let mut names = BTreeSet::new();
+            let mut indexed = Vec::new();
             let (mut entries, mut subdirectories) = (0u32, 0u32);
-            for block in blocks {
+            for (block_index, block) in blocks.into_iter().enumerate() {
                 let data = self.copy_block(block, number)?;
                 let mut offset = 0;
                 loop {
@@ -443,6 +479,9 @@ impl<D: Disk> Volume<D> {
                     }
                     entries += 1;
                     subdirectories += u32::from(is_directory);
+                    if inode.name_index != 0 {
+                        indexed.push((crate::index::name_hash(record.name), block_index as u32));
+                    }
                     match seen.get(record.inode) {
                         true => more_records
                             .entry(record.inode)
@@ -466,11 +505,17 @@ impl<D: Disk> Volume<D> {
             if entries != inode.entries || subdirectories != inode.child_directories {
                 return Err(wrong("a directory's counts are wrong", number, 0));
             }
+            if inode.name_index != 0 {
+                if geometry.version < VERSION_WITH_NAME_INDEX {
+                    return Err(wrong("a version 2 volume holds a name index", number, 0));
+                }
+                self.check_name_index(number, inode.name_index, &indexed, &mut used)?;
+            }
         }
         self.check_names(&named, &more_records)?;
         report.orphans = self.check_orphans(orphan_head, &mut seen, &mut used)?;
         let hard_links = named.values().any(|names| names.more_names > 0);
-        if geometry.version < VERSION
+        if geometry.version < VERSION_WITH_LINKS
             && (report.symbolic_links > 0 || report.orphans > 0 || hard_links)
         {
             return Err(wrong(

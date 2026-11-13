@@ -1311,14 +1311,14 @@ fn superblock_versions_are_read_strictly_except_for_a_torn_upgrade() {
     assert_eq!(version(&torn[..]), Some(2));
     let mut future = image.clone();
     let mut geometry = Geometry::decode(&image).unwrap();
-    geometry.version = 3;
+    geometry.version = 4;
     future[..BLOCK_SIZE].copy_from_slice(&geometry.encode()[..]);
     assert!(Geometry::decode(&future).is_none());
     assert!(matches!(
         Volume::mount(MemoryDisk::from_image(future)),
         Err((MountError::NotEggFs, _))
     ));
-    image[8] = 3;
+    image[8] = 4;
     assert!(Geometry::decode(&image).is_none());
 }
 
