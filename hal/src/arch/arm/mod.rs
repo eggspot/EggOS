@@ -103,8 +103,38 @@ _start:
     bl      kernel_main
 3:  wfi
     b       3b
+
+    .global eggos_secondary_start
+eggos_secondary_start:
+    cpsid   aif
+    mov     r8, r0
+    ldr     r4, ={offset}
+    ldr     r0, ={boot_root}
+    sub     r0, r0, r4
+    ldr     r1, ={mair0}
+    mcr     p15, 0, r1, c10, c2, 0
+    ldr     r1, ={ttbcr}
+    mcr     p15, 0, r1, c2, c0, 2
+    mov     r1, #0
+    mcrr    p15, 0, r0, r1, c2
+    isb
+    mrc     p15, 0, r1, c1, c0, 0
+    ldr     r2, ={sctlr}
+    orr     r1, r1, r2
+    dsb
+    mcr     p15, 0, r1, c1, c0, 0
+    isb
+    ldr     pc, =4f
+4:  ldr     sp, [r8, #{start_stack_top}]
+    bl      {enable}
+    mov     r0, r8
+    bl      {secondary_main}
+5:  wfi
+    b       5b
     .ltorg
 "#,
+    start_stack_top = const core::mem::offset_of!(crate::cpu::CpuStart, stack_top),
+    secondary_main = sym secondary_main,
     offset = const DIRECT_MAP_OFFSET,
     boot_root = sym BOOT_ROOT,
     ram_start = const RAM_START,
@@ -201,7 +231,24 @@ const TIMER_MASKED: u32 = 1 << 1;
 const UART_BYTES: u64 = 0x1000;
 const BOOT_DIRECT_MAP_END: u64 = RAM_START as u64 + (768 << 20);
 const DEVICE_WINDOW: core::ops::Range<u64> = 0xffc0_0000..0xffe0_0000;
-const SECONDARY_CPUS_NOT_YET: i64 = 0;
+const PSCI_CPU_ON: u32 = 0x8400_0003;
+const PSCI_INVALID_PARAMETERS: i32 = -2;
+const PSCI_ALREADY_ON: i32 = -4;
+const UART_INTERRUPT_MASK: usize = 0x38;
+const UART_CLEAR: usize = 0x44;
+const UART_RECEIVE_EMPTY: u32 = 1 << 4;
+const UART_RECEIVE_INTERRUPTS: u32 = 1 << 4 | 1 << 6;
+const UART_SOURCE: u32 = 32 + 1;
+const SHARED_FIRST: u32 = 32;
+const TARGETS: usize = 0x800;
+const SOFTWARE_GENERATED: usize = 0xf00;
+const WAKE_UP: u32 = 0;
+const SPURIOUS: u32 = 1023;
+const TTBR_ASID_SHIFT: u32 = 48;
+const PAN_FIELD_SHIFT: u32 = 16;
+
+static DEVICE_LINES: crate::interrupt::SourceLines = crate::interrupt::SourceLines::new();
+static PAN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 const CACHE_LINE: usize = 64;
 const FAULT_STATUS: u64 = 0x3f;
 const TRANSLATION_ACCESS_OR_PERMISSION: [u64; 3] = [0x04, 0x08, 0x0c];
@@ -261,12 +308,82 @@ pub(super) extern "C" fn irq() {
     // SAFETY: the GIC's CPU interface, mapped as device memory; acknowledging and ending an
     // interrupt are this handler's alone.
     let acknowledged = unsafe { gic(GIC_CPU, ACKNOWLEDGE).read_volatile() };
-    if acknowledged & INTERRUPT_ID == VIRTUAL_TIMER {
-        set_compare(u64::MAX, TIMER_ENABLE | TIMER_MASKED);
-        crate::interrupt::deliver(crate::interrupt::Interrupt::Timer);
+    let id = acknowledged & INTERRUPT_ID;
+    if id == SPURIOUS {
+        return;
+    }
+    match id {
+        VIRTUAL_TIMER => {
+            set_compare(u64::MAX, TIMER_ENABLE | TIMER_MASKED);
+            crate::interrupt::deliver(crate::interrupt::Interrupt::Timer);
+        }
+        WAKE_UP => crate::interrupt::deliver(crate::interrupt::Interrupt::Wakeup),
+        UART_SOURCE => {
+            // SAFETY: clears the UART's receive and receive-timeout interrupts; the console
+            // reads the bytes.
+            unsafe { uart_register(UART_CLEAR).write_volatile(UART_RECEIVE_INTERRUPTS) };
+            crate::interrupt::deliver(crate::interrupt::Interrupt::ConsoleInput);
+        }
+        id => {
+            if let Some(line) = DEVICE_LINES.line_of(id) {
+                crate::interrupt::deliver(crate::interrupt::Interrupt::Device(line));
+            }
+        }
     }
     // SAFETY: as above.
     unsafe { gic(GIC_CPU, END_OF_INTERRUPT).write_volatile(acknowledged) };
+}
+
+/// Enables shared interrupt `id` at the middle priority, sent to the CPU with interface number
+/// `cpu` (D570).
+fn enable_shared(id: u32, cpu: u32) {
+    let index = id as usize;
+    // SAFETY: the distributor, mapped as device memory; the byte-wide priority and target
+    // registers and the set-enable bit of `id` are this kernel's to set.
+    unsafe {
+        ((GIC_DISTRIBUTOR + PRIORITY + index) as *mut u8).write_volatile(MIDDLE_PRIORITY);
+        ((GIC_DISTRIBUTOR + TARGETS + index) as *mut u8).write_volatile(1 << (cpu & 7));
+        gic(GIC_DISTRIBUTOR, SET_ENABLE + 4 * (index / 32)).write_volatile(1 << (index % 32));
+    }
+}
+
+fn disable_shared(id: u32) {
+    let index = id as usize;
+    // SAFETY: the distributor's clear-enable bit of `id`.
+    unsafe { gic(GIC_DISTRIBUTOR, 0x180 + 4 * (index / 32)).write_volatile(1 << (index % 32)) };
+}
+
+/// Called by `eggos_secondary_start` with the MMU on and the GIC's CPU interface set (D570):
+/// switches to the kernel's tables, then calls the entry.
+extern "C" fn secondary_main(start: &crate::cpu::CpuStart) -> ! {
+    // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, mapping what
+    // this CPU uses where it uses it now; IRQs are masked.
+    unsafe { <Arm as crate::Platform>::activate_page_tables(&start.page_table_roots[..1]) };
+    (start.entry)(start.argument)
+}
+
+/// Turns PAN on where the CPU has it (Armv8.1's AArch32, `ID_MMFR3.PAN`; D570): the kernel then
+/// reaches user pages only inside `with_user_access`.
+fn enable_pan() {
+    let features: u32;
+    // SAFETY: reads `ID_MMFR3`; no side effects.
+    unsafe { core::arch::asm!("mrc p15, 0, {}, c0, c1, 7", out(reg) features) };
+    if features >> PAN_FIELD_SHIFT & 0xf == 0 {
+        return;
+    }
+    PAN.store(true, Ordering::Relaxed);
+    set_pan(true);
+}
+
+fn set_pan(on: bool) {
+    // SAFETY: `SETPAN` only changes whether privileged accesses to user pages fault; the CPU has
+    // it (`enable_pan` checked).
+    unsafe {
+        match on {
+            true => core::arch::asm!(".inst 0xf1100208"),
+            false => core::arch::asm!(".inst 0xf1100008"),
+        }
+    }
 }
 
 extern "C" fn fatal() -> ! {
@@ -297,6 +414,7 @@ extern "C" fn enable_interrupts_and_fp() {
         gic(GIC_CPU, CPU_CONTROL).write_volatile(1);
     }
     set_compare(u64::MAX, TIMER_ENABLE | TIMER_MASKED);
+    enable_pan();
 }
 
 fn arm_vectors_address() -> usize {
@@ -341,12 +459,61 @@ impl crate::Platform for Arm {
         console_write(bytes);
     }
 
-    fn console_read(_buffer: &mut [u8]) -> usize {
-        0
+    fn console_read(buffer: &mut [u8]) -> usize {
+        let mut read = 0;
+        for byte in buffer.iter_mut() {
+            // SAFETY: the UART's flag and data registers, mapped as device memory.
+            let empty = unsafe { uart_register(UART_FLAGS).read_volatile() } & UART_RECEIVE_EMPTY;
+            if empty != 0 {
+                break;
+            }
+            // SAFETY: as above; the receive FIFO has a byte.
+            *byte = unsafe { uart_register(UART_DATA).read_volatile() } as u8;
+            read += 1;
+        }
+        read
     }
 
     fn enable_console_input() -> Result<(), &'static str> {
-        Err("32-bit Arm has no console input interrupt yet")
+        // SAFETY: unmasks the UART's receive and receive-timeout interrupts (D570).
+        unsafe { uart_register(UART_INTERRUPT_MASK).write_volatile(UART_RECEIVE_INTERRUPTS) };
+        enable_shared(UART_SOURCE, 0);
+        Ok(())
+    }
+
+    fn route_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        let cells = specifier.cells();
+        let &[kind, number, ..] = cells else {
+            return Err("a GIC specifier has three cells");
+        };
+        if kind != 0 {
+            return Err("only shared peripheral interrupts are routed");
+        }
+        let id = SHARED_FIRST + number;
+        if id == UART_SOURCE {
+            return Err("the interrupt is the console's");
+        }
+        let (line, new) = DEVICE_LINES
+            .claim(id)
+            .ok_or("every device interrupt line is taken")?;
+        if new {
+            enable_shared(id, 0);
+        }
+        Ok(line)
+    }
+
+    fn release_device_interrupt(line: crate::DeviceLine) {
+        if let Some(id) = DEVICE_LINES.release(line) {
+            disable_shared(id);
+        }
+    }
+
+    fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
+        let id = DEVICE_LINES.source_of(line).ok_or("the line is not routed")?;
+        enable_shared(id, cpu as u32);
+        Ok(())
     }
 
     fn exit(_status: crate::ExitStatus) -> ! {
@@ -480,7 +647,50 @@ impl crate::Platform for Arm {
     }
 
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
-        access()
+        let pan = PAN.load(Ordering::Relaxed);
+        if pan {
+            set_pan(false);
+        }
+        let result = access();
+        if pan {
+            set_pan(true);
+        }
+        result
+    }
+
+    unsafe fn switch_tagged_address_space(roots: &[u64], tag: crate::asid::AddressSpaceTag) {
+        let [root] = roots else {
+            panic!("LPAE tables here have one root");
+        };
+        let block = Self::cpu_local();
+        // SAFETY: the per-CPU register holds this CPU's block with a `HalCpuLocal` at its
+        // offset; only this CPU uses its tags, with IRQs masked (the caller's duty).
+        let choice = unsafe {
+            let hal = &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal);
+            hal.address_space_tags.choose(tag)
+        };
+        let asid = u64::from(choice.hardware_tag) << TTBR_ASID_SHIFT;
+        let ttbr = *root | asid;
+        // SAFETY: as in `activate_page_tables`, with the space's ASID in `TTBR0` (D570): user
+        // translations are not global and carry it, so `TLBIASID` drops only that space's,
+        // and only when the tags say they are stale.
+        unsafe {
+            core::arch::asm!(
+                "dsb",
+                "mcrr p15, 0, {low}, {high}, c2",
+                "isb",
+                low = in(reg) ttbr as u32,
+                high = in(reg) (ttbr >> 32) as u32,
+            );
+            if choice.drop_old {
+                core::arch::asm!(
+                    "mcr p15, 0, {asid}, c8, c7, 2",
+                    "dsb",
+                    "isb",
+                    asid = in(reg) u32::from(choice.hardware_tag),
+                );
+            }
+        }
     }
 
     unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {
@@ -599,10 +809,35 @@ impl crate::Platform for Arm {
     }
 
     unsafe fn start_cpu(
-        _cpu: u64,
-        _start: &crate::cpu::CpuStart,
+        cpu: u64,
+        start: &crate::cpu::CpuStart,
     ) -> Result<(), crate::cpu::StartCpuError> {
-        Err(crate::cpu::StartCpuError::Refused(SECONDARY_CPUS_NOT_YET))
+        unsafe extern "C" {
+            fn eggos_secondary_start();
+        }
+        let entry = (eggos_secondary_start as *const () as u32).wrapping_sub(DIRECT_MAP_OFFSET);
+        let context = core::ptr::from_ref(start) as u32;
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let result: i32;
+        // SAFETY: PSCI `CPU_ON` through the hypervisor conduit QEMU `virt` answers (D570):
+        // CPU `cpu` starts at the physical address of the secondary entry with `context` in
+        // `r0`; the caller guarantees what that code relies on.
+        unsafe {
+            core::arch::asm!(
+                "dsb",
+                "hvc #0",
+                inout("r0") PSCI_CPU_ON => result,
+                in("r1") cpu as u32,
+                in("r2") entry,
+                in("r3") context,
+            )
+        };
+        match result {
+            0 => Ok(()),
+            PSCI_INVALID_PARAMETERS => Err(crate::cpu::StartCpuError::InvalidCpu),
+            PSCI_ALREADY_ON => Err(crate::cpu::StartCpuError::AlreadyRunning),
+            error => Err(crate::cpu::StartCpuError::Refused(i64::from(error))),
+        }
     }
 
     unsafe fn set_cpu_local(block: usize) {
@@ -617,5 +852,13 @@ impl crate::Platform for Arm {
         block
     }
 
-    fn wake_cpu(_cpu: u64) {}
+    fn wake_cpu(cpu: u64) {
+        // SAFETY: `GICD_SGIR` sends software interrupt `WAKE_UP` to the CPU with interface
+        // number `cpu` (D570); the fence orders the waker's stores before it.
+        unsafe {
+            core::arch::asm!("dsb");
+            gic(GIC_DISTRIBUTOR, SOFTWARE_GENERATED)
+                .write_volatile(1 << (16 + (cpu as u32 & 7)) | WAKE_UP);
+        }
+    }
 }
