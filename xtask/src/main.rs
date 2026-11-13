@@ -580,6 +580,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-app",
     "eggos-mcp",
     "eggos-eggway",
+    "eggos-dbus",
     "eggos-wayland",
     "eggos-files",
     "eggos-terminal",
@@ -668,6 +669,8 @@ const APP_WINDOW_PATH: &str = "usr/libexec/app-window";
 const MCP_SERVER_PATH: &str = "usr/libexec/eggmcpd";
 
 const WAYLAND_SERVER_PATH: &str = "usr/libexec/eggway";
+
+const SESSION_BUS_PATH: &str = "usr/libexec/session-bus";
 
 const VAR_PATH: &str = "var";
 
@@ -1949,6 +1952,7 @@ fn initramfs_with(
     let settings = build_runtime_program(arch, "eggos-settings")?;
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
+    let session_bus = build_runtime_program(arch, "eggos-dbus")?;
     let mut embedded = Vec::new();
     if layers == Layers::Embedded {
         embedded.push((
@@ -2000,6 +2004,7 @@ fn initramfs_with(
             WAYLAND_SERVER_PATH,
             initramfs::Content::Program(&wayland_server),
         ),
+        (SESSION_BUS_PATH, initramfs::Content::Program(&session_bus)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (SYS_PATH, initramfs::Content::Directory),

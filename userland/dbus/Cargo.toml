@@ -1,0 +1,16 @@
+[package]
+name = "eggos-dbus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "session-bus"
+path = "src/main.rs"
+
+[dependencies]
+eggos-runtime = { path = "../runtime" }
+
+[lints]
+workspace = true

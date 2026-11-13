@@ -8,13 +8,17 @@ pub const DISPLAY_DEVICE: &[u8] = b"/dev/window\0";
 /// The Wayland server, with its terminating NUL.
 pub const DISPLAY_SERVER: &[u8] = b"/usr/libexec/eggway\0";
 
+/// The D-Bus session bus (D575), which init starts with the display server: the desktop's
+/// programs are its clients, so a headless machine runs neither.
+pub const SESSION_BUS: &[u8] = b"/usr/libexec/session-bus\0";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_paths_are_c_strings() {
-        for text in [DISPLAY_DEVICE, DISPLAY_SERVER] {
+        for text in [DISPLAY_DEVICE, DISPLAY_SERVER, SESSION_BUS] {
             assert_eq!(
                 text.iter().position(|&byte| byte == 0),
                 Some(text.len() - 1)

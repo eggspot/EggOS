@@ -4,7 +4,7 @@ use crate::agent_server::{
 };
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
-use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER};
+use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER, SESSION_BUS};
 use crate::first_run::{
     self, COMMAND_LINE, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK, SETTINGS_FILE,
 };
@@ -55,12 +55,13 @@ const CONFIG_CAPACITY: usize = 1024;
 const REBOOT_MAGIC1: usize = 0xfee1_dead;
 const REBOOT_MAGIC2: usize = 0x2812_1969;
 
-const ENVIRONMENT: [&[u8]; 5] = [
+const ENVIRONMENT: [&[u8]; 6] = [
     b"HOME=/home/root\0",
     b"TERM=xterm\0",
     b"PATH=/bin\0",
     b"XDG_RUNTIME_DIR=/run/user/0\0",
     b"WAYLAND_DISPLAY=wayland-0\0",
+    b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus\0",
 ];
 
 #[derive(Default)]
@@ -68,6 +69,7 @@ struct Services {
     agent: AgentServer,
     network: AgentServer,
     display: AgentServer,
+    bus: AgentServer,
     clock: AgentServer,
     updates: AgentServer,
 }
@@ -225,6 +227,9 @@ pub fn run(_startup: &Startup) -> i32 {
     }
     if exists(DISPLAY_SERVER) && exists(DISPLAY_DEVICE) {
         start_display_server(&mut services.display);
+        if exists(SESSION_BUS) {
+            start_session_bus(&mut services.bus);
+        }
     }
     if exists(DATE) {
         start_clock_keeper(&mut services.clock);
@@ -653,7 +658,19 @@ fn start_network_server(network: &mut AgentServer) {
 }
 
 fn start_display_server(display: &mut AgentServer) {
-    let program = DISPLAY_SERVER.as_ptr();
+    if !start_service(DISPLAY_SERVER, display) {
+        say(&[b"init: could not start eggway\n"]);
+    }
+}
+
+fn start_session_bus(bus: &mut AgentServer) {
+    if !start_service(SESSION_BUS, bus) {
+        say(&[b"init: could not start the session bus\n"]);
+    }
+}
+
+fn start_service(path: &[u8], service: &mut AgentServer) -> bool {
+    let program = path.as_ptr();
     let arguments = [program, ptr::null()];
     let mut environment = [ptr::null::<u8>(); ENVIRONMENT.len() + 1];
     for (slot, variable) in environment.iter_mut().zip(ENVIRONMENT) {
@@ -677,8 +694,11 @@ fn start_display_server(display: &mut AgentServer) {
             );
             syscall::exit(COMMAND_NOT_RUN)
         }
-        1.. => display.started(child as usize, now_ms()),
-        _ => say(&[b"init: could not start eggway\n"]),
+        1.. => {
+            service.started(child as usize, now_ms());
+            true
+        }
+        _ => false,
     }
 }
 
@@ -939,6 +959,13 @@ fn notice_end(services: &mut Services, ended: isize) {
         Some(AfterEnd::GiveUp) => {
             say(&[b"init: eggway keeps ending; Wayland programs cannot open windows\n"])
         }
+        None => {}
+    }
+    match services.bus.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_session_bus(&mut services.bus),
+        Some(AfterEnd::GiveUp) => say(&[
+            b"init: the session bus keeps ending; programs cannot talk over D-Bus\n",
+        ]),
         None => {}
     }
 }

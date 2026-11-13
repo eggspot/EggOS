@@ -30,11 +30,12 @@ pub const DOWNLOADS_PROGRAM: &[u8] = b"/bin/downloads";
 /// The terminal program (D187), a name of the Settings program.
 pub const TERMINAL_PROGRAM: &[u8] = b"/bin/terminal";
 
-const ENVIRONMENT: [&[u8]; 4] = [
+const ENVIRONMENT: [&[u8]; 5] = [
     b"HOME=/",
     b"TERM=xterm",
     b"XDG_RUNTIME_DIR=/run/user/0",
     b"WAYLAND_DISPLAY=wayland-0",
+    b"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus",
 ];
 
 type Starter = Arc<dyn Fn(&[u8]) -> Result<(), &'static str> + Send + Sync>;
