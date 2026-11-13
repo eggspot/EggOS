@@ -26104,3 +26104,32 @@ the license, by an explicit instruction recorded here.
   (`linux/abi/riscv_misaligned.rs`); `abi::emulate_misaligned` does nothing elsewhere.
 - **Not yet.** Building and running; `fanotify`'s permission events, file handles (`FAN_REPORT_FID`)
   and the causing process's id; misaligned floating-point accesses.
+
+## D561 A vDSO for clock reads, and `ptrace` for debuggers (M6; D51's, D65's, D73's and D167's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **The vDSO** (`userland/vdso`, `linux::vdso`). A small `no_std` shared object of our own, built by
+  `cargo xtask` for x86_64, aarch64 and riscv64 with its own linker script and handed to the kernel
+  build as `EGGOS_VDSO` (`cfg(eggos_vdso)`), exports `__vdso_clock_gettime`, `__vdso_gettimeofday`,
+  `__vdso_time`, `__vdso_clock_getres` and `__vdso_getcpu` (and AArch64's `__kernel_*` names). The
+  clock reads take the counter in user mode (x86_64's TSC, AArch64's virtual counter, RISC-V's `time`
+  CSR, which harts now open with `scounteren.TM`) and the kernel's clock data page just before the
+  image: the counter's 32.32 scale (the same factor the kernel's monotonic clock multiplies by), the
+  wall clock's offset and a sequence the kernel makes odd while it writes. Realtime, monotonic,
+  their coarse and raw forms and boot time are answered there; anything else, or a counter programs
+  may not read, falls back to the system call. `execve` maps the data page and the image (one copy,
+  lent read-only to every process) below the `mmap` area and sets `AT_SYSINFO_EHDR`; setting the
+  wall clock republishes the data. No symbol versions are given: musl and glibc accept an
+  unversioned vDSO.
+- **`ptrace`** (`linux::ptrace`). `TRACEME`, `ATTACH` (with `SIGSTOP`), `SEIZE`, `INTERRUPT`,
+  `PEEKTEXT`/`PEEKDATA`, `POKETEXT`/`POKEDATA`, `CONT`, `SYSCALL` (resumes as `CONT`; no system-call
+  stops yet), `SINGLESTEP` (x86_64's trap flag; `EIO` elsewhere), `DETACH`, `KILL`, `SETOPTIONS`,
+  `GETEVENTMSG`, `GETSIGINFO`, `GETREGS`/`SETREGS` (x86_64's `user_regs_struct`) and
+  `GETREGSET`/`SETREGSET` with `NT_PRSTATUS` (x86_64, AArch64's `user_pt_regs`, RISC-V's
+  `user_regs_struct`). A traced process stops before each signal's delivery (not `SIGKILL`) and after
+  `execve` (`SIGTRAP`): its registers are kept for the tracer, the tracer is woken and sent
+  `SIGCHLD`, its `waitpid` reports the stop (also for a tracee that is not its child), and the tracee
+  sleeps until resumed with a signal to deliver (0 for none; another signal is sent instead). Tracing
+  is per process; root, or a caller with the tracee's real and effective user id, may attach.
+- **Not yet.** Building and running; system-call stops; `PTRACE_O_TRACE*` events (fork, exec, exit
+  events); single-step on AArch64 and RISC-V; hardware breakpoints and watchpoints (`TRAP_HWBKPT`);
+  the `PTRACE_MODE_READ` check on `/proc/<pid>/maps`, `fd`, `exe` and `stat`.

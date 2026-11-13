@@ -55,7 +55,7 @@ and is not listed per item.
 - [x] `RLIMIT_AS` and `RLIMIT_DATA` enforced by `brk` and `mmap` (D53, D155) — code written, unbuilt, D558
 - [x] Netlink sockets (`NETLINK_ROUTE`: links, addresses, routes) so iproute2 and musl's `getifaddrs` work (D157) — code written, unbuilt, D559
 - [x] `TCP_INFO` and `SO_LINGER`'s timeout (D158) — code written, unbuilt, D559
-- [ ] A vDSO (`AT_SYSINFO_EHDR`): `clock_gettime`, `gettimeofday`, `time`, `getcpu` without a system call, with the counter readable from user mode (D51, D73, D167)
+- [x] A vDSO (`AT_SYSINFO_EHDR`): `clock_gettime`, `gettimeofday`, `time`, `getcpu` without a system call, with the counter readable from user mode (D51, D73, D167) — code written, unbuilt, D561
 - [x] `ETXTBSY` for writes to a running program's file (D167) — code written, unbuilt, D558
 - [x] `/proc/<pid>/mountinfo`, `/proc/thread-self` and `/proc/<pid>/task/<tid>` directories (D168, D171) — code written, unbuilt, D558
 - [x] `/sys`: `/sys/devices/system/cpu/{online,possible,present}`, `/sys/kernel/mm/transparent_hugepage/enabled`, and `/proc/sys/vm/overcommit_memory` (D168) — code written, unbuilt, D558
@@ -70,7 +70,8 @@ and is not listed per item.
 - [x] POSIX capabilities: `capget`/`capset`, the bounding and ambient sets, `PR_CAPBSET_*`, file capabilities not yet (D270) — code written, unbuilt, D557
 - [x] RISC-V misaligned loads and stores emulated as Linux does on harts that trap them (D65) — code written, unbuilt, D560
 - [x] `MAP_GROWSDOWN` and `MAP_POPULATE` (D53, D167) — code written, unbuilt, D558
-- [ ] `ptrace` for debuggers: `PTRACE_TRACEME`, `ATTACH`/`SEIZE`, `PEEK`/`POKE`, `GETREGS`/`SETREGS`, `CONT`, `SINGLESTEP` with `TRAP_TRACE`, hardware breakpoints with `TRAP_HWBKPT`, and the `PTRACE_MODE_READ` check on `/proc/<pid>` files (D65, D168)
+- [x] `ptrace` for debuggers: `PTRACE_TRACEME`, `ATTACH`/`SEIZE`, `PEEK`/`POKE`, `GETREGS`/`SETREGS`, `CONT`, `SINGLESTEP` with `TRAP_TRACE`, hardware breakpoints with `TRAP_HWBKPT`, and the `PTRACE_MODE_READ` check on `/proc/<pid>` files (D65, D168) — code written, unbuilt, D561 (system-call stops, events, single-step off x86_64, hardware breakpoints and the /proc check stay open below)
+- [ ] `ptrace`'s system-call stops, `PTRACE_O_TRACE*` events, single-step on AArch64 and RISC-V, hardware breakpoints, and the `PTRACE_MODE_READ` check on `/proc/<pid>` files (D561)
 
 ## M7 VFS and file systems
 
