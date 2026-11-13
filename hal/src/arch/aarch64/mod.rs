@@ -468,6 +468,18 @@ pub(super) fn madt() -> Option<&'static [u8]> {
 #[derive(Debug)]
 pub struct Aarch64;
 
+/// `TTBR0_EL1.ASID`, bits 63:48.
+const TTBR_ASID_SHIFT: u32 = 48;
+
+/// The ASID in `TTBR0_EL1`, in place (bits 63:48): what the active user space's translations
+/// carry (D552).
+fn current_asid() -> u64 {
+    let ttbr: u64;
+    // SAFETY: reading `TTBR0_EL1` has no side effects.
+    unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr, options(nomem, nostack, preserves_flags)) };
+    ttbr & (0xffff << TTBR_ASID_SHIFT)
+}
+
 impl Platform for Aarch64 {
     const ARCH: &'static str = "aarch64";
 
@@ -782,6 +794,42 @@ impl Platform for Aarch64 {
         }
     }
 
+    unsafe fn switch_tagged_address_space(roots: &[u64], tag: crate::asid::AddressSpaceTag) {
+        let [low, _] = roots else {
+            panic!("AArch64 page tables have two roots");
+        };
+        let block = Self::cpu_local();
+        // SAFETY: the per-CPU register holds this CPU's block, with a `HalCpuLocal` at its
+        // offset; only this CPU uses its tags, with interrupts masked (the caller's duty).
+        let choice = unsafe {
+            let hal = &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal);
+            hal.address_space_tags.choose(tag)
+        };
+        let asid = u64::from(choice.hardware_tag) << TTBR_ASID_SHIFT;
+        // SAFETY: as in `switch_address_space`, with the space's own ASID in `TTBR0_EL1`
+        // (`TCR_EL1.A1` = 0, every CPU has at least 8 ASID bits): user translations are not
+        // global and carry it, so `TLBI ASIDE1` drops only that space's, and only when the tags
+        // say they are stale.
+        unsafe {
+            core::arch::asm!(
+                "dsb ish",
+                "msr ttbr0_el1, {ttbr}",
+                "isb",
+                ttbr = in(reg) *low | asid,
+                options(nostack, preserves_flags),
+            );
+            if choice.drop_old {
+                core::arch::asm!(
+                    "tlbi aside1, {asid}",
+                    "dsb nsh",
+                    "isb",
+                    asid = in(reg) asid,
+                    options(nostack, preserves_flags),
+                );
+            }
+        }
+    }
+
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
         access()
     }
@@ -842,28 +890,30 @@ impl Platform for Aarch64 {
 
     fn drop_user_translations(start: u64, length: u64) {
         let pages = length / crate::memory::FRAME_SIZE;
+        let asid = current_asid();
         if pages > crate::paging::USER_PAGES_DROPPED_ONE_BY_ONE {
             // SAFETY: barriers and TLB invalidation change no memory contents. User
-            // translations carry ASID 0 and are not global (see `switch_address_space`), so
-            // `TLBI ASIDE1` with ASID 0 drops them all and keeps the kernel's. Local: the kernel
-            // sees to other CPUs.
+            // translations carry the active space's ASID and are not global (see
+            // `switch_tagged_address_space`), so `TLBI ASIDE1` with it drops them all and keeps
+            // the kernel's. Local: the kernel sees to other CPUs.
             unsafe {
                 core::arch::asm!(
                     "dsb ishst",
-                    "tlbi aside1, xzr",
+                    "tlbi aside1, {asid}",
                     "dsb nsh",
                     "isb",
+                    asid = in(reg) asid,
                     options(nostack, preserves_flags)
                 )
             };
             return;
         }
         // SAFETY: as above: the first barrier completes the caller's table writes before any
-        // walk, then each page's translations (any level, ASID 0: the operand's top bits are 0
-        // as user addresses are below 2^48) are dropped on this CPU.
+        // walk, then each page's translations (any level, the active ASID in the operand's top
+        // bits, which user addresses below 2^48 leave free) are dropped on this CPU.
         unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)) };
         for page in 0..pages {
-            let operand = (start + page * crate::memory::FRAME_SIZE) >> 12;
+            let operand = (start + page * crate::memory::FRAME_SIZE) >> 12 | asid;
             // SAFETY: as above.
             unsafe {
                 core::arch::asm!("tlbi vae1, {}", in(reg) operand, options(nostack, preserves_flags))

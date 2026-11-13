@@ -4,9 +4,12 @@
 //! Sv39 is what every RVA profile requires, so it runs on every RISC-V application processor;
 //! its upper half (256 GiB) holds the direct map (254 GiB) and the kernel image (D29, D33).
 //! Without the Svpbmt extension a page cannot say whether it is device memory: the platform's
-//! physical memory attributes decide, so [`super::MemoryType`] is not encoded.
+//! physical memory attributes decide, so [`super::MemoryType`] is not encoded. With it (the
+//! device tree lists `svpbmt`, D552), a leaf's PBMT field, bits 62:61, says: 0 the platform's
+//! attributes (normal memory), 1 non-cacheable and idempotent (write-combining), 2 I/O (device).
 
-use super::{Attributes, Entry, Format};
+use super::{Attributes, Entry, Format, MemoryType};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// The Sv39 format. See the module documentation.
 #[derive(Debug)]
@@ -30,6 +33,21 @@ const PPN: u64 = ((1 << 44) - 1) << PPN_SHIFT;
 /// In an entry without [`VALID`], whose other bits the hart ignores: [`Format::kept`]'s mark
 /// (one of the bits left to software, RSW, in valid ones).
 const KEPT: u64 = 1 << 8;
+/// Svpbmt's page-based memory type field, bits 62:61.
+const PBMT_SHIFT: u32 = 61;
+const PBMT: u64 = 3 << PBMT_SHIFT;
+const PBMT_NONCACHEABLE: u64 = 1 << PBMT_SHIFT;
+const PBMT_IO: u64 = 2 << PBMT_SHIFT;
+
+/// Whether the harts have Svpbmt; the HAL sets it from the device tree before it builds tables
+/// ([`set_svpbmt`]).
+static SVPBMT: AtomicBool = AtomicBool::new(false);
+
+/// Records whether every hart has Svpbmt (the device tree's `svpbmt`), before any table is built
+/// with this format; entries then carry their memory type.
+pub fn set_svpbmt(present: bool) {
+    SVPBMT.store(present, Ordering::Relaxed);
+}
 
 impl Format for Riscv64Sv39 {
     const LEVELS: usize = 3;
@@ -40,17 +58,27 @@ impl Format for Riscv64Sv39 {
     const USER_END: u64 = 1 << 38;
 
     fn root(virt: u64) -> Option<usize> {
-        // Canonical: bits 63:39 copy bit 38.
         (((virt as i64) << 25 >> 25) as u64 == virt).then_some(0)
     }
 
     fn table(table: u64, _level: usize, _user: bool) -> u64 {
-        // `U` is reserved in a pointer to a table: only the leaf decides.
         ((table >> 12) << PPN_SHIFT) & PPN | VALID
     }
 
+    fn encodes_memory_type() -> bool {
+        SVPBMT.load(Ordering::Relaxed)
+    }
+
     fn leaf(phys: u64, _level: usize, attributes: Attributes) -> u64 {
-        leaf(phys, attributes)
+        let entry = leaf(phys, attributes);
+        if !Self::encodes_memory_type() {
+            return entry;
+        }
+        match attributes.memory_type {
+            MemoryType::Normal => entry,
+            MemoryType::WriteCombining => entry | PBMT_NONCACHEABLE,
+            MemoryType::Device => entry | PBMT_IO,
+        }
     }
 
     fn kept(phys: u64) -> u64 {
@@ -69,12 +97,17 @@ impl Format for Riscv64Sv39 {
         if entry & (READ | WRITE | EXECUTE) == 0 {
             return Entry::Table(phys);
         }
+        let memory_type = match entry & PBMT {
+            PBMT_NONCACHEABLE => MemoryType::WriteCombining,
+            PBMT_IO => MemoryType::Device,
+            _ => MemoryType::Normal,
+        };
         Entry::Leaf(
             phys,
             Attributes {
                 writable: entry & WRITE != 0,
                 executable: entry & EXECUTE != 0,
-                memory_type: super::MemoryType::Normal,
+                memory_type,
                 user: entry & USER != 0,
             },
         )

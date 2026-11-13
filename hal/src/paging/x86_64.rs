@@ -1,11 +1,12 @@
 //! x86_64 4-level paging (Intel SDM vol. 3A, 4.5; AMD APM vol. 2, 5.3): PML4, PDPT, page
-//! directory, page table. Leaves are 4 KiB pages and 2 MiB pages; 1 GiB pages need CPUID's
-//! `Page1GB` and come when the kernel checks for it.
+//! directory, page table. Leaves are 4 KiB pages, 2 MiB pages and, where CPUID's `Page1GB`
+//! (leaf 0x8000_0001, EDX bit 26) says the CPU has them, 1 GiB pages (D552).
 //!
 //! Read-only kernel mappings need `CR0.WP` and no-execute needs `EFER.NXE`; the x86_64 module
 //! sets both before loading tables built with this format.
 
 use super::{Attributes, Entry, Format, MemoryType};
+use core::sync::atomic::{AtomicU8, Ordering};
 use crate::memory::FRAME_SIZE;
 
 /// The 4-level format. See the module documentation.
@@ -35,18 +36,60 @@ const LARGE_PAT: u64 = 1 << 12;
 /// In an entry without [`PRESENT`], whose other bits the CPU ignores: [`Format::kept`]'s mark.
 const KEPT: u64 = 1 << 9;
 
+/// Global: the translation survives CR3 loads ([`set_global_kernel_pages`]).
+const GLOBAL: u64 = 1 << 8;
+
+/// Whether kernel leaves are made global: the HAL turns it on with `CR4.PGE` on CPUs that need
+/// no separate user view (D552), and off again when one is set up.
+static GLOBAL_KERNEL_PAGES: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Makes kernel leaves built from now on global (or not).
+pub fn set_global_kernel_pages(global: bool) {
+    GLOBAL_KERNEL_PAGES.store(global, Ordering::Relaxed);
+}
+
+const UNKNOWN: u8 = 0;
+/// The highest leaf level the CPU takes, found at the first use ([`Format::max_leaf_level`]).
+static GIGABYTE_LEAVES: AtomicU8 = AtomicU8::new(UNKNOWN);
+
+/// Whether CPUID reports 1 GiB pages (`Page1GB`, leaf 0x8000_0001 EDX bit 26). On a host that is
+/// not x86_64 (the format's host tests), no.
+fn has_gigabyte_pages() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::__cpuid;
+        let highest = __cpuid(0x8000_0000).eax;
+        highest >= 0x8000_0001 && __cpuid(0x8000_0001).edx & 1 << 26 != 0
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
 impl Format for X86_64 {
     const LEVELS: usize = 4;
     const ROOTS: usize = 1;
-    const MAX_LEAF_LEVEL: usize = 1;
+    const MAX_LEAF_LEVEL: usize = 2;
     const ENCODES_MEMORY_TYPE: bool = true;
     /// The lower 128 TiB but its last page. A `syscall` in that page's last bytes would return
     /// (`sysretq`) to the first non-canonical address, which faults in ring 0 on the user's
     /// stack on Intel CPUs; with the page never mapped, no user instruction runs there.
     const USER_END: u64 = (1 << 47) - FRAME_SIZE;
 
+    fn max_leaf_level() -> usize {
+        match GIGABYTE_LEAVES.load(Ordering::Relaxed) {
+            UNKNOWN => {
+                let level = if has_gigabyte_pages() { 2 } else { 1 };
+                GIGABYTE_LEAVES.store(level, Ordering::Relaxed);
+                usize::from(level)
+            }
+            level => usize::from(level),
+        }
+    }
+
     fn root(virt: u64) -> Option<usize> {
-        // Canonical: bits 63:48 copy bit 47.
         (((virt as i64) << 16 >> 16) as u64 == virt).then_some(0)
     }
 
@@ -75,6 +118,8 @@ impl Format for X86_64 {
         }
         if attributes.user {
             entry |= USER;
+        } else if GLOBAL_KERNEL_PAGES.load(Ordering::Relaxed) {
+            entry |= GLOBAL;
         }
         entry
     }

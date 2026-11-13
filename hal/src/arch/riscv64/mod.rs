@@ -177,6 +177,50 @@ const DIRECT_MAP_OFFSET: usize = 0xffff_ffc0_0000_0000;
 const BOOT_DIRECT_MAP_END: u64 = 0xffff_ffff_8000_0000 - DIRECT_MAP_OFFSET as u64;
 
 /// `sstatus.SUM`: S-mode may access U-mode pages (see `with_user_access`).
+/// `satp.ASID`, bits 59:44 in Sv39.
+const SATP_ASID_SHIFT: u32 = 44;
+const UNPROBED: u8 = 0;
+const ASIDS_USABLE: u8 = 1;
+const ASIDS_TOO_FEW: u8 = 2;
+static ASID_PROBE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(UNPROBED);
+
+/// Whether the harts implement at least four ASID bits, enough for the tags' eight slots (D552):
+/// probed once by writing every ASID bit into `satp` with the active root and reading back what
+/// stuck (the privileged specification's way to learn ASIDLEN).
+fn asids_work() -> bool {
+    match ASID_PROBE.load(core::sync::atomic::Ordering::Relaxed) {
+        UNPROBED => {
+            let before: u64;
+            let after: u64;
+            // SAFETY: the same root goes back in at once, with only the ASID field changed, which
+            // no translation of the kernel depends on; interrupts are masked as the kernel runs.
+            unsafe {
+                core::arch::asm!(
+                    "csrr {before}, satp",
+                    "or {probe}, {before}, {all}",
+                    "csrw satp, {probe}",
+                    "csrr {after}, satp",
+                    "csrw satp, {before}",
+                    before = out(reg) before,
+                    after = out(reg) after,
+                    probe = out(reg) _,
+                    all = in(reg) 0xffffu64 << SATP_ASID_SHIFT,
+                    options(nostack),
+                );
+            }
+            let _ = before;
+            let bits = ((after >> SATP_ASID_SHIFT) & 0xffff).count_ones();
+            let usable = bits >= 4;
+            ASID_PROBE.store(
+                if usable { ASIDS_USABLE } else { ASIDS_TOO_FEW },
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            usable
+        }
+        state => state == ASIDS_USABLE,
+    }
+}
+
 const SSTATUS_SUM: u64 = 1 << 18;
 
 /// The kernel's boot mapping: read, write and execute until its own page tables are active.
@@ -540,6 +584,36 @@ impl Platform for Riscv64 {
         unsafe { core::arch::asm!("fence.i", options(nostack)) };
     }
 
+    unsafe fn switch_tagged_address_space(roots: &[u64], tag: crate::asid::AddressSpaceTag) {
+        let [root] = roots else {
+            panic!("Sv39 page tables have one root");
+        };
+        if !asids_work() {
+            // SAFETY: the caller's guarantees include `switch_address_space`'s.
+            return unsafe { Self::switch_address_space(roots) };
+        }
+        let block = Self::cpu_local();
+        // SAFETY: the per-CPU register holds this hart's block, with a `HalCpuLocal` at its
+        // offset; only this hart uses its tags, with interrupts masked (the caller's duty).
+        let choice = unsafe {
+            let hal = &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal);
+            hal.address_space_tags.choose(tag)
+        };
+        let asid = u64::from(choice.hardware_tag);
+        let satp = paging::riscv64::SATP_MODE_SV39 | asid << SATP_ASID_SHIFT | root >> 12;
+        // SAFETY: as in `switch_address_space`: the fence orders this hart's stores before the
+        // new tables' walks, the kernel half is the active one's, and `fence.i` makes other
+        // harts' code visible here. Translations under the ASID are dropped only when the tags
+        // say they are stale; the kernel's global ones stay.
+        unsafe {
+            core::arch::asm!("fence rw, rw", "csrw satp, {satp}", satp = in(reg) satp, options(nostack));
+            if choice.drop_old {
+                core::arch::asm!("sfence.vma zero, {asid}", asid = in(reg) asid, options(nostack));
+            }
+            core::arch::asm!("fence.i", options(nostack));
+        }
+    }
+
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
         let before: u64;
         // SAFETY: `sstatus.SUM` only widens what S-mode may load and store to U-mode pages; it
@@ -609,6 +683,21 @@ impl Platform for Riscv64 {
             // walks and drops cached translations; it changes no memory contents. Every address
             // space (no ASIDs are used), the kernel's global ones too, which costs refills only.
             unsafe { core::arch::asm!("sfence.vma zero, zero", options(nostack)) };
+            return;
+        }
+        if timer::has_svinval() {
+            // SAFETY: Svinval's three instructions (the device tree listed `svinval`): the first
+            // orders earlier page-table writes before the invalidations, `sinval.vma` drops one
+            // page's translations in every address space without waiting, and the last orders
+            // them before later walks. Encoded as words for assemblers without the extension.
+            unsafe {
+                core::arch::asm!(".4byte 0x18000073", options(nostack));
+                for page in 0..pages {
+                    let address = start + page * crate::memory::FRAME_SIZE;
+                    core::arch::asm!(".4byte 0x16050073", in("a0") address, options(nostack));
+                }
+                core::arch::asm!(".4byte 0x18100073", options(nostack));
+            }
             return;
         }
         for page in 0..pages {

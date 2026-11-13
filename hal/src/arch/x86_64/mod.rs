@@ -393,6 +393,8 @@ pub(crate) fn doorbell_barrier() {
 
 static PVH_START_INFO: AtomicU32 = AtomicU32::new(0);
 
+/// CR3 bit 63 with `CR4.PCIDE`: the load keeps the translations cached under its PCID (D552).
+const CR3_NO_FLUSH: u64 = 1 << 63;
 const PVH_START_MAGIC: u32 = 0x336e_c578;
 const PVH_CMDLINE_PADDR: usize = 24;
 const PVH_RSDP_PADDR: usize = 32;
@@ -923,10 +925,36 @@ impl Platform for X86_64 {
         };
         // SAFETY: the caller guarantees the root's kernel half is the active one's, so the
         // kernel runs on at the same addresses, and that nothing uses the low half meanwhile.
-        // Loading CR3 drops every cached translation (no page is global yet). No `nomem`:
-        // memory accesses must not move across the switch.
+        // Loading CR3 without bit 63 drops the cached translations of its PCID, 0, which only
+        // kernel tables and untagged switches use; global kernel ones stay. No `nomem`: memory
+        // accesses must not move across the switch.
         unsafe {
             core::arch::asm!("mov cr3, {}", in(reg) *root, options(nostack, preserves_flags));
+        }
+    }
+
+    unsafe fn switch_tagged_address_space(roots: &[u64], tag: crate::asid::AddressSpaceTag) {
+        if !exception::pcids_on() {
+            // SAFETY: the caller's guarantees include `switch_address_space`'s.
+            return unsafe { Self::switch_address_space(roots) };
+        }
+        let [root] = roots else {
+            panic!("x86_64 page tables have one root");
+        };
+        let block = Self::cpu_local();
+        // SAFETY: the per-CPU register holds this CPU's block, with a `HalCpuLocal` at its
+        // offset; only this CPU uses its tags, with interrupts masked (the caller's duty).
+        let choice = unsafe {
+            let hal = &*((block + crate::cpu::HAL_CPU_LOCAL_OFFSET) as *const crate::cpu::HalCpuLocal);
+            hal.address_space_tags.choose(tag)
+        };
+        let keep = if choice.drop_old { 0 } else { CR3_NO_FLUSH };
+        let cr3 = *root | u64::from(choice.hardware_tag) | keep;
+        // SAFETY: as in `switch_address_space`; with `CR4.PCIDE` set, the PCID in bits 11:0 tags
+        // the space's translations, and bit 63 keeps the ones cached under it, which the tags
+        // say are current: its generation has not moved since this CPU last ran it.
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
         }
     }
 

@@ -17,6 +17,7 @@ compile_error!("a bare-metal build of the HAL needs `--cfg eggos_kernel` (.cargo
 pub mod acpi;
 pub mod aml;
 pub mod arch;
+pub mod asid;
 pub mod atomic;
 pub mod cache;
 pub mod command_line;
@@ -443,6 +444,22 @@ pub trait Platform: 'static {
     /// must be exactly the active one. Nothing may hold a pointer into the low half the tables
     /// replace.
     unsafe fn switch_address_space(roots: &[u64]);
+
+    /// As [`Self::switch_address_space`], for a user address space the kernel tags (D552): where
+    /// the CPU tags translations by address space (x86_64's PCIDs, AArch64's and RISC-V's ASIDs),
+    /// the CPU keeps the translations of the few spaces it ran last and drops only those of a
+    /// space whose `tag.generation` moved on since it last ran it here. Elsewhere it is the plain
+    /// switch.
+    ///
+    /// # Safety
+    /// As [`Self::switch_address_space`], and `tag.generation` must have moved on after every
+    /// removal or loss of access of a mapping in the space before the kernel read it for this
+    /// switch.
+    unsafe fn switch_tagged_address_space(roots: &[u64], tag: asid::AddressSpaceTag) {
+        let _ = tag;
+        // SAFETY: the caller's guarantees include `switch_address_space`'s.
+        unsafe { Self::switch_address_space(roots) };
+    }
 
     /// Runs `access` with the kernel allowed to read and write user mappings
     /// ([`paging::Attributes::user`]) of the active address space: on RISC-V, S-mode reaches

@@ -69,7 +69,7 @@ fn map_as<P: Platform>(
         return Ok((window.virt + (region.start - window.frames.start)) as usize);
     }
     let window = paging::device_window::<P>();
-    let largest = <P::PageTableFormat as Format>::MAX_LEAF_LEVEL
+    let largest = <P::PageTableFormat as Format>::max_leaf_level()
         .min(<P::PageTableFormat as Format>::LEVELS - 2);
     let alignment = (0..=largest)
         .rev()

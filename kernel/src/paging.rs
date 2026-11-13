@@ -270,7 +270,7 @@ impl<F: Format> PageTables<F> {
         let end = virt.wrapping_add(length);
         while virt != end {
             let remaining = end.wrapping_sub(virt);
-            let level = (0..=F::MAX_LEAF_LEVEL)
+            let level = (0..=F::max_leaf_level())
                 .rev()
                 .find(|&level| {
                     let size = F::leaf_bytes(level);
@@ -580,7 +580,7 @@ impl<F: Format> PageTables<F> {
             return Err(MapError::OutsideDeviceWindow);
         }
         phys.checked_add(length).ok_or(MapError::InvalidAddress)?;
-        let largest = F::MAX_LEAF_LEVEL.min(F::LEVELS - 2);
+        let largest = F::max_leaf_level().min(F::LEVELS - 2);
         while virt != end {
             let remaining = end - virt;
             let level = (0..=largest)
@@ -1110,7 +1110,7 @@ mod tests {
         assert_eq!(device.0, 0x900_0010);
         assert!(device.1.writable && !device.1.executable);
         let used = 64 - frames.free_frames();
-        let largest = leaf_size(F::MAX_LEAF_LEVEL);
+        let largest = leaf_size(F::max_leaf_level());
         assert_eq!(big % largest, 0);
         assert!(
             used <= (F::ROOTS + 3 * (F::LEVELS - 1)) as u64,

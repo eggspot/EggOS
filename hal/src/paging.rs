@@ -232,7 +232,7 @@ pub trait Format {
     /// The highest level that may hold a leaf (0: 4 KiB pages only, 1: also 2 MiB, 2: also
     /// 1 GiB).
     const MAX_LEAF_LEVEL: usize;
-    /// Whether an entry records its [`MemoryType`]; see [`Format::decode`].
+    /// Whether an entry can record its [`MemoryType`]; see [`Format::decode`].
     const ENCODES_MEMORY_TYPE: bool;
     /// The end of user space: user addresses are `0..USER_END`, page-aligned, in the low half
     /// (it may stop short of the half's end). A root-level entry whose range starts at or above
@@ -266,6 +266,18 @@ pub trait Format {
 
     /// The lowest address bit `level`'s index takes: 12 plus 9 a level, the 512-entry tables
     /// of every format but s390x's, whose levels take 8 and 11 bits (D320).
+    /// The highest level this machine's CPUs take a leaf at: [`Self::MAX_LEAF_LEVEL`] unless the
+    /// format's largest leaf depends on a CPU feature (x86_64's 1 GiB pages, D552).
+    fn max_leaf_level() -> usize {
+        Self::MAX_LEAF_LEVEL
+    }
+
+    /// Whether this machine's entries record their [`MemoryType`]: [`Self::ENCODES_MEMORY_TYPE`]
+    /// unless the format encodes it only with a CPU extension (RISC-V's Svpbmt, D552).
+    fn encodes_memory_type() -> bool {
+        Self::ENCODES_MEMORY_TYPE
+    }
+
     fn index_shift(level: usize) -> u32 {
         12 + 9 * level as u32
     }

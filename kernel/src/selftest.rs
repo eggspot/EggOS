@@ -605,7 +605,7 @@ fn page_tables_protect_the_kernel<P: Platform>(memory: &mut Memory<P>) -> Result
         &mut |device| match tables.translate(device.start + offset) {
             Some((phys, attributes)) => {
                 devices_ok &= phys == device.start && attributes.writable && !attributes.executable;
-                devices_ok &= !<P::PageTableFormat as Format>::ENCODES_MEMORY_TYPE
+                devices_ok &= !<P::PageTableFormat as Format>::encodes_memory_type()
                     || attributes.memory_type == MemoryType::Device;
                 devices_ok &= tables.translate(device.start).is_none();
             }

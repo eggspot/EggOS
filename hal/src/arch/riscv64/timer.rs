@@ -31,6 +31,10 @@ pub(super) extern "C" fn init() {
         if crate::fdt::riscv_has_extension(tree, b"sstc") {
             SSTC.store(true, core::sync::atomic::Ordering::Relaxed);
         }
+        crate::paging::riscv64::set_svpbmt(crate::fdt::riscv_has_extension(tree, b"svpbmt"));
+        if crate::fdt::riscv_has_extension(tree, b"svinval") {
+            SVINVAL.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(hertz) = crate::fdt::timebase_frequency(tree).filter(|&hertz| hertz != 0) {
             FREQUENCY.store(hertz, core::sync::atomic::Ordering::Relaxed);
         }
@@ -71,6 +75,13 @@ pub(super) fn now() -> u64 {
     // directly or by emulating the read).
     unsafe { core::arch::asm!("rdtime {}", out(reg) ticks, options(nomem, nostack)) };
     ticks
+}
+
+static SVINVAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether the harts have Svinval (D552): ranged TLB invalidation without a fence per page.
+pub(super) fn has_svinval() -> bool {
+    SVINVAL.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether the harts have Sstc (D261): the deadline is written to `stimecmp` directly, with no

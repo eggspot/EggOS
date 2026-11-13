@@ -57,6 +57,7 @@ use core::any::Any;
 use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering, fence};
+use eggos_hal::atomic::AtomicU64;
 use eggos_hal::Platform;
 use eggos_hal::paging::{Attributes, Format};
 
@@ -86,8 +87,17 @@ pub struct AddressSpace<P: Platform> {
     /// Whether threads using it may run on several CPUs at once ([`Self::spread_over_cpus`]):
     /// changes are then shot down on other CPUs instead of marking them stale. Never cleared.
     spread: AtomicBool,
+    /// Unique for the kernel's lifetime: what a CPU's address-space tags know it by (D552).
+    id: u64,
+    /// Moves on every time a mapping is removed or loses access, before other CPUs are told,
+    /// so a CPU that kept this space's translations under a tag drops them when it switches
+    /// back (D552).
+    generation: AtomicU64,
     platform: PhantomData<fn() -> P>,
 }
+
+/// The next [`AddressSpace::id`]; 0 is never one.
+static NEXT_ADDRESS_SPACE_ID: AtomicU64 = AtomicU64::new(1);
 
 impl<P: Platform> AddressSpace<P> {
     /// An empty address space sharing the kernel half of `kernel`; its tables come from the
@@ -111,6 +121,8 @@ impl<P: Platform> AddressSpace<P> {
             kernel_roots,
             owns_frames: false,
             spread: AtomicBool::new(false),
+            id: NEXT_ADDRESS_SPACE_ID.fetch_add(1, Ordering::Relaxed),
+            generation: AtomicU64::new(0),
             platform: PhantomData,
         })
     }
@@ -147,6 +159,8 @@ impl<P: Platform> AddressSpace<P> {
             kernel_roots: self.kernel_roots,
             owns_frames: true,
             spread: AtomicBool::new(false),
+            id: NEXT_ADDRESS_SPACE_ID.fetch_add(1, Ordering::Relaxed),
+            generation: AtomicU64::new(0),
             platform: PhantomData,
         })
     }
@@ -385,6 +399,7 @@ impl<P: Platform> AddressSpace<P> {
     fn drop_old_translations(&self, virt: u64, length: u64, spread: bool) {
         let here = cpu::current::<P>();
         let root = self.root();
+        self.generation.fetch_add(1, Ordering::Release);
         if here.active_address_space() == root {
             P::drop_user_translations(virt, length);
         }
@@ -434,7 +449,7 @@ impl<P: Platform> AddressSpace<P> {
         // through `change_pages`, which drops this CPU's translations of them (added ones are
         // allowed, see the module documentation), until the switch back below. Nothing
         // points into the kernel's low half, which is empty.
-        unsafe { P::switch_address_space(self.roots()) };
+        unsafe { P::switch_tagged_address_space(self.roots(), self.tag()) };
         let result = active();
         assert!(
             ptr::eq(cpu::current::<P>(), here),
@@ -505,7 +520,7 @@ impl<P: Platform> AddressSpace<P> {
         // kept below until the CPU switches away from them. The previous address space, if
         // any, is no longer used: `with_active` never runs around this call (checked above),
         // and the kernel reaches user pages only after loading the address space it means.
-        unsafe { P::switch_address_space(self.roots()) };
+        unsafe { P::switch_tagged_address_space(self.roots(), self.tag()) };
         let mut kernel_roots = self.kernel_roots;
         kernel_roots[self.roots().len()..].fill(0);
         *slot = Some(LazilyLoaded {
@@ -518,6 +533,17 @@ impl<P: Platform> AddressSpace<P> {
         // keep it are not woken here, which would cost every switch a look at every CPU: one
         // whose last look raced with this switch keeps it until something wakes it (roadmap).
         drop(previous);
+    }
+
+    /// What a CPU's address-space tags know this space by now (D552): read after the CPU
+    /// recorded the space as its own and a full fence, so a change made after the read marks
+    /// the CPU stale or shoots its translations down.
+    fn tag(&self) -> eggos_hal::asid::AddressSpaceTag {
+        fence(Ordering::SeqCst);
+        eggos_hal::asid::AddressSpaceTag {
+            id: self.id,
+            generation: self.generation.load(Ordering::Acquire),
+        }
     }
 
     /// Whether this address space is the one active or loaded on this CPU, and not marked

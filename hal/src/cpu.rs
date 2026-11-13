@@ -81,6 +81,10 @@ pub struct HalCpuLocal {
     #[cfg(target_arch = "riscv64")]
     #[allow(dead_code)]
     pub(crate) plic_context: AtomicU64,
+    /// The address-space tags this CPU holds (D552).
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
+    #[allow(dead_code)]
+    pub(crate) address_space_tags: crate::asid::AddressSpaceTags,
 }
 
 impl HalCpuLocal {
@@ -90,6 +94,8 @@ impl HalCpuLocal {
             timer_deadline: AtomicU64::new(u64::MAX),
             #[cfg(target_arch = "riscv64")]
             plic_context: AtomicU64::new(u64::MAX),
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
+            address_space_tags: crate::asid::AddressSpaceTags::new(),
             #[cfg(target_arch = "x86_64")]
             x86: X86CpuTables(UnsafeCell::new(X86Tables {
                 gdt: [0; GDT_ENTRIES],

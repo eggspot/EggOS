@@ -1596,6 +1596,7 @@ pub(super) unsafe fn set_user_view(block: usize, root: u64) {
         (*tables).entry_stack_top = top;
         (*tables).tss.rsp[0] = top;
         (*tables).user_cr3 = root & CR3_ADDRESS | USER_VIEW_MARKER;
+        crate::paging::x86_64::set_global_kernel_pages(false);
         core::arch::asm!(
             "mov {tmp}, cr4",
             "and {tmp}, {keep}",
@@ -1949,7 +1950,32 @@ fn supervisor_protections() -> u64 {
     } else {
         0
     };
-    smep | umip | smap
+    smep | umip | smap | tagged_translations()
+}
+
+const CR4_PCIDE: u64 = 1 << 17;
+const CPUID_1_ECX_PCID: u32 = 1 << 17;
+static PCIDS_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Global kernel pages and PCIDs (D552), on CPUs that need no separate user view: with one,
+/// every switch to it must drop the kernel's translations, which global pages would keep, and
+/// the entry code's CR3 loads carry no PCID.
+fn tagged_translations() -> u64 {
+    if needs_user_view() {
+        return 0;
+    }
+    crate::paging::x86_64::set_global_kernel_pages(true);
+    if super::timer::cpuid(1, 0)[2] & CPUID_1_ECX_PCID != 0 {
+        PCIDS_ON.store(true, core::sync::atomic::Ordering::Relaxed);
+        CR4_GLOBAL_PAGES | CR4_PCIDE
+    } else {
+        CR4_GLOBAL_PAGES
+    }
+}
+
+/// Whether CR3 carries a PCID on this machine (D552).
+pub(super) fn pcids_on() -> bool {
+    PCIDS_ON.load(core::sync::atomic::Ordering::Relaxed) && !isolates_user_view()
 }
 const CPUID_SMEP: u32 = 1 << 7;
 const RFLAGS_INTERRUPTS: u64 = 1 << 9;

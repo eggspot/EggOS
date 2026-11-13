@@ -74,7 +74,7 @@ fn no_normal_alias<P: Platform>(
     memory: &Memory<P>,
     found: &[DeviceNode],
 ) -> Result<(), &'static str> {
-    if !<P::PageTableFormat as Format>::ENCODES_MEMORY_TYPE {
+    if !<P::PageTableFormat as Format>::encodes_memory_type() {
         return Ok(());
     }
     let mut ranges: alloc::vec::Vec<PhysicalRange> =
