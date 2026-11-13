@@ -10,8 +10,13 @@
 //! 2^[`MAX_ORDER`] frames (4 MiB); larger ones fail (the caller gets null, and `alloc`
 //! panics).
 //!
-//! Frames a size class took stay with that class when its blocks are freed: giving empty slabs
-//! back needs a count of live blocks per frame (D30 follow-up).
+//! Frames a size class took stay with that class while any of their blocks lives; when memory
+//! runs low, [`KernelHeap::release_empty_slabs`] sorts each class's free list by address, finds
+//! the frames whose every block is free and gives them back to the frame allocator (D551), off
+//! the allocation paths.
+//!
+//! Each CPU keeps a few freed blocks of each class in a cache of its own (D551), so most
+//! allocations and frees take only that CPU's lock, which no other CPU takes but to empty it.
 //!
 //! Interrupt and exception handlers must not allocate: the heap's lock does not mask
 //! interrupts (see [`LeafSpinLock`]), so a handler allocating while the code it interrupted holds
@@ -26,6 +31,7 @@ use crate::memory::{self, FrameAllocator, MAX_ORDER};
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use eggos_hal::memory::FRAME_SIZE;
 
 /// The smallest block: room for the free-list link, and the alignment `alloc` callers most
@@ -255,6 +261,88 @@ impl Heap {
         Some(block)
     }
 
+    /// Takes a block of class `class` off its free list or the frame being carved, without
+    /// taking a new frame; `None` when it has none.
+    fn take_block(&mut self, class: usize) -> Option<usize> {
+        let state = &mut self.classes[class];
+        if state.free != NO_BLOCK {
+            let block = state.free;
+            // SAFETY: as in `allocate_block`: the first word of a free block is its link.
+            state.free = unsafe { (block as *const usize).read() };
+            return Some(block);
+        }
+        (state.next != state.end).then(|| {
+            let block = state.next;
+            state.next += MIN_BLOCK << class;
+            block
+        })
+    }
+
+    /// Puts a freed block of class `class` back on its free list.
+    ///
+    /// # Safety
+    /// The block must be of this class, from this heap, and unused.
+    unsafe fn put_block(&mut self, class: usize, block: usize) {
+        let state = &mut self.classes[class];
+        // SAFETY: the caller gives the block up; its first word is the heap's to write.
+        unsafe { (block as *mut usize).write(state.free) };
+        state.free = block;
+    }
+
+    /// Gives back to `frames` every slab frame whose blocks are all on its class's free list
+    /// (the frame being carved is kept). Sorts each free list by address in place (a merge sort
+    /// of the linked blocks, so it needs no memory), then counts runs of blocks per frame.
+    /// Returns how many frames went back.
+    pub fn release_empty_slabs(&mut self, frames: &mut impl FrameSource) -> u64 {
+        let mut released = 0;
+        for class in 0..CLASSES {
+            let per_frame = FRAME_SIZE as usize / (MIN_BLOCK << class);
+            let state = self.classes[class];
+            // SAFETY: the list is the class's free list, every block on it free and linked
+            // through its first word.
+            let sorted = unsafe { sort_blocks(state.free) };
+            let carving = (state.next != state.end).then(|| state.next & !(FRAME_SIZE as usize - 1));
+            let mut kept = NO_BLOCK;
+            let mut kept_tail = NO_BLOCK;
+            let mut at = sorted;
+            while at != NO_BLOCK {
+                let frame = at & !(FRAME_SIZE as usize - 1);
+                let mut run_end = at;
+                let mut count = 1;
+                // SAFETY: `run_end` is a free block of the sorted list.
+                let mut next = unsafe { (run_end as *const usize).read() };
+                while next != NO_BLOCK && next & !(FRAME_SIZE as usize - 1) == frame {
+                    run_end = next;
+                    count += 1;
+                    // SAFETY: as above.
+                    next = unsafe { (run_end as *const usize).read() };
+                }
+                if count == per_frame && carving != Some(frame) {
+                    // SAFETY: every block of the frame is free, so nothing uses it; the class
+                    // took it from `frames` as one frame.
+                    unsafe { frames.free_frames(frame, 0) };
+                    self.slab_frames -= 1;
+                    released += 1;
+                } else {
+                    if kept == NO_BLOCK {
+                        kept = at;
+                    } else {
+                        // SAFETY: `kept_tail` is the last kept free block.
+                        unsafe { (kept_tail as *mut usize).write(at) };
+                    }
+                    kept_tail = run_end;
+                }
+                at = next;
+            }
+            if kept_tail != NO_BLOCK {
+                // SAFETY: as above.
+                unsafe { (kept_tail as *mut usize).write(NO_BLOCK) };
+            }
+            self.classes[class].free = kept;
+        }
+        released
+    }
+
     /// Gives a size class a new frame to carve; `None` when there is none. Out of line, so
     /// the block path stays short.
     #[cold]
@@ -270,6 +358,134 @@ impl Heap {
         class.end = frame + FRAME_SIZE as usize;
         Some(())
     }
+}
+
+/// Sorts a list of free blocks linked through their first words by address, in place (a
+/// bottom-up merge sort); returns the new head.
+///
+/// # Safety
+/// Every block on the list must be free, aligned and linked through its first word, ending in
+/// [`NO_BLOCK`].
+unsafe fn sort_blocks(head: usize) -> usize {
+    let next = |block: usize| {
+        // SAFETY: the caller's promise: `block` is a free block of the list.
+        unsafe { (block as *const usize).read() }
+    };
+    let set_next = |block: usize, to: usize| {
+        // SAFETY: as above.
+        unsafe { (block as *mut usize).write(to) }
+    };
+    let mut head = head;
+    let mut width = 1usize;
+    loop {
+        let mut merges = 0;
+        let mut left = head;
+        let mut new_head = NO_BLOCK;
+        let mut tail = NO_BLOCK;
+        while left != NO_BLOCK {
+            merges += 1;
+            let mut right = left;
+            let mut left_len = 0;
+            while left_len < width && right != NO_BLOCK {
+                right = next(right);
+                left_len += 1;
+            }
+            let mut right_len = width;
+            while left_len > 0 || (right_len > 0 && right != NO_BLOCK) {
+                let take_left = right_len == 0 || right == NO_BLOCK || (left_len > 0 && left < right);
+                let block = if take_left {
+                    let block = left;
+                    left = next(left);
+                    left_len -= 1;
+                    block
+                } else {
+                    let block = right;
+                    right = next(right);
+                    right_len -= 1;
+                    block
+                };
+                if tail == NO_BLOCK {
+                    new_head = block;
+                } else {
+                    set_next(tail, block);
+                }
+                tail = block;
+            }
+            left = right;
+        }
+        if tail != NO_BLOCK {
+            set_next(tail, NO_BLOCK);
+        }
+        head = new_head;
+        if merges <= 1 {
+            return head;
+        }
+        width *= 2;
+    }
+}
+
+/// Blocks a CPU's cache keeps per size class.
+const CPU_CACHE_BLOCKS: usize = 8;
+/// Blocks a CPU's cache takes from the shared heap at once when a class runs dry.
+const CPU_CACHE_REFILL: usize = 4;
+/// CPUs with a cache of their own; the others take the shared heap's lock every time.
+const CACHED_CPUS: usize = 64;
+
+/// One CPU's freed blocks, per size class.
+#[derive(Debug)]
+struct CpuCache {
+    blocks: [[usize; CPU_CACHE_BLOCKS]; CLASSES],
+    counts: [usize; CLASSES],
+}
+
+impl CpuCache {
+    const fn new() -> Self {
+        Self {
+            blocks: [[NO_BLOCK; CPU_CACHE_BLOCKS]; CLASSES],
+            counts: [0; CLASSES],
+        }
+    }
+
+    fn pop(&mut self, class: usize) -> Option<usize> {
+        let count = self.counts[class].checked_sub(1)?;
+        self.counts[class] = count;
+        Some(self.blocks[class][count])
+    }
+
+    fn push(&mut self, class: usize, block: usize) -> bool {
+        let count = self.counts[class];
+        let Some(slot) = self.blocks[class].get_mut(count) else {
+            return false;
+        };
+        *slot = block;
+        self.counts[class] = count + 1;
+        true
+    }
+
+    /// Puts every block back into `heap`.
+    fn empty_into(&mut self, heap: &mut Heap) {
+        for class in 0..CLASSES {
+            while let Some(block) = self.pop(class) {
+                // SAFETY: the cache held the block, a free block of this class from `heap`.
+                unsafe { heap.put_block(class, block) };
+            }
+        }
+    }
+}
+
+/// How the heap learns which CPU it runs on: a function the kernel sets once its per-CPU blocks
+/// exist ([`KernelHeap::set_cpu_index`]); until then, and on the host, every allocation takes the
+/// shared heap.
+static CPU_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+fn current_cpu_index() -> Option<usize> {
+    let function = CPU_INDEX.load(Ordering::Acquire);
+    if function == 0 {
+        return None;
+    }
+    // SAFETY: only `set_cpu_index` stores a non-zero value, and it stores a `fn() -> usize`.
+    let function: fn() -> usize = unsafe { core::mem::transmute(function) };
+    Some(function()).filter(|&index| index < CACHED_CPUS)
 }
 
 /// Whether the kernel heap may grow by `bytes` for an allocation a program drives: the frame
@@ -289,6 +505,9 @@ pub fn may_grow_for_user(bytes: usize) -> bool {
 #[derive(Debug)]
 pub struct KernelHeap {
     heap: LeafSpinLock<Heap>,
+    /// Each CPU's cache, made at its first use; null before (D551). Lock order: a CPU's cache,
+    /// then the shared heap, then [`memory::FRAMES`].
+    caches: [AtomicPtr<LeafSpinLock<CpuCache>>; CACHED_CPUS],
 }
 
 impl Default for KernelHeap {
@@ -301,7 +520,71 @@ impl KernelHeap {
     pub const fn new() -> Self {
         Self {
             heap: LeafSpinLock::new_leaf(Heap::new()),
+            caches: [const { AtomicPtr::new(ptr::null_mut()) }; CACHED_CPUS],
         }
+    }
+
+    /// Lets the heap find the CPU it runs on with `index`, which returns the kernel's number of
+    /// the calling CPU; from then on each CPU uses a cache of its own.
+    pub fn set_cpu_index(&self, index: fn() -> usize) {
+        CPU_INDEX.store(index as usize, Ordering::Release);
+    }
+
+    /// This CPU's cache, made at its first use; `None` before [`Self::set_cpu_index`], past
+    /// [`CACHED_CPUS`], or when memory for it is exhausted.
+    fn cpu_cache(&self) -> Option<&LeafSpinLock<CpuCache>> {
+        let index = current_cpu_index()?;
+        let slot = &self.caches[index];
+        let cache = slot.load(Ordering::Acquire);
+        if !cache.is_null() {
+            // SAFETY: a non-null slot points to a cache made below, never freed.
+            return Some(unsafe { &*cache });
+        }
+        self.make_cpu_cache(slot)
+    }
+
+    #[cold]
+    fn make_cpu_cache<'a>(
+        &'a self,
+        slot: &'a AtomicPtr<LeafSpinLock<CpuCache>>,
+    ) -> Option<&'a LeafSpinLock<CpuCache>> {
+        let layout = Layout::new::<LeafSpinLock<CpuCache>>();
+        let memory = self
+            .lock()
+            .allocate(layout, &mut GlobalFrames)?
+            .cast::<LeafSpinLock<CpuCache>>();
+        // SAFETY: the memory was just allocated for this layout and is unused.
+        unsafe { memory.as_ptr().write(LeafSpinLock::new_leaf(CpuCache::new())) };
+        match slot.compare_exchange(
+            ptr::null_mut(),
+            memory.as_ptr(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            // SAFETY: just stored; never freed.
+            Ok(_) => Some(unsafe { &*memory.as_ptr() }),
+            Err(existing) => {
+                // SAFETY: the block was allocated above with `layout` and nothing else saw it.
+                unsafe { self.lock().deallocate(memory.cast(), layout, &mut GlobalFrames) };
+                // SAFETY: another thread of this CPU stored it first; never freed.
+                Some(unsafe { &*existing })
+            }
+        }
+    }
+
+    /// Empties every CPU's cache into the shared heap, then gives the frames of empty slabs back
+    /// to the frame allocator; returns how many went back. For when memory runs low.
+    pub fn release_empty_slabs(&self) -> u64 {
+        for slot in &self.caches {
+            let cache = slot.load(Ordering::Acquire);
+            if cache.is_null() {
+                continue;
+            }
+            // SAFETY: a non-null slot points to a cache, never freed.
+            let mut cache = unsafe { &*cache }.lock();
+            cache.empty_into(&mut self.lock());
+        }
+        self.lock().release_empty_slabs(&mut GlobalFrames)
     }
 
     /// The heap, locked, once the CPU using it (or the host thread, in tests) is done. Every
@@ -332,6 +615,31 @@ impl KernelHeap {
 unsafe impl GlobalAlloc for KernelHeap {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if let Some(Kind::Block(class)) = Kind::of(layout)
+            && let Some(cache) = self.cpu_cache()
+        {
+            let mut cache = cache.lock();
+            if let Some(block) = cache.pop(class) {
+                return block as *mut u8;
+            }
+            let mut heap = self.lock();
+            for _ in 0..CPU_CACHE_REFILL {
+                let Some(block) = heap.take_block(class) else {
+                    break;
+                };
+                if !cache.push(class, block) {
+                    // SAFETY: just taken from this class, unused.
+                    unsafe { heap.put_block(class, block) };
+                    break;
+                }
+            }
+            if let Some(block) = cache.pop(class) {
+                return block as *mut u8;
+            }
+            return heap
+                .allocate(layout, &mut GlobalFrames)
+                .map_or(ptr::null_mut(), NonNull::as_ptr);
+        }
         self.lock()
             .allocate(layout, &mut GlobalFrames)
             .map_or(ptr::null_mut(), NonNull::as_ptr)
@@ -342,6 +650,12 @@ unsafe impl GlobalAlloc for KernelHeap {
         let Some(pointer) = NonNull::new(pointer) else {
             return;
         };
+        if let Some(Kind::Block(class)) = Kind::of(layout)
+            && let Some(cache) = self.cpu_cache()
+            && cache.lock().push(class, pointer.as_ptr() as usize)
+        {
+            return;
+        }
         // SAFETY: `GlobalAlloc` callers give back memory `alloc` returned for `layout`, which
         // came from this heap with `GlobalFrames`, and do not use it any more.
         unsafe { self.lock().deallocate(pointer, layout, &mut GlobalFrames) };
@@ -558,5 +872,49 @@ mod tests {
         assert!(heap.allocate(layout(2048, 8), &mut frames).is_none());
         assert!(heap.allocate(layout(16, 8), &mut frames).is_none());
         assert!(heap.allocate(layout(8192, 8), &mut frames).is_none());
+    }
+
+    #[test]
+    fn empty_slabs_go_back_and_partly_used_ones_stay() {
+        let mut allocator = frames(8);
+        let mut frames = Frames(&mut allocator);
+        let mut heap = Heap::new();
+        let free = frames.0.free_frames();
+        let l = layout(1024, 8);
+        let blocks: Vec<_> = (0..12).map(|_| heap.allocate(l, &mut frames).unwrap()).collect();
+        assert_eq!(heap.slab_frames(), 3);
+        for &block in &blocks[..8] {
+            // SAFETY: from this heap with this layout, not used any more.
+            unsafe { heap.deallocate(block, l, &mut frames) };
+        }
+        // SAFETY: as above.
+        unsafe { heap.deallocate(blocks[9], l, &mut frames) };
+        assert_eq!(heap.release_empty_slabs(&mut frames), 2);
+        assert_eq!(heap.slab_frames(), 1);
+        assert_eq!(frames.0.free_frames(), free - 1);
+        assert_eq!(heap.allocate(l, &mut frames), Some(blocks[9]));
+    }
+
+    #[test]
+    fn sorting_free_blocks_orders_them_by_address() {
+        let mut arena = vec![0usize; 64];
+        let base = arena.as_mut_ptr() as usize;
+        let order = [5usize, 1, 7, 3, 0, 6, 2, 4];
+        let mut head = NO_BLOCK;
+        for &i in order.iter().rev() {
+            let block = base + i * 64;
+            // SAFETY: each block is 64 bytes of the arena, aligned for a `usize`.
+            unsafe { (block as *mut usize).write(head) };
+            head = block;
+        }
+        // SAFETY: the list's blocks are the arena's, linked above.
+        let mut at = unsafe { sort_blocks(head) };
+        let mut seen = Vec::new();
+        while at != NO_BLOCK {
+            seen.push((at - base) / 64);
+            // SAFETY: as above.
+            at = unsafe { (at as *const usize).read() };
+        }
+        assert_eq!(seen, (0..8).collect::<Vec<_>>());
     }
 }

@@ -92,6 +92,143 @@ pub fn user_may_take_frames(frames: u64) -> bool {
 /// [`FRAME_SIZE`].
 const NO_FRAME: u64 = u64::MAX;
 
+/// The second word of a frame on the free stack in debug builds, mixed with the frame's address
+/// ([`FrameAllocator::free`]'s double-free check).
+const STACKED_MARK: u64 = 0x5eed_f4ee_57ac_4ed0;
+
+/// The free stack's high watermark is this share of the machine's frames (D551)...
+const STACK_SHARE: u64 = 8;
+/// ...and never below this many frames (16 MiB).
+const MIN_STACK_HIGH_WATERMARK: u64 = 4096;
+/// Frames [`FrameAllocator::free`] moves into the buddy allocator at a time past the watermark.
+const STACK_TRIM_BATCH: u32 = 256;
+
+/// Frames a CPU keeps for programs' page faults, so most faults take a frame without the frame
+/// allocator's lock (D551). Counted as allocated while they sit here; the allocator takes them
+/// back ([`drain_frame_caches`]) before it reports memory exhausted.
+#[derive(Debug)]
+pub struct FrameCache {
+    frames: [u64; FRAME_CACHE_SIZE],
+    count: usize,
+}
+
+/// Frames a [`FrameCache`] holds at most.
+pub const FRAME_CACHE_SIZE: usize = 32;
+/// Frames a [`FrameCache`] takes from the allocator at once when it runs dry.
+const FRAME_CACHE_BATCH: usize = 16;
+
+impl FrameCache {
+    pub const fn new() -> Self {
+        Self {
+            frames: [NO_FRAME; FRAME_CACHE_SIZE],
+            count: 0,
+        }
+    }
+
+    fn pop(&mut self) -> Option<u64> {
+        self.count = self.count.checked_sub(1)?;
+        Some(self.frames[self.count])
+    }
+
+    fn push(&mut self, frame: u64) -> bool {
+        let Some(slot) = self.frames.get_mut(self.count) else {
+            return false;
+        };
+        *slot = frame;
+        self.count += 1;
+        true
+    }
+
+    /// Refills it from `allocator` with frames programs may take (above the reserve).
+    fn refill(&mut self, allocator: &mut FrameAllocator) {
+        for _ in 0..FRAME_CACHE_BATCH {
+            let Some(frame) = allocator.allocate_for_user() else {
+                break;
+            };
+            if !self.push(frame) {
+                // SAFETY: the frame was just allocated from `allocator` and is unused.
+                unsafe { allocator.free(frame) };
+                break;
+            }
+        }
+    }
+
+    /// Gives every frame back to `allocator`.
+    fn empty_into(&mut self, allocator: &mut FrameAllocator) {
+        while let Some(frame) = self.pop() {
+            // SAFETY: the cache owned the frame, which came from this allocator, unused.
+            unsafe { allocator.free(frame) };
+        }
+    }
+}
+
+impl Default for FrameCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A frame for a program's page, from this CPU's [`FrameCache`] when it has one, else from the
+/// frame allocator (taking a batch for the cache under one lock); `None` once free frames are
+/// down to the reserve, after every CPU's cache was given back.
+pub fn allocate_user_frame<P: Platform>() -> Option<u64> {
+    let cpu = crate::cpu::current::<P>();
+    {
+        let mut cache = cpu.frame_cache.lock();
+        if let Some(frame) = cache.pop() {
+            return Some(frame);
+        }
+        let mut frames = FRAMES.lock();
+        let allocator = frames.as_mut()?;
+        cache.refill(allocator);
+        if let Some(frame) = cache.pop() {
+            return Some(frame);
+        }
+    }
+    drain_frame_caches();
+    if let Some(frame) = FRAMES.lock().as_mut()?.allocate_for_user() {
+        return Some(frame);
+    }
+    if cfg!(eggos_kernel) && crate::HEAP.release_empty_slabs() > 0 {
+        return FRAMES.lock().as_mut()?.allocate_for_user();
+    }
+    None
+}
+
+/// Gives back a frame a program's page used: into this CPU's [`FrameCache`] while it has room,
+/// else to the frame allocator.
+///
+/// # Safety
+/// As [`FrameAllocator::free`]: the frame came from the frame allocator, is not freed yet, and
+/// nothing uses it any more.
+pub unsafe fn free_user_frame<P: Platform>(frame: u64) {
+    let cpu = crate::cpu::current::<P>();
+    let mut cache = cpu.frame_cache.lock();
+    if cache.push(frame) {
+        return;
+    }
+    let mut frames = FRAMES.lock();
+    if let Some(allocator) = frames.as_mut() {
+        // SAFETY: the caller's promise.
+        unsafe { allocator.free(frame) };
+    }
+}
+
+/// Gives every CPU's cached frames back to the frame allocator: before an allocation reports
+/// memory exhausted, and for `/proc/meminfo`'s exact count.
+pub fn drain_frame_caches() {
+    for cpu in crate::cpu::CPUS.all() {
+        let mut cache = cpu.frame_cache.lock();
+        if cache.count == 0 {
+            continue;
+        }
+        let mut frames = FRAMES.lock();
+        if let Some(allocator) = frames.as_mut() {
+            cache.empty_into(allocator);
+        }
+    }
+}
+
 /// Hands out and takes back 4 KiB physical frames.
 #[derive(Debug)]
 pub struct FrameAllocator {
@@ -108,6 +245,11 @@ pub struct FrameAllocator {
     free_frames: u64,
     user_reserve: u64,
     physical_memory_offset: usize,
+    /// Frames on the free stack.
+    stacked_frames: u64,
+    /// Past this many frames on the free stack, [`Self::free`] moves a batch of them into the
+    /// buddy allocator, where they merge back into contiguous blocks (D551).
+    stack_high_watermark: u64,
     /// Free blocks of contiguous frames (D31).
     buddy: Buddy,
 }
@@ -130,20 +272,18 @@ impl FrameAllocator {
             free_frames: map.total() / FRAME_SIZE,
             user_reserve: 0,
             physical_memory_offset,
-            buddy: Buddy::new(PhysicalRange::default(), 0),
+            stacked_frames: 0,
+            stack_high_watermark: (map.total() / FRAME_SIZE / STACK_SHARE).max(MIN_STACK_HIGH_WATERMARK),
+            buddy: Buddy::none(),
         };
-        // The buddy allocator's bitmap covers every frame from the lowest to the highest one
-        // in the map. It is taken from the top of the highest range that keeps a frame besides
-        // it, but not written until the buddy allocator is first used; without such a range,
-        // there is no buddy allocator (only single frames).
-        if let ([first, ..], [.., last]) = (map.ranges(), map.ranges()) {
-            let span = PhysicalRange {
-                start: first.start,
-                end: last.end,
-            };
-            let bytes = Buddy::bitmap_bytes(span);
+        // The buddy allocator's metadata covers the frames of each range in the map, not the
+        // holes between them (D551). It is taken from the top of the highest range that keeps
+        // a frame besides it, but not written until the buddy allocator is first used; without
+        // such a range, there is no buddy allocator (only single frames).
+        if !map.ranges().is_empty() {
+            let bytes = Buddy::bitmap_bytes(map);
             if let Some(bitmap) = allocator.take_from_untouched(bytes) {
-                allocator.buddy = Buddy::new(span, bitmap);
+                allocator.buddy = Buddy::new(map, bitmap);
                 allocator.free_frames -= bytes / FRAME_SIZE;
             }
         }
@@ -184,7 +324,7 @@ impl FrameAllocator {
         if self.buddy.exists() {
             map.add_ram(PhysicalRange::from_start_length(
                 self.buddy.bitmap,
-                Buddy::bitmap_bytes(self.buddy.span),
+                self.buddy.bitmap_bytes,
             ));
         }
         Some(map)
@@ -233,7 +373,7 @@ impl FrameAllocator {
         if order > MAX_ORDER || !self.user_may_take(1 << order) {
             return None;
         }
-        self.allocate_contiguous(order)
+        self.allocate_contiguous_of_kind(order, BlockKind::User)
     }
 
     /// The physical address of a free frame, now owned by the caller; `None` when memory is
@@ -247,6 +387,12 @@ impl FrameAllocator {
             // offset and is aligned for a `u64` (frames are 4 KiB aligned).
             self.free_stack = unsafe { self.link(frame).read() };
             self.free_frames -= 1;
+            self.stacked_frames -= 1;
+            if cfg!(debug_assertions) {
+                // SAFETY: the frame is now the caller's, reached through the offset and aligned;
+                // its second word loses the free-stack mark.
+                unsafe { self.link(frame).add(1).write(0) };
+            }
             return Some(frame);
         }
         if self.current.is_empty() {
@@ -267,7 +413,7 @@ impl FrameAllocator {
             self.untouched_ranges = below;
             self.current = self.untouched[below];
         } else {
-            let frame = self.allocate_from_buddy(0)?;
+            let frame = self.allocate_from_buddy(0, BlockKind::Kernel)?;
             self.current = PhysicalRange::from_start_length(frame, FRAME_SIZE);
         }
         Some(())
@@ -282,24 +428,67 @@ impl FrameAllocator {
     /// untouched memory, then moves frames from the free stack into the buddy allocator, where
     /// freed neighbours merge, until a block of `order` forms.
     pub fn allocate_contiguous(&mut self, order: u32) -> Option<u64> {
+        self.allocate_contiguous_of_kind(order, BlockKind::Kernel)
+    }
+
+    /// As [`Self::allocate_contiguous`], grouped with the other blocks of `kind`.
+    ///
+    /// When nothing else gives a block, it hands every untouched range and the whole free
+    /// stack to the buddy allocator before it gives up, so a free run that straddles untouched
+    /// memory and freed frames still merges into the block (D551). Single frames then come
+    /// from the buddy allocator once the free stack is empty: near exhaustion, where a
+    /// contiguous block matters more than the bump allocator's speed.
+    pub fn allocate_contiguous_of_kind(&mut self, order: u32, kind: BlockKind) -> Option<u64> {
         if order == 0 {
             return self.allocate();
         }
         if order > MAX_ORDER || !self.buddy.exists() {
             return None;
         }
-        let block = match self.allocate_from_buddy(order) {
+        let block = match self.allocate_from_buddy(order, kind) {
             Some(block) => block,
             None => match self.carve_untouched(order) {
                 Some(block) => block,
                 None => {
                     self.drain_free_stack(order);
-                    self.allocate_from_buddy(order)?
+                    match self.allocate_from_buddy(order, kind) {
+                        Some(block) => block,
+                        None => self.allocate_after_compacting(order, kind)?,
+                    }
                 }
             },
         };
         self.free_frames -= 1 << order;
         Some(block)
+    }
+
+    /// The last try for a contiguous block: every untouched range and every stacked frame go
+    /// to the buddy allocator, where they merge with each other.
+    #[cold]
+    fn allocate_after_compacting(&mut self, order: u32, kind: BlockKind) -> Option<u64> {
+        let ranges = self.untouched_ranges;
+        for index in 0..ranges {
+            let range = self.untouched[index];
+            self.give_range_to_buddy(range);
+        }
+        self.untouched_ranges = 0;
+        let current = core::mem::take(&mut self.current);
+        self.give_range_to_buddy(current);
+        self.drain_free_stack(MAX_ORDER + 1);
+        self.allocate_from_buddy(order, kind)
+    }
+
+    /// Inserts `range`'s frames into the buddy allocator as the largest aligned blocks that fit.
+    fn give_range_to_buddy(&mut self, range: PhysicalRange) {
+        let mut buddy = self.buddy_memory();
+        let mut start = range.start;
+        while start < range.end {
+            let order = (start.trailing_zeros() - FRAME_SIZE.trailing_zeros())
+                .min(MAX_ORDER)
+                .min((range.end - start).ilog2() - FRAME_SIZE.trailing_zeros());
+            buddy.insert(start, order);
+            start += FRAME_SIZE << order;
+        }
     }
 
     /// Gives back 2^`order` frames starting at `first`.
@@ -322,11 +511,11 @@ impl FrameAllocator {
 
     /// A block of 2^`order` frames from the buddy allocator's free lists, splitting a larger
     /// one if needed. Does not count it in [`Self::free_frames`].
-    fn allocate_from_buddy(&mut self, order: u32) -> Option<u64> {
+    fn allocate_from_buddy(&mut self, order: u32, kind: BlockKind) -> Option<u64> {
         if !self.buddy.exists() {
             return None;
         }
-        self.buddy_memory().allocate(order)
+        self.buddy_memory().allocate(order, kind)
     }
 
     /// Takes an aligned block of 2^`order` frames from the top of an untouched range, the
@@ -362,16 +551,7 @@ impl FrameAllocator {
             self.untouched.copy_within(i + 1..self.untouched_ranges, i);
             self.untouched_ranges -= 1;
         }
-        let mut buddy = self.buddy_memory();
-        let mut start = above.start;
-        while start < above.end {
-            // The largest block that starts here and fits.
-            let order = (start.trailing_zeros() - FRAME_SIZE.trailing_zeros())
-                .min(MAX_ORDER)
-                .min((above.end - start).ilog2() - FRAME_SIZE.trailing_zeros());
-            buddy.insert(start, order);
-            start += FRAME_SIZE << order;
-        }
+        self.give_range_to_buddy(above);
         Some(block)
     }
 
@@ -382,6 +562,7 @@ impl FrameAllocator {
             let frame = self.free_stack;
             // SAFETY: as in `allocate`: `frame` is on the free stack, its first word the link.
             self.free_stack = unsafe { self.link(frame).read() };
+            self.stacked_frames -= 1;
             if self.buddy_memory().insert(frame, 0) >= order {
                 return;
             }
@@ -407,11 +588,57 @@ impl FrameAllocator {
             frame.is_multiple_of(FRAME_SIZE),
             "freeing an unaligned frame"
         );
+        if cfg!(debug_assertions) {
+            self.check_not_stacked(frame);
+        }
         // SAFETY: the caller gives up the frame, which this allocator handed out, so its first
         // word is ours to write; it is reached through the physical memory offset and aligned.
         unsafe { self.link(frame).write(self.free_stack) };
         self.free_stack = frame;
         self.free_frames += 1;
+        self.stacked_frames += 1;
+        if self.stacked_frames > self.stack_high_watermark {
+            self.trim_free_stack();
+        }
+    }
+
+    /// Debug builds: panics when `frame` is already on the free stack (freed twice), and marks
+    /// it as stacked. The mark is its second word, [`STACKED_MARK`] mixed with its address; a
+    /// frame in use that happens to hold it costs a walk of the stack, never a false report.
+    fn check_not_stacked(&mut self, frame: u64) {
+        let mark = self.link(frame).wrapping_add(1);
+        // SAFETY: the caller of `free` gives the frame up, so its second word is ours to read
+        // and write; it is reached through the physical memory offset and aligned.
+        if unsafe { mark.read() } == STACKED_MARK ^ frame {
+            let mut at = self.free_stack;
+            while at != NO_FRAME {
+                assert_ne!(at, frame, "frame {frame:#x} freed twice");
+                // SAFETY: `at` is on the free stack; its first word is the next link.
+                at = unsafe { self.link(at).read() };
+            }
+        }
+        // SAFETY: as above.
+        unsafe { mark.write(STACKED_MARK ^ frame) };
+    }
+
+    /// Moves [`STACK_TRIM_BATCH`] frames from the top of the free stack into the buddy
+    /// allocator, where they merge with their free neighbours, once the stack passed its high
+    /// watermark.
+    #[cold]
+    fn trim_free_stack(&mut self) {
+        if !self.buddy.exists() {
+            return;
+        }
+        for _ in 0..STACK_TRIM_BATCH {
+            let frame = self.free_stack;
+            if frame == NO_FRAME {
+                break;
+            }
+            // SAFETY: as in `allocate`: `frame` is on the free stack, its first word the link.
+            self.free_stack = unsafe { self.link(frame).read() };
+            self.stacked_frames -= 1;
+            self.buddy_memory().insert(frame, 0);
+        }
     }
 
     /// Gives back every frame in `chain` at once: the chain joins the free stack whole, in
@@ -431,6 +658,10 @@ impl FrameAllocator {
         unsafe { self.link(chain.last).write(self.free_stack) };
         self.free_stack = chain.first;
         self.free_frames += chain.count;
+        self.stacked_frames += chain.count;
+        if self.stacked_frames > self.stack_high_watermark {
+            self.trim_free_stack();
+        }
     }
 
     /// Where the kernel reaches the first word of `frame`, the free-stack link.
@@ -541,70 +772,203 @@ pub struct FrameChain {
 /// Largest block the buddy allocator manages: 2^`MAX_ORDER` frames (4 MiB).
 pub const MAX_ORDER: u32 = 10;
 
-/// The buddy allocator's state (D31): free blocks of 2^order contiguous frames, each aligned
-/// to its size, in one doubly linked list per order. A free block's first three words hold its
-/// links (next, previous) and its order. One bit per frame of the span says whether the frame
-/// starts a free block, so freeing a block finds out in one load whether its buddy is free to
-/// merge with (and then reads the buddy's order from the buddy itself).
+/// A pageblock: 2^`PAGEBLOCK_ORDER` frames (2 MiB) that the buddy allocator keeps for one
+/// [`BlockKind`] of allocation, so the kernel's long-lived blocks and programs' blocks do not
+/// interleave and break up each other's large runs (anti-fragmentation grouping).
+pub const PAGEBLOCK_ORDER: u32 = 9;
+
+/// Who a buddy block is for: the pageblock it lies in is grouped with others of its kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    /// The kernel's own memory: heap blocks over a frame, DMA buffers, page tables.
+    Kernel = 0,
+    /// Memory a program drives: huge pages, window buffers, pipe and socket rings.
+    User = 1,
+}
+
+const KINDS: usize = 2;
+
+impl BlockKind {
+    fn other(self) -> Self {
+        match self {
+            Self::Kernel => Self::User,
+            Self::User => Self::Kernel,
+        }
+    }
+
+    fn from_bit(bit: bool) -> Self {
+        if bit { Self::User } else { Self::Kernel }
+    }
+}
+
+/// One range of the memory map as the buddy allocator sees it: its frames and where its part of
+/// the metadata starts (one bit per frame saying whether a free block starts there, then one
+/// bit per pageblock it touches saying whether that pageblock is kept for programs).
+#[derive(Clone, Copy, Debug, Default)]
+struct BuddyRange {
+    range: PhysicalRange,
+    /// Physical address of the range's first free-block bit's byte.
+    free_bits: u64,
+    /// Physical address of the range's first pageblock bit's byte.
+    kind_bits: u64,
+}
+
+impl BuddyRange {
+    fn frames(range: PhysicalRange) -> u64 {
+        range.len() / FRAME_SIZE
+    }
+
+    fn pageblocks(range: PhysicalRange) -> u64 {
+        if range.is_empty() {
+            return 0;
+        }
+        let shift = FRAME_SIZE.trailing_zeros() + PAGEBLOCK_ORDER;
+        ((range.end - 1) >> shift) - (range.start >> shift) + 1
+    }
+
+    fn metadata_bytes(range: PhysicalRange) -> u64 {
+        Self::frames(range).div_ceil(8) + Self::pageblocks(range).div_ceil(8)
+    }
+}
+
+/// The buddy allocator's state (D31, D551): free blocks of 2^order contiguous frames, each
+/// aligned to its size, in one doubly linked list per order and per [`BlockKind`]. A free block's
+/// first three words hold its links (next, previous) and its order with its list's kind. Each
+/// range of the memory map has its own metadata, so a sparse machine pays nothing for its
+/// holes: one bit per frame says whether the frame starts a free block, so freeing a block finds
+/// out in one load whether its buddy is free to merge with (and then reads the buddy's order
+/// from the buddy itself), and one bit per pageblock says which kind it is kept for.
 #[derive(Debug)]
 struct Buddy {
-    /// The frames the bitmap covers.
-    span: PhysicalRange,
-    /// Physical address of the bitmap, one bit per frame of `span`.
+    ranges: [BuddyRange; MAX_RANGES],
+    range_count: usize,
+    /// Physical address of the metadata, every range's in one run of whole frames.
     bitmap: u64,
-    /// Whether the bitmap has been zeroed yet; it is, on the buddy allocator's first use.
+    /// The metadata's length in bytes, whole frames.
+    bitmap_bytes: u64,
+    /// Whether the metadata has been zeroed yet; it is, on the buddy allocator's first use.
     zeroed: bool,
-    /// The first free block of each order, or [`NO_FRAME`].
-    heads: [u64; MAX_ORDER as usize + 1],
+    /// The first free block of each order, per kind, or [`NO_FRAME`].
+    heads: [[u64; MAX_ORDER as usize + 1]; KINDS],
 }
 
 /// Words at the start of a free buddy block.
 const NEXT: usize = 0;
 const PREVIOUS: usize = 1;
 const ORDER: usize = 2;
+/// The bit of the [`ORDER`] word that says the block is on the [`BlockKind::User`] lists.
+const USER_LIST: u64 = 1 << 8;
 
 impl Buddy {
-    /// A buddy allocator over `span` with its bitmap at `bitmap`; none for an empty span.
-    const fn new(span: PhysicalRange, bitmap: u64) -> Self {
+    /// No buddy allocator: single frames only.
+    const fn none() -> Self {
         Self {
-            span,
-            bitmap,
+            ranges: [BuddyRange {
+                range: PhysicalRange { start: 0, end: 0 },
+                free_bits: 0,
+                kind_bits: 0,
+            }; MAX_RANGES],
+            range_count: 0,
+            bitmap: 0,
+            bitmap_bytes: 0,
             zeroed: false,
-            heads: [NO_FRAME; MAX_ORDER as usize + 1],
+            heads: [[NO_FRAME; MAX_ORDER as usize + 1]; KINDS],
         }
     }
 
-    const fn exists(&self) -> bool {
-        !self.span.is_empty()
+    /// A buddy allocator over the ranges of `map`, with their metadata at `bitmap`, which is
+    /// [`Self::bitmap_bytes`] of `map` long.
+    fn new(map: &MemoryMap, bitmap: u64) -> Self {
+        let mut buddy = Self::none();
+        let mut at = bitmap;
+        for (slot, &range) in buddy.ranges.iter_mut().zip(map.ranges()) {
+            let free_bits = at;
+            let kind_bits = free_bits + BuddyRange::frames(range).div_ceil(8);
+            at = kind_bits + BuddyRange::pageblocks(range).div_ceil(8);
+            *slot = BuddyRange {
+                range,
+                free_bits,
+                kind_bits,
+            };
+        }
+        buddy.range_count = map.ranges().len();
+        buddy.bitmap = bitmap;
+        buddy.bitmap_bytes = Self::bitmap_bytes(map);
+        buddy
     }
 
-    /// Bytes the bitmap for `span` takes, in whole frames.
-    const fn bitmap_bytes(span: PhysicalRange) -> u64 {
-        (span.len() / FRAME_SIZE)
-            .div_ceil(8)
+    fn exists(&self) -> bool {
+        self.range_count > 0
+    }
+
+    /// Bytes the metadata for every range of `map` takes, in whole frames.
+    fn bitmap_bytes(map: &MemoryMap) -> u64 {
+        map.ranges()
+            .iter()
+            .map(|&range| BuddyRange::metadata_bytes(range))
+            .sum::<u64>()
             .next_multiple_of(FRAME_SIZE)
+    }
+
+    /// The range holding `frame`, if any.
+    fn range_of(&self, frame: u64) -> Option<&BuddyRange> {
+        let ranges = &self.ranges[..self.range_count];
+        let index = ranges.partition_point(|r| r.range.end <= frame);
+        ranges.get(index).filter(|r| r.range.start <= frame)
     }
 }
 
-/// A [`Buddy`] with the physical memory offset that reaches its blocks and bitmap.
+/// A [`Buddy`] with the physical memory offset that reaches its blocks and metadata.
 struct BuddyMemory<'a> {
     buddy: &'a mut Buddy,
     offset: usize,
 }
 
 impl BuddyMemory<'_> {
-    /// Removes and returns a block of 2^`order` frames, splitting a larger free block if
-    /// needed (its upper halves stay free).
-    fn allocate(&mut self, order: u32) -> Option<u64> {
+    /// Removes and returns a block of 2^`order` frames for `kind`, splitting a larger free block
+    /// if needed (its other parts stay free, on the lists of the pageblocks they lie in). When
+    /// `kind`'s lists have nothing large enough, it takes the largest block of the other kind's
+    /// and keeps the pageblocks that block covers for `kind` from then on, so the next
+    /// allocations of `kind` find their frames together (Linux's fallback, D551).
+    fn allocate(&mut self, order: u32, kind: BlockKind) -> Option<u64> {
         self.zero_bitmap();
-        let mut found = (order..=MAX_ORDER).find(|&o| self.buddy.heads[o as usize] != NO_FRAME)?;
-        let block = self.buddy.heads[found as usize];
+        let own = (order..=MAX_ORDER).find(|&o| self.head(kind, o) != NO_FRAME);
+        let (mut found, block) = match own {
+            Some(found) => (found, self.head(kind, found)),
+            None => {
+                let other = kind.other();
+                let found = (order..=MAX_ORDER)
+                    .rev()
+                    .find(|&o| self.head(other, o) != NO_FRAME)?;
+                let block = self.head(other, found);
+                (found, block)
+            }
+        };
         self.unlink(block, found);
+        if own.is_none() {
+            self.claim(block, found, kind);
+        }
         while found > order {
             found -= 1;
             self.push(block + (FRAME_SIZE << found), found);
         }
         Some(block)
+    }
+
+    fn head(&self, kind: BlockKind, order: u32) -> u64 {
+        self.buddy.heads[kind as usize][order as usize]
+    }
+
+    /// Keeps the pageblocks under the block at `block` of `order` for `kind`: every pageblock it
+    /// covers, or, for a block smaller than a pageblock, the one it lies in.
+    fn claim(&mut self, block: u64, order: u32, kind: BlockKind) {
+        let size = FRAME_SIZE << order.max(PAGEBLOCK_ORDER);
+        let first = block / size * size;
+        let mut pageblock = first;
+        while pageblock < first + size {
+            self.set_kind(pageblock.max(block), kind);
+            pageblock += FRAME_SIZE << PAGEBLOCK_ORDER;
+        }
     }
 
     /// Adds the free block of 2^`order` frames at `block`, merging it with its buddy as long as
@@ -626,32 +990,32 @@ impl BuddyMemory<'_> {
 
     /// The order of the free block starting at `frame`, if one does.
     fn free_block_order(&self, frame: u64) -> Option<u32> {
-        if frame < self.buddy.span.start || frame >= self.buddy.span.end {
-            return None;
-        }
-        let (byte, bit) = self.bitmap_bit(frame);
-        // SAFETY: `frame` is in the span, so its bit is inside the bitmap, which the allocator
+        let (byte, bit) = self.free_bit(frame)?;
+        // SAFETY: the byte is in the metadata of the range holding `frame`, which the allocator
         // owns and zeroed before any use.
         if unsafe { byte.read() } & bit == 0 {
             return None;
         }
         // SAFETY: the bit says a free block starts at `frame`, whose third word `push` set to
-        // its order.
-        Some(unsafe { self.word(frame, ORDER).read() } as u32)
+        // its order and list.
+        Some((unsafe { self.word(frame, ORDER).read() } & 0xff) as u32)
     }
 
-    /// Pushes the free block at `block` onto the list of `order`.
+    /// Pushes the free block at `block` onto the list of `order` of the kind its pageblock is
+    /// kept for.
     fn push(&mut self, block: u64, order: u32) {
-        let head = &mut self.buddy.heads[order as usize];
+        let kind = self.kind_of(block);
+        let head = &mut self.buddy.heads[kind as usize][order as usize];
         let next = *head;
         *head = block;
+        let list = if kind == BlockKind::User { USER_LIST } else { 0 };
         // SAFETY: `block` is free and owned by the allocator, reached through the physical
         // memory offset; its first three words are its header.
         unsafe { self.word(block, NEXT).write(next) };
         // SAFETY: as above.
         unsafe { self.word(block, PREVIOUS).write(NO_FRAME) };
         // SAFETY: as above.
-        unsafe { self.word(block, ORDER).write(u64::from(order)) };
+        unsafe { self.word(block, ORDER).write(u64::from(order) | list) };
         if next != NO_FRAME {
             // SAFETY: `next` was the list's head, a free block with a header.
             unsafe { self.word(next, PREVIOUS).write(block) };
@@ -659,14 +1023,18 @@ impl BuddyMemory<'_> {
         self.set_free_bit(block, true);
     }
 
-    /// Takes the free block at `block` off the list of `order`.
+    /// Takes the free block at `block` off the list of `order` it was pushed onto (its header
+    /// names the kind, which its pageblock may have changed since).
     fn unlink(&mut self, block: u64, order: u32) {
-        // SAFETY: `block` is a free block on the list, so `push` wrote its header.
+        // SAFETY: `block` is a free block on a list, so `push` wrote its header.
         let next = unsafe { self.word(block, NEXT).read() };
         // SAFETY: as above.
         let previous = unsafe { self.word(block, PREVIOUS).read() };
+        // SAFETY: as above.
+        let list = unsafe { self.word(block, ORDER).read() } & USER_LIST;
+        let kind = BlockKind::from_bit(list != 0);
         if previous == NO_FRAME {
-            self.buddy.heads[order as usize] = next;
+            self.buddy.heads[kind as usize][order as usize] = next;
         } else {
             // SAFETY: `previous` is the block before it on the list, a free block.
             unsafe { self.word(previous, NEXT).write(next) };
@@ -679,32 +1047,69 @@ impl BuddyMemory<'_> {
     }
 
     fn set_free_bit(&mut self, frame: u64, free: bool) {
-        let (byte, bit) = self.bitmap_bit(frame);
-        // SAFETY: only blocks inside the span are pushed or unlinked, so the byte is inside the
-        // bitmap, which the allocator owns.
+        let Some((byte, bit)) = self.free_bit(frame) else {
+            return;
+        };
+        // SAFETY: the byte is in the metadata of the range holding `frame`, which the allocator
+        // owns.
         let value = unsafe { byte.read() };
         let value = if free { value | bit } else { value & !bit };
         // SAFETY: as above.
         unsafe { byte.write(value) };
     }
 
-    /// Zeroes the bitmap, the first time the buddy allocator is used.
+    /// The kind the pageblock holding `frame` is kept for: the kernel's until claimed.
+    fn kind_of(&self, frame: u64) -> BlockKind {
+        let Some((byte, bit)) = self.kind_bit(frame) else {
+            return BlockKind::Kernel;
+        };
+        // SAFETY: the byte is in the metadata of the range holding `frame`.
+        BlockKind::from_bit(unsafe { byte.read() } & bit != 0)
+    }
+
+    fn set_kind(&mut self, frame: u64, kind: BlockKind) {
+        let Some((byte, bit)) = self.kind_bit(frame) else {
+            return;
+        };
+        // SAFETY: the byte is in the metadata of the range holding `frame`, which the allocator
+        // owns.
+        let value = unsafe { byte.read() };
+        let value = match kind {
+            BlockKind::User => value | bit,
+            BlockKind::Kernel => value & !bit,
+        };
+        // SAFETY: as above.
+        unsafe { byte.write(value) };
+    }
+
+    /// Zeroes the metadata, the first time the buddy allocator is used.
     fn zero_bitmap(&mut self) {
         if !self.buddy.zeroed {
-            let bytes = (self.buddy.span.len() / FRAME_SIZE).div_ceil(8);
             let bitmap = self.virt(self.buddy.bitmap) as *mut u8;
-            // SAFETY: the bitmap frames were taken out of the free memory for this, are reached
-            // through the physical memory offset and hold one bit per frame of the span.
-            unsafe { bitmap.write_bytes(0, bytes as usize) };
+            // SAFETY: the metadata frames were taken out of the free memory for this and are
+            // reached through the physical memory offset.
+            unsafe { bitmap.write_bytes(0, self.buddy.bitmap_bytes as usize) };
             self.buddy.zeroed = true;
         }
     }
 
-    /// The bitmap byte holding `frame`'s bit, and the bit.
-    fn bitmap_bit(&self, frame: u64) -> (*mut u8, u8) {
-        let index = (frame - self.buddy.span.start) / FRAME_SIZE;
-        let byte = self.virt(self.buddy.bitmap + index / 8) as *mut u8;
-        (byte, 1 << (index % 8))
+    /// The metadata byte holding `frame`'s free-block bit, and the bit; `None` outside every
+    /// range.
+    fn free_bit(&self, frame: u64) -> Option<(*mut u8, u8)> {
+        let range = self.buddy.range_of(frame)?;
+        let index = (frame - range.range.start) / FRAME_SIZE;
+        let byte = self.virt(range.free_bits + index / 8) as *mut u8;
+        Some((byte, 1 << (index % 8)))
+    }
+
+    /// The metadata byte holding the kind bit of `frame`'s pageblock, and the bit; `None`
+    /// outside every range.
+    fn kind_bit(&self, frame: u64) -> Option<(*mut u8, u8)> {
+        let range = self.buddy.range_of(frame)?;
+        let shift = FRAME_SIZE.trailing_zeros() + PAGEBLOCK_ORDER;
+        let index = (frame >> shift) - (range.range.start >> shift);
+        let byte = self.virt(range.kind_bits + index / 8) as *mut u8;
+        Some((byte, 1 << (index % 8)))
     }
 
     /// Word `index` of the block at physical `block`.
@@ -863,7 +1268,7 @@ mod tests {
     fn touch(frames: &FrameAllocator, block: u64, order: u32) {
         let bitmap = frames.buddy.bitmap;
         assert!(
-            bitmap < block || bitmap >= block + (K << order),
+            bitmap + frames.buddy.bitmap_bytes <= block || bitmap >= block + (K << order),
             "bitmap handed out"
         );
         let start = (block as usize).wrapping_add(frames.physical_memory_offset()) as *mut u8;
@@ -1091,5 +1496,55 @@ mod tests {
             }
             assert_eq!(frames.free_frames() + owned.len() as u64, total);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "freed twice")]
+    fn freeing_a_frame_twice_panics_in_debug_builds() {
+        let mut arena = Arena::new(0x40_0000, 16);
+        let b = arena.base;
+        let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 16 * K)]), arena.offset());
+        let frame = frames.allocate().unwrap();
+        // SAFETY: from this allocator, unused.
+        unsafe { frames.free(frame) };
+        // SAFETY: deliberately wrong: the check under test catches it.
+        unsafe { frames.free(frame) };
+    }
+
+    #[test]
+    fn programs_blocks_and_the_kernels_keep_to_their_own_pageblocks() {
+        let mut arena = Arena::new(0x40_0000, 2048);
+        let b = arena.base;
+        let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 2048 * K)]), arena.offset());
+        let kernel = frames.allocate_contiguous_of_kind(1, BlockKind::Kernel).unwrap();
+        let user = frames.allocate_contiguous_of_kind(1, BlockKind::User).unwrap();
+        let pageblock = |frame: u64| frame >> (FRAME_SIZE.trailing_zeros() + PAGEBLOCK_ORDER);
+        assert_ne!(pageblock(kernel), pageblock(user));
+        let second = frames.allocate_contiguous_of_kind(1, BlockKind::User).unwrap();
+        assert_eq!(pageblock(second), pageblock(user));
+    }
+
+    #[test]
+    fn a_run_across_untouched_memory_and_freed_frames_still_forms_a_block() {
+        let mut arena = Arena::new(0x40_0000, 64);
+        let b = arena.base;
+        let mut frames = FrameAllocator::new(&arena.map(&[(b, b + 64 * K)]), arena.offset());
+        let total = frames.free_frames();
+        let taken: Vec<u64> = (0..40).map(|_| frames.allocate().unwrap()).collect();
+        for &frame in &taken {
+            // SAFETY: from this allocator, unused.
+            unsafe { frames.free(frame) };
+        }
+        let block = frames.allocate_contiguous(5).unwrap();
+        assert_eq!(block % (32 * K), 0);
+        assert_eq!(frames.free_frames(), total - 32);
+    }
+
+    #[test]
+    fn a_sparse_map_keeps_metadata_for_its_ranges_only() {
+        let mut map = MemoryMap::new();
+        map.add_ram(PhysicalRange::from_start_length(0x10_0000, 16 * K));
+        map.add_ram(PhysicalRange::from_start_length(0x100_0000_0000, 16 * K));
+        assert_eq!(Buddy::bitmap_bytes(&map), K);
     }
 }

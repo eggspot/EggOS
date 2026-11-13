@@ -79,6 +79,10 @@ pub struct Cpu {
     pub(crate) scheduler: CpuScheduler,
     /// The CPU's key of the random number generator (D56). Only the CPU itself takes the lock.
     pub(crate) random: LeafSpinLock<CpuKey>,
+    /// Frames this CPU keeps for programs' page faults (D551). The CPU itself takes the lock,
+    /// and another CPU only when memory runs out ([`crate::memory::drain_frame_caches`]); lock
+    /// order: this before [`crate::memory::FRAMES`].
+    pub(crate) frame_cache: LeafSpinLock<crate::memory::FrameCache>,
 }
 
 /// The top bit of [`Cpu::unseen_by_scheduler`]: another CPU asks this CPU's scheduler to look at
@@ -113,6 +117,7 @@ impl Cpu {
             shootdowns_served: AtomicU64::new(0),
             scheduler: CpuScheduler::new(),
             random: LeafSpinLock::new_leaf(CpuKey::new()),
+            frame_cache: LeafSpinLock::new_leaf(crate::memory::FrameCache::new()),
         }
     }
 
@@ -320,6 +325,14 @@ pub fn init_boot_cpu<P: Platform>() {
     // SAFETY: `BOOT_CPU` is a static made by `Cpu::new`, whose first word now holds its own
     // address and whose HAL part is at the offset the HAL expects.
     unsafe { P::set_cpu_local(ptr::from_ref(&BOOT_CPU) as usize) };
+    if cfg!(eggos_kernel) {
+        crate::HEAP.set_cpu_index(current_index::<P>);
+    }
+}
+
+/// The kernel's number for the calling CPU, as a plain function for the heap's per-CPU caches.
+fn current_index<P: Platform>() -> usize {
+    current::<P>().index()
 }
 
 /// The CPU this code runs on. Only valid once [`init_boot_cpu`] has run (on secondary CPUs,

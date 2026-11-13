@@ -1715,11 +1715,7 @@ impl<P: Platform> Process<P> {
         attributes: Attributes,
         contents: &[u8],
     ) -> Result<u64, MapError> {
-        let frame = {
-            let mut frames = memory::FRAMES.lock();
-            let frames = frames.as_mut().ok_or(MapError::OutOfMemory)?;
-            frames.allocate_for_user().ok_or(MapError::OutOfMemory)?
-        };
+        let frame = memory::allocate_user_frame::<P>().ok_or(MapError::OutOfMemory)?;
         let page = (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
         // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
         // it through its offset, the process's `frame_offset`. `contents` fit in the frame (the
@@ -1958,13 +1954,7 @@ impl<P: Platform> Process<P> {
                 .map_err(|_| UnresolvedFault::NotAllowed)?;
             return Ok((frame, attributes));
         }
-        let new = {
-            let mut frames = memory::FRAMES.lock();
-            let frames = frames.as_mut().ok_or(UnresolvedFault::OutOfMemory)?;
-            frames
-                .allocate_for_user()
-                .ok_or(UnresolvedFault::OutOfMemory)?
-        };
+        let new = memory::allocate_user_frame::<P>().ok_or(UnresolvedFault::OutOfMemory)?;
         let at = |frame: u64| (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
         // SAFETY: both frames are reached through the frame allocator's offset: `frame` is
         // mapped read-only by this address space and every other that shares it, so nothing
