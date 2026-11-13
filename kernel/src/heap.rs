@@ -485,6 +485,18 @@ fn current_cpu_index() -> Option<usize> {
     Some(function()).filter(|&index| index < CACHED_CPUS)
 }
 
+/// The calling CPU's number for code that cannot name the platform (a driver's queue
+/// choice, D566): 0 before the per-CPU blocks exist and on the host.
+pub fn calling_cpu() -> usize {
+    let function = CPU_INDEX.load(Ordering::Acquire);
+    if function == 0 {
+        return 0;
+    }
+    // SAFETY: only `set_cpu_index` stores a non-zero value, and it stores a `fn() -> usize`.
+    let function: fn() -> usize = unsafe { core::mem::transmute(function) };
+    function()
+}
+
 /// Whether the kernel heap may grow by `bytes` for an allocation a program drives: the frame
 /// allocator keeps its reserve after it ([`memory::user_may_take_frames`], D155). A check, not
 /// a reservation: CPUs growing at once may each pass it, which the reserve's size absorbs. On

@@ -1356,6 +1356,8 @@ mod network {
         }
     }
 
+    const MAX_QUEUE_PAIRS: usize = 8;
+
     fn probe_net(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
         let node = *probe
             .table()
@@ -1371,8 +1373,16 @@ mod network {
                 "the device's DMA is not coherent and this CPU cannot keep its caches in step",
             ))?
             .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
+        let wanted_pairs = crate::cpu::CPUS.all().len().clamp(1, MAX_QUEUE_PAIRS);
+        let mut more = Vec::new();
+        for _ in 1..wanted_pairs {
+            match DmaRegion::allocate_for(MEMORY_BYTES, node.dma) {
+                Some(Ok(region)) => more.push(region),
+                _ => break,
+            }
+        }
         let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
-        let mut net = match VirtioNet::new(transport, memory, &mut || deadline.keep_waiting()) {
+        let mut net = match VirtioNet::new(transport, memory, more, &mut || deadline.keep_waiting()) {
             Ok(net) => net,
             Err((error, transport, memory)) => {
                 if let Some(memory) = memory {
@@ -1384,6 +1394,7 @@ mod network {
                 return Err(ProbeError::Refused(error.description()));
             }
         };
+        net.set_lane_chooser(crate::heap::calling_cpu);
         let interrupting =
             connect_interrupt(probe, id, net.transport(), &crate::net::DEVICE_EVENTS).is_ok();
         if interrupting {

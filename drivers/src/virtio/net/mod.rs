@@ -8,10 +8,12 @@
 //! as one. The hardware address, the link's state and the
 //! MTU come from the device's configuration when it offers them.
 
-use super::queue::{Buffer, SplitQueue};
 use super::{Error, ResetDone, Transport, device_type};
 use crate::dma::DmaMemory;
+use alloc::vec::Vec;
+use lane::Lane;
 
+mod lane;
 #[cfg(test)]
 mod tests;
 
@@ -36,7 +38,6 @@ pub const MEMORY_BYTES: usize = TRANSMIT_BUFFERS_OFFSET + QUEUE_SIZE as usize * 
 /// The MTU of a device that does not say its own.
 pub const DEFAULT_MTU: u16 = 1500;
 
-const RECEIVE_QUEUE: u16 = 0;
 const HEADER_FLAGS: usize = 0;
 const HEADER_CHECKSUM_START: usize = 6;
 const HEADER_CHECKSUM_OFFSET: usize = 8;
@@ -139,13 +140,23 @@ pub fn complete_checksum(frame: &mut [u8], start: usize, offset: usize) {
     let folded = !(sum as u16);
     frame[field..field + 2].copy_from_slice(&folded.to_be_bytes());
 }
-const TRANSMIT_QUEUE: u16 = 1;
+/// Where the control queue lies in the first pair's memory, after the transmit queue (D566).
+pub const CONTROL_QUEUE_OFFSET: usize = 2048;
+/// Where a control command and its answer lie in the first pair's memory.
+pub const CONTROL_COMMAND_OFFSET: usize = 3072;
 
 const _: () = assert!(super::queue::memory_size(QUEUE_SIZE) <= TRANSMIT_QUEUE_OFFSET);
 const _: () = assert!(
     TRANSMIT_QUEUE_OFFSET + super::queue::memory_size(QUEUE_SIZE) <= RECEIVE_BUFFERS_OFFSET
 );
 const _: () = assert!(QUEUE_SIZE as usize <= u16::BITS as usize);
+const _: () = assert!(
+    TRANSMIT_QUEUE_OFFSET + super::queue::memory_size(QUEUE_SIZE) <= CONTROL_QUEUE_OFFSET
+);
+const _: () = assert!(
+    CONTROL_QUEUE_OFFSET + super::queue::memory_size(lane::CONTROL_QUEUE_SIZE)
+        <= CONTROL_COMMAND_OFFSET
+);
 
 /// Feature bits of the network device (virtio 1.2, 5.1.3).
 pub mod feature {
@@ -162,6 +173,10 @@ pub mod feature {
     pub const MAC: u64 = 1 << 5;
     /// The device says whether its link is up.
     pub const STATUS: u64 = 1 << 16;
+    /// The device has a control queue (D566).
+    pub const CTRL_VQ: u64 = 1 << 17;
+    /// The device has several queue pairs, steered by the control queue (D566).
+    pub const MQ: u64 = 1 << 22;
 }
 
 /// The device configuration's layout (`virtio_net_config`).
@@ -170,6 +185,8 @@ pub mod config {
     pub const MAC_OFFSET: usize = 0;
     /// The status, 16 bits, little-endian.
     pub const STATUS_OFFSET: usize = 6;
+    /// How many queue pairs the device has at most, 16 bits, little-endian (D566).
+    pub const MAX_PAIRS_OFFSET: usize = 8;
     /// The MTU, 16 bits, little-endian.
     pub const MTU_OFFSET: usize = 10;
     /// The status bit that says the link is up.
@@ -180,28 +197,32 @@ pub mod config {
 #[derive(Debug)]
 pub struct VirtioNet<T: Transport, M: DmaMemory> {
     transport: T,
-    memory: M,
-    receive: SplitQueue,
-    transmit: SplitQueue,
+    lanes: Vec<Lane<M>>,
     mac: [u8; 6],
     mtu: u16,
     reports_link: bool,
     completes_checksums: bool,
     segments_tcp: bool,
-    receive_buffer_of_head: [u8; QUEUE_SIZE as usize],
-    transmit_buffers_of_head: [u16; QUEUE_SIZE as usize],
-    free_transmit_buffers: u16,
+    choose_lane: fn() -> usize,
+    next_receive_lane: usize,
+}
+
+fn first_lane() -> usize {
+    0
 }
 
 impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
     /// Sets the network device behind `transport` up with `memory` ([`MEMORY_BYTES`] or more)
-    /// for its two queues and their buffers, reads its hardware address, and posts every
-    /// receive buffer, polling while `keep_waiting` says to. On an error the transport comes
-    /// back, and the memory too unless the device may still use it (a reset that did not read
-    /// back 0): then it is leaked.
+    /// for its first queue pair and its buffers, and with one more pair for each block of
+    /// `more` the device takes (`VIRTIO_NET_F_MQ`, D566: the blocks it does not take are
+    /// leaked with it), reads its hardware address, and posts every receive buffer, polling
+    /// while `keep_waiting` says to. On an error the transport comes back, and the first
+    /// memory too unless the device may still use it (a reset that did not read back 0):
+    /// then it is leaked, as the further blocks always are.
     pub fn new(
         transport: T,
         memory: M,
+        more: Vec<M>,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<Self, (Error, T, Option<M>)> {
         if memory.len() < MEMORY_BYTES {
@@ -210,13 +231,16 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         if transport.device_type() != device_type::NETWORK {
             return Err((Error::WrongDeviceType, transport, Some(memory)));
         }
-        let wanted = feature::MAC
+        let mut wanted = feature::MAC
             | feature::STATUS
             | feature::MTU
             | feature::GUEST_CSUM
             | feature::CSUM
             | feature::HOST_TSO4
             | super::feature::RING_EVENT_IDX;
+        if !more.is_empty() {
+            wanted |= feature::CTRL_VQ | feature::MQ;
+        }
         let accepted = match super::initialize(&transport, wanted, keep_waiting) {
             Ok(accepted) => accepted,
             Err(error) => return Err((error, transport, Some(memory))),
@@ -233,83 +257,74 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             0 => DEFAULT_MTU,
             _ => read_config16(&transport, config::MTU_OFFSET).clamp(68, DEFAULT_MTU),
         };
-        let size = |queue: u16| match transport.max_queue_size(queue).min(QUEUE_SIZE) {
-            0 => 0,
-            max => 1 << max.ilog2(),
+        let multiqueue = accepted & (feature::CTRL_VQ | feature::MQ) == feature::CTRL_VQ | feature::MQ;
+        let offered_pairs = match multiqueue {
+            true => read_config16(&transport, config::MAX_PAIRS_OFFSET).max(1),
+            false => 1,
         };
-        let (receive_size, transmit_size) = (size(RECEIVE_QUEUE), size(TRANSMIT_QUEUE));
-        if receive_size == 0 || transmit_size == 0 {
-            super::fail(&transport);
-            return Err((Error::QueueUnavailable, transport, Some(memory)));
-        }
-        let base = memory.as_mut_ptr();
-        // SAFETY: `memory` holds at least `MEMORY_BYTES`: the receive queue's
-        // `memory_size(QUEUE_SIZE)` bytes at its 4096-aligned start, before
-        // `TRANSMIT_QUEUE_OFFSET`, owned by this driver, which keeps it while the queue lives;
-        // the device reaches it at its DMA address.
-        let receive = unsafe { SplitQueue::new(base, memory.dma_addr(), receive_size) };
-        let transmit_dma = memory.dma_addr().checked_add(TRANSMIT_QUEUE_OFFSET as u64);
-        let transmit = match transmit_dma {
-            // SAFETY: as above, for the transmit queue at `TRANSMIT_QUEUE_OFFSET` (1024-aligned),
-            // whose bytes end before the receive buffers.
-            Some(dma) => unsafe {
-                SplitQueue::new(base.wrapping_add(TRANSMIT_QUEUE_OFFSET), dma, transmit_size)
-            },
-            None => Err(Error::MemoryTooSmall),
+        let event_index = accepted & super::feature::RING_EVENT_IDX != 0;
+        let first = match Lane::new(&transport, memory, 0, event_index) {
+            Ok(lane) => lane,
+            Err((error, memory)) => {
+                super::fail(&transport);
+                let memory = match super::reset(&transport, keep_waiting) {
+                    Ok(_) => Some(memory),
+                    Err(_) => {
+                        core::mem::forget(memory);
+                        None
+                    }
+                };
+                return Err((error, transport, memory));
+            }
         };
-        let (mut receive, mut transmit) = match (receive, transmit) {
-            (Ok(receive), Ok(transmit)) => (receive, transmit),
-            (Err(error), _) | (_, Err(error)) => return Err((error, transport, Some(memory))),
+        let mut lanes = Vec::with_capacity(1 + more.len());
+        lanes.push(first);
+        for memory in more {
+            let pair = lanes.len() as u16;
+            if pair >= offered_pairs {
+                core::mem::forget(memory);
+                continue;
+            }
+            match Lane::new(&transport, memory, pair, event_index) {
+                Ok(lane) => lanes.push(lane),
+                Err((_, memory)) => core::mem::forget(memory),
+            }
+        }
+        let control = match multiqueue && lanes.len() > 1 {
+            true => lanes[0].control_queue(&transport, offered_pairs),
+            false => None,
         };
-        receive.disable_used_notifications();
-        transmit.disable_used_notifications();
-        receive.set_cache_maintenance(memory.cache_maintenance());
-        transmit.set_cache_maintenance(memory.cache_maintenance());
-        if accepted & super::feature::RING_EVENT_IDX != 0 {
-            receive.use_event_index();
-            transmit.use_event_index();
-        }
-        let set_up = transport
-            .set_up_queue(RECEIVE_QUEUE, receive_size, &receive.addresses())
-            .and_then(|()| {
-                transport.set_up_queue(TRANSMIT_QUEUE, transmit_size, &transmit.addresses())
-            });
-        if let Err(error) = set_up {
-            super::fail(&transport);
-            let memory = match super::reset(&transport, keep_waiting) {
-                Ok(_) => Some(memory),
-                Err(_) => {
-                    core::mem::forget(memory);
-                    None
-                }
-            };
-            return Err((error, transport, memory));
-        }
         let mut net = Self {
             transport,
-            memory,
-            receive,
-            transmit,
+            lanes,
             mac,
             mtu,
             reports_link: accepted & feature::STATUS != 0,
             completes_checksums: accepted & feature::CSUM != 0,
             segments_tcp: accepted & feature::CSUM != 0 && accepted & feature::HOST_TSO4 != 0,
-            receive_buffer_of_head: [0; QUEUE_SIZE as usize],
-            transmit_buffers_of_head: [0; QUEUE_SIZE as usize],
-            free_transmit_buffers: ((1u32 << transmit_size) - 1) as u16,
+            choose_lane: first_lane,
+            next_receive_lane: 0,
         };
-        if let Err(error) = (0..receive_size as u8).try_for_each(|buffer| net.post_receive(buffer))
-        {
-            super::fail(&net.transport);
-            return match net.reset(keep_waiting) {
-                Ok((transport, memory, _)) => Err((error, transport, Some(memory))),
-                Err((_, transport)) => Err((error, transport, None)),
-            };
-        }
         super::driver_ok(&net.transport);
-        if net.receive.should_notify() {
-            net.transport.notify(RECEIVE_QUEUE);
+        let pairs = net.lanes.len() as u16;
+        let enabled = match control {
+            Some(mut control) => control.set_pairs(&net.transport, &net.lanes[0].memory, pairs, keep_waiting),
+            None => false,
+        };
+        if !enabled {
+            net.lanes.truncate(1);
+        }
+        for index in 0..net.lanes.len() {
+            let Self {
+                transport, lanes, ..
+            } = &mut net;
+            if let Err(error) = lanes[index].post_all(transport) {
+                super::fail(&net.transport);
+                return match net.reset(keep_waiting) {
+                    Ok((transport, memory, _)) => Err((error, transport, Some(memory))),
+                    Err((_, transport)) => Err((error, transport, None)),
+                };
+            }
         }
         Ok(net)
     }
@@ -323,7 +338,9 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
     /// instead of polling (D220); frames received before are found by the next look.
     /// Transmitted frames are taken back when the next one is sent, without an interrupt.
     pub fn enable_interrupts(&mut self) {
-        self.receive.enable_used_notifications();
+        for lane in &mut self.lanes {
+            lane.enable_interrupts();
+        }
     }
 
     /// The device's hardware address.
@@ -354,93 +371,6 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             || read_config16(&self.transport, config::STATUS_OFFSET) & config::LINK_UP != 0
     }
 
-    fn buffer_addr(&self, offset: usize) -> Result<crate::dma::DmaAddr, Error> {
-        self.memory
-            .dma_addr()
-            .checked_add(offset as u64)
-            .ok_or(Error::MemoryTooSmall)
-    }
-
-    fn post_receive(&mut self, buffer: u8) -> Result<(), Error> {
-        let offset = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
-        let addr = self.buffer_addr(offset)?;
-        self.memory.prepare_for_cpu(offset, BUFFER_BYTES);
-        let head = self.receive.submit(&[Buffer {
-            addr,
-            len: BUFFER_BYTES as u32,
-            device_writes: true,
-        }])?;
-        if let Some(slot) = self.receive_buffer_of_head.get_mut(usize::from(head)) {
-            *slot = buffer;
-        }
-        Ok(())
-    }
-
-    /// Copies the next frame the device received into the start of `frame` and posts its
-    /// buffer again: its length (cut to `frame`'s), or `None` when there is none. With nothing
-    /// new, it costs one load of the used ring's index.
-    pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
-        loop {
-            let used = self.receive.pop_used()?;
-            if used.head >= self.receive.size() {
-                continue;
-            }
-            let buffer = self.receive_buffer_of_head[usize::from(used.head)];
-            let length = (used.len as usize)
-                .min(BUFFER_BYTES)
-                .saturating_sub(HEADER_BYTES)
-                .min(frame.len());
-            let header_at = RECEIVE_BUFFERS_OFFSET + usize::from(buffer) * BUFFER_BYTES;
-            let start = header_at + HEADER_BYTES;
-            self.memory
-                .prepare_for_cpu(header_at, HEADER_BYTES + length);
-            let mut header = [0u8; HEADER_BYTES];
-            // SAFETY: the header lies at the start of the receive buffer `buffer`, which the
-            // device handed back with this used element and does not touch until it is posted
-            // again below; `header` is this function's own memory.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.memory.as_mut_ptr().wrapping_add(header_at),
-                    header.as_mut_ptr(),
-                    HEADER_BYTES,
-                )
-            };
-            // SAFETY: the frame lies inside the receive buffer `buffer` of the driver's DMA
-            // memory, which the device wrote and handed back with this used element (its index
-            // read with acquire ordering) and does not touch until it is posted again below;
-            // `frame` is the caller's own memory, apart from it.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.memory.as_mut_ptr().wrapping_add(start),
-                    frame.as_mut_ptr(),
-                    length,
-                )
-            };
-            if header[HEADER_FLAGS] & NEEDS_CHECKSUM != 0 {
-                let field =
-                    |at: usize| usize::from(u16::from_le_bytes([header[at], header[at + 1]]));
-                let (checksum_start, checksum_offset) =
-                    (field(HEADER_CHECKSUM_START), field(HEADER_CHECKSUM_OFFSET));
-                complete_checksum(&mut frame[..length], checksum_start, checksum_offset);
-            }
-            let posted = self.post_receive(buffer);
-            if self.receive.should_notify() {
-                self.transport.notify(RECEIVE_QUEUE);
-            }
-            if used.len as usize >= HEADER_BYTES && posted.is_ok() {
-                return Some(length);
-            }
-        }
-    }
-
-    fn reclaim_transmitted(&mut self) {
-        while let Some(used) = self.transmit.pop_used() {
-            if let Some(&buffers) = self.transmit_buffers_of_head.get(usize::from(used.head)) {
-                self.free_transmit_buffers |= buffers;
-            }
-        }
-    }
-
     /// Hands `frame` to the device to send: [`Error::FrameTooLong`] beyond
     /// [`MAX_FRAME_BYTES`], [`Error::QueueFull`] while every transmit buffer is with the device.
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), Error> {
@@ -448,7 +378,8 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             return Err(Error::FrameTooLong);
         }
         let header = transmit_header(frame, self.completes_checksums);
-        self.hand_over(frame, &header)
+        let lane = (self.choose_lane)() % self.lanes.len();
+        self.lanes[lane].hand_over(&self.transport, frame, &header)
     }
 
     /// Hands `frame`, a TCP segment longer than the MTU, to the device to cut into segments of
@@ -460,48 +391,34 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
             return Err(Error::FrameTooLong);
         }
         let header = segmentation_header(frame, segment_size).ok_or(Error::FrameTooLong)?;
-        self.hand_over(frame, &header)
+        let lane = (self.choose_lane)() % self.lanes.len();
+        self.lanes[lane].hand_over(&self.transport, frame, &header)
     }
 
-    fn hand_over(&mut self, frame: &[u8], header: &[u8; HEADER_BYTES]) -> Result<(), Error> {
-        self.reclaim_transmitted();
-        let count = (HEADER_BYTES + frame.len()).div_ceil(BUFFER_BYTES).max(1);
-        let run = ((1u32 << count) - 1) as u16;
-        let first = (0..=QUEUE_SIZE as usize - count)
-            .find(|&first| (self.free_transmit_buffers >> first) & run == run)
-            .ok_or(Error::QueueFull)?;
-        let buffers = run << first;
-        let offset = TRANSMIT_BUFFERS_OFFSET + first * BUFFER_BYTES;
-        let start = self.memory.as_mut_ptr().wrapping_add(offset);
-        // SAFETY: the transmit buffers `first..first + count` of the driver's DMA memory,
-        // `BUFFER_BYTES` long each and contiguous, are free: the device handed them back (or
-        // never had them), so only the driver touches them; the header fits at their start,
-        // and `header` is the caller's own.
-        unsafe { core::ptr::copy_nonoverlapping(header.as_ptr(), start, HEADER_BYTES) };
-        // SAFETY: the same free buffers, which hold the frame after the header (`count` covers
-        // both); `frame` is the caller's own memory, apart from them.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                frame.as_ptr(),
-                start.wrapping_add(HEADER_BYTES),
-                frame.len(),
-            )
-        };
-        self.memory
-            .prepare_for_device(offset, HEADER_BYTES + frame.len());
-        let head = self.transmit.submit(&[Buffer {
-            addr: self.buffer_addr(offset)?,
-            len: (HEADER_BYTES + frame.len()) as u32,
-            device_writes: false,
-        }])?;
-        self.free_transmit_buffers &= !buffers;
-        if let Some(slot) = self.transmit_buffers_of_head.get_mut(usize::from(head)) {
-            *slot = buffers;
+    /// Copies the next frame any of its queue pairs received into the start of `frame` and
+    /// posts its buffer again: its length, or `None` when there is none.
+    pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+        let count = self.lanes.len();
+        for step in 0..count {
+            let lane = (self.next_receive_lane + step) % count;
+            if let Some(length) = self.lanes[lane].receive(&self.transport, frame) {
+                self.next_receive_lane = (lane + 1) % count;
+                return Some(length);
+            }
         }
-        if self.transmit.should_notify() {
-            self.transport.notify(TRANSMIT_QUEUE);
-        }
-        Ok(())
+        None
+    }
+
+    /// How many queue pairs it drives (D566): one per CPU it was given memory for, up to what
+    /// the device offers.
+    pub fn queue_pairs(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// Picks the queue pair a send goes through: `choose` (the current CPU's number) modulo
+    /// the pairs, so each CPU sends on its own (D566).
+    pub fn set_lane_chooser(&mut self, choose: fn() -> usize) {
+        self.choose_lane = choose;
     }
 
     /// Resets the device and hands back the transport and the memory, with the proof that the
@@ -512,11 +429,18 @@ impl<T: Transport, M: DmaMemory> VirtioNet<T, M> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(T, M, ResetDone), (Error, T)> {
         let Self {
-            transport, memory, ..
+            transport, lanes, ..
         } = self;
-        match super::reset(&transport, keep_waiting) {
-            Ok(done) => Ok((transport, memory, done)),
-            Err(error) => {
+        let mut memories = lanes.into_iter().map(|lane| lane.memory);
+        let first = memories.next();
+        let reset = super::reset(&transport, keep_waiting);
+        for memory in memories {
+            core::mem::forget(memory);
+        }
+        match (reset, first) {
+            (Ok(done), Some(memory)) => Ok((transport, memory, done)),
+            (Ok(_), None) => Err((Error::QueueUnavailable, transport)),
+            (Err(error), memory) => {
                 core::mem::forget(memory);
                 Err((error, transport))
             }

@@ -129,7 +129,7 @@ fn polls(mut count: u32) -> impl FnMut() -> bool {
 }
 
 fn driver(fake: FakeNet) -> VirtioNet<FakeNet, HostDma> {
-    VirtioNet::new(fake, HostDma::zeroed(MEMORY_BYTES / 4096), &mut polls(10)).unwrap()
+    VirtioNet::new(fake, HostDma::zeroed(MEMORY_BYTES / 4096), Vec::new(), &mut polls(10)).unwrap()
 }
 
 fn frame(fill: u8, length: usize) -> Vec<u8> {
@@ -238,6 +238,7 @@ fn a_device_without_a_hardware_address_or_memory_enough_is_refused() {
     let refused = VirtioNet::new(
         FakeNet::new(feature::STATUS),
         HostDma::zeroed(MEMORY_BYTES / 4096),
+        Vec::new(),
         &mut polls(10),
     );
     let Err((error, fake, memory)) = refused else {
@@ -249,6 +250,7 @@ fn a_device_without_a_hardware_address_or_memory_enough_is_refused() {
     let small = VirtioNet::new(
         FakeNet::new(feature::MAC),
         HostDma::zeroed(1),
+        Vec::new(),
         &mut polls(10),
     );
     assert!(matches!(small, Err((Error::MemoryTooSmall, _, Some(_)))));
