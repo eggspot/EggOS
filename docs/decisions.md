@@ -26024,3 +26024,34 @@ the license, by an explicit instruction recorded here.
   nothing yet, which keeps every program that only drops them working.
 - **Not yet.** Building and running; EggFS extended attributes; capabilities that grant; file
   capabilities; `vmsplice`; `/proc/<pid>/task/<tid>/comm`.
+
+## D558 Linux calls, batch 2: memory limits, `MAP_POPULATE` and `MAP_GROWSDOWN`, a randomized layout, `ETXTBSY`, `noexec`, `/proc`'s and `/sys`'s missing files, leases and `F_NOTIFY` (M6; D51's, D53's, D103's, D155's, D167's, D168's, D171's and D201's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+
+- **`RLIMIT_AS` and `RLIMIT_DATA`.** Before a mapping or a break that grows, the process's mappings
+  are summed (`Process::mapped_bytes`, only when a limit is set): the address-space limit counts
+  every mapping, the data limit its writable ones (writable private mappings and the break are what
+  it limits); past either the call is `ENOMEM` (`brk` stays where it was).
+- **`MAP_POPULATE`** makes a new anonymous mapping's pages present at once, as `MADV_POPULATE_WRITE`
+  (or `_READ`) would, ignoring a failure as Linux does. **`MAP_GROWSDOWN`** records the region's
+  start; a fault at most 64 KiB below it, in no region, extends it down to the faulting page.
+- **A randomized layout (D201's rest).** With layouts randomized, `execve` lowers the `mmap` area's
+  top by up to 256 MiB (`Process::mmap_top`), starts the break up to 32 MiB past the program's end,
+  and loads the interpreter up to 256 × 2 MiB below its usual place (never below half of it).
+- **`ETXTBSY`.** A program's file is held as a running image (`vfs::RunningImage`) for as long as its
+  process runs it; opening such a file for writing or with `O_TRUNC` is `ETXTBSY`.
+- **`noexec`.** Mounts may refuse to run programs (`vfs::mount_without_programs`); `/proc`, `/dev`
+  and the new `/sys` are `nosuid,noexec`, `execve` of a file there is `EACCES`, and `/proc/mounts`
+  says `noexec`.
+- **`/proc`.** `/proc/<pid>/mountinfo` (every mount: number, parent, device, root, point, options,
+  `-`, type), `/proc/<pid>/task/<tid>/` with `comm`, `stat` and `status` for each thread the
+  process's signal state records, `/proc/thread-self` (to the calling process's first thread: the
+  file system knows the caller's process, not its thread), and `/proc/sys/vm/overcommit_memory` (`0`).
+- **`/sys`** (`vfs::sysfs`): `devices/system/cpu/{online,possible,present}` as CPU lists and
+  `kernel/mm/transparent_hugepage/{enabled,defrag}` reading `[never]`; the initramfs has `/sys`.
+- **Leases and `F_NOTIFY`** (`linux::leases`). `F_SETLEASE` takes or drops a read or write lease on a
+  regular file (`EAGAIN` against a conflicting one), `F_GETLEASE` reads it; another process's open
+  that conflicts sends the holder `SIGIO` and ends the lease, without the opener waiting for it to be
+  given up. `F_NOTIFY` watches a directory's entries (access, modify, create, delete, rename,
+  attributes, `DN_MULTISHOT`), fed from the same events `inotify` reports, and sends `SIGIO`.
+- **Not yet.** Building and running; the opener's wait for a lease to be given up; per-thread names in
+  `task/<tid>/comm` and a `thread-self` that names the calling thread; `MAP_GROWSDOWN` past 64 KiB.
