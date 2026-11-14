@@ -26532,3 +26532,28 @@ the license, by an explicit instruction recorded here.
   handshake, the cheapest point; the count is per IPv4 address, as the listener is IPv4.
 - **Not yet.** Building and running; resuming a stream after a reconnect (`Last-Event-ID`);
   IPv6; answering two agents' calls at the same time.
+
+## D577 mDNS advertisement of the agent endpoint (`_mcp._tcp`), and IPv4 multicast groups (M10; D193's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from RFC 6762, RFC 6763 and RFC 1112)
+- **What.** `eggos_net::mdns` writes the records of a DNS-SD service (`PTR` for its type and
+  for the type list, `SRV`, `TXT`, `A`, the host's records with the cache-flush bit) and reads
+  the questions of a query, compressed names included, saying which of them a service must
+  answer and whether a unicast answer was asked. `eggmcpd --network` advertises
+  `eggos._mcp._tcp.local` at `eggos.local` (the name its certificate holds) on its port, with
+  `TXT` `path=/mcp` and `fp=sha256:<hex>`, the certificate's fingerprint an agent pins:
+  announced twice a second apart at start and whenever the machine's address changes
+  (checked every 30 s), and answered to the link's questions, by multicast, to the asker
+  when it set the `QU` bit, and with the query's id to a legacy asker (a port other than
+  5353). Off while the network server is off (D18).
+- **IPv4 multicast.** An interface now keeps up to 8 joined IPv4 groups besides all-hosts
+  (`join_group`, `leave_group`), takes frames to `01:00:5e` addresses and delivers datagrams
+  sent to its groups; a datagram to a multicast address goes out to its group's Ethernet
+  address (RFC 1112) with no ARP. Sockets join and leave with `IP_ADD_MEMBERSHIP` and
+  `IP_DROP_MEMBERSHIP` (`ENOBUFS` when an interface is full); `IP_MULTICAST_IF`, `_TTL` and
+  `_LOOP` are taken and change nothing yet.
+- **Decided by research.** No probing for a unique name (RFC 6762 section 8): EggOS's
+  certificate names `eggos.local`, so advertising another host name would make clients'
+  checks fail; two EggOS machines on one link both answering for `eggos.local` is left to
+  the person's pairing, which pins a fingerprint, not a name. Known-answer suppression is not
+  done: one service's answers are a few hundred bytes.
+- **Not yet.** Building and running; probing and conflict renaming; IPv6 (`ff02::fb`);
+  goodbye packets when the server stops; multicast TTL and loopback options.
