@@ -26776,3 +26776,23 @@ the license, by an explicit instruction recorded here.
   wait, and a stream's fences pass in order on its ring anyway.
 - **Not yet.** Building and running; timeline sync objects; opaque sync object descriptors
   shared between processes.
+
+## D587 `zwp_linux_dmabuf_v1` version 4: feedback objects, and multi-plane YUV buffers (M11; D459's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from `linux-dmabuf-v1.xml` and DRM's `drm_fourcc.h` codes)
+- **Feedback.** The global is version 4: `get_default_feedback` and `get_surface_feedback`
+  answer with a format table in a sealed memory file (`XRGB8888`, `ARGB8888`, `NV12`,
+  `YUV420`, each with the linear modifier), the main device (the render node,
+  `/dev/dri/renderD128`), one tranche for that device listing every format, and `done`. A
+  version 4 binding gets no `format`/`modifier` events, as the protocol says.
+- **Multi-plane.** Buffer params take planes 0 to 3, each linear and once. `NV12` (luma and
+  interleaved half-resolution chroma) and `YUV420` (three planes) buffers map their planes
+  read-only and get a picture of their own in new memory; each commit converts the planes
+  into it with BT.601's limited-range coefficients in integer arithmetic
+  (`eggos_wayland::yuv`), and the window then shows it like any XRGB buffer. Destroying the
+  buffer unmaps the planes and frees the picture.
+- **Decided by research.** The conversion runs in eggway on commit rather than on the GPU:
+  a video player's frames are a few megabytes a frame, the CPU conversion is one pass over
+  them, and the window server composes CPU pixels today; a GPU path comes with the window
+  server scanning out YUV directly. Limited range (16-235) because that is what decoders
+  write by default and what GStreamer and FFmpeg tag `NV12` with.
+- **Not yet.** Building and running; full-range and BT.709 colour; modifiers other than
+  linear; scanout tranches.
