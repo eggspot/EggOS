@@ -26677,3 +26677,36 @@ the license, by an explicit instruction recorded here.
   first is reported (a broken console) stops the CPU instead of recursing until the stack
   overflows. Console write errors while reporting a fault or panic are ignored: nothing useful
   can be done then.
+
+## D582 The Text Editor in a terminal: `edit` without a desktop, or with `-t` (M10; D149's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design by Claude Fable, `docs/ux/text-editor-terminal-v0.1.md`)
+- **What.** `edit [-t|--terminal] [--] [<path>]` edits in the terminal it runs in when there is
+  no desktop, or always with `-t`: the same document, history, clipboard, find and file rules
+  as the window (D149), on a VT100/xterm stream. The screen is a title row
+  (`*<name> - Text Editor`), the text (no wrap, horizontal scroll by quarter widths with `<`
+  and `>` edge marks, tabs to 8, wide characters two cells and combining marks none except on
+  the EggOS terminal), a status row (`Ln, Col`, the selection, the language, `Modified` or
+  `New file`, the line ending, messages) and nano-style key hints; prompts take the status
+  row: save changes, save as, replace a file, open, find with its count and match case,
+  three-step replace with `All` as one undo step, go to line. Ctrl+S/Q/O/N/Z/Y/X/C/V/A/F/R/G,
+  Alt+S, F1's key list, F3, the mark (Ctrl+^, Ctrl+Space), Alt+N line numbers, Alt+Y syntax
+  colours (the GUI's highlighter mapped to the 16 ANSI colours), bracketed paste as one undo
+  step; monochrome on `TERM=dumb`, an unknown `TERM` or `NO_COLOR`.
+- **How.** `terminal::keys` reads what terminals send (UTF-8, control bytes, `CSI` and `SS3`
+  with xterm's modifiers); `terminal::session::TerminalEditor` is the state and writes frames
+  that redraw only the rows whose bytes changed (a hash per row), each placed absolutely;
+  `terminal::program` keeps the terminal's settings, sets them raw (`ICANON`, `ECHO`, `ISIG`,
+  `IEXTEN`, `IXON`, `ICRNL`, `OPOST` off), takes the alternate screen and bracketed paste,
+  gets the size from `TIOCGWINSZ`, else `LINES` and `COLUMNS`, else the terminal's own
+  answer to a cursor-position query, else 80x24, and gives everything back on quit. A lone
+  `ESC` is the Escape key after 50 ms without more bytes.
+- **Decided by research.** A resize is noticed by asking `TIOCGWINSZ` whenever the loop wakes
+  (at least every 250 ms) rather than with a `SIGWINCH` handler: the handler's frame layout
+  differs per architecture, and a quarter second is below what a person dragging a window
+  notices. A hangup is noticed as the end of the terminal's input (`SIGHUP` ignored) and
+  writes `<path>.save` when there are unsaved changes; `SIGTERM` keeps its default.
+  `Editor::insert_text` puts a paste or a replacement in place of the selection as one step.
+  Horizontal scroll counts cells rather than characters, so a tab and a wide character scroll
+  as they draw.
+- **Not yet.** Building and running; the shared clipboard from a terminal on the desktop; the
+  termios layouts of PowerPC, MIPS and SPARC (their flag bits differ, as in eggsh); the QEMU
+  check on the serial console; word wrap.

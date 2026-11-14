@@ -117,7 +117,7 @@ and is not listed per item.
 - [x] MCP over the network: mDNS advertisement of the agent endpoint (`_mcp._tcp`) (D193) — code written, unbuilt, D577
 - [x] MCP: `subscriptions/listen` and `input_required` with a signed `requestState` (D193) — code written, unbuilt, D578
 - [x] Time zones: past rules of a zone (transitions from TZif data) and `localtime`/`_tzset` in the Windows layer (D194) — code written, unbuilt, D579
-- [ ] Text Editor: a terminal editor (`edit` in a console without a window) (D149)
+- [x] Text Editor: a terminal editor (`edit` in a console without a window) (D149) — code written, unbuilt, D582
 
 ## M11 Graphics stack and compositor
 
