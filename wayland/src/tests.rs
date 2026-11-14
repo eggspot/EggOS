@@ -244,6 +244,12 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::FractionalScale,
         Interface::LinuxDmabuf,
         Interface::LinuxBufferParams,
+        Interface::XdgOutputManager,
+        Interface::XdgOutput,
+        Interface::ToplevelIconManager,
+        Interface::ToplevelIcon,
+        Interface::WmDialog,
+        Interface::Dialog,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);
@@ -282,7 +288,10 @@ fn every_request_table_is_ordered_and_bounded() {
             ("zwp_text_input_manager_v3", 1),
             ("org_kde_kwin_server_decoration_manager", 1),
             ("wp_fractional_scale_manager_v1", 1),
-            ("zwp_linux_dmabuf_v1", 3)
+            ("zwp_linux_dmabuf_v1", 3),
+            ("zxdg_output_manager_v1", 3),
+            ("xdg_toplevel_icon_manager_v1", 1),
+            ("xdg_wm_dialog_v1", 1)
         ]
     );
     assert_eq!(
@@ -295,7 +304,7 @@ fn every_request_table_is_ordered_and_bounded() {
     );
     assert_eq!(
         protocol::GLOBALS.map(|global| global.name),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     );
 }
 

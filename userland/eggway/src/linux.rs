@@ -87,6 +87,7 @@ const KEYMAP_NAME: &CStr = c"eggway-keymap";
 const TITLE_BYTES: usize = 64;
 const MAX_COMMIT_RECTS: usize = 8;
 const NO_GPU_BUFFER: u32 = u32::MAX;
+const DIALOG_ROLE: u32 = 1;
 
 #[repr(C)]
 struct SocketAddress {
@@ -391,6 +392,40 @@ pub struct Linux {
 }
 
 impl Linux {
+    fn create_dialog_or_window(
+        &mut self,
+        device: Fd,
+        parent: Option<u32>,
+        width: u32,
+        height: u32,
+        flags: u32,
+    ) -> Result<WindowBuffer, Errno> {
+        let mut create = [0u8; 32];
+        if let Some(parent) = parent {
+            put(&mut create, 0, DIALOG_ROLE);
+            put(&mut create, 4, parent);
+        }
+        put(&mut create, 8, width);
+        put(&mut create, 12, height);
+        put(&mut create, 16, flags);
+        ioctl(device, request::CREATE, &mut create)?;
+        let mut window = WindowBuffer {
+            id: word(&create, 20),
+            width: word(&create, 8),
+            height: word(&create, 12),
+            address: 0,
+        };
+        let offset = u64::from_ne_bytes(create[24..32].try_into().unwrap_or([0; 8])) as usize;
+        match map_window(device, &window, offset) {
+            Ok(address) => window.address = address,
+            Err(error) => {
+                let _ = ioctl(device, request::DESTROY, &mut window.id.to_ne_bytes());
+                return Err(error);
+            }
+        }
+        Ok(window)
+    }
+
     /// Unmaps the memory of the clients the compositor gave back since the last call; nothing
     /// refers to it any more.
     pub fn unmap_freed_clients(&mut self) {
@@ -712,27 +747,20 @@ impl System for Linux {
         height: u32,
         flags: u32,
     ) -> Result<WindowBuffer, Errno> {
-        let mut create = [0u8; 32];
-        put(&mut create, 8, width);
-        put(&mut create, 12, height);
-        put(&mut create, 16, flags);
-        ioctl(device, request::CREATE, &mut create)?;
-        let mut window = WindowBuffer {
-            id: word(&create, 20),
-            width: word(&create, 8),
-            height: word(&create, 12),
-            address: 0,
-        };
-        let offset = u64::from_ne_bytes(create[24..32].try_into().unwrap_or([0; 8])) as usize;
-        match map_window(device, &window, offset) {
-            Ok(address) => window.address = address,
-            Err(error) => {
-                let _ = ioctl(device, request::DESTROY, &mut window.id.to_ne_bytes());
-                return Err(error);
-            }
-        }
-        Ok(window)
+        self.create_dialog_or_window(device, None, width, height, flags)
     }
+
+    fn create_dialog_window(
+        &mut self,
+        device: Fd,
+        parent: u32,
+        width: u32,
+        height: u32,
+        flags: u32,
+    ) -> Result<WindowBuffer, Errno> {
+        self.create_dialog_or_window(device, Some(parent), width, height, flags)
+    }
+
 
     fn resize_window(
         &mut self,

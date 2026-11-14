@@ -197,6 +197,11 @@ pub struct Surface {
     pub subsurface: u32,
     /// Its window shows a GPU buffer in place of its own pixels (D461).
     pub shows_gpu: bool,
+    /// The toplevel `xdg_toplevel.set_parent` named, by its surface's index (D585).
+    pub toplevel_parent: Option<u16>,
+    /// `xdg_dialog_v1.set_modal`: its window is a dialog of its parent's, which keeps it above
+    /// and sends the parent's input to it (D585).
+    pub modal: bool,
 }
 
 impl Surface {
@@ -232,6 +237,8 @@ impl Surface {
             activated: false,
             role: Role::None,
             parent: None,
+            toplevel_parent: None,
+            modal: false,
             position: (0, 0),
             pending_position: None,
             synced: true,

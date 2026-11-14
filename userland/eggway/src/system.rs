@@ -134,6 +134,20 @@ pub trait System {
         width: u32,
         height: u32,
     ) -> Result<(), Errno>;
+    /// A new dialog of the window `parent` (D585): kept above it, the parent's input sent to
+    /// it while it is open; otherwise as [`System::create_window`]. A window server that cannot
+    /// tell makes a normal window.
+    fn create_dialog_window(
+        &mut self,
+        device: Fd,
+        parent: u32,
+        width: u32,
+        height: u32,
+        flags: u32,
+    ) -> Result<WindowBuffer, Errno> {
+        let _ = parent;
+        self.create_window(device, width, height, flags)
+    }
     /// Destroys `window` and unmaps its buffer.
     fn destroy_window(&mut self, device: Fd, window: WindowBuffer);
     /// Sets `window`'s title, at most 64 bytes of UTF-8.

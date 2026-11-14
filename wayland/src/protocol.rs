@@ -57,6 +57,12 @@ pub enum Interface {
     FractionalScale,
     LinuxDmabuf,
     LinuxBufferParams,
+    XdgOutputManager,
+    XdgOutput,
+    ToplevelIconManager,
+    ToplevelIcon,
+    WmDialog,
+    Dialog,
 }
 
 impl Interface {
@@ -108,6 +114,12 @@ impl Interface {
             Self::FractionalScale => "wp_fractional_scale_v1",
             Self::LinuxDmabuf => "zwp_linux_dmabuf_v1",
             Self::LinuxBufferParams => "zwp_linux_buffer_params_v1",
+            Self::XdgOutputManager => "zxdg_output_manager_v1",
+            Self::XdgOutput => "zxdg_output_v1",
+            Self::ToplevelIconManager => "xdg_toplevel_icon_manager_v1",
+            Self::ToplevelIcon => "xdg_toplevel_icon_v1",
+            Self::WmDialog => "xdg_wm_dialog_v1",
+            Self::Dialog => "xdg_dialog_v1",
         }
     }
 }
@@ -363,6 +375,30 @@ const LINUX_BUFFER_PARAMS: &[Request] = &[
     request("create", 1, &[Int, Int, Uint, Uint]),
     request("create_immed", 2, &[NewId, Int, Int, Uint, Uint]),
 ];
+const XDG_OUTPUT_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_xdg_output", 1, &[NewId, Object]),
+];
+const XDG_OUTPUT: &[Request] = &[destructor("destroy", 1)];
+const TOPLEVEL_ICON_MANAGER: &[Request] = &[
+    destructor("destroy", 1),
+    request("create_icon", 1, &[NewId]),
+    request("set_icon", 1, &[Object, NullableObject]),
+];
+const TOPLEVEL_ICON: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_name", 1, &[String]),
+    request("add_buffer", 1, &[Object, Int]),
+];
+const WM_DIALOG: &[Request] = &[
+    destructor("destroy", 1),
+    request("get_xdg_dialog", 1, &[NewId, Object]),
+];
+const DIALOG: &[Request] = &[
+    destructor("destroy", 1),
+    request("set_modal", 1, &[]),
+    request("unset_modal", 1, &[]),
+];
 
 /// `interface`'s requests, indexed by opcode.
 pub const fn requests(interface: Interface) -> &'static [Request] {
@@ -412,6 +448,12 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::FractionalScale => FRACTIONAL_SCALE,
         Interface::LinuxDmabuf => LINUX_DMABUF,
         Interface::LinuxBufferParams => LINUX_BUFFER_PARAMS,
+        Interface::XdgOutputManager => XDG_OUTPUT_MANAGER,
+        Interface::XdgOutput => XDG_OUTPUT,
+        Interface::ToplevelIconManager => TOPLEVEL_ICON_MANAGER,
+        Interface::ToplevelIcon => TOPLEVEL_ICON,
+        Interface::WmDialog => WM_DIALOG,
+        Interface::Dialog => DIALOG,
     }
 }
 
@@ -431,7 +473,7 @@ pub struct Global {
 }
 
 /// Every global, in the order the registry announces them.
-pub const GLOBALS: [Global; 16] = [
+pub const GLOBALS: [Global; 19] = [
     Global {
         name: 1,
         interface: Interface::Compositor,
@@ -512,6 +554,21 @@ pub const GLOBALS: [Global; 16] = [
         interface: Interface::LinuxDmabuf,
         version: 3,
     },
+    Global {
+        name: 17,
+        interface: Interface::XdgOutputManager,
+        version: 3,
+    },
+    Global {
+        name: 18,
+        interface: Interface::ToplevelIconManager,
+        version: 1,
+    },
+    Global {
+        name: 19,
+        interface: Interface::WmDialog,
+        version: 1,
+    },
 ];
 
 /// The global named `name`.
@@ -559,6 +616,23 @@ pub const fn output_global(id: u32) -> u32 {
 
 /// Where the names of the extra screens' `wl_output` globals start.
 pub const OUTPUT_GLOBAL_BASE: u32 = 64;
+
+/// `zxdg_output_v1`'s events (D585).
+pub mod xdg_output {
+    use super::{Event, event};
+    pub const LOGICAL_POSITION: Event = event(0, 1);
+    pub const LOGICAL_SIZE: Event = event(1, 1);
+    pub const DONE: Event = event(2, 1);
+    pub const NAME: Event = event(3, 2);
+    pub const DESCRIPTION: Event = event(4, 2);
+}
+
+/// `xdg_toplevel_icon_manager_v1`'s events (D585).
+pub mod toplevel_icon_manager {
+    use super::{Event, event};
+    pub const ICON_SIZE: Event = event(0, 1);
+    pub const DONE: Event = event(1, 1);
+}
 
 /// `wl_callback`'s events.
 pub mod callback {

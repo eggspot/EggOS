@@ -253,7 +253,7 @@ fn the_registry_announces_every_global_and_refuses_a_newer_bind() {
         .iter()
         .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
         .collect();
-    assert_eq!(globals.len(), 16);
+    assert_eq!(globals.len(), 19);
     assert_eq!(globals[0].word(0), 1);
     session.bind(1, "wl_compositor", 5, COMPOSITOR);
     session.pump();
@@ -2566,4 +2566,46 @@ fn a_second_screen_is_a_second_output_and_its_going_is_a_global_remove() {
             && event.opcode == registry::GLOBAL_REMOVE.opcode
             && event.word(0) == output_global(1)
     }));
+}
+
+#[test]
+fn an_xdg_output_tells_the_screen_s_place_and_name_then_wl_output_done() {
+    use eggos_wayland::protocol::{output, xdg_output};
+    const XDG_OUTPUT_MANAGER: u32 = 40;
+    const XDG_OUTPUT: u32 = 41;
+    let mut session = Session::new();
+    session.globals();
+    session.bind(17, "zxdg_output_manager_v1", 3, XDG_OUTPUT_MANAGER);
+    session.send(XDG_OUTPUT_MANAGER, 1, &[Value::NewId(XDG_OUTPUT), Value::Object(OUTPUT)]);
+    let events = session.pump();
+    assert!(events.iter().any(|event| event.object == XDG_OUTPUT && event.opcode == xdg_output::LOGICAL_SIZE.opcode));
+    assert!(events.iter().any(|event| event.object == XDG_OUTPUT && event.opcode == xdg_output::NAME.opcode));
+    assert!(events.iter().any(|event| event.object == OUTPUT && event.opcode == output::DONE.opcode));
+    assert!(session.alive());
+}
+
+#[test]
+fn a_dialog_is_taken_for_a_toplevel_and_the_icon_manager_says_its_sizes() {
+    use eggos_wayland::protocol::toplevel_icon_manager;
+    const WM_DIALOG: u32 = 42;
+    const DIALOG: u32 = 43;
+    const ICON_MANAGER: u32 = 44;
+    const ICON: u32 = 45;
+    let mut session = Session::new();
+    session.globals();
+    session.configured_toplevel();
+    session.bind(18, "xdg_toplevel_icon_manager_v1", 1, ICON_MANAGER);
+    session.bind(19, "xdg_wm_dialog_v1", 1, WM_DIALOG);
+    session.send(ICON_MANAGER, 1, &[Value::NewId(ICON)]);
+    session.send(ICON, 1, &[Value::String(b"org.example.App")]);
+    session.send(ICON_MANAGER, 2, &[Value::Object(TOPLEVEL), Value::Object(ICON)]);
+    session.send(WM_DIALOG, 1, &[Value::NewId(DIALOG), Value::Object(TOPLEVEL)]);
+    session.send(DIALOG, 1, &[]);
+    let events = session.pump();
+    let sizes = events
+        .iter()
+        .filter(|event| event.object == ICON_MANAGER && event.opcode == toplevel_icon_manager::ICON_SIZE.opcode)
+        .count();
+    assert_eq!(sizes, 2);
+    assert!(session.alive(), "{:?}", session.error());
 }

@@ -27,8 +27,8 @@ use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
     fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat, server_decoration,
-    shm, subsurface, surface, viewport, xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel,
-    xdg_wm_base,
+    shm, subsurface, surface, toplevel_icon_manager, viewport, xdg_output, xdg_popup,
+    xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 use eggos_wayland::wire::{self, Header, MAX_ARGUMENTS, MAX_MESSAGE_SIZE, Value};
 
@@ -781,11 +781,105 @@ fn handle<S: System>(
         Interface::FractionalScale => fractional_scale_request(client, message),
         Interface::LinuxDmabuf => dmabuf_request(client, message),
         Interface::LinuxBufferParams => dmabuf_params_request(client, shared, system, message),
+        Interface::XdgOutputManager => xdg_output_manager_request(client, shared, message),
+        Interface::ToplevelIconManager => toplevel_icon_manager_request(client, message),
+        Interface::WmDialog => wm_dialog_request(client, message),
+        Interface::Dialog => dialog_request(client, message),
         Interface::Region
         | Interface::Callback
         | Interface::Keyboard
         | Interface::Touch
-        | Interface::Output => {}
+        | Interface::Output
+        | Interface::XdgOutput
+        | Interface::ToplevelIcon => {}
+    }
+}
+
+fn xdg_output_manager_request(client: &mut ClientSlot, shared: &Shared, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, output) = (message.uint(0), message.uint(1));
+    let Some(screen_id) = object_index(client, output, Interface::Output) else {
+        return;
+    };
+    let output_version = client.object(output).map_or(1, |object| object.version);
+    let screen = shared
+        .screens
+        .iter()
+        .flatten()
+        .find(|screen| screen.id == u32::from(screen_id))
+        .or(shared.screens[0].as_ref())
+        .copied();
+    if !new_object(client, id, Interface::XdgOutput, message.version, screen_id) {
+        return;
+    }
+    let (x, y, width, height) = screen.map_or((0, 0, 0, 0), |screen| {
+        (screen.x, screen.y, screen.width as i32, screen.height as i32)
+    });
+    client.post(id, message.version, xdg_output::LOGICAL_POSITION, &[Value::Int(x), Value::Int(y)]);
+    client.post(id, message.version, xdg_output::LOGICAL_SIZE, &[Value::Int(width), Value::Int(height)]);
+    if message.version >= 2 {
+        let number = u32::from(screen_id) + 1;
+        let mut name = [0u8; 16];
+        let name_length = screen_name(number, &mut name);
+        client.post(id, message.version, xdg_output::NAME, &[Value::String(&name[..name_length])]);
+        client.post(id, message.version, xdg_output::DESCRIPTION, &[Value::String(OUTPUT_DESCRIPTION)]);
+    }
+    match message.version >= 3 {
+        true => client.post(output, output_version, output::DONE, &[]),
+        false => client.post(id, message.version, xdg_output::DONE, &[]),
+    }
+}
+
+fn screen_name(number: u32, out: &mut [u8; 16]) -> usize {
+    out[..4].copy_from_slice(b"EGG-");
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut rest = number;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let length = digits.len() - at;
+    out[4..4 + length].copy_from_slice(&digits[at..]);
+    4 + length
+}
+
+fn toplevel_icon_manager_request(client: &mut ClientSlot, message: &Message) {
+    match message.opcode {
+        1 => {
+            new_object(client, message.uint(0), Interface::ToplevelIcon, message.version, 0);
+        }
+        2 => {
+            let _ = object_index(client, message.uint(0), Interface::XdgToplevel);
+        }
+        _ => {}
+    }
+}
+
+fn wm_dialog_request(client: &mut ClientSlot, message: &Message) {
+    if message.opcode != 1 {
+        return;
+    }
+    let (id, toplevel) = (message.uint(0), message.uint(1));
+    let Some(index) = object_index(client, toplevel, Interface::XdgToplevel) else {
+        return;
+    };
+    new_object(client, id, Interface::Dialog, message.version, index);
+}
+
+fn dialog_request(client: &mut ClientSlot, message: &Message) {
+    let modal = match message.opcode {
+        1 => true,
+        _ => false,
+    };
+    if let Some(surface) = client.surface(message.index) {
+        surface.modal = modal;
     }
 }
 
@@ -835,6 +929,8 @@ fn announce_output(client: &mut ClientSlot, registry: u32, name: u32) {
 }
 
 const OUTPUT_VERSION: u32 = 4;
+const OUTPUT_DESCRIPTION: &[u8] = b"EggOS screen";
+const TOPLEVEL_ICON_SIZES: [i32; 2] = [32, 64];
 
 fn registries(client: &ClientSlot) -> impl Iterator<Item = u32> + '_ {
     client
@@ -868,7 +964,11 @@ fn bind<S: System>(client: &mut ClientSlot, shared: &Shared, system: &mut S, mes
         client.protocol_error(message.object, display::INVALID_OBJECT, b"bad bind");
         return;
     };
-    if !new_object(client, id, global.interface, version, 0) {
+    let index = match global.interface {
+        Interface::Output => screen.map_or(0, |screen| screen.id as u16),
+        _ => 0,
+    };
+    if !new_object(client, id, global.interface, version, index) {
         return;
     }
     match global.interface {
@@ -896,6 +996,12 @@ fn bind<S: System>(client: &mut ClientSlot, shared: &Shared, system: &mut S, mes
             client.post(id, version, seat::NAME, &[Value::String(b"seat0")]);
         }
         Interface::Subcompositor | Interface::Viewporter => client.composes = true,
+        Interface::ToplevelIconManager => {
+            for size in TOPLEVEL_ICON_SIZES {
+                client.post(id, version, toplevel_icon_manager::ICON_SIZE, &[Value::Int(size)]);
+            }
+            client.post(id, version, toplevel_icon_manager::DONE, &[]);
+        }
         Interface::ServerDecorationManager => client.post(
             id,
             version,
@@ -1662,7 +1768,17 @@ fn present<S: System>(
                 && surface.minimum.0 > 0
                 && surface.minimum.1 > 0;
             let flags = if fixed { FIXED_SIZE } else { 0 };
-            let Ok(window) = system.create_window(device, size.0, size.1, flags) else {
+            let dialog_of = surface
+                .toplevel_parent
+                .filter(|_| surface.modal)
+                .and_then(|parent| peek(client, parent))
+                .and_then(|parent| parent.window)
+                .map(|parent| parent.id);
+            let created = match dialog_of {
+                Some(parent) => system.create_dialog_window(device, parent, size.0, size.1, flags),
+                None => system.create_window(device, size.0, size.1, flags),
+            };
+            let Ok(window) = created else {
                 client.protocol_error(1, display::NO_MEMORY, b"no window");
                 return;
             };
@@ -2093,6 +2209,16 @@ fn toplevel_request<S: System>(client: &mut ClientSlot, system: &mut S, message:
                 surface.reset_toplevel();
             }
             forget_focus(client, index);
+        }
+        1 => {
+            let parent = message.uint(0);
+            let parent_index = match parent {
+                0 => None,
+                parent => object_index(client, parent, Interface::XdgToplevel),
+            };
+            if let Some(surface) = client.surface(index) {
+                surface.toplevel_parent = parent_index;
+            }
         }
         2 => {
             let title = title_prefix(message.values[0].bytes());
