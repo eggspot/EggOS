@@ -6,7 +6,8 @@
 //! `class/drm/renderD128` linking to the render node's directory under the GPU's device, with
 //! its `dev`, `uevent`, `subsystem` and `device`, the virtio device above it and its PCI
 //! function's (or platform device's) identity. Read-only; each file's text is made when it is
-//! opened.
+//! opened. `devices/system/cpu/cpu<n>/online` takes CPU `n` out of service with `0` and puts it
+//! back with `1` (D596).
 
 use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Usage};
 use crate::sync::LeafSpinLock;
@@ -239,6 +240,59 @@ pub struct SystemFiles;
 
 fn is_directory(node: u64) -> bool {
     matches!(node, ROOT | DEVICES | SYSTEM | CPU | KERNEL | MM | TRANSPARENT_HUGEPAGE)
+        || cpu_node(node).is_some_and(|(_, file)| !file)
+}
+
+/// The first per-CPU node: `cpu<n>` is `PER_CPU + 2n`, its `online` file the next (D596).
+const PER_CPU: u64 = 1000;
+
+/// What takes a CPU out of service (`false`) or puts it back (`true`), by index (D596).
+static CPU_SERVICE: LeafSpinLock<Option<fn(usize, bool) -> Result<(), &'static str>>> =
+    LeafSpinLock::new_leaf(None);
+
+/// Lets `cpu<n>/online` take CPUs out of service and back through `service` (D596).
+pub fn set_cpu_service(service: fn(usize, bool) -> Result<(), &'static str>) {
+    *CPU_SERVICE.lock() = Some(service);
+}
+
+/// The CPU index of a per-CPU node and whether it is the `online` file; the boot CPU, index 0,
+/// has no such directory, as on x86 Linux.
+fn cpu_node(node: u64) -> Option<(usize, bool)> {
+    let offset = node.checked_sub(PER_CPU)?;
+    let index = usize::try_from(offset / 2).ok()?;
+    (index >= 1 && index < crate::cpu::CPUS.all().len()).then_some((index, offset % 2 == 1))
+}
+
+fn cpu_directory_name(index: usize) -> Vec<u8> {
+    alloc::format!("cpu{index}").into_bytes()
+}
+
+/// The CPUs in service as Linux writes a CPU list: `0-3,5`.
+fn online_list() -> Vec<u8> {
+    let cpus = crate::cpu::CPUS.all();
+    let mut text = alloc::string::String::new();
+    let mut index = 0;
+    while index < cpus.len().max(1) {
+        let online = cpus.get(index).is_none_or(|cpu| cpu.is_online());
+        if !online {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while cpus.get(index + 1).is_some_and(|cpu| cpu.is_online()) {
+            index += 1;
+        }
+        if !text.is_empty() {
+            text.push(',');
+        }
+        match start == index {
+            true => text.push_str(&alloc::format!("{start}")),
+            false => text.push_str(&alloc::format!("{start}-{index}")),
+        }
+        index += 1;
+    }
+    text.push('\n');
+    text.into_bytes()
 }
 
 /// The CPUs `0..count` as Linux writes a CPU list: `0`, or `0-<last>`.
@@ -275,11 +329,13 @@ impl FileSystem for SystemFiles {
 
     fn attributes(&self, node: u64) -> Attributes {
         let kind = self.kind(node);
+        let writable = cpu_node(node).is_some_and(|(_, file)| file);
         Attributes {
             kind,
             permissions: match kind {
                 NodeKind::Directory => 0o555,
                 NodeKind::SymbolicLink => 0o777,
+                _ if writable => 0o644,
                 _ => 0o444,
             },
             file_id: node,
@@ -292,6 +348,18 @@ impl FileSystem for SystemFiles {
     }
 
     fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
+        if directory == CPU
+            && let Some(index) = name
+                .strip_prefix(b"cpu")
+                .and_then(|digits| core::str::from_utf8(digits).ok())
+                .and_then(|digits| digits.parse::<u64>().ok())
+            && cpu_node(PER_CPU + 2 * index).is_some()
+        {
+            return Some(PER_CPU + 2 * index);
+        }
+        if let Some((index, false)) = cpu_node(directory) {
+            return (name == b"online").then_some(PER_CPU + 2 * index as u64 + 1);
+        }
         NODES
             .iter()
             .find(|&&(_, file, parent)| parent == directory && file == name)
@@ -307,6 +375,12 @@ impl FileSystem for SystemFiles {
         if let Some((_, parent, _)) = drm_node(node) {
             return parent;
         }
+        if let Some((index, file)) = cpu_node(node) {
+            return match file {
+                true => PER_CPU + 2 * index as u64,
+                false => CPU,
+            };
+        }
         NODES
             .iter()
             .find(|&&(file, _, _)| file == node)
@@ -316,6 +390,12 @@ impl FileSystem for SystemFiles {
     fn name(&self, node: u64) -> Name {
         if let Some((name, _, _)) = drm_node(node) {
             return Name::new(&name);
+        }
+        if let Some((index, file)) = cpu_node(node) {
+            return match file {
+                true => Name::new(b"online"),
+                false => Name::new(&cpu_directory_name(index)),
+            };
         }
         Name::new(
             NODES
@@ -336,19 +416,70 @@ impl FileSystem for SystemFiles {
     fn generate(&self, node: u64) -> Result<Option<Vec<u8>>, super::StorageError> {
         let cpus = crate::cpu::CPUS.all();
         Ok(Some(match node {
-            ONLINE => cpu_range(cpus.iter().filter(|cpu| cpu.is_online()).count()),
+            ONLINE => online_list(),
             POSSIBLE | PRESENT => cpu_range(cpus.len()),
             ENABLED => b"always madvise [never]\n".to_vec(),
             DEFRAG => b"always defer defer+madvise madvise [never]\n".to_vec(),
-            node => match drm_text(node) {
-                Some(text) => text,
-                None => return Ok(None),
+            node => match (cpu_node(node), drm_text(node)) {
+                (Some((index, true)), _) => {
+                    match cpus.get(index).is_some_and(|cpu| cpu.is_online()) {
+                        true => b"1\n".to_vec(),
+                        false => b"0\n".to_vec(),
+                    }
+                }
+                (_, Some(text)) => text,
+                _ => return Ok(None),
             },
         }))
     }
 
+    fn is_node_writable(&self, node: u64) -> bool {
+        cpu_node(node).is_some_and(|(_, file)| file)
+    }
+
+    fn write(
+        &self,
+        node: u64,
+        _at: super::WriteAt,
+        bytes: &[u8],
+        _now: u64,
+    ) -> Result<(usize, u64), super::Refused> {
+        let Some((index, true)) = cpu_node(node) else {
+            return Err(super::Refused::ReadOnly);
+        };
+        let online = match bytes.trim_ascii() {
+            b"1" => true,
+            b"0" => false,
+            _ => return Err(super::Refused::InvalidArgument),
+        };
+        let service = (*CPU_SERVICE.lock()).ok_or(super::Refused::ReadOnly)?;
+        service(index, online).map_err(|_| super::Refused::InvalidArgument)?;
+        Ok((bytes.len(), bytes.len() as u64))
+    }
+
     fn entry(&self, directory: u64, position: u64) -> Option<DirectoryEntry> {
         let position = usize::try_from(position).ok()?;
+        if let Some((index, false)) = cpu_node(directory) {
+            return (position == 0).then(|| DirectoryEntry {
+                name: Name::new(b"online"),
+                node: PER_CPU + 2 * index as u64 + 1,
+                kind: NodeKind::Regular,
+            });
+        }
+        if directory == CPU {
+            let fixed = NODES.iter().filter(|&&(_, _, parent)| parent == CPU).count();
+            if let Some(index) = position
+                .checked_sub(fixed)
+                .map(|extra| extra + 1)
+                .filter(|&index| index < crate::cpu::CPUS.all().len())
+            {
+                return Some(DirectoryEntry {
+                    name: Name::new(&cpu_directory_name(index)),
+                    node: PER_CPU + 2 * index as u64,
+                    kind: NodeKind::Directory,
+                });
+            }
+        }
         let fixed = NODES.iter().filter(|&&(_, _, parent)| parent == directory);
         let fixed_count = fixed.clone().count();
         if let Some(&(node, name, _)) = fixed.clone().nth(position) {

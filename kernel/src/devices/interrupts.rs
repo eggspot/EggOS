@@ -107,6 +107,92 @@ static SPREADING: AtomicBool = AtomicBool::new(false);
 
 static NEXT_CPU: AtomicUsize = AtomicUsize::new(1);
 
+/// The hardware id of the CPU each line was last moved to, [`ON_BOOT_CPU`] until it moves
+/// (D596).
+static LINE_CPU: [AtomicU64; DeviceLine::COUNT] =
+    [const { AtomicU64::new(ON_BOOT_CPU) }; DeviceLine::COUNT];
+const ON_BOOT_CPU: u64 = u64::MAX;
+
+/// How many interrupts each line has taken, and how many it had at the last balancing (D596).
+static RAISED: [AtomicU64; DeviceLine::COUNT] = [const { AtomicU64::new(0) }; DeviceLine::COUNT];
+static RAISED_AT_LAST_LOOK: [AtomicU64; DeviceLine::COUNT] =
+    [const { AtomicU64::new(0) }; DeviceLine::COUNT];
+
+/// How often the lines are balanced by load.
+const BALANCING_PERIOD: core::time::Duration = core::time::Duration::from_secs(10);
+
+fn line_cpu(line: DeviceLine) -> u64 {
+    match LINE_CPU[line.index()].load(Ordering::Acquire) {
+        ON_BOOT_CPU => crate::cpu::CPUS
+            .all()
+            .first()
+            .map_or(ON_BOOT_CPU, |cpu| cpu.hardware_id()),
+        cpu => cpu,
+    }
+}
+
+fn connected_lines() -> impl Iterator<Item = DeviceLine> {
+    HANDLERS.iter().enumerate().filter_map(|(index, handler)| {
+        (!handler.load(Ordering::Acquire).is_null())
+            .then(|| DeviceLine::from_index(index))
+            .flatten()
+    })
+}
+
+/// Moves every line on the CPU with hardware id `cpu`, which is leaving service, to the CPUs
+/// that stay, in turn (D596).
+pub fn move_off<P: Platform>(cpu: u64) {
+    for line in connected_lines() {
+        if line_cpu(line) == cpu {
+            steer_to_next_cpu::<P>(line);
+        }
+    }
+}
+
+/// Balances the lines by load (D596): the lines that took interrupts since the last look go,
+/// busiest first, each to the CPU in service with the least interrupts given so far, and a line
+/// moves only when that is not where it is. Lines with no interrupts stay.
+pub fn balance<P: Platform>() {
+    let cpus: alloc::vec::Vec<u64> = crate::cpu::CPUS
+        .all()
+        .iter()
+        .filter(|cpu| cpu.is_online())
+        .map(|cpu| cpu.hardware_id())
+        .collect();
+    if cpus.len() < 2 {
+        return;
+    }
+    let mut lines: alloc::vec::Vec<(DeviceLine, u64)> = connected_lines()
+        .map(|line| {
+            let raised = RAISED[line.index()].load(Ordering::Relaxed);
+            let before = RAISED_AT_LAST_LOOK[line.index()].swap(raised, Ordering::Relaxed);
+            (line, raised.wrapping_sub(before))
+        })
+        .filter(|&(_, rate)| rate != 0)
+        .collect();
+    lines.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    let mut load = alloc::vec![0u64; cpus.len()];
+    for (line, rate) in lines {
+        let Some((least, _)) = load.iter().enumerate().min_by_key(|&(_, load)| *load) else {
+            return;
+        };
+        load[least] += rate;
+        if line_cpu(line) != cpus[least] {
+            steer::<P>(line, cpus[least]);
+        }
+    }
+}
+
+/// Starts the thread that balances the lines every [`BALANCING_PERIOD`] (D596).
+pub fn start_balancing<P: Platform>() {
+    let _ = crate::thread::spawn::<P, _>(|| {
+        loop {
+            crate::thread::sleep::<P>(BALANCING_PERIOD);
+            balance::<P>();
+        }
+    });
+}
+
 /// Makes `handler` the handler of `line`, for good. Refused when the line has one already. The
 /// line stays where the HAL routed it until [`follow`].
 pub fn connect(line: DeviceLine, handler: Handler) -> Result<(), &'static str> {
@@ -236,7 +322,7 @@ fn next_cpu() -> Option<u64> {
 fn steer_to_next_cpu<P: Platform>(line: DeviceLine) {
     let cpus = crate::cpu::CPUS.all();
     let online = cpus.iter().filter(|cpu| cpu.is_online()).count();
-    if online < 2 {
+    if online < 1 {
         return;
     }
     let turn = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % online;
@@ -265,6 +351,9 @@ pub fn steer<P: Platform>(line: DeviceLine, cpu: u64) -> bool {
             None => P::steer_device_interrupt(line, cpu).is_ok(),
         },
     };
+    if moved {
+        LINE_CPU[line.index()].store(cpu, Ordering::Release);
+    }
     let handler = HANDLERS[line.index()].load(Ordering::Acquire);
     // SAFETY: a connected handler is a leaked box, never changed or freed.
     if moved && let Some(handler) = unsafe { handler.as_ref() } {
@@ -283,6 +372,7 @@ pub fn handle<P: Platform>(line: DeviceLine) {
     if handler.is_null() {
         return;
     }
+    RAISED[line.index()].fetch_add(1, Ordering::Relaxed);
     // SAFETY: a connected handler is a leaked box, never changed or freed.
     let handler = unsafe { &*handler };
     (handler.acknowledge)(handler.context);

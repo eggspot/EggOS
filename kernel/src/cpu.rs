@@ -197,6 +197,16 @@ impl Cpu {
         self.turn_user_ticks.load(Ordering::Relaxed)
     }
 
+    /// Marks the CPU as taken out of service, or back in (D596), counting it in [`CPUS`].
+    pub(crate) fn set_online(&self, online: bool) {
+        if self.online.swap(online, Ordering::AcqRel) != online {
+            match online {
+                true => CPUS.online.fetch_add(1, Ordering::AcqRel),
+                false => CPUS.online.fetch_sub(1, Ordering::AcqRel),
+            };
+        }
+    }
+
     /// Whether the CPU runs the kernel's code: true for the boot CPU, and for a secondary CPU
     /// once it has reported in.
     pub fn is_online(&self) -> bool {

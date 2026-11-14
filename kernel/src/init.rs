@@ -56,6 +56,19 @@ pub fn run<P: Platform, W: Write>(
     let online = start_cpus::<P>(memory);
     crate::devices::interrupts::enable_remapping::<P>();
     crate::devices::interrupts::spread::<P>();
+    if online > 1 {
+        crate::devices::interrupts::start_balancing::<P>();
+    }
+    crate::vfs::sysfs::set_cpu_service(|index, online| {
+        let cpu = *crate::cpu::CPUS.all().get(index).ok_or("no such CPU")?;
+        match online {
+            true => {
+                thread::bring_cpu_online::<P>(cpu);
+                Ok(())
+            }
+            false => thread::take_cpu_offline::<P>(cpu),
+        }
+    });
     let plural = if online == 1 { "" } else { "s" };
     writeln!(console, "cpu: {online} CPU{plural} online")?;
     thread::enable_preemption::<P>();

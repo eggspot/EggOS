@@ -63,6 +63,7 @@ use crate::heap::{FrameSource, GlobalFrames};
 use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::cell::{Cell, OnceCell, UnsafeCell};
 use core::fmt;
@@ -824,6 +825,7 @@ pub(crate) struct CpuScheduler {
     state: UnsafeCell<Scheduler>,
     locked: AtomicBool,
     started: AtomicBool,
+    leaving: AtomicBool,
 }
 
 // SAFETY: the state is only reached through a `Local`, which only `lock`, `try_lock` and
@@ -837,7 +839,13 @@ impl CpuScheduler {
             state: UnsafeCell::new(Scheduler::new()),
             locked: AtomicBool::new(false),
             started: AtomicBool::new(false),
+            leaving: AtomicBool::new(false),
         }
+    }
+
+    /// Whether this CPU is being taken out of service, or is out (D596).
+    fn is_leaving(&self) -> bool {
+        self.leaving.load(Ordering::Acquire)
     }
 
     /// Takes the lock, spinning while another CPU holds it. Call it with interrupts masked.
@@ -941,8 +949,22 @@ fn place(here: &'static Cpu) -> &'static Cpu {
 
 fn first_allowed(allowed: u64) -> Option<&'static Cpu> {
     cpu::CPUS.all().iter().copied().find(|&cpu| {
-        (cpu.index() >= 64 || allowed & 1 << cpu.index() != 0) && cpu.scheduler.has_started()
+        (cpu.index() >= 64 || allowed & 1 << cpu.index() != 0)
+            && cpu.scheduler.has_started()
+            && !cpu.scheduler.is_leaving()
     })
+}
+
+/// Where a thread allowed on `allowed` goes when its CPU leaves service (D596): the first CPU
+/// it is allowed on that stays, else any that stays, its CPU set then widened to every CPU, as
+/// Linux does. `None` when no other CPU runs threads.
+fn refuge(thread: &Thread) -> Option<&'static Cpu> {
+    if let Some(cpu) = first_allowed(thread.allowed.get()) {
+        return Some(cpu);
+    }
+    let cpu = first_allowed(u64::MAX)?;
+    thread.allowed.set(u64::MAX);
+    Some(cpu)
 }
 
 /// [`place`] among `cpus`, turning `next`; `here` if there is no other. A CPU whose lock is
@@ -1054,7 +1076,14 @@ fn set_slice_ticks(here: &'static Cpu, slice_ticks: u64) {
 /// interrupt.
 #[inline]
 fn make_ready<P: Platform>(thread: ThreadBox) -> Option<&'static Cpu> {
-    let target = thread.get().cpu;
+    let mut thread = thread;
+    let mut target = thread.get().cpu;
+    if target.scheduler.is_leaving()
+        && let Some(refuge) = refuge(thread.get())
+    {
+        thread.move_to(refuge);
+        target = refuge;
+    }
     let mut scheduler = target.scheduler.lock();
     match scheduler.push_ready(thread) {
         Notice::Nothing => None,
@@ -1735,6 +1764,97 @@ pub fn set_running_shared<P: Platform>(shared: Arc<ThreadShared>) {
     drop(previous);
 }
 
+/// Takes `cpu` out of service (D596): it stops taking new threads, its device lines move to the
+/// other CPUs, its running thread moves at its next preemption point and its ready and sleeping
+/// threads once its idle thread looks, and then it waits for interrupts until
+/// [`bring_cpu_online`]. The boot CPU and the last CPU in service stay.
+pub fn take_cpu_offline<P: Platform>(cpu: &'static Cpu) -> Result<(), &'static str> {
+    if cpu.index() == 0 {
+        return Err("the boot CPU stays in service");
+    }
+    if !cpu.is_online() {
+        return Ok(());
+    }
+    if cpu::CPUS.online() <= 1 {
+        return Err("the last CPU in service stays");
+    }
+    cpu.scheduler.leaving.store(true, Ordering::Release);
+    cpu.set_online(false);
+    crate::devices::interrupts::move_off::<P>(cpu.hardware_id());
+    cpu.request_reschedule();
+    cpu::wake::<P>(cpu);
+    Ok(())
+}
+
+/// Puts `cpu` back in service after [`take_cpu_offline`] (D596).
+pub fn bring_cpu_online<P: Platform>(cpu: &'static Cpu) {
+    if cpu.scheduler.leaving.swap(false, Ordering::AcqRel) {
+        cpu.set_online(true);
+        cpu::wake::<P>(cpu);
+    }
+}
+
+/// The running thread leaves this CPU, which is leaving service, for another (D596).
+fn leave_cpu<P: Platform>() {
+    let here = cpu::current::<P>();
+    let mut local = here.scheduler.lock();
+    let Some(target) = local.current.as_ref().and_then(|thread| refuge(thread.get())) else {
+        return;
+    };
+    let next = match local.ready.pop_front() {
+        Some(next) => next,
+        None => local
+            .idle
+            .take()
+            .expect("a thread runs, so the idle thread does not"),
+    };
+    switch_to::<P>(local, here, next, move |scheduler, _, mut previous| {
+        previous.move_to(target);
+        scheduler.migrating = Some(previous);
+    });
+}
+
+/// The idle thread of a CPU leaving service hands its ready and sleeping threads to the CPUs
+/// that stay, then waits for interrupts until it is back in service (D596).
+fn drain_and_park<P: Platform>(here: &'static Cpu) {
+    let mut moving = Vec::new();
+    {
+        let mut local = here.scheduler.lock();
+        while let Some(thread) = local.ready.pop_front() {
+            moving.push((thread, None));
+        }
+        while let Some(thread) = local.sleeping.pop_front() {
+            let wake_at = thread.get().wake_at;
+            moving.push((thread, Some(wake_at)));
+        }
+        local.armed = u64::MAX;
+        P::set_timer_deadline(u64::MAX);
+    }
+    for (mut thread, wake_at) in moving {
+        let Some(target) = refuge(thread.get()) else {
+            here.scheduler.lock().ready.push_back(thread);
+            continue;
+        };
+        thread.move_to(target);
+        match wake_at {
+            Some(wake_at) => {
+                target.scheduler.lock().sleeping.insert_by_wake_at(thread, wake_at);
+                target.request_reschedule();
+                cpu::wake::<P>(target);
+            }
+            None => {
+                if let Some(cpu) = make_ready::<P>(thread) {
+                    cpu::wake::<P>(cpu);
+                }
+            }
+        }
+    }
+    while here.scheduler.is_leaving() {
+        P::wait_for_interrupt();
+        cpu::serve_shootdowns::<P>();
+    }
+}
+
 /// The running thread's id, as a number (D595).
 pub fn running_thread_id<P: Platform>() -> u64 {
     cpu::current::<P>()
@@ -1877,6 +1997,11 @@ pub fn preemption_point_before_user_mode<P: Platform>() -> bool {
 fn preemption_point_timer_fired<P: Platform>() {
     let here = cpu::current::<P>();
     let mut local = here.scheduler.lock();
+    if here.scheduler.is_leaving() && local.idle.is_some() {
+        drop(local);
+        leave_cpu::<P>();
+        return;
+    }
     let requested = local
         .current
         .as_ref()
@@ -2094,6 +2219,9 @@ fn idle_loop<P: Platform>() -> ! {
     let here = cpu::current::<P>();
     loop {
         crate::address_space::release_unused::<P>(here);
+        if here.scheduler.is_leaving() {
+            drain_and_park::<P>(here);
+        }
         let mut local = here.scheduler.lock();
         local.wakeup_sent = false;
         timer_events::<P>(&mut local);
