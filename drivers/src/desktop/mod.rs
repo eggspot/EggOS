@@ -52,6 +52,7 @@ mod tray;
 mod tv;
 mod updates;
 mod windows;
+mod zoom;
 
 #[cfg(test)]
 mod carry_tests;
@@ -105,7 +106,12 @@ pub use network::{
     NO_ADDRESS_TOOLTIP, NetworkState,
 };
 pub use osk::{EnterWord, FieldKind, FocusCause, LONG_PRESS_MS, OnScreenKeyboardMode, ScreenKey};
-pub use pointer::{CURSOR_SIDE, write_cursor_image};
+pub use pointer::{
+    CURSOR_SIDE, POINTER_SIZE_HALVES, area as pointer_area, fits_cursor_image,
+    set_size_halves as set_pointer_size_halves, size_halves as pointer_size_halves,
+    write_cursor_image,
+};
+pub use zoom::{ZOOM_LEVELS, ZoomView, magnify_rows, view_size as zoom_view_size};
 pub use responsiveness::{
     APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
 };
@@ -413,6 +419,7 @@ pub struct Desktop {
     pointer_visible: bool,
     pointer_drawn: Option<(u32, u32, PointerShape)>,
     pointer_on_display: bool,
+    zoom: zoom::Zoom,
     profile: Profile,
     layout: Layout,
     catalogue: Catalogue,
@@ -512,6 +519,7 @@ impl Desktop {
             pointer_visible: false,
             pointer_drawn: None,
             pointer_on_display: false,
+            zoom: zoom::Zoom::default(),
             profile: Profile::default(),
             layout: layout(width, height, 1, Profile::default()),
             catalogue: Catalogue::new(),
@@ -1862,6 +1870,7 @@ impl Desktop {
         self.note_person_motion(x, y);
         self.pointer = (x, y);
         self.pointer_visible = true;
+        self.zoom_follow_pointer(x, y, damage);
         if let Some(mut picker) = self.picker {
             damage.add(self.picker_area(&picker));
             picker.moved((x, y));
@@ -2380,6 +2389,9 @@ impl Desktop {
         if self.shift_tapped_to_toggle_sticky_keys(code, pressed, modifiers) {
             return Action::ToggleStickyKeys;
         }
+        if let Some(action) = self.mouse_keys_toggle(code, pressed, modifiers) {
+            return action;
+        }
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
@@ -2505,6 +2517,10 @@ impl Desktop {
                     self.profile,
                     self.focused_takes_ctrl_keys(),
                 )
+                && match shortcut {
+                    Shortcut::Zoom(command) => self.takes_zoom_command(command),
+                    _ => true,
+                }
             {
                 return self.run_shortcut(shortcut, damage, events);
             }

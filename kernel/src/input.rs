@@ -431,6 +431,8 @@ pub struct InputState {
     switch_armed: bool,
     num_lock_off: bool,
     scroll_lock: bool,
+    bounce: bounce::BounceKeys,
+    mouse_keys: mouse_keys::MouseKeys,
 }
 
 impl Default for InputState {
@@ -451,6 +453,11 @@ pub struct Timing {
     /// How long a key must be held before it counts, in ticks, while slow keys are on; 0 off
     /// (D205).
     pub slow_keys: u64,
+    /// How soon a key pressed again after its release is a bounce, in ticks, while bounce keys
+    /// are on; 0 off (D602).
+    pub bounce_keys: u64,
+    /// A mouse keys tick ([`mouse_keys::MOUSE_KEYS_TICK_MS`]) in ticks (D602).
+    pub mouse_keys_tick: u64,
 }
 
 impl Timing {
@@ -469,12 +476,52 @@ impl Timing {
                 frequency,
                 1000,
             ),
+            bounce_keys: mul_div_ceil(
+                u64::from(BOUNCE_KEYS_MS.load(Ordering::Relaxed)),
+                frequency,
+                1000,
+            ),
+            mouse_keys_tick: mul_div_ceil(mouse_keys::MOUSE_KEYS_TICK_MS, frequency, 1000),
         }
     }
 }
 
 static STICKY_KEYS: AtomicBool = AtomicBool::new(false);
 static SLOW_KEYS_MS: AtomicU32 = AtomicU32::new(0);
+static BOUNCE_KEYS_MS: AtomicU32 = AtomicU32::new(0);
+static MOUSE_KEYS_SPEED: AtomicU32 = AtomicU32::new(0);
+static MOUSE_KEYS_SHOWN: AtomicU32 = AtomicU32::new(0);
+
+/// Bounce keys and mouse keys (D602): a key pressed again within `bounce_keys_ms` of its
+/// release is ignored (`None` off, else 100 to 1000), and the numeric keypad moves the pointer
+/// at up to `mouse_keys_speed` pixels a second (`None` off, else 100 to 1000). `false`, and
+/// nothing changed, for a value out of range.
+pub fn set_more_key_accessibility(
+    bounce_keys_ms: Option<u32>,
+    mouse_keys_speed: Option<u32>,
+) -> bool {
+    let in_range = |value: Option<u32>| value.is_none_or(|value| (100..=1000).contains(&value));
+    if !in_range(bounce_keys_ms) || !in_range(mouse_keys_speed) {
+        return false;
+    }
+    BOUNCE_KEYS_MS.store(bounce_keys_ms.unwrap_or(0), Ordering::Relaxed);
+    MOUSE_KEYS_SPEED.store(mouse_keys_speed.unwrap_or(0), Ordering::Relaxed);
+    true
+}
+
+/// Whether mouse keys are on (D602).
+pub fn mouse_keys() -> bool {
+    MOUSE_KEYS_SPEED.load(Ordering::Relaxed) != 0
+}
+
+/// The mouse keys' button as the bar's chip shows it: the button (0 left, 1 right, 2 middle)
+/// in the low byte and whether it is held in the next; 0 while mouse keys are off (D602).
+pub fn mouse_keys_button() -> u32 {
+    match mouse_keys() {
+        true => MOUSE_KEYS_SHOWN.load(Ordering::Relaxed),
+        false => 0,
+    }
+}
 
 /// The accessibility of the keys (D205): sticky keys latch a tapped modifier for the next key
 /// (a second tap locks it); slow keys count a key only once it is held `slow_keys_ms` (`None`
@@ -852,6 +899,8 @@ impl InputState {
             switch_armed: false,
             num_lock_off: false,
             scroll_lock: false,
+            bounce: bounce::BounceKeys::new(),
+            mouse_keys: mouse_keys::MouseKeys::new(),
         }
     }
 
@@ -932,10 +981,14 @@ impl InputState {
 
     /// When the held key repeats next, if one does, or a key held under slow keys counts.
     pub fn next_repeat(&self) -> Option<u64> {
-        match (self.repeat.next(), self.slow.map(|(_, at)| at)) {
-            (Some(repeat), Some(slow)) => Some(repeat.min(slow)),
-            (repeat, slow) => repeat.or(slow),
-        }
+        [
+            self.repeat.next(),
+            self.slow.map(|(_, at)| at),
+            self.mouse_keys.next(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn accept_slow_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
@@ -994,6 +1047,17 @@ impl InputState {
             return;
         }
         if event.code >= button::FIRST {
+            return;
+        }
+        if timing.bounce_keys > 0
+            && self
+                .bounce
+                .drops(event.code, event.value, timing.now, timing.bounce_keys)
+        {
+            return;
+        }
+        if mouse_keys() && mouse_keys::is_mouse_key(event.code) {
+            self.mouse_key(event, timing, sink);
             return;
         }
         if timing.slow_keys > 0 && self.held_back_slowly(event, timing) {
@@ -1196,6 +1260,77 @@ impl InputState {
     fn switch_layout(&mut self, backwards: bool, sink: &mut dyn InputSink) {
         if let Some(next) = self.cycle_layout(backwards) {
             sink.event(InputEvent::LayoutChanged(next as u8));
+        }
+    }
+
+    fn mouse_keys_held(&self) -> (bool, bool, u32) {
+        let modifiers = self.keyboard.modifiers();
+        (
+            modifiers.contains(Modifiers::SHIFT),
+            modifiers.contains(Modifiers::CTRL),
+            MOUSE_KEYS_SPEED.load(Ordering::Relaxed),
+        )
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn mouse_key(&mut self, event: RawEvent, timing: Timing, sink: &mut dyn InputSink) {
+        use mouse_keys::MouseKeysAction;
+        let held = self.mouse_keys_held();
+        let action = self.mouse_keys.key(
+            event.code,
+            event.value,
+            timing.now,
+            timing.mouse_keys_tick,
+            held,
+        );
+        let (button, holding) = self.mouse_keys.button();
+        match action {
+            MouseKeysAction::Nothing => {}
+            MouseKeysAction::Move(dx, dy) => self.move_pointer_by(dx, dy, sink),
+            MouseKeysAction::Click => self.click(button, 1, sink),
+            MouseKeysAction::DoubleClick => self.click(button, 2, sink),
+            MouseKeysAction::Press => self.set_button(button, true, sink),
+            MouseKeysAction::Release => self.set_button(button, false, sink),
+        }
+        MOUSE_KEYS_SHOWN.store(
+            u32::from(button) | u32::from(holding) << 8,
+            Ordering::Relaxed,
+        );
+    }
+
+    fn move_pointer_by(&mut self, dx: i32, dy: i32, sink: &mut dyn InputSink) {
+        let Some((width, height)) = screen().filter(|&(width, height)| width > 0 && height > 0)
+        else {
+            return;
+        };
+        let moved = |at: u32, delta: i32, size: u32| at.saturating_add_signed(delta).min(size - 1);
+        let (x, y) = (
+            moved(self.pointer.0, dx, width),
+            moved(self.pointer.1, dy, height),
+        );
+        if (x, y) != self.pointer {
+            self.pointer = (x, y);
+            sink.event(InputEvent::PointerMove { x, y });
+        }
+    }
+
+    fn set_button(&mut self, index: u8, pressed: bool, sink: &mut dyn InputSink) {
+        let Some(&(button, _)) = BUTTONS.get(usize::from(index)) else {
+            return;
+        };
+        let bit = 1 << index;
+        match pressed {
+            true => self.buttons_held |= bit,
+            false => self.buttons_held &= !bit,
+        }
+        sink.event(InputEvent::Button { button, pressed });
+    }
+
+    fn click(&mut self, index: u8, times: u8, sink: &mut dyn InputSink) {
+        for _ in 0..times {
+            self.set_button(index, true, sink);
+            self.set_button(index, false, sink);
         }
     }
 
@@ -1535,6 +1670,12 @@ impl InputState {
     /// whole; without room the repeat stays due for the next poll.
     pub fn repeat_key(&mut self, timing: Timing, sink: &mut dyn InputSink) {
         self.accept_slow_key(timing, sink);
+        if self.mouse_keys.next().is_some() {
+            let held = self.mouse_keys_held();
+            if let Some((dx, dy)) = self.mouse_keys.due(timing.now, timing.mouse_keys_tick, held) {
+                self.move_pointer_by(dx, dy, sink);
+            }
+        }
         if sink.room() < KeyBytes::CAPACITY {
             return;
         }
@@ -2146,6 +2287,8 @@ pub fn start<P: Platform>() -> Result<Option<Watching>, crate::thread::SpawnErro
     .map(|_| Some(watching))
 }
 
+mod bounce;
+mod mouse_keys;
 #[cfg(test)]
 mod tests;
 

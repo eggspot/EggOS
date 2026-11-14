@@ -79,6 +79,8 @@ fn timing(now: u64) -> Timing {
         repeat_delay: 400,
         repeat_interval: 40,
         slow_keys: 0,
+        bounce_keys: 0,
+        mouse_keys_tick: 20,
     }
 }
 

@@ -67,6 +67,8 @@ pub struct Facts {
     pub input: InputPreferences,
     /// Sticky keys and slow keys (D205).
     pub keys: KeyAccessibility,
+    /// The screen reader's settings (D603).
+    pub screen_reader: eggos_settings_file::ScreenReaderSettings,
     /// High contrast and reduced motion (D224).
     pub display: DisplayAccessibility,
     /// The network adapter as `/proc/net/interfaces` reports it; `None` on a machine without
@@ -141,10 +143,8 @@ impl Facts {
             caps_lock: false,
             input: InputPreferences::DEFAULT,
             keys: KeyAccessibility::DEFAULT,
-            display: DisplayAccessibility {
-                high_contrast: false,
-                reduce_motion: false,
-            },
+            screen_reader: eggos_settings_file::ScreenReaderSettings::DEFAULT,
+            display: DisplayAccessibility::DEFAULT,
             network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
             power: eggos_device_list::power::PowerFacts::parse(EXAMPLE_POWER.as_bytes()),
             sleep_available: false,

@@ -110,6 +110,10 @@ pub enum Shortcut {
     /// window, Super+Shift+S and Super+Shift+4 a region; Super+PrtScn the screen in the
     /// Windows profile, Shift+PrtScn in the Linux one, Super+Shift+5 a region in the macOS one.
     Screenshot(super::screenshots::ScreenshotTarget),
+    /// Zoom on or off, in or out, or its view panned (D602): Super+Alt+8, Super+Alt+= and
+    /// Super+Alt+-, Super+= and Super+- (the keypad's + and - too), Super+Esc off, and
+    /// Ctrl+Alt+arrows, in every profile.
+    Zoom(super::zoom::ZoomCommand),
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -143,6 +147,25 @@ pub fn shortcut(
         };
         if let Some(target) = screenshot {
             return Some(Shortcut::Screenshot(target));
+        }
+    }
+    {
+        use super::zoom::{Pan, ZoomCommand};
+        let super_alt = Modifiers::from_bits(Modifiers::SUPER.bits() | Modifiers::ALT.bits());
+        let zoom_chord = only(super_alt) || only(super_key);
+        let zoom = match code {
+            key::KEY_8 if only(super_alt) => Some(ZoomCommand::Toggle),
+            key::EQUAL | key::KEYPAD_PLUS if zoom_chord => Some(ZoomCommand::In),
+            key::MINUS | key::KEYPAD_MINUS if zoom_chord => Some(ZoomCommand::Out),
+            key::ESC if only(super_key) => Some(ZoomCommand::Off),
+            key::UP if only(ctrl_alt) => Some(ZoomCommand::Pan(Pan::Up)),
+            key::DOWN if only(ctrl_alt) => Some(ZoomCommand::Pan(Pan::Down)),
+            key::LEFT if only(ctrl_alt) => Some(ZoomCommand::Pan(Pan::Left)),
+            key::RIGHT if only(ctrl_alt) => Some(ZoomCommand::Pan(Pan::Right)),
+            _ => None,
+        };
+        if let Some(command) = zoom {
+            return Some(Shortcut::Zoom(command));
         }
     }
     Some(match code {

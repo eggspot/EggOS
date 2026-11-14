@@ -2234,7 +2234,11 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   mouse and keys behave so from the next event. accessibility.sticky_keys and \
                   accessibility.slow_keys take true or false, accessibility.slow_keys_ms 100 \
                   to 1000: a modifier pressed alone then stays down for the next key, or a key \
-                  counts once held that long, from the next key. mouse.device.<n>.buttons, \
+                  counts once held that long, from the next key. accessibility.zoom, \
+                  .bounce_keys, .toggle_keys and .mouse_keys take true or false, \
+                  accessibility.zoom_level 2, 3, 4, 6 or 8, accessibility.pointer_size 1, 1.5, \
+                  2 or 3, accessibility.bounce_keys_ms and accessibility.mouse_keys_speed 100 \
+                  to 1000. mouse.device.<n>.buttons, \
                   .scrolling, .speed and .acceleration (n 1 to 16) take the global key's \
                   values or global to follow it; mouse.devices lists the pointing devices \
                   present. The other keys report facts \

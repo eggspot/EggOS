@@ -1,6 +1,8 @@
 //! The sticky keys' chips in the panel (docs/ux/first-run-accessibility-v0.3.md section 2.6,
-//! D224): one chip per modifier the kernel's input layer holds latched or locked, and for
-//! [`NOTICE_MS`] after sticky keys are turned on or off, a notice saying so in their place.
+//! D224): one chip per modifier the kernel's input layer holds latched or locked, the mouse
+//! keys' button chip (D602), and a notice in their place for a while: sticky keys or mouse keys
+//! turned on or off, a lock key's change with toggle keys on, a zoom level
+//! (docs/ux/accessibility-v0.4.md sections 2.2, 3.3 and 3.4).
 
 use super::launcher::NOTICE_MS;
 use super::paint::{self, Canvas};
@@ -28,13 +30,23 @@ const STICKY_STRIP_BEFORE_CHIP: u32 = 8;
 const STICKY_STRIP_BEFORE_CLOCK: u32 = 16;
 const STICKY_LABEL_Y: u32 = 2;
 
-/// The modifiers the chips show and the notice, if one shows: whether sticky keys went on,
-/// and when.
+/// The modifiers the chips show, the mouse keys' button chip, and the notice, if one shows:
+/// its words, when it showed and for how long (D224, D602).
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct StickyChips {
     latched: u8,
     locked: u8,
-    notice: Option<(bool, u32)>,
+    notice: Option<StripNotice>,
+    mouse_keys_button: Option<&'static str>,
+    mouse_keys_on: bool,
+    alt_taps: (u8, u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StripNotice {
+    words: &'static str,
+    at: u32,
+    lasting_ms: u32,
 }
 
 fn chip_width(word: &str) -> u32 {
@@ -61,21 +73,93 @@ impl Desktop {
 
     /// Sticky keys were turned `on` or off: the strip says so for [`NOTICE_MS`].
     pub fn sticky_keys_turned(&mut self, on: bool, damage: &mut Damage) {
+        let words = match on {
+            true => STICKY_KEYS_ON,
+            false => STICKY_KEYS_OFF,
+        };
+        self.show_strip_notice(words, NOTICE_MS, damage);
+    }
+
+    /// The strip shows `words` for `lasting_ms` in place of its chips: a lock key's change with
+    /// toggle keys on, a zoom level, mouse keys turned on (D602). A new notice replaces the one
+    /// showing.
+    pub fn show_strip_notice(&mut self, words: &'static str, lasting_ms: u32, damage: &mut Damage) {
         self.damage_sticky_strip(damage);
-        self.sticky.notice = Some((on, self.now_ms));
+        self.sticky.notice = Some(StripNotice {
+            words,
+            at: self.now_ms,
+            lasting_ms,
+        });
         self.damage_sticky_strip(damage);
+    }
+
+    /// The mouse keys' button chip, while a button other than the left is selected or one is
+    /// held (`Right button`, `Left button held`); `None` hides it (D602).
+    pub fn set_mouse_keys_button(&mut self, words: Option<&'static str>, damage: &mut Damage) {
+        if words == self.sticky.mouse_keys_button {
+            return;
+        }
+        self.damage_sticky_strip(damage);
+        self.sticky.mouse_keys_button = words;
+        self.damage_sticky_strip(damage);
+    }
+
+    /// Mouse keys are on or off now, so their toggle chord knows which way to turn them.
+    pub fn set_mouse_keys_on(&mut self, on: bool) {
+        self.sticky.mouse_keys_on = on;
+    }
+
+    /// Whether `code` pressed with `modifiers` turns mouse keys on or off (D602): Left Alt and
+    /// Left Shift with Num Lock in every profile, and Alt tapped five times within two seconds
+    /// in the macOS profile. Both start `settings set accessibility.mouse_keys`, so the pane,
+    /// the CLI and the next boot agree.
+    pub(super) fn mouse_keys_toggle(
+        &mut self,
+        code: u16,
+        pressed: bool,
+        modifiers: Modifiers,
+    ) -> Option<super::Action> {
+        if !pressed {
+            return None;
+        }
+        let held = modifiers.bits() & !Modifiers::CAPS_LOCK.bits();
+        let chord = Modifiers::ALT.bits() | Modifiers::SHIFT.bits();
+        let toggled = match code {
+            crate::input::key::NUM_LOCK => held == chord,
+            crate::input::key::LEFT_ALT | crate::input::key::RIGHT_ALT
+                if self.profile == super::Profile::Macos && held & !Modifiers::ALT.bits() == 0 =>
+            {
+                let (taps, last) = self.sticky.alt_taps;
+                let within = self.now_ms.wrapping_sub(last) <= super::STICKY_TOGGLE_WITHIN_MS;
+                let taps = match taps > 0 && within {
+                    true => taps + 1,
+                    false => 1,
+                };
+                let done = taps == super::STICKY_TOGGLE_TAPS;
+                self.sticky.alt_taps = (if done { 0 } else { taps }, self.now_ms);
+                done
+            }
+            _ => {
+                self.sticky.alt_taps = (0, self.now_ms);
+                false
+            }
+        };
+        toggled.then_some(super::Action::SetSetting {
+            key: "accessibility.mouse_keys",
+            value: match self.sticky.mouse_keys_on {
+                true => "false",
+                false => "true",
+            },
+        })
     }
 
     /// The notice the strip shows now, if any.
     pub fn sticky_keys_notice(&self) -> Option<&'static str> {
-        let (on, at) = self.sticky.notice?;
-        if self.now_ms.wrapping_sub(at) >= NOTICE_MS {
+        let notice = self.sticky.notice?;
+        if self.now_ms.wrapping_sub(notice.at) >= notice.lasting_ms {
             return None;
         }
-        Some(match on {
-            true => STICKY_KEYS_ON,
-            false => STICKY_KEYS_OFF,
-        })
+        Some(notice.words)
     }
 
     /// The chips that show, left to right: each one's rectangle, its word and whether its
@@ -107,6 +191,9 @@ impl Desktop {
             );
             x += width + STICKY_CHIP_GAP;
         }
+        if let Some(word) = self.sticky.mouse_keys_button {
+            chip(Rect::new(x, strip.y, chip_width(word), CHIP_HEIGHT), word, false);
+        }
     }
 
     /// The strip the chips or the notice fill, while any shows: its right edge 8 px left of
@@ -122,6 +209,9 @@ impl Desktop {
                     if shown & modifier.bits() != 0 {
                         width += chip_width(latched) + STICKY_CHIP_GAP;
                     }
+                }
+                if let Some(word) = self.sticky.mouse_keys_button {
+                    width += chip_width(word) + STICKY_CHIP_GAP;
                 }
                 width.checked_sub(STICKY_CHIP_GAP)?
             }
@@ -156,17 +246,13 @@ impl Desktop {
     }
 
     pub(super) fn tick_sticky_notice(&mut self, damage: &mut Damage) {
-        let Some((on, at)) = self.sticky.notice else {
+        let Some(notice) = self.sticky.notice else {
             return;
         };
-        if self.now_ms.wrapping_sub(at) < NOTICE_MS {
+        if self.now_ms.wrapping_sub(notice.at) < notice.lasting_ms {
             return;
         }
-        let shown = match on {
-            true => STICKY_KEYS_ON,
-            false => STICKY_KEYS_OFF,
-        };
-        if let Some(notice) = self.sticky_strip_of(chip_width(shown)) {
+        if let Some(notice) = self.sticky_strip_of(chip_width(notice.words)) {
             damage.add(notice);
         }
         self.sticky.notice = None;

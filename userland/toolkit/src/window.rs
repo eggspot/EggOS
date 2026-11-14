@@ -29,8 +29,9 @@ const SET_DEVICE_INPUT_PREFERENCES: usize = 0x4014_773c;
 /// `SET_DEVICE_INPUT_PREFERENCES`' device for every mouse (D589).
 pub const EVERY_DEVICE: u32 = u32::MAX;
 const SET_CLIPBOARD: usize = 0x4010_7720;
-const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
+const SET_KEY_ACCESSIBILITY: usize = 0x4020_7724;
 const SET_LID_ACTION: usize = 0x4004_7740;
+const SET_ACCESSIBILITY: usize = 0x401c_7741;
 const CHANGE_FLAGS: usize = 0x400c_7725;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const START_DRAG: usize = 0x4058_7737;
@@ -183,23 +184,26 @@ impl WindowServer {
         result(answer).map(|_| argument)
     }
 
-    /// Turns sticky keys and slow keys on or off, slow keys counting a key once held
-    /// `slow_keys_ms` (`SET_KEY_ACCESSIBILITY`, D205).
-    pub fn set_key_accessibility(
-        &self,
-        sticky_keys: bool,
-        slow_keys: bool,
-        slow_keys_ms: u32,
-    ) -> Result<(), Errno> {
-        let mut bytes = [0u8; 12];
-        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip([
-            u32::from(sticky_keys),
-            u32::from(slow_keys),
-            slow_keys_ms,
-        ]) {
+    /// Uses the key accessibility in `words` from the next key on (`SET_KEY_ACCESSIBILITY`,
+    /// D205, D602): sticky keys, slow keys and their delay in milliseconds, bounce keys and
+    /// theirs, toggle keys, mouse keys and their top speed in pixels a second, each switch 0 or 1.
+    pub fn set_key_accessibility(&self, words: [u32; 8]) -> Result<(), Errno> {
+        let mut bytes = [0u8; 32];
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
             *place = word.to_ne_bytes();
         }
         self.ioctl(SET_KEY_ACCESSIBILITY, &mut bytes)
+    }
+
+    /// Uses the screen reader's settings and the zoom and pointer size in `words` at once
+    /// (`SET_ACCESSIBILITY`, D602, D603): the reader on, captions on, words a minute, echo
+    /// characters, zoom on, its level, the pointer's size in halves.
+    pub fn set_accessibility(&self, words: [u32; 7]) -> Result<(), Errno> {
+        let mut bytes = [0u8; 28];
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *place = word.to_ne_bytes();
+        }
+        self.ioctl(SET_ACCESSIBILITY, &mut bytes)
     }
 
     /// What closing the lid does from now on (`SET_LID_ACTION`, D599): 0 sleep, 1 nothing, 2

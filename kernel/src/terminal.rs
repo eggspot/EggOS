@@ -36,7 +36,7 @@ use crate::vfs;
 use crate::window::{self, Buffers, Clients, Queues};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 use eggos_drivers::desktop::protocol::{DiscardEvents, EventSink, PointerShape};
 use eggos_drivers::desktop::{
     Action, AppId, Contents, Desktop, Form, FormSetting, GRID_SIZE, KeyboardLayoutChoice, Launch,
@@ -92,6 +92,8 @@ struct Screen {
     boot_screen_until: Option<u64>,
     active_at: u64,
     snapshot: Snapshot,
+    /// The frame before the zoom's lens magnifies it, while zoom is on (D602).
+    lens_source: Option<Box<[u32]>>,
 }
 
 impl Screen {
@@ -131,25 +133,61 @@ impl Contents for ScreenContents<'_> {
     }
 }
 
-fn compose(screen: &Screen, framebuffer: &mut display::Framebuffer<'_>, damage: &Damage) {
+fn compose(screen: &mut Screen, framebuffer: &mut display::Framebuffer<'_>, damage: &Damage) {
     if screen.boot_screen_until.is_some() {
         return;
     }
-    let Some(desktop) = screen.desktop.as_ref() else {
+    let Screen {
+        desktop,
+        console,
+        terminal_pixels,
+        buffers,
+        lens_source,
+        ..
+    } = screen;
+    let Some(desktop) = desktop.as_ref() else {
         for &rect in damage.rects() {
-            draw_console(framebuffer, screen.console, &screen.terminal_pixels, rect);
+            draw_console(framebuffer, *console, &terminal_pixels[..], rect);
         }
         return;
     };
-    let stride = framebuffer.mode().width as usize;
+    let mode = framebuffer.mode();
+    let stride = mode.width as usize;
     let contents = ScreenContents {
         terminal: desktop.terminal_window(),
-        terminal_pixels: &screen.terminal_pixels,
-        buffers: &screen.buffers,
+        terminal_pixels: &terminal_pixels[..],
+        buffers: &*buffers,
+    };
+    let Some(view) = desktop.zoom_view() else {
+        *lens_source = None;
+        for &rect in damage.rects() {
+            desktop.draw(framebuffer.pixels(), stride, rect, &contents);
+            framebuffer.damage(rect);
+        }
+        return;
+    };
+    let pixels = stride * mode.height as usize;
+    if lens_source.as_ref().is_none_or(|source| source.len() != pixels) {
+        let mut fresh = Vec::new();
+        if fresh.try_reserve_exact(pixels).is_err() {
+            *lens_source = None;
+            return;
+        }
+        fresh.resize(pixels, 0);
+        *lens_source = Some(fresh.into_boxed_slice());
+        let whole = Rect::new(0, 0, mode.width, mode.height);
+        if let Some(source) = lens_source.as_mut() {
+            desktop.draw(source, stride, whole, &contents);
+        }
+    }
+    let Some(source) = lens_source.as_mut() else {
+        return;
     };
     for &rect in damage.rects() {
-        desktop.draw(framebuffer.pixels(), stride, rect, &contents);
-        framebuffer.damage(rect);
+        desktop.draw(source, stride, rect, &contents);
+        let shown = desktop.zoomed_damage(rect);
+        eggos_drivers::desktop::magnify_rows(source, framebuffer.pixels(), mode.width, view, shown);
+        framebuffer.damage(shown);
     }
 }
 
@@ -537,6 +575,11 @@ pub fn load_saved_settings<P: Platform>() {
     };
     CHOSEN_PALETTE.store(theme + contrast, Ordering::Relaxed);
     REDUCE_MOTION.store(display.reduce_motion, Ordering::Relaxed);
+    set_display_aids::<P>(
+        display.zoom.then_some(display.zoom_level),
+        display.zoom_level,
+        display.pointer_size_halves,
+    );
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
@@ -546,6 +589,11 @@ pub fn load_saved_settings<P: Platform>() {
         keys.sticky_keys,
         keys.slow_keys.then_some(keys.slow_keys_ms),
     );
+    crate::input::set_more_key_accessibility(
+        keys.bounce_keys.then_some(keys.bounce_keys_ms),
+        keys.mouse_keys.then_some(keys.mouse_keys_speed),
+    );
+    set_toggle_keys(keys.toggle_keys);
     let input = eggos_settings_file::input_preferences(&file[..length]);
     crate::input::set_preferences(crate::input::Preferences {
         left_handed: input.left_handed,
@@ -622,13 +670,21 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         Some(mut desktop) => {
             desktop.set_profile(desktop_profile(), &mut Damage::new(), &mut DiscardEvents);
             desktop.set_reduce_motion(reduce_motion(), &mut Damage::new());
+            let zoom_level = ZOOM_LEVEL.load(Ordering::Relaxed);
+            let zoom = ZOOM_ON.load(Ordering::Relaxed).then_some(zoom_level);
+            desktop.set_zoom(zoom, zoom_level, &mut Damage::new());
+            desktop.set_mouse_keys_on(input::mouse_keys());
             if session == Session::Interactive {
                 desktop.set_catalogue(
                     crate::apps::catalogue(),
                     &mut Damage::new(),
                     &mut DiscardEvents,
                 );
-                desktop.set_pointer_on_display(display::draws_pointer(), &mut Damage::new());
+                let on_display = display::draws_pointer()
+                    && zoom.is_none()
+                    && eggos_drivers::desktop::pointer_size_halves()
+                        <= LARGEST_HARDWARE_POINTER_HALVES;
+                desktop.set_pointer_on_display(on_display, &mut Damage::new());
             }
             Some(desktop)
         }
@@ -658,7 +714,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         },
         None => console,
     };
-    let screen = Box::new(Screen {
+    let mut screen = Box::new(Screen {
         terminal_pixels: grid_pixels(grid)?,
         desktop,
         console,
@@ -668,6 +724,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         boot_screen_until,
         active_at: now,
         snapshot: Snapshot::default(),
+        lens_source: None,
     });
     if drawer().is_none() {
         DRAWER.store(Box::into_raw(Box::new(WaitQueue::new())), Ordering::Release);
@@ -679,7 +736,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         framebuffer.end_boot_screen();
         let mut whole = Damage::new();
         whole.add(mode.rect());
-        compose(&screen, framebuffer, &whole);
+        compose(&mut screen, framebuffer, &whole);
     })?;
     KEYS_TO_TERMINAL.store(true, Ordering::Relaxed);
     CONSOLE_ALONE.store(screen.desktop.is_none(), Ordering::Relaxed);
@@ -1033,6 +1090,8 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
     desktop.set_network(crate::net::indicated(), damage);
     let (latched, locked) = input::sticky_modifiers();
     desktop.set_latched(latched, locked, damage);
+    show_lock_changes(desktop, damage);
+    show_mouse_keys_button(desktop, damage);
     show_keyboard_layouts(desktop, damage);
     while let Some(event) = input::next_event() {
         let asked = match event {
@@ -1289,6 +1348,116 @@ pub fn sticky_keys_turned<P: Platform>(on: bool) {
         desktop.sticky_keys_turned(on, damage);
     });
 }
+
+/// Mouse keys were turned `on` or off (`SET_KEY_ACCESSIBILITY`, D602): the bar says so for
+/// three seconds, and the button chip goes with them.
+pub fn mouse_keys_turned<P: Platform>(on: bool) {
+    with_windows::<P, _>(|desktop, _, damage, _| {
+        let words = match on {
+            true => MOUSE_KEYS_ON,
+            false => MOUSE_KEYS_OFF,
+        };
+        desktop.show_strip_notice(words, MOUSE_KEYS_NOTICE_MS, damage);
+        desktop.set_mouse_keys_on(on);
+        if !on {
+            desktop.set_mouse_keys_button(None, damage);
+        }
+    });
+}
+
+const MOUSE_KEYS_ON: &str = "Mouse keys on";
+const MOUSE_KEYS_OFF: &str = "Mouse keys off";
+const MOUSE_KEYS_NOTICE_MS: u32 = 3000;
+const TOGGLE_KEYS_CHIP_MS: u32 = 1500;
+const BUTTON_CHIPS: [[Option<&str>; 2]; 3] = [
+    [None, Some("Left button held")],
+    [Some("Right button"), Some("Right button held")],
+    [Some("Middle button"), Some("Middle button held")],
+];
+
+static TOGGLE_KEYS: AtomicBool = AtomicBool::new(false);
+static ZOOM_ON: AtomicBool = AtomicBool::new(false);
+static ZOOM_LEVEL: AtomicU32 = AtomicU32::new(2);
+static LOCKS_SHOWN: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Whether the bar says when Caps, Num or Scroll Lock change (D602).
+pub fn set_toggle_keys(on: bool) {
+    TOGGLE_KEYS.store(on, Ordering::Relaxed);
+}
+
+fn locks_now() -> u32 {
+    u32::from(input::caps_lock())
+        | u32::from(input::num_lock()) << 1
+        | u32::from(input::scroll_lock()) << 2
+}
+
+fn show_lock_changes(desktop: &mut Desktop, damage: &mut Damage) {
+    let now = locks_now();
+    let before = LOCKS_SHOWN.swap(now, Ordering::Relaxed);
+    if before == u32::MAX || before == now || !TOGGLE_KEYS.load(Ordering::Relaxed) {
+        return;
+    }
+    let changed = before ^ now;
+    let words = [
+        ("Caps Lock on", "Caps Lock off"),
+        ("Num Lock on", "Num Lock off"),
+        ("Scroll Lock on", "Scroll Lock off"),
+    ];
+    if let Some((bit, &(on, off))) = words
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|&(bit, _)| changed & (1 << bit) != 0)
+    {
+        let words = match now & (1 << bit) != 0 {
+            true => on,
+            false => off,
+        };
+        desktop.show_strip_notice(words, TOGGLE_KEYS_CHIP_MS, damage);
+    }
+}
+
+fn show_mouse_keys_button(desktop: &mut Desktop, damage: &mut Damage) {
+    let shown = input::mouse_keys_button();
+    let chip = match input::mouse_keys() {
+        true => BUTTON_CHIPS
+            .get((shown & 0xff) as usize)
+            .and_then(|chips| chips[usize::from(shown >> 8 & 1 != 0)]),
+        false => None,
+    };
+    desktop.set_mouse_keys_button(chip, damage);
+}
+
+/// Zoom on at `zoom` or off, the level the settings hold, and the pointer's size in halves
+/// (`SET_ACCESSIBILITY`, the boot read; D602): the next frame shows them. The display's own
+/// cursor is used only while neither zoom nor a size larger than its image needs software.
+pub fn set_display_aids<P: Platform>(zoom: Option<u32>, saved_level: u32, pointer_halves: u32) {
+    ZOOM_ON.store(zoom.is_some(), Ordering::Relaxed);
+    ZOOM_LEVEL.store(saved_level, Ordering::Relaxed);
+    let on_display = display::draws_pointer()
+        && zoom.is_none()
+        && pointer_halves <= LARGEST_HARDWARE_POINTER_HALVES;
+    if !on_display {
+        let _ = display::show_pointer::<P>(None);
+    }
+    let resized = eggos_drivers::desktop::pointer_size_halves() != pointer_halves
+        && eggos_drivers::desktop::set_pointer_size_halves(pointer_halves);
+    if resized {
+        display::forget_pointer_image();
+    }
+    with_windows::<P, _>(|desktop, _, damage, _| {
+        if let Some((x, y, shape)) = desktop.pointer() {
+            damage.add(eggos_drivers::desktop::pointer_area(shape, x, y));
+        }
+        desktop.set_zoom(zoom, saved_level, damage);
+        desktop.set_pointer_on_display(on_display, damage);
+        if let Some((x, y, shape)) = desktop.pointer() {
+            damage.add(eggos_drivers::desktop::pointer_area(shape, x, y));
+        }
+    });
+}
+
+const LARGEST_HARDWARE_POINTER_HALVES: u32 = 4;
 
 fn launch_command(app: AppId) -> Option<Launch> {
     SCREEN

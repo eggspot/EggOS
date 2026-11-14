@@ -1,71 +1,58 @@
-//! The Accessibility pane (D205, D224, docs/ux/first-run-accessibility-v0.3.md section 2):
-//! high contrast, reduce motion, sticky keys, slow keys and the delay a key must be held, and
-//! full keyboard navigation, always on. Each change is one [`Request::ChangeDisplay`] or
-//! [`Request::ChangeKeys`] the program saves, then applies.
+//! The Accessibility pane (D205, D224, D602; docs/ux/first-run-accessibility-v0.3.md section 2
+//! and docs/ux/accessibility-v0.4.md section 4.1): under `Seeing`, high contrast, reduce
+//! motion, zoom and its level, and the pointer's size; under `Keys and pointer`, sticky keys,
+//! slow keys and their delay, bounce keys and theirs, toggle keys, mouse keys and their top
+//! speed; and full keyboard navigation, always on. Each change is one
+//! [`Request::ChangeDisplay`] or [`Request::ChangeKeys`] the program saves, then applies.
 
 use crate::agents_pane::show_line;
 use crate::facts::Facts;
 use crate::input_panes::Reply;
 use crate::keys::{DisplayChange, KeysChange};
 use crate::settings_window::{CAPACITY, Request};
+use alloc::vec::Vec;
 use eggos_runtime::errno::Errno;
-use eggos_settings_file::{DisplayAccessibility, KeyAccessibility};
+use eggos_settings_file::{DisplayAccessibility, KeyAccessibility, POINTER_SIZES, ZOOM_LEVELS};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{CONTROL_HEIGHT, Horizontal, Kind, Length, Place};
 
 const PADDING: i32 = 16;
+const INDENT: i32 = 40;
+const FIRST_ROW: i32 = 64;
+const ROW: i32 = 40;
+const TEXT_IN_ROW: i32 = 12;
+const CONTROL_IN_ROW: i32 = 6;
 const SLIDER_WIDTH: i32 = 216;
+const TOP_SPEED_WIDTH: i32 = 224;
+const DROPDOWN_WIDTH: i32 = 160;
 const TOUCH_CONTROL: i32 = 48;
+const LINE: i32 = 20;
+/// The pane's height on the desktop: its rows from 64, 40 apart, the navigation lines and the
+/// status line.
+pub const ACCESSIBILITY_PANE_HEIGHT: i32 = 788;
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
+const LEVEL_OPTIONS: [&str; 5] = ["2x", "3x", "4x", "6x", "8x"];
+const POINTER_SIZE_OPTIONS: [&str; 4] =
+    ["Normal (1x)", "Large (1.5x)", "Larger (2x)", "Largest (3x)"];
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
     tree.add(Some(parent), place, kind)
         .expect("the Settings window fits its tree")
 }
 
-fn label(
-    tree: &mut WidgetTree<CAPACITY>,
-    pane: WidgetId,
-    x: i32,
-    y: i32,
-    words: &str,
-    ink: Token,
-) -> WidgetId {
-    add(
-        tree,
-        pane,
-        Place::at(x, y, Length::Content, Length::Content),
-        Kind::label(words, ink),
-    )
+fn text_at(x: i32, y: i32) -> Place {
+    Place::at(x, y, Length::Content, Length::Content)
 }
 
-fn meaning(
-    tree: &mut WidgetTree<CAPACITY>,
-    pane: WidgetId,
-    y: i32,
-    words: &str,
-    ink: Token,
-) -> WidgetId {
-    add(
-        tree,
-        pane,
-        Place::right(PADDING, y),
-        Kind::label(words, ink),
-    )
-}
-
-fn checkbox(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, y: i32, words: &str) -> WidgetId {
-    add(
-        tree,
-        pane,
-        Place::at(PADDING, y, Length::Content, Length::Px(CONTROL_HEIGHT)),
-        Kind::Checkbox {
-            text: Text::from(words),
-            checked: false,
-        },
-    )
+fn from_right(top: i32, width: i32) -> Place {
+    Place {
+        horizontal: Horizontal::Right(PADDING),
+        top,
+        width: Length::Px(width),
+        height: Length::Px(CONTROL_HEIGHT),
+    }
 }
 
 /// What the pane's controls show: the display's and the keys' accessibility.
@@ -85,64 +72,128 @@ impl Shown {
     }
 }
 
+/// One row of the pane, in order, as it is placed on the desktop and on a narrow page.
+#[derive(Debug, Clone, Copy)]
+enum Row {
+    /// A sub-heading: `Seeing`, `Keys and pointer`.
+    Heading(WidgetId),
+    /// A checkbox with its meaning right-aligned beside it, or under it on a narrow page.
+    Check { check: WidgetId, meaning: WidgetId },
+    /// A label with its control right-aligned, `width` wide (a dropdown or a slider); the
+    /// label indented when the row belongs to the checkbox above.
+    Control {
+        label: WidgetId,
+        control: WidgetId,
+        width: i32,
+        indented: bool,
+    },
+}
+
 /// The Accessibility pane's widgets.
 #[derive(Debug)]
 pub struct AccessibilityPane {
-    meanings: [WidgetId; 4],
-    lines: [WidgetId; 4],
+    rows: Vec<Row>,
+    navigation: [WidgetId; 3],
     contrast: WidgetId,
     motion: WidgetId,
+    zoom: WidgetId,
+    level: WidgetId,
+    pointer_size: WidgetId,
     sticky: WidgetId,
     slow: WidgetId,
     delay: WidgetId,
+    bounce: WidgetId,
+    bounce_delay: WidgetId,
+    toggle: WidgetId,
+    mouse_keys: WidgetId,
+    top_speed: WidgetId,
     status: WidgetId,
+}
+
+struct Builder<'a> {
+    tree: &'a mut WidgetTree<CAPACITY>,
+    pane: WidgetId,
+    rows: Vec<Row>,
+}
+
+impl Builder<'_> {
+    fn heading(&mut self, words: &str) {
+        let id = add(
+            self.tree,
+            self.pane,
+            text_at(PADDING, FIRST_ROW),
+            Kind::label(words, Token::Text),
+        );
+        self.rows.push(Row::Heading(id));
+    }
+
+    fn check(&mut self, words: &str, meaning: &str) -> WidgetId {
+        let check = add(
+            self.tree,
+            self.pane,
+            Place::at(PADDING, FIRST_ROW, Length::Content, Length::Px(CONTROL_HEIGHT)),
+            Kind::Checkbox {
+                text: Text::from(words),
+                checked: false,
+            },
+        );
+        let meaning = add(
+            self.tree,
+            self.pane,
+            Place::right(PADDING, FIRST_ROW),
+            Kind::label(meaning, Token::TextDim),
+        );
+        self.rows.push(Row::Check { check, meaning });
+        check
+    }
+
+    fn control(&mut self, words: &str, kind: Kind, width: i32, indented: bool) -> WidgetId {
+        let label = add(
+            self.tree,
+            self.pane,
+            text_at(PADDING, FIRST_ROW),
+            Kind::label(words, Token::Text),
+        );
+        let control = add(self.tree, self.pane, from_right(FIRST_ROW, width), kind);
+        self.rows.push(Row::Control {
+            label,
+            control,
+            width,
+            indented,
+        });
+        control
+    }
 }
 
 impl AccessibilityPane {
     /// Builds the pane's rows in `pane`, under its heading, showing `shown`.
     pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, shown: Shown) -> Self {
-        let contrast = checkbox(tree, pane, 70, "High contrast");
-        let contrast_meaning = meaning(
+        let mut rows = Builder {
             tree,
             pane,
-            76,
-            "White on black, every edge drawn.",
-            Token::TextDim,
+            rows: Vec::new(),
+        };
+        rows.heading("Seeing");
+        let contrast = rows.check("High contrast", "White on black, every edge drawn.");
+        let motion = rows.check("Reduce motion", "No blinking, no animation.");
+        let zoom = rows.check("Zoom", "Magnifies the screen around the focus.");
+        let level = rows.control(
+            "Level",
+            Kind::dropdown("Level", &LEVEL_OPTIONS, 0),
+            DROPDOWN_WIDTH,
+            true,
         );
-        let motion = checkbox(tree, pane, 110, "Reduce motion");
-        let motion_meaning = meaning(
-            tree,
-            pane,
-            116,
-            "No blinking, no animation.",
-            Token::TextDim,
+        let pointer_size = rows.control(
+            "Pointer size",
+            Kind::dropdown("Pointer size", &POINTER_SIZE_OPTIONS, 0),
+            DROPDOWN_WIDTH,
+            false,
         );
-        let sticky = checkbox(tree, pane, 150, "Sticky keys");
-        let sticky_meaning = meaning(
-            tree,
-            pane,
-            156,
-            "Tap a modifier, then the key; twice locks it.",
-            Token::TextDim,
-        );
-        let slow = checkbox(tree, pane, 190, "Slow keys");
-        let slow_meaning = meaning(
-            tree,
-            pane,
-            196,
-            "A key counts only when held this long.",
-            Token::TextDim,
-        );
-        let hold = label(tree, pane, 40, 236, "Hold a key for", Token::Text);
-        let delay = add(
-            tree,
-            pane,
-            Place {
-                horizontal: Horizontal::Right(PADDING),
-                top: 230,
-                width: Length::Px(SLIDER_WIDTH),
-                height: Length::Px(CONTROL_HEIGHT),
-            },
+        rows.heading("Keys and pointer");
+        let sticky = rows.check("Sticky keys", "Tap a modifier, then the key; twice locks it.");
+        let slow = rows.check("Slow keys", "A key counts only when held this long.");
+        let delay = rows.control(
+            "Hold a key for",
             Kind::slider(
                 "Hold a key for",
                 100,
@@ -151,109 +202,199 @@ impl AccessibilityPane {
                 shown.keys.slow_keys_ms as i32,
                 " ms",
             ),
+            SLIDER_WIDTH,
+            true,
         );
-        let navigation = label(
-            tree,
-            pane,
-            PADDING,
-            276,
-            "Full keyboard navigation",
-            Token::Text,
+        let bounce = rows.check("Bounce keys", "A key pressed again this soon is ignored.");
+        let bounce_delay = rows.control(
+            "Ignore a repeat within",
+            Kind::slider(
+                "Ignore a repeat within",
+                100,
+                1000,
+                50,
+                shown.keys.bounce_keys_ms as i32,
+                " ms",
+            ),
+            SLIDER_WIDTH,
+            true,
         );
-        let always = meaning(tree, pane, 276, "Always on", Token::Text);
-        let reaches = label(
-            tree,
-            pane,
-            PADDING,
-            296,
-            "Tab reaches every control; Ctrl+Alt+Tab reaches the bar.",
-            Token::TextDim,
+        let toggle = rows.check("Toggle keys", "Says when Caps, Num or Scroll Lock change.");
+        let mouse_keys = rows.check("Mouse keys", "The numeric keypad moves the pointer.");
+        let top_speed = rows.control(
+            "Top speed",
+            Kind::slider(
+                "Top speed",
+                100,
+                1000,
+                50,
+                shown.keys.mouse_keys_speed as i32,
+                " px/s",
+            ),
+            TOP_SPEED_WIDTH,
+            true,
         );
-        let status = label(tree, pane, PADDING, 316, "", Token::TextDim);
+        let Builder { tree, rows, .. } = rows;
+        let navigation = [
+            add(
+                tree,
+                pane,
+                text_at(PADDING, FIRST_ROW),
+                Kind::label("Full keyboard navigation", Token::Text),
+            ),
+            add(
+                tree,
+                pane,
+                Place::right(PADDING, FIRST_ROW),
+                Kind::label("Always on", Token::Text),
+            ),
+            add(
+                tree,
+                pane,
+                text_at(PADDING, FIRST_ROW),
+                Kind::label(
+                    "Tab reaches every control; Ctrl+Alt+Tab reaches the bar.",
+                    Token::TextDim,
+                ),
+            ),
+        ];
+        let status = add(tree, pane, text_at(PADDING, FIRST_ROW), Kind::label("", Token::TextDim));
         let accessibility = Self {
-            meanings: [
-                contrast_meaning,
-                motion_meaning,
-                sticky_meaning,
-                slow_meaning,
-            ],
-            lines: [hold, navigation, always, reaches],
+            rows,
+            navigation,
             contrast,
             motion,
+            zoom,
+            level,
+            pointer_size,
             sticky,
             slow,
             delay,
+            bounce,
+            bounce_delay,
+            toggle,
+            mouse_keys,
+            top_speed,
             status,
         };
+        accessibility.reflow(tree, None);
         accessibility.show(tree, shown);
         tree.set_shown(status, false);
         accessibility
     }
 
-    /// Moves the pane to one column `content` wide on a narrow page (settings-forms-v0.5.md 2,
-    /// R8 and R2: each check box a 48 px row with its meaning under it, the slider under its
-    /// label), or back to the desktop's; returns the narrow pane's height.
+    /// Places the rows on the desktop (`None`: the 40 px grid from 64, each control
+    /// right-aligned), or in one column `content` wide on a narrow page
+    /// (settings-forms-v0.5.md 2, R8 and R2: each check box a 48 px row with its meaning under
+    /// it, each dropdown and slider under its label); returns the pane's height.
     pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
-        let boxes = [self.contrast, self.motion, self.sticky, self.slow];
-        let [hold, navigation, always, reaches] = self.lines;
-        let line = |x: i32, y: i32| Place::at(x, y, Length::Content, Length::Content);
-        let Some(c) = content else {
-            for (index, (check, meaning)) in boxes.iter().zip(self.meanings).enumerate() {
-                let y = 70 + 40 * index as i32;
-                tree.set_place(
-                    *check,
-                    Place::at(PADDING, y, Length::Content, Length::Px(CONTROL_HEIGHT)),
-                );
-                tree.set_place(meaning, Place::right(PADDING, y + 6));
-            }
-            tree.set_place(hold, line(40, 236));
-            tree.set_place(
-                self.delay,
-                Place {
-                    horizontal: Horizontal::Right(PADDING),
-                    top: 230,
-                    width: Length::Px(SLIDER_WIDTH),
-                    height: Length::Px(CONTROL_HEIGHT),
-                },
-            );
-            tree.set_place(navigation, line(PADDING, 276));
-            tree.set_place(always, Place::right(PADDING, 276));
-            tree.set_place(reaches, line(PADDING, 296));
-            tree.set_place(self.status, line(PADDING, 316));
-            return 0;
-        };
-        for (index, (check, meaning)) in boxes.iter().zip(self.meanings).enumerate() {
-            let y = 64 + 80 * index as i32;
-            tree.set_place(
-                *check,
-                Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL)),
-            );
-            tree.set_place(meaning, line(PADDING, y + 52));
+        let mut y = FIRST_ROW;
+        for &row in &self.rows {
+            y = match (row, content) {
+                (Row::Heading(id), _) => {
+                    tree.set_place(id, text_at(PADDING, y + TEXT_IN_ROW));
+                    y + ROW
+                }
+                (Row::Check { check, meaning }, None) => {
+                    tree.set_place(
+                        check,
+                        Place::at(
+                            PADDING,
+                            y + CONTROL_IN_ROW,
+                            Length::Content,
+                            Length::Px(CONTROL_HEIGHT),
+                        ),
+                    );
+                    tree.set_place(meaning, Place::right(PADDING, y + TEXT_IN_ROW));
+                    y + ROW
+                }
+                (Row::Check { check, meaning }, Some(c)) => {
+                    tree.set_place(
+                        check,
+                        Place::at(PADDING, y, Length::Px(c), Length::Px(TOUCH_CONTROL)),
+                    );
+                    tree.set_place(meaning, text_at(PADDING, y + TOUCH_CONTROL + 4));
+                    y + TOUCH_CONTROL + 4 + LINE + 8
+                }
+                (
+                    Row::Control {
+                        label,
+                        control,
+                        width,
+                        indented,
+                    },
+                    None,
+                ) => {
+                    let x = if indented { INDENT } else { PADDING };
+                    tree.set_place(label, text_at(x, y + TEXT_IN_ROW));
+                    tree.set_place(control, from_right(y + CONTROL_IN_ROW, width));
+                    y + ROW
+                }
+                (Row::Control { label, control, .. }, Some(c)) => {
+                    tree.set_place(label, text_at(PADDING, y));
+                    tree.set_place(
+                        control,
+                        Place::at(PADDING, y + 24, Length::Px(c), Length::Px(TOUCH_CONTROL)),
+                    );
+                    y + 24 + TOUCH_CONTROL + 8
+                }
+            };
         }
-        tree.set_place(hold, line(PADDING, 384));
-        tree.set_place(
-            self.delay,
-            Place::at(PADDING, 408, Length::Px(c), Length::Px(TOUCH_CONTROL)),
-        );
-        tree.set_place(navigation, line(PADDING, 472));
-        tree.set_place(always, line(PADDING + c - 72, 472));
+        let [navigation, always, reaches] = self.navigation;
+        tree.set_place(navigation, text_at(PADDING, y + TEXT_IN_ROW));
+        match content {
+            None => tree.set_place(always, Place::right(PADDING, y + TEXT_IN_ROW)),
+            Some(_) => tree.set_place(always, text_at(PADDING, y + TEXT_IN_ROW + LINE)),
+        }
+        let below = match content {
+            None => y + TEXT_IN_ROW + LINE,
+            Some(_) => y + TEXT_IN_ROW + 2 * LINE,
+        };
         tree.set_place(
             reaches,
-            Place::at(PADDING, 492, Length::Px(c), Length::Content),
+            match content {
+                None => text_at(PADDING, below),
+                Some(c) => Place::at(PADDING, below, Length::Px(c), Length::Content),
+            },
         );
-        tree.set_place(self.status, line(PADDING, 520));
-        552
+        tree.set_place(self.status, text_at(PADDING, below + LINE));
+        below + LINE + 2 * PADDING
     }
 
-    /// Shows `shown` in the controls.
+    /// Shows `shown` in the controls; a dependent control is enabled while its checkbox is.
     pub fn show(&self, tree: &mut WidgetTree<CAPACITY>, shown: Shown) {
         let Shown { display, keys } = shown;
-        tree.set_selected(self.contrast, usize::from(display.high_contrast));
-        tree.set_selected(self.motion, usize::from(display.reduce_motion));
-        tree.set_selected(self.sticky, usize::from(keys.sticky_keys));
-        tree.set_selected(self.slow, usize::from(keys.slow_keys));
-        tree.set_value(self.delay, keys.slow_keys_ms as i32);
-        tree.set_enabled(self.delay, keys.slow_keys);
+        for (check, on) in [
+            (self.contrast, display.high_contrast),
+            (self.motion, display.reduce_motion),
+            (self.zoom, display.zoom),
+            (self.sticky, keys.sticky_keys),
+            (self.slow, keys.slow_keys),
+            (self.bounce, keys.bounce_keys),
+            (self.toggle, keys.toggle_keys),
+            (self.mouse_keys, keys.mouse_keys),
+        ] {
+            tree.set_selected(check, usize::from(on));
+        }
+        let level = ZOOM_LEVELS
+            .iter()
+            .position(|&level| level == display.zoom_level)
+            .unwrap_or(0);
+        tree.set_selected(self.level, level);
+        tree.set_enabled(self.level, display.zoom);
+        let size = POINTER_SIZES
+            .iter()
+            .position(|&(_, halves)| halves == display.pointer_size_halves)
+            .unwrap_or(0);
+        tree.set_selected(self.pointer_size, size);
+        for (slider, value, on) in [
+            (self.delay, keys.slow_keys_ms, keys.slow_keys),
+            (self.bounce_delay, keys.bounce_keys_ms, keys.bounce_keys),
+            (self.top_speed, keys.mouse_keys_speed, keys.mouse_keys),
+        ] {
+            tree.set_value(slider, value as i32);
+            tree.set_enabled(slider, on);
+        }
     }
 
     /// Shows the pane afresh: the controls at `facts`, the status line at its "shown" state.
@@ -314,6 +455,13 @@ impl AccessibilityPane {
                 Some(DisplayChange::HighContrast(on))
             }
             Response::Toggled(id, on) if id == self.motion => Some(DisplayChange::ReduceMotion(on)),
+            Response::Toggled(id, on) if id == self.zoom => Some(DisplayChange::Zoom(on)),
+            Response::Chosen(id, choice) if id == self.level => ZOOM_LEVELS
+                .get(choice)
+                .map(|&level| DisplayChange::ZoomLevel(level)),
+            Response::Chosen(id, choice) if id == self.pointer_size => POINTER_SIZES
+                .get(choice)
+                .map(|&(_, halves)| DisplayChange::PointerSizeHalves(halves)),
             _ => None,
         };
         if let Some(change) = display {
@@ -324,12 +472,33 @@ impl AccessibilityPane {
         let change = match response {
             Response::Toggled(id, on) if id == self.sticky => KeysChange::StickyKeys(on),
             Response::Toggled(id, on) if id == self.slow => KeysChange::SlowKeys(on),
+            Response::Toggled(id, on) if id == self.bounce => KeysChange::BounceKeys(on),
+            Response::Toggled(id, on) if id == self.toggle => KeysChange::ToggleKeys(on),
+            Response::Toggled(id, on) if id == self.mouse_keys => KeysChange::MouseKeys(on),
             Response::Adjusted(id, value) if id == self.delay => {
                 KeysChange::SlowKeysMs(value as u32)
+            }
+            Response::Adjusted(id, value) if id == self.bounce_delay => {
+                KeysChange::BounceKeysMs(value as u32)
+            }
+            Response::Adjusted(id, value) if id == self.top_speed => {
+                KeysChange::MouseKeysSpeed(value as u32)
             }
             _ => return Reply::NotMine,
         };
         let unchanged = change.applied_to(keys) == keys;
         Reply::Done((!unchanged).then_some(Request::ChangeKeys(change)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_options_follow_the_settings_values() {
+        assert_eq!(LEVEL_OPTIONS.len(), ZOOM_LEVELS.len());
+        assert_eq!(POINTER_SIZE_OPTIONS.len(), POINTER_SIZES.len());
+        assert_eq!(POINTER_SIZES[1], ("1.5", 3));
     }
 }

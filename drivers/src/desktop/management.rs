@@ -809,6 +809,7 @@ impl Desktop {
             Shortcut::ShowDesktop => self.show_desktop(damage, events),
             Shortcut::FocusPanel => self.focus_panel(damage),
             Shortcut::Screenshot(target) => return self.screenshot(target, damage),
+            Shortcut::Zoom(command) => return self.zoom_command(command, damage),
             Shortcut::PowerMenu => {
                 self.open_menu(damage);
                 self.menu_hover = Some(0);

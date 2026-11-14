@@ -683,6 +683,7 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         clock_sync: clock_sync_record(),
         input: settings_file::input_preferences(&file[..length]),
         keys: settings_file::key_accessibility(&file[..length]),
+        screen_reader: settings_file::screen_reader_settings(&file[..length]),
         display: saved_display(&file[..length], server),
         network_adapter: network_adapter(),
         power: power_facts(),
@@ -1015,7 +1016,11 @@ fn apply_display(
     match server {
         Some(server) => {
             server.set_palette(palette_index(theme, display.high_contrast))?;
-            server.set_reduce_motion(display.reduce_motion)
+            server.set_reduce_motion(display.reduce_motion)?;
+            let mut file = [0u8; LARGEST + 1];
+            let length = saved_settings(&mut file);
+            let reader = settings_file::screen_reader_settings(&file[..length]);
+            server.set_accessibility(settings_file::accessibility_request_words(reader, display))
         }
         None => Ok(()),
     }
@@ -1030,6 +1035,7 @@ fn saved_display(file: &[u8], server: Option<&WindowServer>) -> DisplayAccessibi
         reduce_motion: server
             .and_then(|server| server.reduce_motion().ok())
             .unwrap_or(saved.reduce_motion),
+        ..saved
     }
 }
 
@@ -1214,7 +1220,7 @@ impl command::Machine for Machine {
         };
         match server {
             Some(server) => server
-                .set_key_accessibility(keys.sticky_keys, keys.slow_keys, keys.slow_keys_ms)
+                .set_key_accessibility(keys.request_words())
                 .map_err(Errno::message),
             None => Ok(()),
         }
@@ -1546,11 +1552,7 @@ impl Application<CAPACITY> for Settings {
                 let applied = match (saved, self.server.as_ref()) {
                     (Ok(()), Some(server)) => {
                         let keys = change.applied_to(self.window.facts().keys);
-                        server.set_key_accessibility(
-                            keys.sticky_keys,
-                            keys.slow_keys,
-                            keys.slow_keys_ms,
-                        )
+                        server.set_key_accessibility(keys.request_words())
                     }
                     _ => Ok(()),
                 };

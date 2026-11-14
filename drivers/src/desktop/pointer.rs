@@ -6,6 +6,39 @@
 
 use super::protocol::PointerShape;
 use crate::display::Rect;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// The pointer's sizes in halves (`accessibility.pointer_size` 1, 1.5, 2 and 3, D602).
+pub const POINTER_SIZE_HALVES: [u32; 4] = [2, 3, 4, 6];
+static SIZE_HALVES: AtomicU32 = AtomicU32::new(2);
+
+/// Draws every shape `halves / 2` times its size from now on, by nearest neighbour; `false`, and
+/// nothing changed, for a size not in [`POINTER_SIZE_HALVES`].
+pub fn set_size_halves(halves: u32) -> bool {
+    if !POINTER_SIZE_HALVES.contains(&halves) {
+        return false;
+    }
+    SIZE_HALVES.store(halves, Ordering::Relaxed);
+    true
+}
+
+/// The pointer's size in halves.
+pub fn size_halves() -> u32 {
+    SIZE_HALVES.load(Ordering::Relaxed)
+}
+
+/// `shape`'s size and hotspot at the size in force: each scaled down to whole pixels, so at
+/// 1.5 the cells are 1 and 2 pixels in turn.
+pub fn scaled_size_and_hotspot(shape: PointerShape) -> ((u32, u32), (u32, u32)) {
+    let halves = size_halves();
+    let ((width, height), (hot_x, hot_y)) = size_and_hotspot(shape);
+    let scale = |length: u32| length * halves / 2;
+    ((scale(width), scale(height)), (scale(hot_x), scale(hot_y)))
+}
+
+fn source_cell(output: u32, halves: u32) -> u32 {
+    (2 * (output + 1)).div_ceil(halves) - 1
+}
 
 const ARROW: [&[u8]; 19] = [
     b"X...........",
@@ -262,25 +295,26 @@ pub fn write_cursor_image(shape: PointerShape, image: &mut [u32]) -> Option<(u32
     let side = CURSOR_SIDE as usize;
     let image = image.get_mut(..side * side)?;
     let bitmap = bitmap(shape);
-    let (width, height) = bitmap.size();
+    let ((width, height), hotspot) = scaled_size_and_hotspot(shape);
+    let halves = size_halves();
     for (row, line) in image.chunks_exact_mut(side).enumerate() {
         for (column, pixel) in line.iter_mut().enumerate() {
             let (column, row) = (column as u32, row as u32);
             *pixel = match column < width && row < height {
                 true => bitmap
-                    .pixel(column, row)
+                    .pixel(source_cell(column, halves), source_cell(row, halves))
                     .map_or(0, |colour| OPAQUE | colour),
                 false => 0,
             };
         }
     }
-    Some(size_and_hotspot(shape).1)
+    Some(hotspot)
 }
 
 /// The rectangle `shape` covers with its hotspot at (`x`, `y`), cut at the screen's top and
 /// left edges.
 pub fn area(shape: PointerShape, x: u32, y: u32) -> Rect {
-    let ((width, height), (hot_x, hot_y)) = size_and_hotspot(shape);
+    let ((width, height), (hot_x, hot_y)) = scaled_size_and_hotspot(shape);
     let left = x.saturating_sub(hot_x);
     let top = y.saturating_sub(hot_y);
     Rect::new(
@@ -295,14 +329,24 @@ pub fn area(shape: PointerShape, x: u32, y: u32) -> Rect {
 /// transparent or does not reach.
 pub fn pixel_at(shape: PointerShape, at: (u32, u32), x: u32, y: u32) -> Option<u32> {
     let bitmap = bitmap(shape);
-    let (width, height) = bitmap.size();
-    let (_, hotspot) = size_and_hotspot(shape);
+    let ((width, height), hotspot) = scaled_size_and_hotspot(shape);
     let column = i64::from(x) - i64::from(at.0) + i64::from(hotspot.0);
     let row = i64::from(y) - i64::from(at.1) + i64::from(hotspot.1);
     if column < 0 || row < 0 || column >= i64::from(width) || row >= i64::from(height) {
         return None;
     }
-    bitmap.pixel(column as u32, row as u32)
+    let halves = size_halves();
+    bitmap.pixel(
+        source_cell(column as u32, halves),
+        source_cell(row as u32, halves),
+    )
+}
+
+/// Whether the display's cursor image can hold `shape` at the size in force; a larger one is
+/// drawn in software (D602).
+pub fn fits_cursor_image(shape: PointerShape) -> bool {
+    let ((width, height), _) = scaled_size_and_hotspot(shape);
+    width <= CURSOR_SIDE && height <= CURSOR_SIDE
 }
 
 /// As [`pixel_at`] for the arrow, in the agent's colours (docs/ux/desktop-v0.3-gui.md 14.1):
@@ -317,6 +361,14 @@ pub fn agent_arrow_pixel_at(at: (u32, u32), x: u32, y: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn at_one_and_a_half_the_cells_are_one_and_two_pixels_in_turn() {
+        assert_eq!((0..6).map(|x| source_cell(x, 3)).collect::<Vec<_>>(), [0, 1, 1, 2, 3, 3]);
+        assert_eq!((0..4).map(|x| source_cell(x, 4)).collect::<Vec<_>>(), [0, 0, 1, 1]);
+        assert_eq!((0..3).map(|x| source_cell(x, 2)).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!((0..6).map(|x| source_cell(x, 6)).collect::<Vec<_>>(), [0, 0, 0, 1, 1, 1]);
+    }
 
     #[test]
     fn the_agent_s_arrow_is_the_arrow_in_the_accent_with_its_black_outline() {

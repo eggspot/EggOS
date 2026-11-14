@@ -990,6 +990,13 @@ pub fn draws_pointer() -> bool {
         .is_some_and(|display| display.draws_pointer())
 }
 
+/// Has the next [`show_pointer`] write the pointer's image again: its size changed (D602).
+pub fn forget_pointer_image() {
+    if let Some(display) = DISPLAY.lock().as_mut() {
+        display.pointer = None;
+    }
+}
+
 /// Has the display show the pointer `wanted` ([`Display::show_pointer`]); nothing without a
 /// display.
 pub fn show_pointer<P: Platform>(

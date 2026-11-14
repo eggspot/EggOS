@@ -7,7 +7,7 @@
 //! program must do; the program talks to the system.
 
 use crate::about_pane::AboutPane;
-use crate::accessibility_pane::{AccessibilityPane, Shown};
+use crate::accessibility_pane::{ACCESSIBILITY_PANE_HEIGHT, AccessibilityPane, Shown};
 use crate::activity::{ActivityQuery, ActivityRead};
 use crate::agents_pane::{self, AgentsPane, GrantsRead};
 use crate::art;
@@ -56,7 +56,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 261
+pub const CAPACITY: usize = 281
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -370,6 +370,17 @@ const PANE_WORDS: [&[&str]; 13] = [
         "Filter keys",
         "keyboard navigation",
         "disability",
+        "zoom",
+        "magnifier",
+        "magnify",
+        "pointer size",
+        "cursor size",
+        "large pointer",
+        "bounce keys",
+        "toggle keys",
+        "mouse keys",
+        "keypad",
+        "Caps Lock",
     ],
     &[
         "disks",
@@ -1184,6 +1195,7 @@ impl SettingsWindow {
             DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
             DISPLAY => build.pane(scroll, Length::Px(DISPLAY_PANE_HEIGHT)),
             POWER => build.pane(scroll, Length::Px(POWER_PANE_HEIGHT)),
+            ACCESSIBILITY => build.pane(scroll, Length::Px(ACCESSIBILITY_PANE_HEIGHT)),
             _ => build.pane(scroll, Length::Px(PANE_HEIGHT)),
         });
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
@@ -1911,19 +1923,7 @@ impl SettingsWindow {
         let power = self.power.reflow(&mut self.tree, content);
         self.set_pane_height(POWER, power);
         let accessibility = self.accessibility.reflow(&mut self.tree, content);
-        self.tree.set_place(
-            self.widgets.panes[ACCESSIBILITY],
-            Place::at(
-                0,
-                0,
-                Length::Fill(0),
-                Length::Px(if content.is_some() {
-                    accessibility
-                } else {
-                    PANE_HEIGHT
-                }),
-            ),
-        );
+        self.set_pane_height(ACCESSIBILITY, accessibility);
         self.lay_out_frame();
     }
 

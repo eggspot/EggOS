@@ -55,6 +55,14 @@ pub enum Key {
     StickyKeys,
     SlowKeys,
     SlowKeysMs,
+    Zoom,
+    ZoomLevel,
+    PointerSize,
+    BounceKeys,
+    BounceKeysMs,
+    ToggleKeys,
+    MouseKeys,
+    MouseKeysSpeed,
     KeyboardNavigation,
     NetworkState,
     NetworkAddress,
@@ -285,6 +293,13 @@ pub enum KeysChange {
     SlowKeys(bool),
     /// 100 to 1000 milliseconds.
     SlowKeysMs(u32),
+    BounceKeys(bool),
+    /// 100 to 1000 milliseconds.
+    BounceKeysMs(u32),
+    ToggleKeys(bool),
+    MouseKeys(bool),
+    /// 100 to 1000 pixels a second.
+    MouseKeysSpeed(u32),
 }
 
 impl KeysChange {
@@ -295,6 +310,11 @@ impl KeysChange {
             Self::StickyKeys(on) => changed.sticky_keys = on,
             Self::SlowKeys(on) => changed.slow_keys = on,
             Self::SlowKeysMs(delay) => changed.slow_keys_ms = delay,
+            Self::BounceKeys(on) => changed.bounce_keys = on,
+            Self::BounceKeysMs(delay) => changed.bounce_keys_ms = delay,
+            Self::ToggleKeys(on) => changed.toggle_keys = on,
+            Self::MouseKeys(on) => changed.mouse_keys = on,
+            Self::MouseKeysSpeed(speed) => changed.mouse_keys_speed = speed,
         }
         changed
     }
@@ -315,6 +335,26 @@ impl KeysChange {
                 let _ = write!(value, "{delay}");
                 eggos_settings_file::SLOW_KEYS_MS
             }
+            Self::BounceKeys(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::BOUNCE_KEYS
+            }
+            Self::BounceKeysMs(delay) => {
+                let _ = write!(value, "{delay}");
+                eggos_settings_file::BOUNCE_KEYS_MS
+            }
+            Self::ToggleKeys(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::TOGGLE_KEYS
+            }
+            Self::MouseKeys(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::MOUSE_KEYS
+            }
+            Self::MouseKeysSpeed(speed) => {
+                let _ = write!(value, "{speed}");
+                eggos_settings_file::MOUSE_KEYS_SPEED
+            }
         };
         (key, value)
     }
@@ -325,6 +365,11 @@ impl KeysChange {
 pub enum DisplayChange {
     HighContrast(bool),
     ReduceMotion(bool),
+    Zoom(bool),
+    /// One of the settings file's `ZOOM_LEVELS`.
+    ZoomLevel(u32),
+    /// The pointer's size in halves: 2, 3, 4 or 6.
+    PointerSizeHalves(u32),
 }
 
 impl DisplayChange {
@@ -334,20 +379,47 @@ impl DisplayChange {
         match self {
             Self::HighContrast(on) => changed.high_contrast = on,
             Self::ReduceMotion(on) => changed.reduce_motion = on,
+            Self::Zoom(on) => changed.zoom = on,
+            Self::ZoomLevel(level) => changed.zoom_level = level,
+            Self::PointerSizeHalves(halves) => changed.pointer_size_halves = halves,
         }
         changed
     }
 
     /// The setting it changes and its value as the settings file holds it.
     pub fn saved(self) -> (&'static str, Value) {
-        let (key, on) = match self {
-            Self::HighContrast(on) => (eggos_settings_file::HIGH_CONTRAST, on),
-            Self::ReduceMotion(on) => (eggos_settings_file::REDUCE_MOTION, on),
-        };
         let mut value = Value::new();
-        let _ = value.write_str(boolean_name(on));
+        let key = match self {
+            Self::HighContrast(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::HIGH_CONTRAST
+            }
+            Self::ReduceMotion(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::REDUCE_MOTION
+            }
+            Self::Zoom(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::ZOOM
+            }
+            Self::ZoomLevel(level) => {
+                let _ = write!(value, "{level}");
+                eggos_settings_file::ZOOM_LEVEL
+            }
+            Self::PointerSizeHalves(halves) => {
+                let _ = value.write_str(pointer_size_name(halves));
+                eggos_settings_file::POINTER_SIZE
+            }
+        };
         (key, value)
     }
+}
+
+fn pointer_size_name(halves: u32) -> &'static str {
+    eggos_settings_file::POINTER_SIZES
+        .iter()
+        .find(|&&(_, known)| known == halves)
+        .map_or("1", |&(name, _)| name)
 }
 
 const fn boolean_name(on: bool) -> &'static str {
@@ -463,7 +535,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 55] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -494,6 +566,14 @@ impl Key {
         Self::StickyKeys,
         Self::SlowKeys,
         Self::SlowKeysMs,
+        Self::Zoom,
+        Self::ZoomLevel,
+        Self::PointerSize,
+        Self::BounceKeys,
+        Self::BounceKeysMs,
+        Self::ToggleKeys,
+        Self::MouseKeys,
+        Self::MouseKeysSpeed,
         Self::KeyboardNavigation,
         Self::NetworkState,
         Self::NetworkAddress,
@@ -549,6 +629,14 @@ impl Key {
             Self::StickyKeys => eggos_settings_file::STICKY_KEYS,
             Self::SlowKeys => eggos_settings_file::SLOW_KEYS,
             Self::SlowKeysMs => eggos_settings_file::SLOW_KEYS_MS,
+            Self::Zoom => eggos_settings_file::ZOOM,
+            Self::ZoomLevel => eggos_settings_file::ZOOM_LEVEL,
+            Self::PointerSize => eggos_settings_file::POINTER_SIZE,
+            Self::BounceKeys => eggos_settings_file::BOUNCE_KEYS,
+            Self::BounceKeysMs => eggos_settings_file::BOUNCE_KEYS_MS,
+            Self::ToggleKeys => eggos_settings_file::TOGGLE_KEYS,
+            Self::MouseKeys => eggos_settings_file::MOUSE_KEYS,
+            Self::MouseKeysSpeed => eggos_settings_file::MOUSE_KEYS_SPEED,
             Self::KeyboardNavigation => "accessibility.keyboard_navigation",
             Self::NetworkState => "network.state",
             Self::NetworkAddress => "network.address",
@@ -631,6 +719,14 @@ impl Key {
                 | Self::StickyKeys
                 | Self::SlowKeys
                 | Self::SlowKeysMs
+                | Self::Zoom
+                | Self::ZoomLevel
+                | Self::PointerSize
+                | Self::BounceKeys
+                | Self::BounceKeysMs
+                | Self::ToggleKeys
+                | Self::MouseKeys
+                | Self::MouseKeysSpeed
                 | Self::PowerLidAction
         )
     }
@@ -696,11 +792,24 @@ impl Key {
             Self::KeyboardRepeatRate => {
                 let _ = choices.write_str("2 to 60");
             }
-            Self::HighContrast | Self::ReduceMotion | Self::StickyKeys | Self::SlowKeys => {
+            Self::HighContrast
+            | Self::ReduceMotion
+            | Self::StickyKeys
+            | Self::SlowKeys
+            | Self::Zoom
+            | Self::BounceKeys
+            | Self::ToggleKeys
+            | Self::MouseKeys => {
                 let _ = choices.write_str("true or false");
             }
-            Self::SlowKeysMs => {
+            Self::SlowKeysMs | Self::BounceKeysMs | Self::MouseKeysSpeed => {
                 let _ = choices.write_str("100 to 1000");
+            }
+            Self::ZoomLevel => {
+                let _ = choices.write_str("2, 3, 4, 6 or 8");
+            }
+            Self::PointerSize => {
+                let _ = choices.write_str("1, 1.5, 2 or 3");
             }
             _ => {
                 let _ = choices.write_str(PROFILE_CHOICES);
@@ -818,6 +927,16 @@ impl Key {
             Self::StickyKeys => value.write_str(boolean_name(facts.keys.sticky_keys)),
             Self::SlowKeys => value.write_str(boolean_name(facts.keys.slow_keys)),
             Self::SlowKeysMs => write!(value, "{}", facts.keys.slow_keys_ms),
+            Self::Zoom => value.write_str(boolean_name(facts.display.zoom)),
+            Self::ZoomLevel => write!(value, "{}", facts.display.zoom_level),
+            Self::PointerSize => {
+                value.write_str(pointer_size_name(facts.display.pointer_size_halves))
+            }
+            Self::BounceKeys => value.write_str(boolean_name(facts.keys.bounce_keys)),
+            Self::BounceKeysMs => write!(value, "{}", facts.keys.bounce_keys_ms),
+            Self::ToggleKeys => value.write_str(boolean_name(facts.keys.toggle_keys)),
+            Self::MouseKeys => value.write_str(boolean_name(facts.keys.mouse_keys)),
+            Self::MouseKeysSpeed => write!(value, "{}", facts.keys.mouse_keys_speed),
             Self::KeyboardNavigation => value.write_str("always"),
             Self::NetworkState => value.write_str(state_word(facts.network_adapter.as_ref())),
             Self::NetworkAddress => {
@@ -947,6 +1066,24 @@ impl Key {
             Self::SlowKeys => boolean(value).map(|on| Change::Keys(KeysChange::SlowKeys(on))),
             Self::SlowKeysMs => number_within(value, 100, 1000)
                 .map(|delay| Change::Keys(KeysChange::SlowKeysMs(delay))),
+            Self::Zoom => boolean(value).map(|on| Change::Display(DisplayChange::Zoom(on))),
+            Self::ZoomLevel => number_within(value, 2, 8)
+                .ok()
+                .filter(|level| eggos_settings_file::ZOOM_LEVELS.contains(level))
+                .map(|level| Change::Display(DisplayChange::ZoomLevel(level)))
+                .ok_or(Refusal::InvalidValue),
+            Self::PointerSize => eggos_settings_file::POINTER_SIZES
+                .iter()
+                .find(|(name, _)| *name == value)
+                .map(|&(_, halves)| Change::Display(DisplayChange::PointerSizeHalves(halves)))
+                .ok_or(Refusal::InvalidValue),
+            Self::BounceKeys => boolean(value).map(|on| Change::Keys(KeysChange::BounceKeys(on))),
+            Self::BounceKeysMs => number_within(value, 100, 1000)
+                .map(|delay| Change::Keys(KeysChange::BounceKeysMs(delay))),
+            Self::ToggleKeys => boolean(value).map(|on| Change::Keys(KeysChange::ToggleKeys(on))),
+            Self::MouseKeys => boolean(value).map(|on| Change::Keys(KeysChange::MouseKeys(on))),
+            Self::MouseKeysSpeed => number_within(value, 100, 1000)
+                .map(|speed| Change::Keys(KeysChange::MouseKeysSpeed(speed))),
             Self::PowerLidAction => eggos_settings_file::LidAction::named(value.as_bytes())
                 .map(Change::LidAction)
                 .ok_or(Refusal::InvalidValue),
@@ -1169,6 +1306,14 @@ mod tests {
                 ("accessibility.sticky_keys", "false".to_owned()),
                 ("accessibility.slow_keys", "false".to_owned()),
                 ("accessibility.slow_keys_ms", "300".to_owned()),
+                ("accessibility.zoom", "false".to_owned()),
+                ("accessibility.zoom_level", "2".to_owned()),
+                ("accessibility.pointer_size", "1".to_owned()),
+                ("accessibility.bounce_keys", "false".to_owned()),
+                ("accessibility.bounce_keys_ms", "300".to_owned()),
+                ("accessibility.toggle_keys", "false".to_owned()),
+                ("accessibility.mouse_keys", "false".to_owned()),
+                ("accessibility.mouse_keys_speed", "500".to_owned()),
                 ("accessibility.keyboard_navigation", "always".to_owned()),
                 ("network.state", "connected".to_owned()),
                 ("network.address", "10.0.2.15/24".to_owned()),

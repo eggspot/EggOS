@@ -1261,7 +1261,7 @@ mod tests {
                 Theme::Dark,
                 DisplayAccessibility {
                     high_contrast: true,
-                    reduce_motion: false,
+                    ..DisplayAccessibility::DEFAULT
                 }
             ))
         );

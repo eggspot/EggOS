@@ -198,6 +198,8 @@ the frame allocator and the heap are as the other benchmarks expect (D111).
 - `term_reflow`: a resize of a terminal with a full scrollback between 80x24 and 100x30 (D223):
   every logical line of the 256 scrollback rows and the screen laid out again at the new width,
   the cursor kept on its cell; one resize per iteration, alternating the two sizes.
+- `gfx_zoom_full_frame`: the zoom's lens over a whole 1280x800 frame at 2x, one read and one
+  write a pixel, nearest neighbour (D602); the design's budget is 3 ms a frame.
 - `gfx_compose_four_windows`: a 64x64 rectangle of a 1280x800 desktop where the terminal and
   four cascaded 658x430 windows overlap, composed from scratch (D127): the wallpaper, each
   window's shadow, chrome and content, the bar. The design's full-screen budget (four windows,

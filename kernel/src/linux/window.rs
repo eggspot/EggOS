@@ -140,6 +140,7 @@ pub fn ioctl<P: Platform>(
             | Request::SetInputPreferences { .. }
             | Request::SetDeviceInputPreferences { .. }
             | Request::SetKeyAccessibility { .. }
+            | Request::SetAccessibility { .. }
             | Request::SetLidAction { .. }
     );
     if changes_settings && !may_change_desktop_settings(process) {
@@ -359,15 +360,60 @@ pub fn ioctl<P: Platform>(
             sticky_keys,
             slow_keys,
             slow_keys_ms,
+            bounce_keys,
+            bounce_keys_ms,
+            toggle_keys,
+            mouse_keys,
+            mouse_keys_speed,
         } => {
-            let slow = (slow_keys != 0).then_some(slow_keys_ms);
-            let was_on = crate::input::sticky_keys();
-            if !crate::input::set_key_accessibility(sticky_keys != 0, slow) {
+            if [sticky_keys, slow_keys, bounce_keys, toggle_keys, mouse_keys]
+                .iter()
+                .any(|&switch| switch > 1)
+            {
                 return Err(Errno::EINVAL);
             }
+            let slow = (slow_keys != 0).then_some(slow_keys_ms);
+            let bounce = (bounce_keys != 0).then_some(bounce_keys_ms);
+            let keypad = (mouse_keys != 0).then_some(mouse_keys_speed);
+            let was_on = crate::input::sticky_keys();
+            let mouse_keys_were_on = crate::input::mouse_keys();
+            if !crate::input::set_key_accessibility(sticky_keys != 0, slow)
+                || !crate::input::set_more_key_accessibility(bounce, keypad)
+            {
+                return Err(Errno::EINVAL);
+            }
+            crate::terminal::set_toggle_keys(toggle_keys != 0);
             if was_on != (sticky_keys != 0) {
                 crate::terminal::sticky_keys_turned::<P>(sticky_keys != 0);
             }
+            if mouse_keys_were_on != (mouse_keys != 0) {
+                crate::terminal::mouse_keys_turned::<P>(mouse_keys != 0);
+            }
+        }
+        Request::SetAccessibility {
+            screen_reader,
+            captions,
+            reader_rate,
+            reader_echo,
+            zoom,
+            zoom_level,
+            pointer_size_halves,
+        } => {
+            let switches_valid = [screen_reader, captions, reader_echo, zoom]
+                .iter()
+                .all(|&switch| switch <= 1);
+            if !switches_valid
+                || !(100..=400).contains(&reader_rate)
+                || !eggos_drivers::desktop::ZOOM_LEVELS.contains(&zoom_level)
+                || !eggos_drivers::desktop::POINTER_SIZE_HALVES.contains(&pointer_size_halves)
+            {
+                return Err(Errno::EINVAL);
+            }
+            crate::terminal::set_display_aids::<P>(
+                (zoom != 0).then_some(zoom_level),
+                zoom_level,
+                pointer_size_halves,
+            );
         }
         Request::ListDesktops => {
             let (count, current, windows) =

@@ -104,11 +104,12 @@ pub mod size {
     pub const SHOW_NOTICE: usize = 8 + super::NOTICE_TEXT_CAPACITY;
     pub const PICK_REGION: usize = 4;
     pub const SET_LID_ACTION: usize = 4;
+    pub const SET_ACCESSIBILITY: usize = 28;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
     pub const DESKTOP_ACTION: usize = 16;
-    pub const SET_KEY_ACCESSIBILITY: usize = 12;
+    pub const SET_KEY_ACCESSIBILITY: usize = 32;
     pub const CHANGE_FLAGS: usize = 12;
     pub const GET_PALETTE: usize = 4;
     pub const SET_PALETTE: usize = 4;
@@ -204,6 +205,7 @@ pub mod request {
     pub const SHOW_NOTICE: u32 = encode(WRITE, 62, size::SHOW_NOTICE);
     pub const PICK_REGION: u32 = encode(WRITE, 63, size::PICK_REGION);
     pub const SET_LID_ACTION: u32 = encode(WRITE, 64, size::SET_LID_ACTION);
+    pub const SET_ACCESSIBILITY: u32 = encode(WRITE, 65, size::SET_ACCESSIBILITY);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -701,6 +703,18 @@ pub enum Request {
     PickRegion,
     /// What closing the lid does from now on (D599): 0 sleep, 1 nothing, 2 power off.
     SetLidAction { action: u32 },
+    /// The screen reader's settings (D603: on, captions, words a minute, 1 to echo characters)
+    /// and how the screen is magnified and the pointer sized (D602: zoom on, its level, the
+    /// pointer's size in halves).
+    SetAccessibility {
+        screen_reader: u32,
+        captions: u32,
+        reader_rate: u32,
+        reader_echo: u32,
+        zoom: u32,
+        zoom_level: u32,
+        pointer_size_halves: u32,
+    },
     ListWindow {
         index: u32,
     },
@@ -882,6 +896,13 @@ pub enum Request {
         sticky_keys: u32,
         slow_keys: u32,
         slow_keys_ms: u32,
+        /// D602's keys: bounce keys and their delay, toggle keys, mouse keys and their top
+        /// speed in pixels a second.
+        bounce_keys: u32,
+        bounce_keys_ms: u32,
+        toggle_keys: u32,
+        mouse_keys: u32,
+        mouse_keys_speed: u32,
     },
     /// Does a [`desktop_action`] with desktop `desktop` (from 1) and window `window` (D204).
     DesktopAction {
@@ -991,6 +1012,7 @@ impl Request {
             request::SHOW_NOTICE => size::SHOW_NOTICE,
             request::PICK_REGION => size::PICK_REGION,
             request::SET_LID_ACTION => size::SET_LID_ACTION,
+            request::SET_ACCESSIBILITY => size::SET_ACCESSIBILITY,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1295,6 +1317,11 @@ impl Request {
                 sticky_keys: at(0),
                 slow_keys: at(4),
                 slow_keys_ms: at(8),
+                bounce_keys: at(12),
+                bounce_keys_ms: at(16),
+                toggle_keys: at(20),
+                mouse_keys: at(24),
+                mouse_keys_speed: at(28),
             },
             request::CHANGE_FLAGS => Self::ChangeFlags {
                 window: at(0),
@@ -1329,6 +1356,15 @@ impl Request {
             },
             request::PICK_REGION => Self::PickRegion,
             request::SET_LID_ACTION => Self::SetLidAction { action: at(0) },
+            request::SET_ACCESSIBILITY => Self::SetAccessibility {
+                screen_reader: at(0),
+                captions: at(4),
+                reader_rate: at(8),
+                reader_echo: at(12),
+                zoom: at(16),
+                zoom_level: at(20),
+                pointer_size_halves: at(24),
+            },
             request::SET_DEVICE_INPUT_PREFERENCES => Self::SetDeviceInputPreferences {
                 device: at(0),
                 pointer_speed: at(4),

@@ -187,6 +187,7 @@ pub fn all<P: Platform>() -> [Benchmark<P>; 70] {
         ("net_rx_wakeup", |_, n| net_rx_wakeup::<P>(n)),
         ("math_sin_f64", |_, n| math_sin_f64(n)),
         ("math_exp_f64", |_, n| math_exp_f64(n)),
+        ("gfx_zoom_full_frame", |_, n| gfx_zoom_full_frame(n)),
     ]
 }
 
@@ -1012,6 +1013,8 @@ fn input_key_to_bytes(n: u64) {
         repeat_delay: 400,
         repeat_interval: 40,
         slow_keys: 0,
+        bounce_keys: 0,
+        mouse_keys_tick: 20,
     };
     let syn = RawEvent::new(event_type::SYN, SYN_REPORT, 0);
     for i in 0..n {
@@ -1183,6 +1186,26 @@ fn gfx_compose_four_windows(n: u64) {
             BENCH_SCREEN.0 as usize,
             rect,
             &contents,
+        );
+    }
+}
+
+fn gfx_zoom_full_frame(n: u64) {
+    let (width, height) = BENCH_SCREEN;
+    let source: alloc::vec::Vec<u32> = (0..width * height).collect();
+    let mut output = alloc::vec![0u32; (width * height) as usize];
+    let view = eggos_drivers::desktop::ZoomView {
+        level: 2,
+        x: width / 4,
+        y: height / 4,
+    };
+    for _ in 0..n {
+        eggos_drivers::desktop::magnify_rows(
+            black_box(&source),
+            black_box(&mut output),
+            width,
+            view,
+            Rect::new(0, 0, width, height),
         );
     }
 }

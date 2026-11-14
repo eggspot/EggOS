@@ -225,32 +225,79 @@ pub const SLOW_KEYS: &str = "accessibility.slow_keys";
 /// How long a key must be held while slow keys are on: 100 to 1000 ms, 300 the default.
 pub const SLOW_KEYS_MS: &str = "accessibility.slow_keys_ms";
 
-/// How the keys are made easier to press (D205), as the settings file holds them.
+/// Whether a key pressed again soon after its release is ignored: `true` or `false` (D602).
+pub const BOUNCE_KEYS: &str = "accessibility.bounce_keys";
+/// How soon: 100 to 1000 ms, 300 the default.
+pub const BOUNCE_KEYS_MS: &str = "accessibility.bounce_keys_ms";
+/// Whether the bar says when Caps, Num or Scroll Lock change: `true` or `false` (D602).
+pub const TOGGLE_KEYS: &str = "accessibility.toggle_keys";
+/// Whether the numeric keypad moves the pointer and clicks: `true` or `false` (D602).
+pub const MOUSE_KEYS: &str = "accessibility.mouse_keys";
+/// The keypad pointer's top speed: 100 to 1000 px/s, 500 the default.
+pub const MOUSE_KEYS_SPEED: &str = "accessibility.mouse_keys_speed";
+
+/// How the keys are made easier to press (D205, D602), as the settings file holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyAccessibility {
     pub sticky_keys: bool,
     pub slow_keys: bool,
     /// 100 to 1000.
     pub slow_keys_ms: u32,
+    pub bounce_keys: bool,
+    /// 100 to 1000.
+    pub bounce_keys_ms: u32,
+    pub toggle_keys: bool,
+    pub mouse_keys: bool,
+    /// 100 to 1000 pixels a second.
+    pub mouse_keys_speed: u32,
 }
 
 impl KeyAccessibility {
-    /// What EggOS starts with: both off, a 300 ms delay.
+    /// What EggOS starts with: everything off, a 300 ms delay for slow and bounce keys, the
+    /// keypad pointer at 500 px/s.
     pub const DEFAULT: Self = Self {
         sticky_keys: false,
         slow_keys: false,
         slow_keys_ms: 300,
+        bounce_keys: false,
+        bounce_keys_ms: 300,
+        toggle_keys: false,
+        mouse_keys: false,
+        mouse_keys_speed: 500,
     };
+}
+
+impl KeyAccessibility {
+    /// `SET_KEY_ACCESSIBILITY`'s words: each switch 0 or 1, each delay and speed as it is.
+    pub fn request_words(self) -> [u32; 8] {
+        [
+            u32::from(self.sticky_keys),
+            u32::from(self.slow_keys),
+            self.slow_keys_ms,
+            u32::from(self.bounce_keys),
+            self.bounce_keys_ms,
+            u32::from(self.toggle_keys),
+            u32::from(self.mouse_keys),
+            self.mouse_keys_speed,
+        ]
+    }
 }
 
 /// The key accessibility `file` holds.
 pub fn key_accessibility(file: &[u8]) -> KeyAccessibility {
     let on = |key: &str| value(file, key) == Some(&b"true"[..]);
+    let default = KeyAccessibility::DEFAULT;
     KeyAccessibility {
         sticky_keys: on(STICKY_KEYS),
         slow_keys: on(SLOW_KEYS),
-        slow_keys_ms: number_in(file, SLOW_KEYS_MS, 100, 1000)
-            .unwrap_or(KeyAccessibility::DEFAULT.slow_keys_ms),
+        slow_keys_ms: number_in(file, SLOW_KEYS_MS, 100, 1000).unwrap_or(default.slow_keys_ms),
+        bounce_keys: on(BOUNCE_KEYS),
+        bounce_keys_ms: number_in(file, BOUNCE_KEYS_MS, 100, 1000)
+            .unwrap_or(default.bounce_keys_ms),
+        toggle_keys: on(TOGGLE_KEYS),
+        mouse_keys: on(MOUSE_KEYS),
+        mouse_keys_speed: number_in(file, MOUSE_KEYS_SPEED, 100, 1000)
+            .unwrap_or(default.mouse_keys_speed),
     }
 }
 
@@ -259,18 +306,125 @@ pub const HIGH_CONTRAST: &str = "accessibility.high_contrast";
 /// Whether nothing blinks: `true` or `false` (D224).
 pub const REDUCE_MOTION: &str = "accessibility.reduce_motion";
 
-/// How the screen is made easier to see (D224), as the settings file holds it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Whether the screen is magnified: `true` or `false` (D602).
+pub const ZOOM: &str = "accessibility.zoom";
+/// By how much: `2` (the default), `3`, `4`, `6` or `8`.
+pub const ZOOM_LEVEL: &str = "accessibility.zoom_level";
+/// [`ZOOM_LEVEL`]'s values.
+pub const ZOOM_LEVELS: [u32; 5] = [2, 3, 4, 6, 8];
+/// The pointer's size: `1` (the default), `1.5`, `2` or `3` (D602).
+pub const POINTER_SIZE: &str = "accessibility.pointer_size";
+/// [`POINTER_SIZE`]'s values, and each one in halves.
+pub const POINTER_SIZES: [(&str, u32); 4] = [("1", 2), ("1.5", 3), ("2", 4), ("3", 6)];
+
+/// How the screen is made easier to see (D224, D602), as the settings file holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayAccessibility {
     pub high_contrast: bool,
     pub reduce_motion: bool,
+    pub zoom: bool,
+    /// One of [`ZOOM_LEVELS`].
+    pub zoom_level: u32,
+    /// The pointer's size in halves: 2, 3, 4 or 6.
+    pub pointer_size_halves: u32,
 }
 
-/// The display accessibility `file` holds: each `false` unless the file says `true`.
+impl DisplayAccessibility {
+    /// What EggOS starts with: everything off, zoom at 2x when turned on, the pointer at 1x.
+    pub const DEFAULT: Self = Self {
+        high_contrast: false,
+        reduce_motion: false,
+        zoom: false,
+        zoom_level: 2,
+        pointer_size_halves: 2,
+    };
+}
+
+impl Default for DisplayAccessibility {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Whether the screen reader is on: `true` or `false` (D603).
+pub const SCREEN_READER: &str = "accessibility.screen_reader";
+/// Whether it shows what it says in the caption panel: `true` (the default) or `false`.
+pub const SCREEN_READER_CAPTIONS: &str = "accessibility.screen_reader_captions";
+/// How fast it reads: 100 to 400 words a minute, 200 the default.
+pub const SCREEN_READER_RATE: &str = "accessibility.screen_reader_rate";
+/// What it says of typing: `characters` (the default) or `none`.
+pub const SCREEN_READER_ECHO: &str = "accessibility.screen_reader_echo";
+/// [`SCREEN_READER_ECHO`]'s values.
+pub const SCREEN_READER_ECHOES: [&str; 2] = ["characters", "none"];
+
+/// The screen reader's settings (D603), as the settings file holds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenReaderSettings {
+    pub on: bool,
+    pub captions: bool,
+    /// 100 to 400 words a minute.
+    pub rate: u32,
+    /// Whether each typed character is said.
+    pub echo_characters: bool,
+}
+
+impl ScreenReaderSettings {
+    /// What EggOS starts with: off, captions on, 200 words a minute, characters echoed.
+    pub const DEFAULT: Self = Self {
+        on: false,
+        captions: true,
+        rate: 200,
+        echo_characters: true,
+    };
+}
+
+/// The screen reader's settings `file` holds.
+pub fn screen_reader_settings(file: &[u8]) -> ScreenReaderSettings {
+    let default = ScreenReaderSettings::DEFAULT;
+    ScreenReaderSettings {
+        on: value(file, SCREEN_READER) == Some(&b"true"[..]),
+        captions: value(file, SCREEN_READER_CAPTIONS) != Some(&b"false"[..]),
+        rate: number_in(file, SCREEN_READER_RATE, 100, 400).unwrap_or(default.rate),
+        echo_characters: value(file, SCREEN_READER_ECHO) != Some(&b"none"[..]),
+    }
+}
+
+/// `SET_ACCESSIBILITY`'s words (D602, D603): the reader on, captions, its rate, echo, then zoom
+/// on, its level and the pointer's size in halves.
+pub fn accessibility_request_words(
+    reader: ScreenReaderSettings,
+    display: DisplayAccessibility,
+) -> [u32; 7] {
+    [
+        u32::from(reader.on),
+        u32::from(reader.captions),
+        reader.rate,
+        u32::from(reader.echo_characters),
+        u32::from(display.zoom),
+        display.zoom_level,
+        display.pointer_size_halves,
+    ]
+}
+
+/// The display accessibility `file` holds: each switch `false` unless the file says `true`,
+/// each number its default unless the file holds one it takes.
 pub fn display_accessibility(file: &[u8]) -> DisplayAccessibility {
+    let default = DisplayAccessibility::DEFAULT;
     DisplayAccessibility {
         high_contrast: value(file, HIGH_CONTRAST) == Some(&b"true"[..]),
         reduce_motion: value(file, REDUCE_MOTION) == Some(&b"true"[..]),
+        zoom: value(file, ZOOM) == Some(&b"true"[..]),
+        zoom_level: number_in(file, ZOOM_LEVEL, 2, 8)
+            .filter(|level| ZOOM_LEVELS.contains(level))
+            .unwrap_or(default.zoom_level),
+        pointer_size_halves: value(file, POINTER_SIZE)
+            .and_then(|size| {
+                POINTER_SIZES
+                    .iter()
+                    .find(|(name, _)| name.as_bytes() == size)
+                    .map(|&(_, halves)| halves)
+            })
+            .unwrap_or(default.pointer_size_halves),
     }
 }
 
@@ -1101,7 +1255,7 @@ accessibility.high_contrast=true
             display_accessibility(file),
             DisplayAccessibility {
                 high_contrast: true,
-                reduce_motion: false,
+                ..DisplayAccessibility::DEFAULT
             }
         );
     }

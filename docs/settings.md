@@ -176,6 +176,9 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `mouse.buttons` | `right` (the default) or `left`, which swaps the primary and secondary buttons (D195; the Mouse pane, with `mouse.scrolling` and `mouse.speed`); used from the next event | yes |
 | `mouse.scrolling` | `traditional` (the default) or `natural` (D195) | yes |
 | `mouse.speed` | `1` to `10`, `5` the default (D195) | yes |
+| `mouse.acceleration` | `on` (the default) or `off` (D589) | yes |
+| `mouse.devices` | the pointing devices present, one word each in their numbers' order: `mouse` or `tablet` (D601) | no |
+| `mouse.device.<n>.buttons`, `.scrolling`, `.speed`, `.acceleration` | for `n` 1 to 16: `global` (the default: the global key's value) or the global key's values; `settings list` shows the devices present and those with a value of their own (D601) | yes |
 | `keyboard.repeat_delay_ms` | `150` to `2000`, `400` the default: how long a key is held before it repeats (D195; the Keyboard pane, with the rate) | yes |
 | `keyboard.repeat_rate` | `2` to `60` repeats a second, `25` the default (D195) | yes |
 | `time.automatic` | `on` (the default) or `off`: the network clock sets the time at boot and every 24 h; turning it on syncs at once (D225; the Date & time pane) | yes |
@@ -183,6 +186,14 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `accessibility.high_contrast`, `accessibility.reduce_motion` | `true` or `false` (the default), shown at once (D224; the Accessibility pane) | yes |
 | `accessibility.sticky_keys`, `accessibility.slow_keys` | `true` or `false` (the default) (D205) | yes |
 | `accessibility.slow_keys_ms` | `100` to `1000`, `300` the default (D205) | yes |
+| `accessibility.zoom` | `true` or `false` (the default): the screen magnified around the pointer, the focus and the caret, at once (D602) | yes |
+| `accessibility.zoom_level` | `2` (the default), `3`, `4`, `6` or `8` (D602) | yes |
+| `accessibility.pointer_size` | `1` (the default), `1.5`, `2` or `3`: every pointer shape that many times larger (D602) | yes |
+| `accessibility.bounce_keys` | `true` or `false` (the default): a key pressed again within `bounce_keys_ms` of its release is ignored (D602) | yes |
+| `accessibility.bounce_keys_ms` | `100` to `1000`, `300` the default (D602) | yes |
+| `accessibility.toggle_keys` | `true` or `false` (the default): the bar says when Caps, Num or Scroll Lock change (D602) | yes |
+| `accessibility.mouse_keys` | `true` or `false` (the default): the numeric keypad moves the pointer and clicks; Left Alt+Left Shift+Num Lock, and Alt tapped five times in the macOS profile, turn it on or off (D602) | yes |
+| `accessibility.mouse_keys_speed` | `100` to `1000` pixels a second, `500` the default (D602) | yes |
 | `accessibility.keyboard_navigation` | `always`: full keyboard navigation is not a toggle (D205) | no |
 | `network.state`, `network.address`, `network.router`, `network.dns`, `network.mac` | the wired adapter's state, address, router, DNS servers and hardware address (D225; the Network pane) | no |
 | `system.version`, `system.arch`, `system.cpus`, `system.memory_mb`, `system.uptime_s` | facts about the machine | no |
