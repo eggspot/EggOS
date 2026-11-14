@@ -27202,3 +27202,37 @@ the license, by an explicit instruction recorded here.
   `/proc/meminfo`'s totals include high memory, and `user_may_take` counts it.
 - **Not yet.** Building and running on QEMU with more RAM than the direct map; high memory for
   the page cache and memfd; a larger window for machines with more than 255 CPUs.
+
+## D601 Each pointing device's own settings in the Mouse pane, the CLI and MCP, and the acceleration row (M12; D589's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/mouse-devices-v0.1.md, by Claude Fable)
+- **Devices are numbers among the pointing devices.** The kernel now gives each pointing source
+  (relative or absolute axes) a number from 0 when it registers: one past the highest number
+  in use. Its own preferences are kept by that number, not by the source's slot. A device
+  plugged in later therefore picks up the preferences saved for its number, and the number is
+  `Device <n + 1>` everywhere. Sources that do not point get no number. `/proc/driver/pointers`
+  lists the kinds in number order, one word a line: `mouse` for relative axes, `tablet` for
+  absolute ones. That file is the carrier the design left to the engineer: it is
+  read-only, cheap, and needs no new request. A touch screen also has absolute axes and is
+  listed as `tablet`; the input layer cannot tell them apart yet.
+- **Keys.** `mouse.device.<n>.buttons|scrolling|speed|acceleration` for `n` 1 to 16 take
+  `global` or the global key's values. Their names are one static table in the settings file
+  crate, so `Key::name` stays `&'static str`. `mouse.devices` is read-only (`mouse,tablet`).
+  `settings list` prints, after `mouse.devices`, the four keys of every present device and of
+  every other number with a value of its own (`Key::listed`). `global` removes the key from the
+  file (`settings_file::without_value`; a save with an empty value removes). The boot read
+  applies every device's saved values and the global acceleration. `settings set` saves and
+  then applies with request 60 for the device's number. The MCP tool descriptions say so.
+- **The pane** (`userland/settings/src/mouse_devices.rs`, `MouseDevices`, 11 widgets):
+  - an `Acceleration` row of `On` `Off` radios with its help text;
+  - the `Settings for` picker, shown with two or more pointing devices or any value of a
+    device's own; it lists a prefix of a static `All devices`, `Device 1`... table, swapped in
+    place;
+  - a device view of four dropdowns whose first option is `Same as all devices` (speed and
+    acceleration disabled for a tablet), the kind hint (`not attached` for a listed number with
+    no device), and the `Same as all devices` button, disabled while every row follows.
+  Switching views writes nothing. The pane places the global rows too (one row lower with the
+  picker), and its narrow page follows section 7's numbers. With no pointing device the status
+  line says `No mouse attached: these apply when one is.` `CAPACITY` grows by 11 for this
+  pane, and by the 20 D599's Power pane needed and did not add.
+- **Not yet.** Building and running; product names for devices; telling two devices of a kind
+  apart by moving one; the TV's tooltips on the disabled controls; the wearable's per-device
+  lines.
