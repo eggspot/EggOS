@@ -70,6 +70,7 @@ pub mod number {
     pub const SETSOCKOPT: usize = 54;
     pub const SENDMSG: usize = 46;
     pub const GETSOCKOPT: usize = 55;
+    pub const SOCKETPAIR: usize = 53;
     pub const RECVMSG: usize = 47;
     pub const BIND: usize = 49;
     pub const LISTEN: usize = 50;
@@ -163,6 +164,7 @@ pub mod number {
     pub const RECVFROM: usize = 207;
     pub const SENDMSG: usize = 211;
     pub const GETSOCKOPT: usize = 209;
+    pub const SOCKETPAIR: usize = 199;
     pub const RECVMSG: usize = 212;
     pub const ACCEPT4: usize = 242;
     pub const MEMFD_CREATE: usize = 279;
@@ -248,6 +250,7 @@ pub mod number {
     pub const SETSOCKOPT: usize = 339;
     pub const SENDMSG: usize = 341;
     pub const GETSOCKOPT: usize = 340;
+    pub const SOCKETPAIR: usize = 350;
     pub const RECVMSG: usize = 342;
     pub const BIND: usize = 327;
     pub const LISTEN: usize = 329;
@@ -335,6 +338,7 @@ pub mod number {
     pub const SETSOCKOPT: usize = 366;
     pub const SENDMSG: usize = 370;
     pub const GETSOCKOPT: usize = 365;
+    pub const SOCKETPAIR: usize = 360;
     pub const RECVMSG: usize = 372;
     pub const BIND: usize = 361;
     pub const LISTEN: usize = 363;
@@ -422,6 +426,7 @@ pub mod number {
     pub const SETSOCKOPT: usize = 355;
     pub const SENDMSG: usize = 114;
     pub const GETSOCKOPT: usize = 118;
+    pub const SOCKETPAIR: usize = 135;
     pub const RECVMSG: usize = 113;
     pub const BIND: usize = 353;
     pub const LISTEN: usize = 354;
@@ -509,6 +514,7 @@ pub mod number {
     pub const SETSOCKOPT: usize = 5053;
     pub const SENDMSG: usize = 5045;
     pub const GETSOCKOPT: usize = 5054;
+    pub const SOCKETPAIR: usize = 5052;
     pub const RECVMSG: usize = 5046;
     pub const BIND: usize = 5048;
     pub const LISTEN: usize = 5049;

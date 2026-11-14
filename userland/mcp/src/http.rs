@@ -1,11 +1,13 @@
-//! MCP for agents on the network (D193): the Streamable HTTP transport over HTTPS, as small as
-//! the specification allows. `POST /mcp` carries one JSON-RPC message and gets the server's
-//! answer as `application/json` (202 with no body for a notification); there is no event
-//! stream, so `GET` and `DELETE` answer 405. Every `/mcp` request carries the agent's token
-//! as `Authorization: Bearer`; `POST /pair` trades a one-time code for that token
+//! MCP for agents on the network (D193, D576): the Streamable HTTP transport over HTTPS.
+//! `POST /mcp` carries one JSON-RPC message and gets the server's answer as `application/json`
+//! (202 with no body for a notification). An `initialize` opens a session whose id the answer
+//! carries as `Mcp-Session-Id`; later requests send it back, `GET /mcp` with it opens the
+//! session's event stream (`text/event-stream`) for what the server says on its own, and
+//! `DELETE /mcp` with it ends the session. Every `/mcp` request carries the agent's token as
+//! `Authorization: Bearer`; `POST /pair` trades a one-time code for that token
 //! ([`crate::pairing`]). A request whose `Origin` is not the address it was sent to is refused,
-//! against DNS rebinding. Requests and answers are HTTP/1.1 (RFC 9112) with `Content-Length`;
-//! chunked bodies are refused.
+//! against DNS rebinding. Requests and answers are HTTP/1.1 (RFC 9112) with `Content-Length`,
+//! the event stream ending with the connection; chunked bodies are refused.
 
 use crate::json::{self, JsonWriter};
 use crate::pairing::{Token, token_hash};
@@ -21,8 +23,14 @@ pub const DEFAULT_PORT: u16 = 8443;
 /// The most bytes of an answer's line and headers.
 pub const MAX_RESPONSE_HEADER_BYTES: usize = 512;
 
+/// The most bytes of a session id.
+pub const MAX_SESSION_ID_BYTES: usize = 64;
+/// What keeps an idle event stream open: an SSE comment.
+pub const STREAM_KEEP_ALIVE: &[u8] = b": keep-alive\n\n";
+
 const BEARER: &[u8] = b"bearer ";
 const JSON_TYPE: &[u8] = b"application/json";
+const EVENT_STREAM_TYPE: &[u8] = b"text/event-stream";
 
 /// A request's method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +62,8 @@ pub enum Status {
     NotFound,
     /// 405.
     MethodNotAllowed,
+    /// 406: an event stream asked for without accepting `text/event-stream`.
+    NotAcceptable,
     /// 411: a body without `Content-Length`.
     LengthRequired,
     /// 413.
@@ -79,6 +89,7 @@ impl Status {
             Self::Forbidden => 403,
             Self::NotFound => 404,
             Self::MethodNotAllowed => 405,
+            Self::NotAcceptable => 406,
             Self::LengthRequired => 411,
             Self::PayloadTooLarge => 413,
             Self::UnsupportedMediaType => 415,
@@ -98,6 +109,7 @@ impl Status {
             Self::Forbidden => "Forbidden",
             Self::NotFound => "Not Found",
             Self::MethodNotAllowed => "Method Not Allowed",
+            Self::NotAcceptable => "Not Acceptable",
             Self::LengthRequired => "Length Required",
             Self::PayloadTooLarge => "Content Too Large",
             Self::UnsupportedMediaType => "Unsupported Media Type",
@@ -129,6 +141,10 @@ pub struct Request<'a> {
     pub mcp_method: Option<&'a [u8]>,
     /// The `Mcp-Name` header's value.
     pub mcp_name: Option<&'a [u8]>,
+    /// The `Mcp-Session-Id` header's value.
+    pub session_id: Option<&'a [u8]>,
+    /// The `Accept` header's value.
+    pub accept: Option<&'a [u8]>,
     /// The body.
     pub body: &'a [u8],
     /// Whether the client keeps the connection for another request.
@@ -212,6 +228,8 @@ pub fn parse(buffer: &[u8], max_body: usize) -> Parsed<'_> {
         protocol_version: None,
         mcp_method: None,
         mcp_name: None,
+        session_id: None,
+        accept: None,
         body: &[],
         keep_alive: keep_alive_by_default,
     };
@@ -244,6 +262,10 @@ pub fn parse(buffer: &[u8], max_body: usize) -> Parsed<'_> {
             request.mcp_method = Some(value);
         } else if is(b"mcp-name") {
             request.mcp_name = Some(value);
+        } else if is(b"mcp-session-id") {
+            request.session_id = Some(value);
+        } else if is(b"accept") {
+            request.accept = Some(value);
         } else if is(b"connection") {
             if value.eq_ignore_ascii_case(b"close") {
                 request.keep_alive = false;
@@ -277,6 +299,11 @@ pub enum Route<'a> {
     Mcp([u8; 32], &'a [u8]),
     /// A pairing request, with its JSON body.
     Pair(&'a [u8]),
+    /// The agent holding the token with this hash opens the event stream of the session the
+    /// request names.
+    Listen([u8; 32]),
+    /// The agent holding the token with this hash ends the session the request names.
+    EndSession([u8; 32]),
     /// Refused with this status and message.
     Refused(Status, &'static str),
 }
@@ -305,7 +332,47 @@ fn is_json(content_type: Option<&[u8]>) -> bool {
 /// refusal, a pairing or a token that is no agent's, closes it, so a stranger cannot hold the
 /// server's connection.
 pub fn keeps_connection(route: &Route<'_>, status: Status, keep_alive: bool) -> bool {
-    keep_alive && matches!(route, Route::Mcp(..)) && status != Status::Unauthorized
+    keep_alive
+        && matches!(route, Route::Mcp(..) | Route::EndSession(..))
+        && status != Status::Unauthorized
+}
+
+/// Whether `id` can be a session id: 1 to 64 visible ASCII characters.
+pub fn valid_session_id(id: &[u8]) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_SESSION_ID_BYTES
+        && id.iter().all(|byte| (0x21..=0x7e).contains(byte))
+}
+
+fn accepts_event_stream(accept: Option<&[u8]>) -> bool {
+    accept.is_some_and(|value| {
+        value.split(|&byte| byte == b',').any(|media| {
+            let media = media
+                .iter()
+                .position(|&byte| byte == b';')
+                .map_or(media, |semicolon| &media[..semicolon]);
+            let media = trimmed(media);
+            media.eq_ignore_ascii_case(EVENT_STREAM_TYPE)
+                || media == b"*/*"
+                || media.eq_ignore_ascii_case(b"text/*")
+        })
+    })
+}
+
+fn bearer_token<'a>(request: &Request<'a>) -> Result<[u8; 32], Route<'a>> {
+    let token = request.authorization.and_then(|value| {
+        let (scheme, token) = value.split_at_checked(BEARER.len())?;
+        scheme
+            .eq_ignore_ascii_case(BEARER)
+            .then_some(trimmed(token))
+    });
+    match token.filter(|token| !token.is_empty()) {
+        Some(token) => Ok(token_hash(token)),
+        None => Err(Route::Refused(
+            Status::Unauthorized,
+            "pair this agent with EggOS first: agent pair <id> on EggOS",
+        )),
+    }
 }
 
 /// Decides where `request` goes.
@@ -318,19 +385,16 @@ pub fn route<'a>(request: &Request<'a>) -> Route<'a> {
             "the request comes from a web page of another address",
         );
     }
+    if let Some(id) = request.session_id
+        && !valid_session_id(id)
+    {
+        return Route::Refused(Status::BadRequest, "that is not a session id");
+    }
     match (request.path, request.method) {
         (MCP_PATH, Method::Post) => {
-            let token = request.authorization.and_then(|value| {
-                let (scheme, token) = value.split_at_checked(BEARER.len())?;
-                scheme
-                    .eq_ignore_ascii_case(BEARER)
-                    .then_some(trimmed(token))
-            });
-            let Some(token) = token.filter(|token| !token.is_empty()) else {
-                return Route::Refused(
-                    Status::Unauthorized,
-                    "pair this agent with EggOS first: agent pair <id> on EggOS",
-                );
+            let token = match bearer_token(request) {
+                Ok(token) => token,
+                Err(refused) => return refused,
             };
             if !is_json(request.content_type) {
                 return Route::Refused(
@@ -338,11 +402,28 @@ pub fn route<'a>(request: &Request<'a>) -> Route<'a> {
                     "MCP messages are sent as application/json",
                 );
             }
-            Route::Mcp(token_hash(token), request.body)
+            Route::Mcp(token, request.body)
         }
+        (MCP_PATH, Method::Get) if request.session_id.is_some() => {
+            let token = match bearer_token(request) {
+                Ok(token) => token,
+                Err(refused) => return refused,
+            };
+            match accepts_event_stream(request.accept) {
+                true => Route::Listen(token),
+                false => Route::Refused(
+                    Status::NotAcceptable,
+                    "the event stream is sent as text/event-stream",
+                ),
+            }
+        }
+        (MCP_PATH, Method::Delete) if request.session_id.is_some() => match bearer_token(request) {
+            Ok(token) => Route::EndSession(token),
+            Err(refused) => refused,
+        },
         (MCP_PATH, _) => Route::Refused(
             Status::MethodNotAllowed,
-            "this server answers POST only: it has no event stream",
+            "the event stream and DELETE belong to a session: initialize first",
         ),
         (PAIR_PATH, Method::Post) => Route::Pair(request.body),
         (PAIR_PATH, _) => Route::Refused(Status::MethodNotAllowed, "pair with POST"),
@@ -432,6 +513,17 @@ fn sentinel_decoded<'o>(header: &[u8], out: &'o mut [u8; 256]) -> Option<&'o [u8
     out.get(..length)
 }
 
+/// Whether an MCP message is `initialize`, which opens a session.
+pub fn is_initialize(body: &[u8]) -> bool {
+    json::parse(body).is_ok_and(|parsed| {
+        parsed
+            .value
+            .get("method")
+            .and_then(|method| method.as_str())
+            .is_some_and(|method| method.equals("initialize"))
+    })
+}
+
 /// The code in a pairing request's body, `{"code": "ABCD-EFGH"}`, copied into `out`.
 pub fn pair_code<'o>(body: &[u8], out: &'o mut [u8; 32]) -> Option<&'o [u8]> {
     let parsed = json::parse(body).ok()?;
@@ -502,6 +594,52 @@ pub fn response_head(
     body_length: usize,
     keep_alive: bool,
 ) -> usize {
+    response_head_in_session(out, status, body_length, keep_alive, None)
+}
+
+/// Writes the head of the event stream of the session `session_id`: `text/event-stream` until
+/// the connection closes.
+pub fn event_stream_head(out: &mut [u8], session_id: &[u8]) -> usize {
+    let mut length = 0;
+    for part in [
+        &b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nMcp-Session-Id: "[..],
+        session_id,
+        b"\r\nConnection: close\r\n\r\n",
+    ] {
+        let Some(place) = out.get_mut(length..length + part.len()) else {
+            return length;
+        };
+        place.copy_from_slice(part);
+        length += part.len();
+    }
+    length
+}
+
+/// Writes one JSON-RPC message `line` as an event of the stream into `out`; its length, or 0
+/// when it does not fit or holds a line break.
+pub fn stream_event(line: &[u8], out: &mut [u8]) -> usize {
+    const START: &[u8] = b"event: message\ndata: ";
+    if line.contains(&b'\n') || line.contains(&b'\r') {
+        return 0;
+    }
+    let total = START.len() + line.len() + 2;
+    let Some(place) = out.get_mut(..total) else {
+        return 0;
+    };
+    place[..START.len()].copy_from_slice(START);
+    place[START.len()..START.len() + line.len()].copy_from_slice(line);
+    place[total - 2..].copy_from_slice(b"\n\n");
+    total
+}
+
+/// As [`response_head`], naming the session `session_id` in `Mcp-Session-Id` when given.
+pub fn response_head_in_session(
+    out: &mut [u8],
+    status: Status,
+    body_length: usize,
+    keep_alive: bool,
+    session_id: Option<&[u8]>,
+) -> usize {
     let mut length = 0;
     let mut put = |bytes: &[u8]| {
         if let Some(place) = out.get_mut(length..length + bytes.len()) {
@@ -527,6 +665,11 @@ pub fn response_head(
         _ => {}
     }
     put(b"Cache-Control: no-store\r\n");
+    if let Some(id) = session_id.filter(|id| valid_session_id(id)) {
+        put(b"Mcp-Session-Id: ");
+        put(id);
+        put(b"\r\n");
+    }
     match keep_alive {
         true => put(b"Connection: keep-alive\r\n\r\n"),
         false => put(b"Connection: close\r\n\r\n"),

@@ -272,3 +272,67 @@ fn only_an_agents_own_message_keeps_its_connection() {
         ));
     }
 }
+
+#[test]
+fn a_session_s_stream_and_end_need_its_id_a_token_and_an_event_stream_accept() {
+    let (request, _) = complete(MCP_POST);
+    let token = crate::pairing::token_hash(b"eggos_abc");
+    let listen = Request {
+        method: Method::Get,
+        session_id: Some(b"0123abcd"),
+        accept: Some(b"application/json, text/event-stream"),
+        ..request
+    };
+    assert_eq!(route(&listen), Route::Listen(token));
+    let json_only = Request {
+        accept: Some(b"application/json"),
+        ..listen
+    };
+    assert!(matches!(
+        route(&json_only),
+        Route::Refused(Status::NotAcceptable, _)
+    ));
+    let stranger = Request {
+        authorization: None,
+        ..listen
+    };
+    assert!(matches!(
+        route(&stranger),
+        Route::Refused(Status::Unauthorized, _)
+    ));
+    let end = Request {
+        method: Method::Delete,
+        ..listen
+    };
+    assert_eq!(route(&end), Route::EndSession(token));
+    assert!(keeps_connection(&route(&end), Status::Ok, true));
+    assert!(!keeps_connection(&route(&listen), Status::Ok, true));
+    let bad_id = Request {
+        session_id: Some(b"has space"),
+        ..request
+    };
+    assert!(matches!(
+        route(&bad_id),
+        Route::Refused(Status::BadRequest, _)
+    ));
+}
+
+#[test]
+fn the_session_id_is_read_and_answered_and_events_are_framed() {
+    let text = b"POST /mcp HTTP/1.1\r\nMcp-Session-Id: s1\r\nAccept: text/event-stream\r\nContent-Length: 0\r\n\r\n";
+    let (request, _) = complete(text);
+    assert_eq!(request.session_id, Some(&b"s1"[..]));
+    assert_eq!(request.accept, Some(&b"text/event-stream"[..]));
+    let mut out = [0u8; MAX_RESPONSE_HEADER_BYTES];
+    let length = response_head_in_session(&mut out, Status::Ok, 2, true, Some(b"s1"));
+    let head = core::str::from_utf8(&out[..length]).unwrap();
+    assert!(head.contains("Mcp-Session-Id: s1\r\n"));
+    let length = event_stream_head(&mut out, b"s1");
+    assert!(out[..length].starts_with(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"));
+    let mut event = [0u8; 64];
+    let length = stream_event(b"{\"a\":1}", &mut event);
+    assert_eq!(&event[..length], b"event: message\ndata: {\"a\":1}\n\n");
+    assert_eq!(stream_event(b"two\nlines", &mut event), 0);
+    assert!(is_initialize(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#));
+    assert!(!is_initialize(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#));
+}

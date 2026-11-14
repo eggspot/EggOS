@@ -442,6 +442,7 @@ impl Linux {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct PollDescriptor {
     descriptor: i32,
     events: i16,
