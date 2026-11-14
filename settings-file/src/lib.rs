@@ -173,6 +173,46 @@ pub const MOUSE_SPEED: &str = "mouse.speed";
 
 /// Whether mice go further the faster they move (D589): `on` (the default) or `off`.
 pub const MOUSE_ACCELERATION: &str = "mouse.acceleration";
+/// What closing the lid does (D599): `sleep` (the default), `nothing` or `off`.
+pub const POWER_LID_ACTION: &str = "power.lid_action";
+/// [`POWER_LID_ACTION`]'s values, in [`LidAction`]'s order.
+pub const LID_ACTIONS: [&str; 3] = ["sleep", "nothing", "off"];
+
+/// What closing the lid does (D599).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LidAction {
+    /// The deepest sleep the machine has, or the power-off countdown without one.
+    #[default]
+    Sleep,
+    /// Nothing.
+    Nothing,
+    /// The power-off countdown.
+    Off,
+}
+
+impl LidAction {
+    /// The action named `name`, as [`LID_ACTIONS`] spells it.
+    pub fn named(name: &[u8]) -> Option<Self> {
+        match LID_ACTIONS.iter().position(|action| action.as_bytes() == name)? {
+            0 => Some(Self::Sleep),
+            1 => Some(Self::Nothing),
+            _ => Some(Self::Off),
+        }
+    }
+
+    /// Its name, as [`LID_ACTIONS`] spells it.
+    pub fn name(self) -> &'static str {
+        LID_ACTIONS[self as usize]
+    }
+}
+
+/// The lid action `file` holds, the default when absent or unknown.
+pub fn lid_action(file: &[u8]) -> LidAction {
+    value(file, POWER_LID_ACTION)
+        .and_then(LidAction::named)
+        .unwrap_or_default()
+}
+
 /// Milliseconds before a held key repeats: 150 to 2000, 400 the default (D195).
 pub const KEYBOARD_REPEAT_DELAY: &str = "keyboard.repeat_delay_ms";
 /// Repeats a second of a held key: 2 to 60, 25 the default (D195).

@@ -677,6 +677,36 @@ pub const WM_DESKTOP_MOVE: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Ctrl+Super+Shift+Left and Right"),
 };
 
+/// What `power status --json` writes: one record (D599).
+pub const POWER_FIELDS: [Field; 6] = [
+    field("batteries", FieldType::List),
+    nullable("line_power", FieldType::Text),
+    nullable("lid", FieldType::Text),
+    field("temperatures_c", FieldType::List),
+    field("critical_c", FieldType::List),
+    nullable("dock", FieldType::Text),
+];
+
+/// `power status` (D599).
+pub const POWER_STATUS: CommandDefinition = CommandDefinition {
+    words: &["power", "status"],
+    summary: "Shows the batteries, line power, the lid, temperatures and the dock.",
+    description: "Prints the power state the firmware reports: each battery's charge and \
+                  whether it charges, line power, the lid, every thermal zone's temperature with \
+                  the hottest zone's critical point, and the dock; `No power devices.` when the \
+                  machine reports none. `power` alone is `power status`.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&POWER_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&NO_SUCH_FILE, 1)],
+    examples: &[],
+    surface: Surface::Gui("the bar's battery indicator and Settings > Power"),
+};
+
 /// What `screenshot --json` writes (D590).
 pub const SCREENSHOT_FIELDS: [Field; 10] = [
     field("path", FieldType::Text),
@@ -4474,7 +4504,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 119] = [
+pub static COMMANDS: [CommandDefinition; 120] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4533,6 +4563,7 @@ pub static COMMANDS: [CommandDefinition; 119] = [
     MV,
     NSLOOKUP,
     PING,
+    POWER_STATUS,
     POWEROFF,
     PS,
     READLINK,

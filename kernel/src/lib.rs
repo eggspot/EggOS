@@ -34,6 +34,7 @@ pub mod linux;
 pub mod memory;
 pub mod net;
 pub mod orientation;
+pub mod power_policy;
 pub mod paging;
 pub mod process;
 pub mod random;

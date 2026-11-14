@@ -1,6 +1,10 @@
 //! What Settings reports about the system and the choices it shows, gathered by the program
 //! from the kernel (or made up by a test), so the window and `settings` show the same values.
 
+/// `/proc/driver/power` in the example facts (D599).
+pub const EXAMPLE_POWER: &str =
+    "lid open\nac offline\nbattery 0 87% discharging\nthermal 0 47.0 limit 95.0\ndock detached";
+
 use eggos_net::status::InterfaceStatus;
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
@@ -68,6 +72,12 @@ pub struct Facts {
     /// The network adapter as `/proc/net/interfaces` reports it; `None` on a machine without
     /// one (D225).
     pub network_adapter: Option<InterfaceStatus>,
+    /// The power state as `/proc/driver/power` reports it (D599).
+    pub power: eggos_device_list::power::PowerFacts,
+    /// Whether the machine can sleep: `/sys/power/state` lists `mem` (D597, D599).
+    pub sleep_available: bool,
+    /// What closing the lid does, `power.lid_action` (D599).
+    pub lid_action: eggos_settings_file::LidAction,
     /// `shell.form`: its index in [`FORM_SETTINGS`] (D303).
     pub form_setting: usize,
     /// The form on screen: its index in [`FORMS_IN_USE`] (D303).
@@ -131,6 +141,9 @@ impl Facts {
                 reduce_motion: false,
             },
             network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
+            power: eggos_device_list::power::PowerFacts::parse(EXAMPLE_POWER.as_bytes()),
+            sleep_available: false,
+            lid_action: eggos_settings_file::LidAction::Sleep,
             form_setting: 0,
             on_screen_keyboard: 0,
             rotation: 0,

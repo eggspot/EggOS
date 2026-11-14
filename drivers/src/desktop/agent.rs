@@ -75,7 +75,8 @@ impl Desktop {
         let indicator = self
             .tray_run()
             .or(self.keyboard_layout_indicator())
-            .or(self.network_indicator());
+            .or(self.network_indicator())
+            .or(self.battery_indicator());
         match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => Some(Rect::new(
                 match indicator {

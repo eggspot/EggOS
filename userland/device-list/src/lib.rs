@@ -5,6 +5,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod power;
+
 /// Where the kernel lists the devices.
 pub const DEVICES_FILE: &str = "/proc/driver/devices";
 

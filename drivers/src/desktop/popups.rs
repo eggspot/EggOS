@@ -262,6 +262,9 @@ impl Desktop {
         self.close_icon_menu(damage, events);
         self.close_end_app(damage);
         self.close_overview(None, damage, events);
+        if self.battery_menu_open() {
+            self.close_battery_menu(damage);
+        }
     }
 
     /// Window `slot` is going away: the switcher stops listing it and its window menu closes.

@@ -59,6 +59,12 @@ pub enum Key {
     NetworkRouter,
     NetworkDns,
     NetworkMac,
+    PowerBattery,
+    PowerLine,
+    PowerLid,
+    PowerTemperature,
+    PowerDock,
+    PowerLidAction,
     SystemVersion,
     SystemArch,
     SystemCpus,
@@ -113,6 +119,8 @@ pub enum Change {
     Keys(KeysChange),
     /// High contrast or reduced motion, shown at once (D224).
     Display(DisplayChange),
+    /// What closing the lid does, from the next close (D599).
+    LidAction(eggos_settings_file::LidAction),
 }
 
 /// What the keyboard uses, all of it (D221): the layouts the switch key cycles through, the
@@ -359,7 +367,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 46] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -395,6 +403,12 @@ impl Key {
         Self::NetworkRouter,
         Self::NetworkDns,
         Self::NetworkMac,
+        Self::PowerBattery,
+        Self::PowerLine,
+        Self::PowerLid,
+        Self::PowerTemperature,
+        Self::PowerDock,
+        Self::PowerLidAction,
         Self::SystemVersion,
         Self::SystemArch,
         Self::SystemCpus,
@@ -440,6 +454,12 @@ impl Key {
             Self::NetworkRouter => "network.router",
             Self::NetworkDns => "network.dns",
             Self::NetworkMac => "network.mac",
+            Self::PowerBattery => "power.battery",
+            Self::PowerLine => "power.line",
+            Self::PowerLid => "power.lid",
+            Self::PowerTemperature => "power.temperature",
+            Self::PowerDock => "power.dock",
+            Self::PowerLidAction => eggos_settings_file::POWER_LID_ACTION,
             Self::SystemVersion => "system.version",
             Self::SystemArch => "system.arch",
             Self::SystemCpus => "system.cpus",
@@ -480,6 +500,7 @@ impl Key {
                 | Self::StickyKeys
                 | Self::SlowKeys
                 | Self::SlowKeysMs
+                | Self::PowerLidAction
         )
     }
 
@@ -498,6 +519,7 @@ impl Key {
             Self::DisplayRotation => {
                 write_choices(&mut choices, &eggos_settings_file::DISPLAY_ROTATIONS)
             }
+            Self::PowerLidAction => write_choices(&mut choices, &eggos_settings_file::LID_ACTIONS),
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
             }
@@ -649,6 +671,26 @@ impl Key {
             Self::NetworkMac => {
                 write_or_none(&mut value, facts.network_adapter.map(|status| status.mac))
             }
+            Self::PowerBattery => match facts.power.batteries().next() {
+                Some(battery) => {
+                    let state = match facts.power.is_low() {
+                        true => "low",
+                        false => battery.charge.word(),
+                    };
+                    write!(value, "{}% {state}", battery.percent)
+                }
+                None => value.write_str("none"),
+            },
+            Self::PowerLine => value.write_str(fact_word(facts.power.line_power, "online", "offline")),
+            Self::PowerLid => value.write_str(fact_word(facts.power.lid_open, "open", "closed")),
+            Self::PowerTemperature => match facts.power.hottest() {
+                Some(zone) => eggos_device_list::power::write_celsius(&mut value, zone.tenths_c),
+                None => value.write_str("none"),
+            },
+            Self::PowerDock => {
+                value.write_str(fact_word(facts.power.docked, "attached", "detached"))
+            }
+            Self::PowerLidAction => value.write_str(facts.lid_action.name()),
             Self::SystemVersion => value.write_str(facts.version),
             Self::SystemArch => value.write_str(facts.architecture.as_str()),
             Self::SystemCpus => write!(value, "{}", facts.cpus),
@@ -741,6 +783,9 @@ impl Key {
             Self::SlowKeys => boolean(value).map(|on| Change::Keys(KeysChange::SlowKeys(on))),
             Self::SlowKeysMs => number_within(value, 100, 1000)
                 .map(|delay| Change::Keys(KeysChange::SlowKeysMs(delay))),
+            Self::PowerLidAction => eggos_settings_file::LidAction::named(value.as_bytes())
+                .map(Change::LidAction)
+                .ok_or(Refusal::InvalidValue),
             _ => Err(Refusal::ReadOnly),
         }
     }
@@ -817,6 +862,14 @@ pub fn layouts_refusal(value: &str, refusal: LayoutSetRefusal) -> (&str, Text<25
     (quoted, reason)
 }
 
+fn fact_word(fact: Option<bool>, yes: &'static str, no: &'static str) -> &'static str {
+    match fact {
+        Some(true) => yes,
+        Some(false) => no,
+        None => "none",
+    }
+}
+
 /// What `settings set name value` changes.
 pub fn change(name: &str, value: &str) -> Result<(Key, Change), Refusal> {
     let key = Key::named(name).ok_or(Refusal::NoSuchSetting)?;
@@ -872,6 +925,12 @@ mod tests {
                 ("network.router", "10.0.2.2".to_owned()),
                 ("network.dns", "10.0.2.3".to_owned()),
                 ("network.mac", "52:54:00:12:34:56".to_owned()),
+                ("power.battery", "87% discharging".to_owned()),
+                ("power.line", "offline".to_owned()),
+                ("power.lid", "open".to_owned()),
+                ("power.temperature", "47.0".to_owned()),
+                ("power.dock", "detached".to_owned()),
+                ("power.lid_action", "sleep".to_owned()),
                 ("system.version", "0.2.0".to_owned()),
                 ("system.arch", "aarch64".to_owned()),
                 ("system.cpus", "4".to_owned()),

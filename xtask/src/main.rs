@@ -710,10 +710,10 @@ const APPLICATIONS_PATH: &str = "Applications";
 
 const WORK_PATH: &str = "work";
 
-const COREUTILS: [&str; 50] = [
+const COREUTILS: [&str; 51] = [
     "agent", "agentlog", "cat", "chmod", "clip", "cp", "date", "device", "df", "download", "echo",
     "false", "fetch", "free", "getprop", "grep", "halt", "head", "help", "hwclock", "ip", "kill",
-    "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "poweroff", "ps", "readlink",
+    "ln", "logcat", "ls", "mkdir", "mv", "nslookup", "ping", "power", "poweroff", "ps", "readlink",
     "reboot", "rm", "screenshot", "setprop", "sleep", "stty", "sync", "tail", "taskset", "tee", "touch", "trash",
     "true", "uname", "uptime", "wc", "wifi", "wm",
 ];

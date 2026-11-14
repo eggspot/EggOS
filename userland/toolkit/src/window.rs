@@ -30,6 +30,7 @@ const SET_DEVICE_INPUT_PREFERENCES: usize = 0x4014_773c;
 pub const EVERY_DEVICE: u32 = u32::MAX;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
+const SET_LID_ACTION: usize = 0x4004_7740;
 const CHANGE_FLAGS: usize = 0x400c_7725;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const START_DRAG: usize = 0x4058_7737;
@@ -199,6 +200,13 @@ impl WindowServer {
             *place = word.to_ne_bytes();
         }
         self.ioctl(SET_KEY_ACCESSIBILITY, &mut bytes)
+    }
+
+    /// What closing the lid does from now on (`SET_LID_ACTION`, D599): 0 sleep, 1 nothing, 2
+    /// power off.
+    pub fn set_lid_action(&self, action: u32) -> Result<(), Errno> {
+        let mut bytes = action.to_ne_bytes();
+        self.ioctl(SET_LID_ACTION, &mut bytes)
     }
 
     /// Makes `text` the clipboard every app shares (`SET_CLIPBOARD`, D197).

@@ -525,11 +525,42 @@ pub struct PowerState {
     pub batteries: Vec<(u8, bool)>,
     /// Each thermal zone's temperature in tenths of a kelvin (`_TMP`).
     pub temperatures: Vec<u64>,
+    /// Each zone's critical point (`_CRT`, else 95.0 °C) and hot point (`_HOT`, else ten
+    /// degrees under critical), in tenths of a kelvin (D599).
+    pub critical: Vec<u64>,
+    pub hot: Vec<u64>,
     /// Whether a dock is attached (`_STA` of a `_DCK` device).
     pub docked: Option<bool>,
 }
 
 static POWER: crate::sync::LeafSpinLock<Option<PowerState>> = crate::sync::LeafSpinLock::new_leaf(None);
+
+/// 0 °C in tenths of a kelvin.
+pub const KELVIN_OFFSET_TENTHS: i64 = 2732;
+/// A zone's critical point when it names none: 95.0 °C (D599).
+pub const CRITICAL_FALLBACK_TENTHS_K: i64 = 950 + KELVIN_OFFSET_TENTHS;
+const HOT_UNDER_CRITICAL_TENTHS: u64 = 100;
+
+/// Keeps `state` as the power state and tells the power policy and the desktop (D599).
+fn publish_power<P: Platform>(state: PowerState) {
+    *POWER.lock() = Some(state.clone());
+    crate::power_policy::changed::<P>(&state);
+}
+
+/// The power state as last read, if the machine has an ACPI namespace (D599).
+pub fn power_state() -> Option<PowerState> {
+    POWER.lock().clone()
+}
+
+/// Reads the power devices again now and publishes them (D599): the power thread's poll, as
+/// not every firmware notifies. Waits for the namespace while another call uses it.
+pub fn poll_power<P: Platform>() {
+    let state = match NAMESPACE.lock().as_mut() {
+        Some(loaded) => read_power(&mut loaded.interpreter),
+        None => return,
+    };
+    publish_power::<P>(state);
+}
 
 /// `/proc/driver/power`'s text (D556): `lid open|closed`, `ac online|offline`, one `battery <n>
 /// <percent>% charging|discharging` line each, one `thermal <n> <celsius>.<tenth>` line each and
@@ -551,8 +582,20 @@ pub fn power_text() -> alloc::string::String {
         let _ = writeln!(text, "battery {index} {percent}% {doing}");
     }
     for (index, tenths) in state.temperatures.iter().enumerate() {
-        let celsius = (*tenths as i64) - 2732;
-        let _ = writeln!(text, "thermal {index} {}.{}", celsius / 10, (celsius % 10).abs());
+        let celsius = (*tenths as i64) - KELVIN_OFFSET_TENTHS;
+        let limit = state
+            .critical
+            .get(index)
+            .map_or(CRITICAL_FALLBACK_TENTHS_K, |&limit| limit as i64)
+            - KELVIN_OFFSET_TENTHS;
+        let _ = writeln!(
+            text,
+            "thermal {index} {}.{} limit {}.{}",
+            celsius / 10,
+            (celsius % 10).abs(),
+            limit / 10,
+            (limit % 10).abs()
+        );
     }
     if let Some(docked) = state.docked {
         let _ = writeln!(text, "dock {}", if docked { "attached" } else { "detached" });
@@ -613,7 +656,15 @@ fn read_power(interpreter: &mut Interpreter<KernelHost>) -> PowerState {
         .collect();
     for zone in zones {
         if let Some(tenths) = integer(interpreter, &zone, b"_TMP") {
+            let critical = integer(interpreter, &zone, b"_CRT")
+                .filter(|&critical| critical > 0)
+                .unwrap_or(CRITICAL_FALLBACK_TENTHS_K as u64);
+            let hot = integer(interpreter, &zone, b"_HOT")
+                .filter(|&hot| hot > 0)
+                .unwrap_or(critical.saturating_sub(HOT_UNDER_CRITICAL_TENTHS));
             state.temperatures.push(tenths);
+            state.critical.push(critical);
+            state.hot.push(hot);
         }
     }
     let docks: Vec<Path> = interpreter
@@ -870,7 +921,7 @@ pub fn woke_from<P: Platform>(state: u64) {
             }
         }
         let state = read_power(&mut loaded.interpreter);
-        *POWER.lock() = Some(state);
+        publish_power::<P>(state);
     }
 }
 
@@ -943,8 +994,9 @@ pub fn start_events<P: Platform>() -> Result<(), &'static str> {
     }
     if let Some(loaded) = NAMESPACE.lock().as_mut() {
         let state = read_power(&mut loaded.interpreter);
-        *POWER.lock() = Some(state);
+        publish_power::<P>(state);
     }
+    crate::power_policy::start::<P>();
     P::enable_system_control()?;
     crate::thread::spawn::<P, _>(|| {
         loop {
@@ -1119,7 +1171,7 @@ fn act_on_notifications<P: Platform>(
         && let Some(loaded) = namespace.as_mut()
     {
         let state = read_power(&mut loaded.interpreter);
-        *POWER.lock() = Some(state);
+        publish_power::<P>(state);
     }
     for (path, value) in notified {
         if value == POWER_BUTTON_PRESSED && power_buttons.contains(&path) {

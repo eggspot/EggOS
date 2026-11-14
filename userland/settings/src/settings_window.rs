@@ -16,6 +16,7 @@ use crate::components_pane::{self, ComponentsPane, ComponentsRead};
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
 use crate::keys::{DisplayChange, InputChange, KeysChange};
+use crate::power_pane::{POWER_PANE_HEIGHT, PowerPane};
 use crate::network_pane::NetworkPane;
 use crate::network_view::NetworkRead;
 use crate::storage_pane::{Reply, StoragePane};
@@ -28,6 +29,7 @@ use core::fmt::Write;
 use eggos_calendar::{ParseError, parse_local_setting};
 use eggos_components::index::Component;
 use eggos_components::manager::{Failure, Refusal, RemoveError};
+use eggos_device_list::power::PowerFacts;
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::storage::{DiskRecord, StorageError};
 use eggos_mcp::grant_files::SaveError;
@@ -36,7 +38,9 @@ use eggos_mcp::pairing::{Code, PairError};
 use eggos_net::status::InterfaceStatus;
 use eggos_runtime::errno::Errno;
 use eggos_settings_file::clock_sync::Record;
-use eggos_settings_file::{KEYBOARD_LAYOUTS, KeyboardLayoutSet, MAX_KEYBOARD_LAYOUTS, SwitchKey};
+use eggos_settings_file::{
+    KEYBOARD_LAYOUTS, KeyboardLayoutSet, LidAction, MAX_KEYBOARD_LAYOUTS, SwitchKey,
+};
 use eggos_toolkit::input::key;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::{Theme, Token};
@@ -164,10 +168,11 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 12] = [
+pub const PANES: [&str; 13] = [
     "Appearance",
     "Network",
     "Display",
+    "Power",
     "Keyboard",
     "Mouse",
     "Accessibility",
@@ -183,29 +188,31 @@ const APPEARANCE: usize = 0;
 /// The `Network` pane's place in [`PANES`] (D225, docs/ux/network-v0.3.md).
 pub const NETWORK: usize = 1;
 const DISPLAY: usize = 2;
+/// The `Power` pane's place in [`PANES`] (D599, docs/ux/power-v0.1.md).
+pub const POWER: usize = 3;
 /// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
-pub const KEYBOARD: usize = 3;
-const MOUSE: usize = 4;
+pub const KEYBOARD: usize = 4;
+const MOUSE: usize = 5;
 /// The `Accessibility` pane's place in [`PANES`] (D205, docs/ux/first-run-accessibility-v0.3.md).
-pub const ACCESSIBILITY: usize = 5;
+pub const ACCESSIBILITY: usize = 6;
 /// The `Storage` pane's place in [`PANES`] (D192, docs/ux/storage-v0.3.md).
-pub const STORAGE: usize = 6;
+pub const STORAGE: usize = 7;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
-pub const DATE_AND_TIME: usize = 7;
+pub const DATE_AND_TIME: usize = 8;
 /// The `Agents` pane's place in [`PANES`] (D193, docs/ux/agents-v0.3.md).
-pub const AGENTS: usize = 8;
+pub const AGENTS: usize = 9;
 /// The `Windows` pane's place in [`PANES`] (D231, docs/ux/windows-registry-v0.3.md): its row
 /// shows only while the Windows layer is installed.
-pub const WINDOWS: usize = 9;
+pub const WINDOWS: usize = 10;
 /// The `Components` pane's place in [`PANES`] (D235, docs/ux/components-v0.3.md).
-pub const COMPONENTS: usize = 10;
+pub const COMPONENTS: usize = 11;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 11;
+pub const ABOUT: usize = 12;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 12] = [
+const PANE_WORDS: [&[&str]; 13] = [
     &[
         "theme",
         "dark",
@@ -282,6 +289,20 @@ const PANE_WORDS: [&[&str]; 12] = [
         "landscape",
         "upside down",
         "sideways",
+    ],
+    &[
+        "battery",
+        "power",
+        "lid",
+        "sleep",
+        "temperature",
+        "thermal",
+        "heat",
+        "charging",
+        "plugged in",
+        "dock",
+        "Power & battery",
+        "Energy",
     ],
     &[
         "Layout",
@@ -583,6 +604,9 @@ pub enum Request {
     /// Save this display accessibility setting, then apply it, then say how both went
     /// ([`SettingsWindow::display_changed`]) (D224).
     ChangeDisplay(DisplayChange),
+    /// Save `power.lid_action`, then apply it, then say how both went
+    /// ([`SettingsWindow::lid_action_changed`]) (D599).
+    SetLidAction(LidAction),
     /// Read the disks and show them ([`SettingsWindow::show_disks`]) (D192).
     ReadDisks,
     /// Check this disk without writing, read the disks again, then show both
@@ -793,6 +817,13 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
             "{} \u{d7} {}, scale {}",
             facts.resolution.0, facts.resolution.1, facts.scale
         ),
+        POWER => match facts.power.mean_percent() {
+            Some(percent) if facts.power.line_power == Some(true) => {
+                write!(text, "{percent}%, plugged in")
+            }
+            Some(percent) => write!(text, "{percent}%, on battery"),
+            None => write!(text, "Lid, temperature and limits"),
+        },
         KEYBOARD => write!(text, "Layouts, repeat, on-screen keyboard"),
         MOUSE => write!(
             text,
@@ -874,6 +905,7 @@ pub struct SettingsWindow {
     display: DisplayPane,
     inputs: InputPanes,
     accessibility: AccessibilityPane,
+    power: PowerPane,
     about: AboutPane,
     network: NetworkPane,
     wifi: WifiSection,
@@ -1138,6 +1170,7 @@ impl SettingsWindow {
             ABOUT => build.pane(scroll, Length::Fill(0)),
             DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
             DISPLAY => build.pane(scroll, Length::Px(DISPLAY_PANE_HEIGHT)),
+            POWER => build.pane(scroll, Length::Px(POWER_PANE_HEIGHT)),
             _ => build.pane(scroll, Length::Px(PANE_HEIGHT)),
         });
         let profile = facts.profile.min(PROFILE_LABELS.len() - 1);
@@ -1191,6 +1224,7 @@ impl SettingsWindow {
         let no_disk = build.label(appearance, PADDING, NO_DISK_LINE, NO_DISK, Token::TextDim);
 
         build.heading(panes[DISPLAY], PANES[DISPLAY]);
+        build.heading(panes[POWER], PANES[POWER]);
         build.heading(panes[MOUSE], PANES[MOUSE]);
         build.heading(panes[ACCESSIBILITY], PANES[ACCESSIBILITY]);
 
@@ -1413,6 +1447,7 @@ impl SettingsWindow {
         );
         let accessibility =
             AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], Shown::of(&facts));
+        let power = PowerPane::build(&mut tree, panes[POWER], &facts);
         let about_devices = AboutPane::build(&mut tree, panes[ABOUT]);
         let network = NetworkPane::build(
             &mut tree,
@@ -1492,6 +1527,7 @@ impl SettingsWindow {
             display,
             inputs,
             accessibility,
+            power,
             about: about_devices,
             network,
             wifi,
@@ -1677,6 +1713,11 @@ impl SettingsWindow {
         if pane == ACCESSIBILITY {
             self.accessibility.reset(&mut self.tree, &self.facts);
         }
+        if pane == POWER {
+            if let Some(height) = self.power.reset(&mut self.tree, &self.facts) {
+                self.set_pane_height(POWER, height);
+            }
+        }
         if pane == STORAGE {
             self.storage.reset(&mut self.tree);
             return Some(Request::ReadDisks);
@@ -1820,6 +1861,8 @@ impl SettingsWindow {
                 }),
             ),
         );
+        let power = self.power.reflow(&mut self.tree, content);
+        self.set_pane_height(POWER, power);
         let accessibility = self.accessibility.reflow(&mut self.tree, content);
         self.tree.set_place(
             self.widgets.panes[ACCESSIBILITY],
@@ -1835,6 +1878,42 @@ impl SettingsWindow {
             ),
         );
         self.lay_out_frame();
+    }
+
+    fn set_pane_height(&mut self, pane: usize, height: i32) {
+        self.tree.set_place(
+            self.widgets.panes[pane],
+            Place::at(0, 0, Length::Fill(0), Length::Px(height)),
+        );
+    }
+
+    /// The Power pane.
+    pub fn power_pane(&self) -> &PowerPane {
+        &self.power
+    }
+
+    /// Shows the power state read again once a second while the Power pane shows (D599).
+    pub fn show_power(&mut self, power: PowerFacts) {
+        self.facts.power = power;
+        if let Some(height) = self.power.show(&mut self.tree, &self.facts) {
+            self.set_pane_height(POWER, height);
+        }
+    }
+
+    /// How saving, then applying, what closing the lid does went ([`Request::SetLidAction`]):
+    /// `applied` is only looked at when `saved` worked.
+    pub fn lid_action_changed(
+        &mut self,
+        action: LidAction,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        if saved.is_ok() {
+            self.facts.lid_action = action;
+        }
+        if let Some(height) = self.power.changed(&mut self.tree, &self.facts, saved, applied) {
+            self.set_pane_height(POWER, height);
+        }
     }
 
     /// The window's shape now.
@@ -2906,6 +2985,11 @@ impl SettingsWindow {
         }
         if let input_panes::Reply::Done(request) =
             self.accessibility.respond(response, Shown::of(&self.facts))
+        {
+            return request;
+        }
+        if let input_panes::Reply::Done(request) =
+            self.power.respond(response, self.facts.lid_action)
         {
             return request;
         }

@@ -103,6 +103,7 @@ pub mod size {
     pub const CAPTURE_SCREEN: usize = 48;
     pub const SHOW_NOTICE: usize = 8 + super::NOTICE_TEXT_CAPACITY;
     pub const PICK_REGION: usize = 4;
+    pub const SET_LID_ACTION: usize = 4;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
@@ -202,6 +203,7 @@ pub mod request {
     pub const CAPTURE_SCREEN: u32 = encode(READ | WRITE, 61, size::CAPTURE_SCREEN);
     pub const SHOW_NOTICE: u32 = encode(WRITE, 62, size::SHOW_NOTICE);
     pub const PICK_REGION: u32 = encode(WRITE, 63, size::PICK_REGION);
+    pub const SET_LID_ACTION: u32 = encode(WRITE, 64, size::SET_LID_ACTION);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -697,6 +699,8 @@ pub enum Request {
     },
     /// Opens the screenshot region picker.
     PickRegion,
+    /// What closing the lid does from now on (D599): 0 sleep, 1 nothing, 2 power off.
+    SetLidAction { action: u32 },
     ListWindow {
         index: u32,
     },
@@ -986,6 +990,7 @@ impl Request {
             request::CAPTURE_SCREEN => size::CAPTURE_SCREEN,
             request::SHOW_NOTICE => size::SHOW_NOTICE,
             request::PICK_REGION => size::PICK_REGION,
+            request::SET_LID_ACTION => size::SET_LID_ACTION,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1323,6 +1328,7 @@ impl Request {
                 duration_ms: at(4),
             },
             request::PICK_REGION => Self::PickRegion,
+            request::SET_LID_ACTION => Self::SetLidAction { action: at(0) },
             request::SET_DEVICE_INPUT_PREFERENCES => Self::SetDeviceInputPreferences {
                 device: at(0),
                 pointer_speed: at(4),

@@ -106,6 +106,14 @@ pub trait Machine {
     fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]>;
     /// Uses `preferences` from the next mouse and key event on.
     fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]>;
+    /// Saves `power.lid_action` to the settings file (D599).
+    fn save_lid_action(&mut self, _action: eggos_settings_file::LidAction) -> Result<(), &'static [u8]> {
+        Ok(())
+    }
+    /// Uses `action` from the next lid close on (D599).
+    fn apply_lid_action(&mut self, _action: eggos_settings_file::LidAction) -> Result<(), &'static [u8]> {
+        Ok(())
+    }
     /// Saves one key accessibility setting to the settings file (D205).
     fn save_keys(&mut self, change: KeysChange) -> Result<(), &'static [u8]>;
     /// Uses `keys` from the next key on.
@@ -525,6 +533,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Input(input) => machine.save_input(input),
         Change::Keys(keys) => machine.save_keys(keys),
         Change::Display(display) => machine.save_display(display),
+        Change::LidAction(action) => machine.save_lid_action(action),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -558,6 +567,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
             let facts = machine.facts();
             machine.apply_display(facts.theme, display.applied_to(facts.display))
         }
+        Change::LidAction(action) => machine.apply_lid_action(action),
     };
     if let Err(why) = applied {
         let mut message = Message::new();

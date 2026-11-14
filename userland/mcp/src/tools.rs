@@ -228,6 +228,8 @@ pub enum Kind {
     WmDesktopClose,
     /// `wm_desktop_move` (D591).
     WmDesktopMove,
+    /// `power_status` (D599).
+    PowerStatus,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -469,7 +471,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 90] = [
+pub const TOOLS: [Tool; 91] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -943,6 +945,11 @@ pub const TOOLS: [Tool; 90] = [
         &registry::WM_DESKTOP_MOVE,
         Kind::WmDesktopMove,
         window_twin(&["desktop", "move"]),
+    ),
+    tool(
+        &registry::POWER_STATUS,
+        Kind::PowerStatus,
+        twin("/bin/power", &["status", "--json"], Operand::None),
     ),
 ];
 

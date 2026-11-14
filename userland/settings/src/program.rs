@@ -40,7 +40,7 @@ use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
-    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, Request,
+    ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, POWER, Request,
     SetOutcome, SettingsForm, SettingsWindow, TITLE,
 };
 use eggos_settings::task_manager::{
@@ -364,6 +364,24 @@ fn wifi_chosen() -> Option<alloc::string::String> {
     wifi_section::chosen_in(core::str::from_utf8(&text[..length]).ok()?)
 }
 
+fn power_facts() -> eggos_device_list::power::PowerFacts {
+    let mut text = [0u8; POWER_TEXT_CAPACITY];
+    let length = read_file(eggos_device_list::power::POWER_FILE, &mut text).unwrap_or(0);
+    eggos_device_list::power::PowerFacts::parse(&text[..length])
+}
+
+fn sleep_available() -> bool {
+    let mut text = [0u8; SLEEP_STATES_CAPACITY];
+    let length = read_file(SLEEP_STATES_PATH, &mut text).unwrap_or(0);
+    text[..length]
+        .split(|byte| byte.is_ascii_whitespace())
+        .any(|state| state == b"mem")
+}
+
+const POWER_TEXT_CAPACITY: usize = 512;
+const SLEEP_STATES_CAPACITY: usize = 64;
+const SLEEP_STATES_PATH: &str = "/sys/power/state";
+
 fn network_adapter() -> Option<InterfaceStatus> {
     let mut text = [0u8; INTERFACES_TEXT_CAPACITY];
     let length = read_file(network_status::INTERFACES_PATH, &mut text).ok()?;
@@ -635,6 +653,9 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         keys: settings_file::key_accessibility(&file[..length]),
         display: saved_display(&file[..length], server),
         network_adapter: network_adapter(),
+        power: power_facts(),
+        sleep_available: sleep_available(),
+        lid_action: settings_file::lid_action(&file[..length]),
         form_setting: form.map_or(0, |(_, setting, _)| setting as usize),
         form_in_use: form.map_or(0, |(in_use, _, _)| in_use as usize),
         input_kinds: form.map_or(0, |(_, _, kinds)| kinds),
@@ -1163,6 +1184,28 @@ impl command::Machine for Machine {
         }
     }
 
+    fn save_lid_action(&mut self, action: settings_file::LidAction) -> Result<(), &'static [u8]> {
+        save_through_a_temporary_file(settings_file::POWER_LID_ACTION, action.name())
+            .map_err(Errno::message)
+    }
+
+    fn apply_lid_action(&mut self, action: settings_file::LidAction) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => Some(server),
+            None => {
+                opened = WindowServer::open();
+                opened.as_ref().ok()
+            }
+        };
+        match server {
+            Some(server) => server
+                .set_lid_action(action as u32)
+                .map_err(Errno::message),
+            None => Ok(()),
+        }
+    }
+
     fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]> {
         let (key, value) = change.saved();
         save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
@@ -1448,6 +1491,15 @@ impl Application<CAPACITY> for Settings {
                 };
                 self.window.keys_changed(change, saved, applied);
             }
+            Some(Request::SetLidAction(action)) => {
+                let saved =
+                    save_through_a_temporary_file(settings_file::POWER_LID_ACTION, action.name());
+                let applied = match (saved, self.server.as_ref()) {
+                    (Ok(()), Some(server)) => server.set_lid_action(action as u32),
+                    _ => Ok(()),
+                };
+                self.window.lid_action_changed(action, saved, applied);
+            }
             Some(Request::ChangeDisplay(change)) => {
                 let (key, value) = change.saved();
                 let saved = save_through_a_temporary_file(key, value.as_str());
@@ -1607,7 +1659,7 @@ impl Application<CAPACITY> for Settings {
             return Some(now_ms.wrapping_add(SECOND_MS - nanoseconds / NANOSECONDS_PER_MS));
         }
         let pane_tick = match self.window.pane() {
-            ABOUT | NETWORK => {
+            ABOUT | NETWORK | POWER => {
                 let elapsed = now_ms.wrapping_sub(self.uptime_from_ms);
                 Some(now_ms.wrapping_add(SECOND_MS - elapsed % SECOND_MS))
             }
@@ -1843,6 +1895,7 @@ impl Settings {
                 self.window.show_network_adapter(network_adapter());
                 self.window.show_wifi(wifi_status(), wifi_chosen());
             }
+            POWER => self.window.show_power(power_facts()),
             _ => {}
         }
     }

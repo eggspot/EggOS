@@ -23,6 +23,7 @@ use crate::nslookup::nslookup;
 use crate::output::{FAILURE, Output};
 use crate::ping::ping;
 use crate::power::{HALT, POWER_OFF, RESTART, power, shutdown, sync, wall};
+use crate::power_status::power as power_status;
 use crate::processes::{free, ps, uptime};
 use crate::screenshot::screenshot;
 use crate::properties::{getprop, setprop};
@@ -75,6 +76,7 @@ pub enum Utility {
     Mv,
     Nslookup,
     Ping,
+    Power,
     Poweroff,
     Ps,
     Readlink,
@@ -101,7 +103,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -131,6 +133,7 @@ impl Utility {
         Self::Mv,
         Self::Nslookup,
         Self::Ping,
+        Self::Power,
         Self::Poweroff,
         Self::Ps,
         Self::Readlink,
@@ -187,6 +190,7 @@ impl Utility {
             Self::Mv => b"mv",
             Self::Nslookup => b"nslookup",
             Self::Ping => b"ping",
+            Self::Power => b"power",
             Self::Poweroff => b"poweroff",
             Self::Ps => b"ps",
             Self::Readlink => b"readlink",
@@ -248,6 +252,7 @@ impl Utility {
             Self::Mv => mv(output, arguments),
             Self::Nslookup => nslookup(output, arguments),
             Self::Ping => ping(output, arguments),
+            Self::Power => power_status(output, arguments),
             Self::Poweroff => power(output, arguments, POWER_OFF),
             Self::Ps => ps(output, arguments),
             Self::Readlink => readlink(output, arguments),

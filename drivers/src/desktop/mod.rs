@@ -39,6 +39,7 @@ mod phone;
 mod phone_sheets;
 mod pointer;
 mod popups;
+pub mod power;
 pub mod protocol;
 mod responsiveness;
 pub mod screenshots;
@@ -447,6 +448,7 @@ pub struct Desktop {
     panel_focus: Option<panel_focus::PanelFocus>,
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     network: network::NetworkIndicator,
+    battery: power::BatteryIndicator,
     tray: tray::Tray,
     shell_menu: Option<shell_menu::ShellMenu>,
     carried: Option<carry::Carry>,
@@ -543,6 +545,7 @@ impl Desktop {
             panel_focus: None,
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             network: network::NetworkIndicator::default(),
+            battery: power::BatteryIndicator::default(),
             tray: tray::Tray::default(),
             shell_menu: None,
             carried: None,
@@ -2109,6 +2112,9 @@ impl Desktop {
         if let Some(action) = self.keyboard_layout_menu_press(code, x, y, damage, events) {
             return action;
         }
+        if let Some(action) = self.battery_menu_press(code, x, y, damage, events) {
+            return action;
+        }
         if let Some(action) = self.tray_overflow_press(code, x, y, damage, events) {
             return action;
         }
@@ -2478,6 +2484,9 @@ impl Desktop {
         if self.keyboard_layout_menu_open() {
             return self.keyboard_layout_menu_key(code, pressed, damage, events);
         }
+        if self.battery_menu_open() {
+            return self.battery_menu_key(code, pressed, damage, events);
+        }
         if self.shell_menu_open() {
             return self.shell_menu_key(code, pressed, damage, events);
         }
@@ -2665,6 +2674,8 @@ impl Desktop {
             self.draw_menu(&mut canvas);
         }
         self.draw_keyboard_layout_menu(&mut canvas);
+        self.draw_battery_menu(&mut canvas);
+        self.draw_countdown(&mut canvas);
         self.draw_tray_overflow(&mut canvas);
         self.draw_shell_menu(&mut canvas);
         self.draw_popups(&mut canvas);
@@ -2706,6 +2717,8 @@ impl Desktop {
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))
             || self.on_screen_keyboard_overlaps(clip)
             || self.keyboard_layout_menu_overlaps(clip)
+            || self.battery_menu_overlaps(clip)
+            || self.countdown_overlaps(clip)
             || self.tray_overflow_overlaps(clip)
             || self.shell_menu_overlaps(clip)
             || self.carry_overlaps(clip)

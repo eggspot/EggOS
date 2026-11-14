@@ -140,6 +140,7 @@ pub fn ioctl<P: Platform>(
             | Request::SetInputPreferences { .. }
             | Request::SetDeviceInputPreferences { .. }
             | Request::SetKeyAccessibility { .. }
+            | Request::SetLidAction { .. }
     );
     if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
@@ -825,6 +826,15 @@ pub fn ioctl<P: Platform>(
                 desktop.show_text_notice(&copied[..length], duration_ms.clamp(500, 10_000), damage);
                 Ok(())
             })?;
+        }
+        Request::SetLidAction { action } => {
+            let action = match action {
+                0 => eggos_settings_file::LidAction::Sleep,
+                1 => eggos_settings_file::LidAction::Nothing,
+                2 => eggos_settings_file::LidAction::Off,
+                _ => return Err(Errno::EINVAL),
+            };
+            crate::power_policy::set_lid_action(action);
         }
         Request::PickRegion => {
             on_windows::<P, _>(|desktop, _, damage, _| {

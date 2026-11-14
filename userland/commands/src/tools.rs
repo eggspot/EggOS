@@ -777,6 +777,20 @@ const DESKTOP: Argument = required(whole(
 const DESKTOP_ONLY: [Argument; 1] = [DESKTOP];
 const WINDOW_AND_DESKTOP: [Argument; 2] = [WINDOW, DESKTOP];
 
+/// `power_status` (D599).
+pub const POWER_STATUS: ToolDefinition = reading(
+    "power_status",
+    "Read the power state",
+    "The power state, as `power status --json` writes it: each battery's percent and state \
+         (charging, discharging, full or low), line power (online or offline), the lid (open or \
+         closed), every thermal zone's temperature in °C with each zone's critical point, and \
+         the dock (attached or detached); null for what the machine does not report.",
+    &["power", "status"],
+    &["--json"],
+    &[],
+    ToolResult::Items(records_of(&crate::commands::POWER_STATUS)),
+);
+
 /// `wm_desktop_switch` (D591).
 pub const WM_DESKTOP_SWITCH: ToolDefinition = operating(
     "wm_desktop_switch",
@@ -2733,7 +2747,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 90] = [
+pub const TOOLS: [ToolDefinition; 91] = [
     LS,
     CAT,
     PS,
@@ -2824,6 +2838,7 @@ pub const TOOLS: [ToolDefinition; 90] = [
     WM_DESKTOP_SWITCH,
     WM_DESKTOP_CLOSE,
     WM_DESKTOP_MOVE,
+    POWER_STATUS,
 ];
 
 impl ToolDefinition {

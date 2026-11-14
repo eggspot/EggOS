@@ -540,6 +540,7 @@ pub fn load_saved_settings<P: Platform>() {
     if let Some(layout) = eggos_settings_file::keyboard_layout(&file[..length]) {
         crate::input::set_layout(layout);
     }
+    crate::power_policy::set_lid_action(eggos_settings_file::lid_action(&file[..length]));
     let keys = eggos_settings_file::key_accessibility(&file[..length]);
     crate::input::set_key_accessibility(
         keys.sticky_keys,

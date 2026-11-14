@@ -182,7 +182,7 @@ impl Desktop {
         if !self.keyboard_layouts.shown() {
             return None;
         }
-        let network = self.network_indicator();
+        let network = self.network_indicator().or(self.battery_indicator());
         match (self.layout.taskbar, self.layout.top_bar) {
             (Some(bar), _) => Some(Rect::new(
                 network
