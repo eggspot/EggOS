@@ -26,8 +26,6 @@ core::arch::global_asm!(
     b       exception_common
     .endm
 
-    // From EL0 (D47): `SP_EL1` points just past the saved part of the running program's
-    // `UserContext`, so the registers go straight into it.
     .macro USER_ENTRY index
     .balign 0x80
     sub     sp, sp, #{user_saved_size}
@@ -104,9 +102,6 @@ exception_common:
     dsb     nsh                     // never reached: as after the user-mode `eret`
     isb
 
-    // The rest of the way out of EL0: save the program's registers in its `UserContext`
-    // (`sp`), its thread pointer (`TPIDR_EL0`) included, record the vector entry, then return
-    // from `aarch64_enter_user` on the kernel stack it left.
 user_exception_common:
     stp     x2, x3, [sp, #16]
     stp     x4, x5, [sp, #32]
@@ -140,10 +135,6 @@ user_exception_common:
     ldp     x19, x20, [sp], #96
     ret
 
-    // `aarch64_enter_user(context)`: keeps the kernel's callee-saved registers on its stack and
-    // the stack pointer in the context, points `SP_EL1` just past the context's saved part and
-    // enters EL0 with the program's registers, `TPIDR_EL0` included. Returns through
-    // `user_exception_common`.
     .global aarch64_enter_user
 aarch64_enter_user:
     stp     x19, x20, [sp, #-96]!
@@ -178,13 +169,10 @@ aarch64_enter_user:
     ldr     x30, [x0, #240]
     ldp     x0, x1, [x0, #0]
     eret
-    // Never reached: no speculation past the `eret` (straight-line speculation).
     dsb     nsh
     isb
     .popsection
 
-    // The user-mode test program (D47, `TestProgram`): position-independent, no stack, no
-    // data. Copied to a user page, never run where it is linked.
     .pushsection .rodata.user_test, "a"
     .balign 4
     .global aarch64_user_test_start
@@ -202,7 +190,6 @@ aarch64_user_test_checks:
     .endr
     mov     x8, #{syscall_first}
     svc     #0
-    // Every register but x0 must be as it was: x1 collects the differences.
     sub     x1, x1, #2
     .irp n, 2, 3, 4, 5
     sub     x\n, x\n, #(\n + 1)
@@ -231,7 +218,6 @@ aarch64_user_test_spin:
 3:  b       3b
     .global aarch64_user_test_linux_hello
 aarch64_user_test_linux_hello:
-    // Linux's generic numbers: write 64, exit_group 94. x19 collects the differences.
     mov     x0, #1
     adr     x1, 9f
     mov     x2, #{hello_length}
@@ -257,14 +243,6 @@ aarch64_user_test_linux_hello:
     .balign 4
     .global aarch64_user_test_linux_start
 aarch64_user_test_linux_start:
-    // Linux's generic numbers: writev 66, exit_group 94, sigaltstack 132, rt_sigaction 134,
-    // getpid 172, gettid 178, prlimit64 261, getrandom 278. x19 is argc, x20 walks argv and
-    // envp, x21 counts the two lists, x22 holds the process id. Each string is written by
-    // writev from one iovec on the stack. Ends with exit_group(255) if the stack is
-    // misaligned, the thread's id is not the process's, getrandom does not fill the 16 bytes
-    // below the stack pointer with something not zero, prlimit64 does not report the stack's
-    // limits as 8 MiB soft and unlimited hard, SIGPIPE's action does not read back as SIG_IGN
-    // once set, or sigaltstack does not report no alternate stack.
     mov     x9, sp
     mov     x0, #255
     tst     x9, #15
@@ -370,8 +348,6 @@ aarch64_user_test_linux_unknown_syscalls:
     b       5b
     .global aarch64_user_test_stack_growth
 aarch64_user_test_stack_growth:
-    // From the stack pointer's page down, a page at a time: each page's address in its
-    // first word, until the stack runs out.
     mov     x9, sp
     and     x9, x9, #~0xfff
 6:  str     x9, [x9]
@@ -379,9 +355,6 @@ aarch64_user_test_stack_growth:
     b       6b
     .global aarch64_user_test_linux_thread_pointer
 aarch64_user_test_linux_thread_pointer:
-    // Linux's generic numbers: getpid 172, sched_yield 124, exit_group 94. The thread pointer
-    // starts at zero; then getpid() << 12, set with `msr`, must outlast every sched_yield.
-    // x19 collects the differences.
     mrs     x19, tpidr_el0
     mov     x8, #172
     svc     #0
@@ -403,9 +376,6 @@ aarch64_user_test_linux_thread_pointer:
 8:  b       8b
     .global aarch64_user_test_linux_poll
 aarch64_user_test_linux_poll:
-    // Linux's generic numbers: ioctl 29, ppoll 73, exit_group 94. x19 is the exit status
-    // until every check passed. The three `struct pollfd`s are at sp-32, the window size at
-    // sp-64, the timeout at sp-48.
     mov     x19, #1
     mov     x10, #0                 // fd 0, no events
     mov     x11, #1
@@ -457,8 +427,6 @@ aarch64_user_test_linux_poll:
 8:  b       8b
     .global aarch64_user_test_linux_signals
 aarch64_user_test_linux_signals:
-    // Linux's generic numbers: exit_group 94, kill 129, tgkill 131, rt_sigprocmask 135,
-    // rt_sigpending 136, getpid 172. The signal set is at sp-16, the pending set at sp-32.
     mov     x0, #0
     mov     x1, #17                 // SIGCHLD, ignored
     mov     x8, #129
@@ -500,10 +468,6 @@ aarch64_user_test_linux_signals:
 8:  b       8b
     .global aarch64_user_test_linux_signal_handler
 aarch64_user_test_linux_signal_handler:
-    // Linux's generic numbers: exit_group 94, tgkill 131, sigaltstack 132, rt_sigaction 134,
-    // rt_sigprocmask 135, getpid 172. Its `struct sigaction` is at sp-64, its `stack_t` at
-    // sp-32, its alternate stack 0x2000 bytes from sp-0x2800, the mask read back at sp-72.
-    // No SA_RESTORER, as glibc: the handler returns through the kernel's trampoline.
     sub     x9, sp, #0x2000
     sub     x9, x9, #0x800
     stp     x9, xzr, [sp, #-32]
@@ -570,8 +534,6 @@ aarch64_user_test_linux_signal_handler:
     mov     x8, #94
     svc     #0
 8:  b       8b
-    // The handler: SIGUSR1 from tgkill (SI_TKILL), on the alternate stack the ucontext names;
-    // then it sets the frame's x20 to 2 and clobbers x19.
 5:  cmp     x0, #10
     b.ne    7f
     ldr     w9, [x1]
@@ -608,8 +570,6 @@ aarch64_user_test_linux_signal_handler:
     .arch_extension nofp
     .global aarch64_user_test_linux_fault_handler
 aarch64_user_test_linux_fault_handler:
-    // Linux's generic numbers: exit_group 94, rt_sigaction 134, mmap 222. Its `struct
-    // sigaction` is at sp-64. No SA_RESTORER: the handler returns through the trampoline.
     adr     x9, 5f
     mov     x10, #4                 // SA_SIGINFO
     stp     x9, x10, [sp, #-64]
@@ -652,9 +612,6 @@ aarch64_user_test_linux_fault_handler:
     mov     x8, #94
     svc     #0
 8:  b       8b
-    // The handler: SIGSEGV with the si_code and si_addr in the frame's x22 and x21, which
-    // fault_address and the esr_context record report too; it counts it in the frame's x20,
-    // and resumes the program at its x23, whatever the checks found.
 5:  cmp     x0, #11
     b.ne    7f
     ldr     w9, [x1]
@@ -1093,7 +1050,6 @@ aarch64_user_test_end:
     thread_pointer_rounds = const TestProgram::LINUX_THREAD_POINTER_ROUNDS,
     poll_wait = const TestProgram::LINUX_POLL_WAIT_NS,
     clock_wait = const TestProgram::LINUX_CLOCK_WAIT_NS,
-    // `uc_mcontext.regs[20]` in the ucontext: the sigcontext at 176, its registers at 8.
     saved_x20 = const 176 + 8 + 20 * 8,
     saved_fpcr = const 176 + 288 + 12,
     saved_v8 = const 176 + 288 + 16 + 8 * 16,
@@ -1104,7 +1060,6 @@ aarch64_user_test_end:
     saved_x21 = const 176 + 8 + 21 * 8,
     saved_x22 = const 176 + 8 + 22 * 8,
     saved_x23 = const 176 + 8 + 23 * 8,
-    // `uc_mcontext.pc` and `fault_address`, and the record after `__reserved`'s FP/SIMD one.
     saved_pc = const 176 + 264,
     fault_address_in_ucontext = const 176,
     esr_record = const 176 + 288 + 528,
@@ -1240,11 +1195,9 @@ pub(super) unsafe fn run_user(context: &mut UserContext) -> UserExit {
     // SAFETY: as above.
     unsafe { core::arch::asm!("mrs {}, far_el1", out(reg) far, options(nomem, nostack)) };
     if index % 4 == TYPE_SYNCHRONOUS && esr >> 26 & 0x3f == EC_SVC64 {
-        // `ELR_EL1` already points after the `svc`.
         return UserExit::Syscall;
     }
     let far = without_user_tag(far);
-    // With `vector`, all `last_exception` needs.
     registers.esr = esr;
     registers.far = far;
     UserExit::Exception(decode(index % 4, esr, far, registers.elr))
@@ -1296,8 +1249,6 @@ pub(super) fn user_test_program() -> TestProgram {
 
 /// Takes the pending interrupt from the GIC and handles it. The timer's and the wake-up's are
 /// ended before the kernel sees them: the kernel may not return here soon (later, a context
-// Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
-// trap path keeps its length (D47).
 #[inline(always)]
 fn irq(pc: u64) {
     let Some(interrupt) = timer::acknowledge() else {
@@ -1314,7 +1265,6 @@ fn irq(pc: u64) {
     }
     timer::end_of_interrupt(interrupt);
     match id {
-        // A stale interrupt for a deadline since moved later is dropped: never early.
         timer::VIRTUAL_TIMER_INTERRUPT => {
             if timer_fired {
                 crate::interrupt::deliver(Interrupt::Timer);
@@ -1365,8 +1315,6 @@ fn without_user_tag(address: u64) -> u64 {
     }
 }
 
-// Inlined into both callers, as when the kernel's vectors were its only one: the kernel's
-// trap path keeps its length (D47).
 #[inline(always)]
 fn decode(entry_type: u64, esr: u64, far: u64, pc: u64) -> Exception {
     let class = esr >> 26 & 0x3f;
