@@ -199,6 +199,11 @@ pub trait Platform: 'static {
         Err("this machine cannot suspend to RAM")
     }
 
+    /// Loads `registers` as this CPU's breakpoints and watchpoints for user mode, or clears
+    /// them (`None`), before a traced program runs (D598). Nothing where the machine has none
+    /// (the default).
+    fn set_user_debug_registers(_registers: Option<&crate::user::UserDebugRegisters>) {}
+
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 

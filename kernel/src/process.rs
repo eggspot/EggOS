@@ -326,6 +326,9 @@ struct Memory<P: Platform> {
     user_ticks: AtomicU64,
     /// What other threads read of the process's first thread, and ask of it (D592).
     first_thread: LeafSpinLock<Option<Arc<thread::ThreadShared>>>,
+    /// The breakpoints and watchpoints its tracer set (D598), and whether it has any.
+    debug_registers: LeafSpinLock<Option<eggos_hal::user::UserDebugRegisters>>,
+    has_debug_registers: core::sync::atomic::AtomicBool,
     /// How far below the usual top this program's `mmap` area starts, chosen at random by
     /// `execve` (D558); 0 for the fixed layout.
     mmap_slide: AtomicU64,
@@ -435,6 +438,8 @@ impl<P: Platform> Memory<P> {
             cpu_ticks: Arc::new(AtomicU64::new(0)),
             user_ticks: AtomicU64::new(0),
             first_thread: LeafSpinLock::new_leaf(None),
+            debug_registers: LeafSpinLock::new_leaf(None),
+            has_debug_registers: core::sync::atomic::AtomicBool::new(false),
             records: AtomicU8::new(0),
             image: ImageLayout::default(),
         }
@@ -526,6 +531,8 @@ impl<P: Platform> Memory<P> {
             cpu_ticks: Arc::new(AtomicU64::new(0)),
             user_ticks: AtomicU64::new(0),
             first_thread: LeafSpinLock::new_leaf(None),
+            debug_registers: LeafSpinLock::new_leaf(None),
+            has_debug_registers: core::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -2615,6 +2622,36 @@ impl<P: Platform> Process<P> {
         self.memory.user_ticks.load(Ordering::Relaxed)
     }
 
+    /// The breakpoints and watchpoints its tracer set, if any (D598).
+    pub fn user_debug_registers(&self) -> Option<eggos_hal::user::UserDebugRegisters> {
+        *self.memory.debug_registers.lock()
+    }
+
+    /// Sets its breakpoints and watchpoints (`None` clears them), loaded each time one of its
+    /// threads runs its program (D598).
+    pub fn set_user_debug_registers(&self, registers: Option<eggos_hal::user::UserDebugRegisters>) {
+        let any = registers.is_some_and(|registers| registers.0.iter().any(|&word| word != 0));
+        *self.memory.debug_registers.lock() = registers.filter(|_| any);
+        self.memory
+            .has_debug_registers
+            .store(any, Ordering::Release);
+    }
+
+    /// Whether `address` is in the part of the address space its program may use (D598).
+    pub fn is_user_address(&self, address: u64) -> bool {
+        address < <P::PageTableFormat as Format>::USER_END
+    }
+
+    /// Loads its breakpoints and watchpoints on `here`, or clears what another program left
+    /// (D598). Out of line: only traced programs and the CPUs that ran one come here.
+    #[cold]
+    #[inline(never)]
+    fn load_debug_registers(&self, here: &cpu::Cpu) {
+        let registers = *self.memory.debug_registers.lock();
+        P::set_user_debug_registers(registers.as_ref());
+        here.set_user_debug_loaded(registers.is_some());
+    }
+
     /// Records `shared` as its first thread's (D592).
     pub fn set_first_thread(&self, shared: Arc<thread::ThreadShared>) {
         *self.memory.first_thread.lock() = Some(shared);
@@ -2848,7 +2885,11 @@ where
         // change marks this CPU stale or, for a process with threads on several CPUs, shoots
         // its translations down before any frame is reused (D94). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
-        let ticks = cpu::current::<P>().tick_count();
+        let here = cpu::current::<P>();
+        if process.memory.has_debug_registers.load(Ordering::Relaxed) || here.user_debug_loaded() {
+            process.load_debug_registers(here);
+        }
+        let ticks = here.tick_count();
         let exit = unsafe { P::run_user(context) };
         if exit == UserExit::Interrupt && cpu::current::<P>().tick_count() != ticks {
             process.note_user_tick(ticks);

@@ -125,6 +125,10 @@ pub enum JobChange {
     Stopped(u8),
     /// `SIGCONT` continued it.
     Continued,
+    /// Its tracer stopped it (D598): the wait status's high byte, the signal (`SIGTRAP`, or
+    /// `SIGTRAP | 0x80` at a system call with `PTRACE_O_TRACESYSGOOD`) with a `ptrace` event
+    /// in the bits above.
+    Traced(u16),
 }
 
 /// Whom a process's stop or continuation tells (D181): its parent, which wakes from a wait for

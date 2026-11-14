@@ -74,7 +74,8 @@ pub mod block {
     pub const BLKGETSIZE64: u32 = 0x8000_1272 | (super::WORD_BYTES as u32) << 16;
 }
 pub use ptrace_registers::{
-    PTRACE_REGISTERS_BYTES, SINGLE_STEPS, ptrace_registers, set_ptrace_registers, set_single_step,
+    PTRACE_REGISTERS_BYTES, SINGLE_STEPS, SOFTWARE_STEP_BREAKPOINT, STEPS_IN_SOFTWARE,
+    next_instructions, ptrace_registers, set_ptrace_registers, set_single_step,
 };
 
 /// Does a misaligned load or store a program's instruction trapped on, where the architecture

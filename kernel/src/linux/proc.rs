@@ -1086,6 +1086,15 @@ impl<P: Platform> FileSystem for Proc<P> {
         ROOT
     }
 
+    fn guarded_by_process(&self, node: u64) -> Option<u32> {
+        let node = ProcessNode::of(node)?;
+        matches!(
+            node.part,
+            part::MAPS | part::STAT | part::TASK_STAT | part::FD | part::DESCRIPTOR | part::EXE
+        )
+        .then_some(node.pid)
+    }
+
     fn device(&self) -> (u32, u32) {
         DEVICE
     }

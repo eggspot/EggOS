@@ -723,6 +723,41 @@ fn syscall<P: Platform>(
     thread: &mut LinuxThread,
     context: &mut UserContext,
 ) -> ControlFlow<()> {
+    if ptrace::needs_attention() {
+        return traced_syscall(process, thread, context);
+    }
+    untraced_syscall(process, thread, context)
+}
+
+/// A system call of a process some tracer may want to see (D598): its entry stop, the exit
+/// event stop before `exit_group`, the call, its exit stop, then any event stop due.
+#[cold]
+#[inline(never)]
+fn traced_syscall<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
+    if !ptrace::is_traced(process.id().get()) {
+        return untraced_syscall(process, thread, context);
+    }
+    ptrace::syscall_stop(process, thread, context)?;
+    let number = context.syscall_number();
+    if number == number::EXIT_GROUP {
+        let status = context.syscall_arguments()[0] & 0xff;
+        ptrace::before_exit(process, thread, context, status)?;
+    }
+    untraced_syscall(process, thread, context)?;
+    ptrace::syscall_stop(process, thread, context)?;
+    ptrace::pending_event_stop(process, thread, context)
+}
+
+#[inline(always)]
+fn untraced_syscall<P: Platform>(
+    process: &Arc<Process<P>>,
+    thread: &mut LinuxThread,
+    context: &mut UserContext,
+) -> ControlFlow<()> {
     let number = context.syscall_number();
     if abi::REWRITES_ARGUMENTS {
         let mut arguments = context.syscall_arguments();

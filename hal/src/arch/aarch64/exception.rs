@@ -1141,6 +1141,9 @@ const EC_DATA_ABORT_LOWER: u64 = 0x24;
 const EC_DATA_ABORT: u64 = 0x25;
 const EC_SP_ALIGNMENT: u64 = 0x26;
 const EC_BRK64: u64 = 0x3c;
+const EC_BREAKPOINT_LOWER: u64 = 0x30;
+const EC_SOFTWARE_STEP_LOWER: u64 = 0x32;
+const EC_WATCHPOINT_LOWER: u64 = 0x34;
 
 /// `ESR_EL1.ISS.FnV` for aborts: set when `FAR_EL1` does not hold the faulting address.
 const ISS_FAR_NOT_VALID: u64 = 1 << 10;
@@ -1439,6 +1442,9 @@ fn synchronous_kind(class: u64) -> (ExceptionKind, &'static str) {
         EC_DATA_ABORT_LOWER | EC_DATA_ABORT => (ExceptionKind::DataFault, "data abort"),
         EC_SP_ALIGNMENT => (ExceptionKind::Alignment, "SP alignment fault"),
         EC_BRK64 => (ExceptionKind::Breakpoint, "breakpoint (brk)"),
+        EC_BREAKPOINT_LOWER => (ExceptionKind::Debug, "hardware breakpoint"),
+        EC_SOFTWARE_STEP_LOWER => (ExceptionKind::Debug, "software step"),
+        EC_WATCHPOINT_LOWER => (ExceptionKind::Debug, "watchpoint"),
         _ => (ExceptionKind::Other, "synchronous exception"),
     }
 }

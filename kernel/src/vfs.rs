@@ -303,6 +303,11 @@ pub trait FileSystem: Sync + Send {
         buffer[..bytes.len()].copy_from_slice(bytes);
         Ok(bytes.len())
     }
+    /// The process whose `PTRACE_MODE_READ` check guards node `node` (D598): `/proc/<pid>`'s
+    /// `maps`, `stat`, `fd` and `exe`. `None` for every other node, the default.
+    fn guarded_by_process(&self, _node: u64) -> Option<u32> {
+        None
+    }
     /// Whether it can be changed: the methods below do something.
     fn is_writable(&self) -> bool {
         false
@@ -550,6 +555,11 @@ impl Node {
     /// ([`FileSystem::link_target`]).
     pub fn link_target(&self, caller: u32) -> Option<alloc::vec::Vec<u8>> {
         self.file_system.link_target(self.id, caller)
+    }
+
+    /// The process whose `PTRACE_MODE_READ` check guards it, if one does (D598).
+    pub fn guarded_by_process(&self) -> Option<u32> {
+        self.file_system.guarded_by_process(self.id)
     }
 
     /// Keeps it alive until [`Self::release`] ([`FileSystem::hold`]).

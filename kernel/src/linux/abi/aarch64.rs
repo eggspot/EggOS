@@ -386,9 +386,9 @@ pub mod fault {
                 exception.address.unwrap_or(pc),
             ),
             ExceptionKind::Breakpoint => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
+            ExceptionKind::Debug => (signal::SIGTRAP, code::TRAP_BRKPT, pc),
             ExceptionKind::IllegalInstruction
             | ExceptionKind::Arithmetic
-            | ExceptionKind::Debug
             | ExceptionKind::Segment
             | ExceptionKind::Interrupt
             | ExceptionKind::Other => (signal::SIGILL, code::ILL_ILLOPC, pc),

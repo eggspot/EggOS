@@ -493,6 +493,33 @@ fn current_asid() -> u64 {
     ttbr & (0xffff << TTBR_ASID_SHIFT)
 }
 
+const DEBUG_CONTROL_ENABLE: u64 = 1;
+const DEBUG_CONTROL_PRIVILEGE: u64 = 0b11 << 1;
+const DEBUG_CONTROL_EL0: u64 = 0b10 << 1;
+const MDSCR_SOFTWARE_STEP: u64 = 1;
+const MDSCR_MONITOR_DEBUG: u64 = 1 << 15;
+
+/// Lets user mode be stepped and take breakpoints and watchpoints (D598): the OS lock open,
+/// and `MDSCR_EL1`'s software step and monitor debug on. Debug exceptions from the kernel's own
+/// level stay off (`KDE` clear), so none of them fires in the kernel.
+fn enable_user_debug() {
+    // SAFETY: OSLAR_EL1 and MDSCR_EL1 are architectural; opening the OS lock and setting these
+    // two bits only lets EL0's step and its own breakpoints raise exceptions to EL1, which the
+    // exception vectors take as `ExceptionKind::Debug`.
+    unsafe {
+        core::arch::asm!(
+            "msr oslar_el1, xzr",
+            "mrs {value}, mdscr_el1",
+            "orr {value}, {value}, {bits}",
+            "msr mdscr_el1, {value}",
+            "isb",
+            value = out(reg) _,
+            bits = in(reg) MDSCR_SOFTWARE_STEP | MDSCR_MONITOR_DEBUG,
+            options(nostack),
+        );
+    }
+}
+
 impl Platform for Aarch64 {
     const ARCH: &'static str = "aarch64";
 
@@ -1119,6 +1146,46 @@ impl Platform for Aarch64 {
         // SAFETY: TPIDR_EL1 is a scratch register for the kernel's own use; nothing else
         // reads it.
         unsafe { core::arch::asm!("msr tpidr_el1, {}", in(reg) block, options(nomem, nostack)) };
+        enable_user_debug();
+    }
+
+    fn set_user_debug_registers(registers: Option<&crate::user::UserDebugRegisters>) {
+        let words = registers.map_or([0; 16], |registers| registers.0);
+        let user_only = |control: u64| match control & DEBUG_CONTROL_ENABLE {
+            0 => 0,
+            _ => control & !DEBUG_CONTROL_PRIVILEGE | DEBUG_CONTROL_EL0,
+        };
+        // SAFETY: the breakpoint and watchpoint registers are architectural (every ARMv8 CPU
+        // has at least two of each, and the four written are those the ABI's slots name; a
+        // CPU with fewer ignores the writes to what it lacks as reserved). Their controls are
+        // forced to match at EL0 only, so they never fire in the kernel.
+        unsafe {
+            core::arch::asm!(
+                "msr dbgbcr0_el1, xzr",
+                "msr dbgbcr1_el1, xzr",
+                "msr dbgwcr0_el1, xzr",
+                "msr dbgwcr1_el1, xzr",
+                "msr dbgbvr0_el1, {bv0}",
+                "msr dbgbvr1_el1, {bv1}",
+                "msr dbgwvr0_el1, {wv0}",
+                "msr dbgwvr1_el1, {wv1}",
+                "isb",
+                "msr dbgbcr0_el1, {bc0}",
+                "msr dbgbcr1_el1, {bc1}",
+                "msr dbgwcr0_el1, {wc0}",
+                "msr dbgwcr1_el1, {wc1}",
+                "isb",
+                bv0 = in(reg) words[0],
+                bv1 = in(reg) words[2],
+                wv0 = in(reg) words[8],
+                wv1 = in(reg) words[10],
+                bc0 = in(reg) user_only(words[1]),
+                bc1 = in(reg) user_only(words[3]),
+                wc0 = in(reg) user_only(words[9]),
+                wc1 = in(reg) user_only(words[11]),
+                options(nostack),
+            );
+        }
     }
 
     #[inline]

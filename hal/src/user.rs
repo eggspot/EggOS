@@ -32,6 +32,12 @@ pub enum UserExit {
     Exception(Exception),
 }
 
+/// A program's hardware breakpoints and watchpoints, as its tracer set them (D598): on x86_64
+/// `DR0` to `DR3` in words 0 to 3 and `DR7` in word 7; on AArch64 an address and a control word
+/// for each of four breakpoints (words 0 to 7) and four watchpoints (words 8 to 15).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UserDebugRegisters(pub [u64; 16]);
+
 /// A user program's registers while the kernel runs, laid out as the architecture's entry code
 /// saves them.
 #[derive(Debug, Clone, PartialEq, Eq)]

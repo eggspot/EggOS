@@ -85,7 +85,7 @@ pub fn process_ended<P: Platform>(process: &Process<P>, how: ProcessExit) {
         table.end(process.id().get(), how, uid)
     };
     super::pidfd::process_ended();
-    super::ptrace::process_ended(process.id().get());
+    super::ptrace::process_ended::<P>(process.id().get());
     if let Some(notice) = ended.to_parent {
         notify::<P>(notice);
     }
@@ -386,11 +386,11 @@ fn wait_or_sleep<P: Platform>(
             Selector::Process(wanted) => wanted == pid,
             Selector::Group(_) => false,
         };
-        if let Some((id, signal)) = super::ptrace::take_stop_report(caller, selected) {
+        if let Some((id, status)) = super::ptrace::take_stop_report(caller, selected) {
             return ControlFlow::Continue(Some(Ok(Some((
                 id,
                 0,
-                Reported::Job(JobChange::Stopped(signal)),
+                Reported::Job(JobChange::Traced(status)),
                 0,
             )))));
         }
@@ -473,6 +473,7 @@ pub fn job_status(change: JobChange) -> u32 {
     match change {
         JobChange::Stopped(signal) => (u32::from(signal) << 8) | 0x7f,
         JobChange::Continued => 0xffff,
+        JobChange::Traced(status) => (u32::from(status) << 8) | 0x7f,
     }
 }
 

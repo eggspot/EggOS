@@ -155,8 +155,25 @@ pub fn clone_process<P: Platform>(
     if any(flag::VM) {
         process.address_space().spread_over_cpus();
     }
+    let event = match (any(flag::VFORK), arguments.exit_signal == SIGCHLD) {
+        (true, _) => super::ptrace::event::VFORK,
+        (false, true) => super::ptrace::event::FORK,
+        (false, false) => super::ptrace::event::CLONE,
+    };
+    let traced = super::ptrace::child_made(process.id().get(), id, event);
     if super::spawn_thread(Arc::clone(&child), first, child_context).is_err() {
         return Err(Errno::ENOMEM);
+    }
+    if traced
+        && let Some(running) = super::process_table::TABLE
+            .lock()
+            .target(id)
+            .and_then(|target| target.running)
+    {
+        super::wait::send_to_running::<P>(
+            &running,
+            super::signals::Info::from_kernel(super::signal::SIGSTOP),
+        );
     }
     if any(flag::VFORK) {
         wait_for_release(process, thread, &child);

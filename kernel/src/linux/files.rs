@@ -393,6 +393,11 @@ fn open<P: Platform>(
             if !directory {
                 super::leases::opened(node, process.id().get(), writes);
             }
+            if let Some(target) = node.guarded_by_process()
+                && !super::ptrace::may_read(process, target)
+            {
+                return Err(Errno::EACCES);
+            }
             super::inotify::changed(node, super::inotify::mask::OPEN);
             match (directory, node.generate().map_err(|_| Errno::EIO)?) {
                 (true, _) => FileKind::Directory(node),
@@ -546,6 +551,11 @@ pub fn readlinkat<P: Platform>(
     };
     if node.kind() != NodeKind::SymbolicLink {
         return Err(Errno::EINVAL);
+    }
+    if let Some(owner) = node.guarded_by_process()
+        && !super::ptrace::may_read(process, owner)
+    {
+        return Err(Errno::EACCES);
     }
     let target = node.link_target(caller).ok_or(Errno::ENOENT)?;
     let length = target.len().min(size as u32 as usize);

@@ -56,6 +56,8 @@ pub struct Cpu {
     tick_span: AtomicU64,
     ticks: AtomicU64,
     turn_user_ticks: AtomicU64,
+    /// Whether a traced program's breakpoints are loaded here (D598).
+    user_debug_loaded: AtomicBool,
     index: usize,
     /// Set before the block is used, never changed after.
     hardware_id: AtomicU64,
@@ -126,6 +128,7 @@ impl Cpu {
             tick_span: AtomicU64::new(0),
             ticks: AtomicU64::new(0),
             turn_user_ticks: AtomicU64::new(0),
+            user_debug_loaded: AtomicBool::new(false),
             index,
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
@@ -195,6 +198,15 @@ impl Cpu {
     /// The user ticks sampled in the running thread's turn so far.
     pub(crate) fn turn_user_ticks(&self) -> u64 {
         self.turn_user_ticks.load(Ordering::Relaxed)
+    }
+
+    /// Whether a traced program's breakpoints are loaded on this CPU (D598).
+    pub(crate) fn user_debug_loaded(&self) -> bool {
+        self.user_debug_loaded.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_user_debug_loaded(&self, loaded: bool) {
+        self.user_debug_loaded.store(loaded, Ordering::Relaxed);
     }
 
     /// Marks the CPU as taken out of service, or back in (D596), counting it in [`CPUS`].

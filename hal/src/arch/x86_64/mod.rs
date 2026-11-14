@@ -669,6 +669,33 @@ impl Platform for X86_64 {
         sleep::suspend()
     }
 
+    fn set_user_debug_registers(registers: Option<&crate::user::UserDebugRegisters>) {
+        const USER_ONLY_ENABLES: u64 = 0b0101_0101;
+        let words = registers.map_or([0; 16], |registers| registers.0);
+        let control = words[7] & !(0b1010_1010 | 1 << 13) & (USER_ONLY_ENABLES | 0xffff_0000);
+        // SAFETY: DR0 to DR3, DR6 and DR7 are architectural; the control word keeps only the
+        // local enables and the conditions and lengths, so the breakpoints fire for this CPU
+        // only, and the kernel never runs at user addresses, where they point.
+        unsafe {
+            core::arch::asm!(
+                "mov dr7, {zero}",
+                "mov dr0, {a}",
+                "mov dr1, {b}",
+                "mov dr2, {c}",
+                "mov dr3, {d}",
+                "mov dr6, {zero}",
+                "mov dr7, {control}",
+                zero = in(reg) 0u64,
+                a = in(reg) words[0],
+                b = in(reg) words[1],
+                c = in(reg) words[2],
+                d = in(reg) words[3],
+                control = in(reg) control,
+                options(nostack),
+            );
+        }
+    }
+
     fn hold_cpu_for_suspend() {
         sleep::hold();
     }

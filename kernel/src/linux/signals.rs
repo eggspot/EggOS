@@ -421,6 +421,8 @@ pub mod code {
     pub const CLD_KILLED: i32 = 2;
     /// `SIGCHLD`'s: a stop signal stopped the child (`CLD_STOPPED`, D181).
     pub const CLD_STOPPED: i32 = 5;
+    /// `SIGCHLD`'s: a traced child stopped for its tracer (`CLD_TRAPPED`, D598).
+    pub const CLD_TRAPPED: i32 = 4;
     /// `SIGCHLD`'s: `SIGCONT` continued the child (`CLD_CONTINUED`, D181).
     pub const CLD_CONTINUED: i32 = 6;
     /// The kernel's own, never given to a program: a thread whose process another thread
@@ -460,6 +462,7 @@ impl Info {
         let (code, status) = match change {
             JobChange::Stopped(signal) => (code::CLD_STOPPED, u32::from(signal)),
             JobChange::Continued => (code::CLD_CONTINUED, SIGCONT),
+            JobChange::Traced(status) => (code::CLD_TRAPPED, u32::from(status & 0x7f)),
         };
         let mut info = Self::sent(super::signal::SIGCHLD, code, pid, uid);
         info.0[info_offset::STATUS..][..4].copy_from_slice(&status.to_ne_bytes());
