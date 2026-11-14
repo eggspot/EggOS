@@ -125,7 +125,7 @@ and is not listed per item.
 - [x] virtio-gpu 3D (virgl, then Venus) (D112) — code written, unbuilt, D415–D461 and D581
 - [x] Terminal: 2x scale, the kernel's panic message on screen, rendering from a snapshot so a writer never waits for a render, a sleeping display lock (D112, D114) — code written, unbuilt, D583
 - [x] eggway: several outputs, with `wl_registry.global_remove` when a screen goes away (D140) — code written, unbuilt, D584
-- [ ] eggway: `zxdg_output_manager_v1`, `xdg_toplevel_icon_v1` and `xdg_wm_dialog_v1` (D179)
+- [x] eggway: `zxdg_output_manager_v1`, `xdg_toplevel_icon_v1` and `xdg_wm_dialog_v1` (D179) — code written, unbuilt, D585
 - [ ] virtio-gpu: the cursor queue on interrupts; several flushes in flight; per-context timelines (`ring_idx`) and sync objects (D414, D460)
 - [ ] `zwp_linux_dmabuf_v1` version 4 feedback objects and multi-plane formats (D459)
 - [ ] Mesa's device enumeration nodes in `/sys` (`/sys/dev/char/226:128`, `/sys/class/drm`) (D415)

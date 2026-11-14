@@ -26729,3 +26729,25 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; an extended desktop (screens side by side with windows
   placed on each), which the window server's single work area does not have yet; the screens'
   physical sizes and refresh rates from EDID.
+
+## D585 eggway: `zxdg_output_manager_v1`, `xdg_toplevel_icon_v1` and `xdg_wm_dialog_v1` (M11; D179's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the protocols' public XML: `xdg-output-unstable-v1.xml`, `xdg-toplevel-icon-v1.xml`, `xdg-dialog-v1.xml`)
+- **xdg-output** (version 3, global 17): `get_xdg_output` on a `wl_output` gives its screen's
+  logical position and size (D584's screens), its name `EGG-<n>` and the description
+  `EggOS screen`, then `wl_output.done` (version 3's rule; `zxdg_output_v1.done` before it).
+  A `wl_output` object now remembers which screen it was bound for.
+- **Toplevel icons** (version 1, global 18): the manager says it takes 32 and 64 pixel icons;
+  `create_icon`, `set_name`, `add_buffer` and `set_icon` are taken. The taskbar keeps showing
+  the app's icon from its manifest and catalogue.
+- **Dialogs** (version 1, global 19): `xdg_toplevel.set_parent` is now kept, and
+  `xdg_dialog_v1.set_modal` on a toplevel with a parent makes its window, when first shown, a
+  dialog of the parent's window (the window server's dialog role: kept above the parent, the
+  parent's input sent to it). `System::create_dialog_window` is the window server's `CREATE`
+  with role 1 and the parent's id.
+- **Decided by research.** Toplevel icons from a client are taken but not shown: the window
+  server draws icons from app manifests by name, and showing a client's own buffer would need a
+  window icon request and its memory carried into the shell for every window; GTK and Qt set
+  the icon by name, which matches the manifest's for the apps EggOS installs. A dialog made
+  modal after its window exists keeps its normal role until shown again, as the window server
+  sets the role at `CREATE`.
+- **Not yet.** Building and running; icons from the client's buffers; turning a shown window
+  into a dialog.
