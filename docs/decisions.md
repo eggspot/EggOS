@@ -27236,3 +27236,63 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; product names for devices; telling two devices of a kind
   apart by moving one; the TV's tooltips on the disabled controls; the wearable's per-device
   lines.
+
+## D602 Zoom, a larger pointer, bounce keys, toggle keys and mouse keys (M12; D224's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/accessibility-v0.4.md sections 2 to 4, by Claude Fable)
+- **Zoom.** The desktop keeps the level (2, 3, 4, 6 or 8) and the view (`drivers/src/desktop/zoom.rs`).
+  - **Lens.** While zoom is on, the kernel composes the frame as before, but into a source
+    buffer allocated only then (`Screen::lens_source`, dropped when zoom goes off). It then
+    writes each output pixel from source `(x + ox / k, y + oy / k)` (`magnify_rows`): nearest
+    neighbour, one read and one write. A dirty source rect damages its magnified rect
+    (`zoomed_damage`); a view move or a level change repaints everything.
+  - **Following.** The view follows the pointer by the overshoot, and the focus and caret by
+    the least move (`bring_into_zoom_view`, which D603's focus reports call).
+  - **Keys** (`Shortcut::Zoom`):
+    - Super+Alt+8 toggles; Super+Alt+= / Super+= (and keypad +) zoom in; Super+Alt+- /
+      Super+- (and keypad -) zoom out; Super+Esc turns it off; Ctrl+Alt+arrows pan.
+    - Panning and Super+Esc pass through to the window while zoom is off.
+    - A key applies at once, says `Zoom 3x` or `Zoom off` in the bar's strip for 1.5 s, and
+      saves the one setting it changed through `settings set`, as Shift x5 does. Zooming in
+      from off saves `zoom true` and keeps the file's level, so `settings set` never races
+      itself with two writes.
+  - The software pointer is drawn into the source; the display's own cursor is hidden while
+    zoom is on. `screenshot` captures the source. Benchmark `gfx_zoom_full_frame`.
+- **Larger pointer.** `accessibility.pointer_size` 1, 1.5, 2 or 3 scales every shape by
+  nearest neighbour (`pointer::scaled_size_and_hotspot`, `source_cell`: at 1.5 the cells are 1
+  and 2 pixels in turn). The display's cursor image is written again on a change. It is used up
+  to 2x; at 3x the pointer is drawn in software, because the 64x64 image cannot hold
+  `Working`. That is one rule for every shape, not the design's per-shape choice, so the
+  pointer never switches between hardware and software while it moves.
+- **Bounce keys** (`kernel/src/input/bounce.rs`): a press within the delay of the same key's
+  last accepted release is dropped with its repeats and release. It is checked before mouse
+  keys, slow keys and sticky keys. Each key's last release is kept (2 KiB in the input state).
+- **Toggle keys**: when Caps, Num or Scroll Lock changes, the bar's strip says `Caps Lock on`
+  and the like for 1.5 s. The strip's notice became general (`show_strip_notice`, words and
+  duration); sticky keys' notice uses it too.
+- **Mouse keys** (`kernel/src/input/mouse_keys.rs`):
+  - The keypad becomes pointer records in the kernel's input layer, whatever Num Lock says.
+  - A held direction moves 1 px at once, then every 20 ms; the step grows a pixel every 4
+    ticks up to a fiftieth of `mouse_keys_speed`. Shift moves 1 px; Ctrl moves 4 times the
+    step, at most 40.
+  - 5 clicks, + double-clicks, 0 holds the button and . releases it; / - * select the left,
+    right and middle buttons.
+  - The input thread wakes for the ticks through `next_repeat`.
+  - The selected or held button shows as a chip beside the sticky chips.
+  - Left Alt+Left Shift+Num Lock, and Alt tapped five times in the macOS profile, start
+    `settings set accessibility.mouse_keys`. The apply says `Mouse keys on` or `off` for 3 s.
+- **Protocol.** `SET_KEY_ACCESSIBILITY` grows to 32 bytes (bounce keys and delay, toggle keys,
+  mouse keys and speed). New `SET_ACCESSIBILITY` (request 65, 28 bytes) carries the screen
+  reader's four settings (D603) and zoom, its level and the pointer size. The kernel reads all
+  of them at boot.
+- **Settings.** Eight new keys:
+  - `accessibility.zoom`, `zoom_level`, `pointer_size`;
+  - `bounce_keys`, `bounce_keys_ms`, `toggle_keys`, `mouse_keys`, `mouse_keys_speed`.
+  They are in `settings`, `settings_set`, docs/settings.md and the tool descriptions.
+- **The Accessibility pane** is table-driven now (`Row`):
+  - `Seeing` and `Keys and pointer` sub-headings;
+  - the new checkboxes, the `Level` and `Pointer size` dropdowns, and the `Ignore a repeat
+    within` and `Top speed` sliders;
+  - 788 px tall on the desktop and one column on a narrow page;
+  - each dependent control disabled while its checkbox is off.
+  `CAPACITY` grows by 20.
+- **Not yet.** Building and running; the design's per-shape cursor choice at 3x; pinch zoom;
+  the console's chips without a desktop.
