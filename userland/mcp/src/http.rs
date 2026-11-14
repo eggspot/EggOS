@@ -515,12 +515,17 @@ fn sentinel_decoded<'o>(header: &[u8], out: &'o mut [u8; 256]) -> Option<&'o [u8
 
 /// Whether an MCP message is `initialize`, which opens a session.
 pub fn is_initialize(body: &[u8]) -> bool {
+    is_method(body, "initialize")
+}
+
+/// Whether an MCP message is a request or notification of `method`.
+pub fn is_method(body: &[u8], method: &str) -> bool {
     json::parse(body).is_ok_and(|parsed| {
         parsed
             .value
             .get("method")
-            .and_then(|method| method.as_str())
-            .is_some_and(|method| method.equals("initialize"))
+            .and_then(|named| named.as_str())
+            .is_some_and(|named| named.equals(method))
     })
 }
 
@@ -597,14 +602,20 @@ pub fn response_head(
     response_head_in_session(out, status, body_length, keep_alive, None)
 }
 
-/// Writes the head of the event stream of the session `session_id`: `text/event-stream` until
-/// the connection closes.
+/// Writes the head of an event stream: the session `session_id`'s (none when empty), or a
+/// `subscriptions/listen` request's; `text/event-stream` until the connection closes.
 pub fn event_stream_head(out: &mut [u8], session_id: &[u8]) -> usize {
     let mut length = 0;
+    let named: [&[u8]; 3] = match session_id.is_empty() {
+        true => [b"", b"", b""],
+        false => [b"Mcp-Session-Id: ", session_id, b"\r\n"],
+    };
     for part in [
-        &b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nMcp-Session-Id: "[..],
-        session_id,
-        b"\r\nConnection: close\r\n\r\n",
+        &b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"[..],
+        named[0],
+        named[1],
+        named[2],
+        b"Connection: close\r\n\r\n",
     ] {
         let Some(place) = out.get_mut(length..length + part.len()) else {
             return length;

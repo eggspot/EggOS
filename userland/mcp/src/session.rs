@@ -110,6 +110,7 @@ pub struct Session {
     client_name: Bounded<MAX_CLIENT_NAME_BYTES>,
     client_version: Bounded<MAX_CLIENT_VERSION_BYTES>,
     elicitation: bool,
+    input_requests: bool,
 }
 
 impl Default for Session {
@@ -120,6 +121,7 @@ impl Default for Session {
             client_name: Bounded::new(UNNAMED_CLIENT),
             client_version: Bounded::new(""),
             elicitation: false,
+            input_requests: false,
         }
     }
 }
@@ -159,11 +161,13 @@ impl Session {
 
     /// Serves one stateless request (2026-07-28) from the client `name` at `version`: the
     /// session counts as initialized at that protocol version, and never elicits, since a
-    /// stateless server sends no request of its own.
-    pub fn serve_stateless(&mut self, name: &str, version: &str) {
+    /// stateless server sends no request of its own; a client that can ask its user in a form
+    /// (`input_requests`) gets `input_required` results instead (D578).
+    pub fn serve_stateless(&mut self, name: &str, version: &str, input_requests: bool) {
         self.state = State::Initialized;
         self.version = STATELESS_VERSION;
         self.elicitation = false;
+        self.input_requests = input_requests;
         self.client_name = Bounded::new(if name.is_empty() {
             UNNAMED_CLIENT
         } else {
@@ -195,6 +199,11 @@ impl Session {
     /// Whether the client can ask its user a question (`elicitation/create`).
     pub fn elicits(&self) -> bool {
         self.elicitation
+    }
+
+    /// Whether the stateless client asks its user what an `input_required` result asks.
+    pub fn takes_input_requests(&self) -> bool {
+        self.is_stateless() && self.input_requests
     }
 
     /// A copy of the client's name, which outlives a borrow of the session.

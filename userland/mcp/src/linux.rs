@@ -250,6 +250,23 @@ fn wait_for_channel(channel: usize, prompt: Option<usize>, deadline_ms: u64) -> 
     }
 }
 
+fn request_state_key() -> Option<[u8; crate::request_state::KEY_BYTES]> {
+    let mut key = [0u8; crate::request_state::KEY_BYTES];
+    let mut filled = 0;
+    while filled < key.len() {
+        let free = &mut key[filled..];
+        match call(
+            number::GETRANDOM,
+            [free.as_mut_ptr() as usize, free.len(), 0, 0, 0, 0],
+        ) {
+            Ok(count) => filled += count,
+            Err(Errno::EINTR) => continue,
+            Err(_) => return None,
+        }
+    }
+    Some(key)
+}
+
 fn ignore_broken_pipes() {
     let action = eggos_runtime::signal::action(eggos_runtime::signal::IGNORE);
     let _ = call(
@@ -339,6 +356,9 @@ pub fn run(startup: &Startup) -> i32 {
         false => Server::new(),
     };
     read_grants(&mut server);
+    if let Some(key) = request_state_key() {
+        server.set_request_state_key(key);
+    }
     if server.grants().allows(Grant::Write) {
         let mut home = [0u8; 16];
         if let Some(home) = c_path(HOME, &mut home) {

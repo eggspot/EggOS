@@ -34,6 +34,7 @@ use crate::grants::{
 use crate::json::{Base64Carry, JsonWriter, Object, Value};
 use crate::paths::{self, MAX_PATH_BYTES, PathRefusal};
 use crate::prompts;
+use crate::request_state::{self, Claim};
 use crate::rpc::{
     self, Answer, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, MAX_ID_BYTES, METHOD_NOT_FOUND,
     Message,
@@ -227,6 +228,29 @@ pub struct Server {
     budget: u64,
     budget_spent: bool,
     answers_only: bool,
+    state_key: Option<[u8; request_state::KEY_BYTES]>,
+    spent_nonces: [u64; SPENT_NONCES],
+    spent_next: usize,
+    nonces_issued: u64,
+    subscription: Option<Subscription>,
+    seen_tools: Option<u64>,
+    seen_grants: Option<u64>,
+}
+
+const SPENT_NONCES: usize = 64;
+const INPUT_KEY: &str = "confirm";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Subscription {
+    tools: bool,
+    grants: bool,
+}
+
+enum InputAnswer {
+    Missing,
+    Yes,
+    Declined,
+    Invalid(&'static str),
 }
 
 impl Default for Server {
@@ -247,6 +271,13 @@ impl Default for Server {
             budget: BUDGET_BYTES,
             budget_spent: false,
             answers_only: false,
+            state_key: None,
+            spent_nonces: [0; SPENT_NONCES],
+            spent_next: 0,
+            nonces_issued: 0,
+            subscription: None,
+            seen_tools: None,
+            seen_grants: None,
         }
     }
 }
@@ -326,6 +357,13 @@ impl Server {
     /// Says the transport only carries the server's answers, never a request of its own (MCP
     /// over HTTP without an event stream): no client is asked through elicitation, so a call
     /// needing the person's answer asks on EggOS's screen or is refused.
+    /// Lets stateless calls that need the person's yes answer `input_required`, with
+    /// `requestState`s signed by `key` (D578); without a key they ask on EggOS's screen or need
+    /// `confirm`, as before.
+    pub fn set_request_state_key(&mut self, key: [u8; request_state::KEY_BYTES]) {
+        self.state_key = Some(key);
+    }
+
     pub fn set_answers_only(&mut self) {
         self.answers_only = true;
     }
@@ -576,9 +614,13 @@ impl Server {
             };
             let name_length = text_of("name", &mut name);
             let version_length = text_of("version", &mut version);
+            let input_requests = session::elicits_forms(
+                capabilities.and_then(|capabilities| capabilities.get("elicitation")),
+            );
             self.session.serve_stateless(
                 text_prefix(&name, name_length),
                 text_prefix(&version, version_length),
+                input_requests,
             );
         }
         let main_start = out.len();
@@ -629,11 +671,16 @@ impl Server {
             "resources/list",
             "resources/read",
             "resources/templates/list",
+            "subscriptions/listen",
         ];
         let Some(&name) = known.iter().find(|name| method.equals(name)) else {
             rpc::write_error(out, Some(id), METHOD_NOT_FOUND, "method not found");
             return;
         };
+        if name == "subscriptions/listen" {
+            self.listen(id, params, out);
+            return;
+        }
         if name == "ping" {
             rpc::write_result(out, id, |out| {
                 out.begin_object();
@@ -1356,11 +1403,55 @@ impl Server {
         }
         let replaces = !checked.append && state != FileState::Missing;
         let destructive = tool.confirmation.needed(replaces, checked.dry_run);
-        let needs_yes = ask_user || destructive;
+        let mut needs_yes = ask_user || destructive;
         let mut approval = match session_answer {
             true => Approval::ForSession,
             false => Approval::NotNeeded,
         };
+        if needs_yes && self.session.takes_input_requests() && self.state_key.is_some() {
+            let arguments_text = arguments.map_or(&b""[..], Value::raw);
+            let call = request_state::call_hash(tool_name, arguments_text);
+            match self.input_answer(params, &call, system) {
+                InputAnswer::Yes => {
+                    needs_yes = false;
+                    approval = Approval::User;
+                }
+                InputAnswer::Missing => {
+                    self.require_input(
+                        id,
+                        number,
+                        tool,
+                        &call,
+                        (&checked, state),
+                        target_length,
+                        shown,
+                        system,
+                        scratch,
+                        out,
+                    );
+                    return;
+                }
+                refusal @ (InputAnswer::Declined | InputAnswer::Invalid(_)) => {
+                    let message = match refusal {
+                        InputAnswer::Invalid(problem) => problem,
+                        _ => "Refused: the user declined.",
+                    };
+                    self.stop(
+                        system,
+                        scratch,
+                        id,
+                        number,
+                        tool_name,
+                        Outcome::Refused,
+                        Logged::Shown(shown),
+                        message,
+                        Ending::Refused(&errors::NEEDS_GRANT),
+                        out,
+                    );
+                    return;
+                }
+            }
+        }
         if needs_yes {
             let prompt = match self.pending {
                 Some(_) => PromptStart::NoScreen,
@@ -1719,31 +1810,248 @@ impl Server {
         out.begin_object();
         out.key("message");
         out.string(message);
-        out.key("requestedSchema");
-        out.begin_object();
-        out.key("type");
-        out.string("object");
-        out.key("properties");
-        out.begin_object();
-        out.key("confirm");
-        out.begin_object();
-        out.key("type");
-        out.string("boolean");
-        out.key("title");
-        out.string("Allow this change");
-        out.key("description");
-        out.string("Set to allow the agent's call; leave unset or decline to refuse it.");
-        out.key("default");
-        out.bool(false);
+        write_confirm_schema(out);
         out.end_object();
         out.end_object();
-        out.key("required");
+    }
+
+    fn input_answer(
+        &mut self,
+        params: Option<Object<'_>>,
+        call: &[u8; 32],
+        system: &mut impl System,
+    ) -> InputAnswer {
+        let Some(key) = self.state_key else {
+            return InputAnswer::Missing;
+        };
+        let Some(state) = params
+            .and_then(|params| params.get("requestState"))
+            .and_then(Value::as_str)
+        else {
+            return InputAnswer::Missing;
+        };
+        let mut text = [0u8; request_state::MAX_TEXT_BYTES];
+        let (decoded, complete) = state.decode_prefix_into(&mut text);
+        let claim = match complete {
+            true => request_state::open(&key, decoded.as_bytes()),
+            false => None,
+        };
+        let Some(claim) = claim else {
+            return InputAnswer::Invalid("Refused: the requestState is not one this server gave.");
+        };
+        if claim.agent != self.agent || claim.call != *call {
+            return InputAnswer::Invalid("Refused: the requestState belongs to another call.");
+        }
+        if system.now() > claim.expires {
+            return InputAnswer::Invalid("Refused: the question expired; call the tool again.");
+        }
+        if self.spent_nonces.contains(&claim.nonce) {
+            return InputAnswer::Invalid(
+                "Refused: this answer was already used; call the tool again.",
+            );
+        }
+        self.spent_nonces[self.spent_next] = claim.nonce;
+        self.spent_next = (self.spent_next + 1) % SPENT_NONCES;
+        let response = params
+            .and_then(|params| params.get("inputResponses"))
+            .and_then(|responses| responses.get(INPUT_KEY));
+        let accepted = response
+            .and_then(|response| response.get("action"))
+            .and_then(Value::as_str)
+            .is_some_and(|action| action.equals("accept"));
+        let confirmed = response
+            .and_then(|response| response.get("content"))
+            .and_then(|content| content.get(INPUT_KEY))
+            .is_some_and(|value| matches!(value, Value::Bool(true)));
+        match accepted && confirmed {
+            true => InputAnswer::Yes,
+            false => InputAnswer::Declined,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn require_input(
+        &mut self,
+        id: &[u8],
+        number: u64,
+        tool: &'static Tool,
+        call: &[u8; 32],
+        (checked, state): (&Checked, FileState),
+        target_length: usize,
+        shown: &[u8],
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut JsonWriter<'_>,
+    ) {
+        let Some(key) = self.state_key else {
+            return;
+        };
+        self.nonces_issued += 1;
+        let claim = Claim {
+            agent: self.agent,
+            call: *call,
+            expires: system.now().saturating_add(request_state::LIFETIME_SECONDS),
+            nonce: self.nonces_issued,
+        };
+        let mut sealed = [0u8; request_state::MAX_TEXT_BYTES];
+        let sealed_length = request_state::seal(&key, &claim, &mut sealed);
+        let sealed = core::str::from_utf8(&sealed[..sealed_length]).unwrap_or_default();
+        let asked = self.record_call(
+            system,
+            scratch.record,
+            number,
+            tool.name.as_bytes(),
+            Outcome::Asked,
+            shown,
+            b"input_required",
+        );
+        if !asked {
+            refused(
+                out,
+                id,
+                &errors::AUDIT_FAILED,
+                "The call was not run: the audit log could not be written.",
+            );
+            return;
+        }
+        let target = target_text(tool, scratch.resolved, target_length).unwrap_or("");
+        let source = arguments::source_text(checked, scratch.content).unwrap_or("");
+        let target = arguments::registry_key_text(checked, scratch.content).unwrap_or(target);
+        let source = arguments::registry_name_text(checked, scratch.content).unwrap_or(source);
+        let facts = question_facts(tool, checked, system);
+        let mut message = [0u8; 2048];
+        let length = question_text(
+            tool,
+            checked,
+            state,
+            (target, source),
+            &facts,
+            &self.agent,
+            &mut message,
+        );
+        let message = text_prefix(&message, length);
+        rpc::write_result(out, id, |out| {
+            out.begin_object();
+            out.key("resultType");
+            out.string("input_required");
+            out.key("inputRequests");
+            out.begin_object();
+            out.key(INPUT_KEY);
+            out.begin_object();
+            out.key("method");
+            out.string("elicitation/create");
+            out.key("params");
+            out.begin_object();
+            out.key("message");
+            out.string(message);
+            write_confirm_schema(out);
+            out.end_object();
+            out.end_object();
+            out.end_object();
+            out.key("requestState");
+            out.string(sealed);
+            out.end_object();
+        });
+    }
+
+    fn listen(&mut self, id: &[u8], params: Option<Object<'_>>, out: &mut JsonWriter<'_>) {
+        if !self.session.is_stateless() {
+            rpc::write_error(
+                out,
+                Some(id),
+                METHOD_NOT_FOUND,
+                "subscriptions/listen is a 2026-07-28 request",
+            );
+            return;
+        }
+        let wanted = params.and_then(|params| params.get("notifications"));
+        let tools = wanted
+            .and_then(|wanted| wanted.get("toolsListChanged"))
+            .is_some_and(|value| matches!(value, Value::Bool(true)));
+        let grants = match wanted.and_then(|wanted| wanted.get("resourcesUpdated")) {
+            Some(Value::Array(uris)) => uris.elements().any(|uri| {
+                uri.as_str()
+                    .is_some_and(|uri| uri.equals(GRANTS_RESOURCE))
+            }),
+            _ => false,
+        };
+        self.subscription = Some(Subscription { tools, grants });
+        self.seen_tools = None;
+        self.seen_grants = None;
+        out.begin_object();
+        out.key("jsonrpc");
+        out.string("2.0");
+        out.key("method");
+        out.string("notifications/subscriptions/acknowledged");
+        out.key("params");
+        out.begin_object();
+        out.key("requestId");
+        out.raw(id);
+        out.key("toolsListChanged");
+        out.bool(tools);
+        out.key("resourcesUpdated");
         out.begin_array();
-        out.string("confirm");
+        if grants {
+            out.string(GRANTS_RESOURCE);
+        }
         out.end_array();
         out.end_object();
         out.end_object();
-        out.end_object();
+    }
+
+    /// What changed since the last call of what a stateless client's `subscriptions/listen`
+    /// asked to hear (D578): `notifications/tools/list_changed` when the tools it may list
+    /// changed, and `notifications/resources/updated` for `eggos://grants` when its grants
+    /// did, as lines written to `out`; their length. The first call only takes note.
+    pub fn subscription_news(
+        &mut self,
+        system: &mut impl System,
+        scratch: &mut Scratch<'_>,
+        out: &mut [u8],
+    ) -> usize {
+        let Some(subscription) = self.subscription else {
+            return 0;
+        };
+        let mut tools_changed = false;
+        if subscription.tools {
+            let length = self.handle_line(TOOLS_LIST_PROBE, system, scratch, out);
+            let fingerprint = crate::grants::fnv1a(out.get(..length).unwrap_or_default());
+            tools_changed = self.seen_tools.is_some_and(|seen| seen != fingerprint);
+            self.seen_tools = Some(fingerprint);
+        }
+        let mut grants_changed = false;
+        if subscription.grants {
+            let mut grants = [0u8; 192];
+            let length = self.grants_text(system, &mut grants);
+            let fingerprint = crate::grants::fnv1a(grants.get(..length).unwrap_or_default());
+            grants_changed = self.seen_grants.is_some_and(|seen| seen != fingerprint);
+            self.seen_grants = Some(fingerprint);
+        }
+        let mut writer = JsonWriter::new(out);
+        if tools_changed {
+            writer.begin_object();
+            writer.key("jsonrpc");
+            writer.string("2.0");
+            writer.key("method");
+            writer.string("notifications/tools/list_changed");
+            writer.end_object();
+            writer.end_line();
+        }
+        if grants_changed {
+            writer.begin_object();
+            writer.key("jsonrpc");
+            writer.string("2.0");
+            writer.key("method");
+            writer.string("notifications/resources/updated");
+            writer.key("params");
+            writer.begin_object();
+            writer.key("uri");
+            writer.string(GRANTS_RESOURCE);
+            writer.end_object();
+            writer.end_object();
+            writer.end_line();
+        }
+        writer.len()
     }
 
     fn question_id(&self, question: u64, out: &mut [u8]) -> usize {
@@ -4218,6 +4526,34 @@ fn write_no_tools(out: &mut JsonWriter<'_>) {
 pub const INSTRUCTIONS_RESOURCE: &str = "eggos://instructions";
 /// The resource holding the reading agent's own grants, as JSON.
 pub const GRANTS_RESOURCE: &str = "eggos://grants";
+
+const TOOLS_LIST_PROBE: &[u8] = br#"{"jsonrpc":"2.0","id":0,"method":"tools/list"}"#;
+
+fn write_confirm_schema(out: &mut JsonWriter<'_>) {
+    out.key("requestedSchema");
+    out.begin_object();
+    out.key("type");
+    out.string("object");
+    out.key("properties");
+    out.begin_object();
+    out.key(INPUT_KEY);
+    out.begin_object();
+    out.key("type");
+    out.string("boolean");
+    out.key("title");
+    out.string("Allow this change");
+    out.key("description");
+    out.string("Set to allow the agent's call; leave unset or decline to refuse it.");
+    out.key("default");
+    out.bool(false);
+    out.end_object();
+    out.end_object();
+    out.key("required");
+    out.begin_array();
+    out.string(INPUT_KEY);
+    out.end_array();
+    out.end_object();
+}
 /// MCP 2025's error for a resource that does not exist.
 pub const RESOURCE_NOT_FOUND: i64 = -32002;
 
@@ -4238,7 +4574,16 @@ fn mark_stateless_result(out: &mut JsonWriter<'_>, start: usize, cacheable: bool
     if written.is_empty() || !written.ends_with(b"}}") {
         return;
     }
-    if crate::json::has_top_level_member(written, "error") {
+    if crate::json::has_top_level_member(written, "error")
+        || !crate::json::has_top_level_member(written, "result")
+    {
+        return;
+    }
+    const INPUT_REQUIRED: &[u8] = b"\"resultType\":\"input_required\"";
+    if written
+        .windows(INPUT_REQUIRED.len())
+        .any(|window| window == INPUT_REQUIRED)
+    {
         return;
     }
     if !out.reopen_object() || !out.reopen_object() {

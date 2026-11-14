@@ -5341,3 +5341,114 @@ fn the_write_tools_never_reach_eggos_settings() {
         b"eggos-settings 1\n"
     );
 }
+
+fn stateless_call(id: u64, arguments: &str, extra: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"tee","arguments":{arguments}{extra},{MODERN_META}}}}}"#
+    )
+}
+
+#[test]
+fn a_stateless_call_needing_a_yes_answers_input_required_and_takes_the_answer_once() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_request_state_key([3; crate::request_state::KEY_BYTES]);
+    harness.system.folders.push("/home/root".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/note.txt".into(), b"old".to_vec());
+    let arguments = r#"{"path":"/home/root/note.txt","content":"new"}"#;
+    let asked = harness.send(&stateless_call(1, arguments, "")).unwrap();
+    let result = parsed(&asked).get("result").unwrap();
+    assert!(
+        result
+            .get("resultType")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .equals("input_required"),
+        "{asked}"
+    );
+    let request = result.get("inputRequests").unwrap().get("confirm").unwrap();
+    assert!(request.get("method").unwrap().as_str().unwrap().equals("elicitation/create"));
+    let state: String = result
+        .get("requestState")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect();
+    assert_eq!(harness.system.files["/home/root/note.txt"], b"old");
+    let yes = format!(
+        r#","inputResponses":{{"confirm":{{"action":"accept","content":{{"confirm":true}}}}}},"requestState":"{state}""#
+    );
+    let answer = harness.send(&stateless_call(2, arguments, &yes)).unwrap();
+    assert!(!is_error(&answer), "{answer}");
+    assert_eq!(harness.system.files["/home/root/note.txt"], b"new");
+    let again = harness.send(&stateless_call(3, arguments, &yes)).unwrap();
+    assert!(is_error(&again) && again.contains("already used"), "{again}");
+    let other = r#"{"path":"/home/root/note.txt","content":"other"}"#;
+    let elsewhere = harness.send(&stateless_call(4, other, &yes)).unwrap();
+    assert!(elsewhere.contains("another call"), "{elsewhere}");
+}
+
+#[test]
+fn a_declined_input_or_a_forged_state_refuses_the_call() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    harness.server.set_request_state_key([3; crate::request_state::KEY_BYTES]);
+    harness.system.folders.push("/home/root".into());
+    harness
+        .system
+        .files
+        .insert("/home/root/note.txt".into(), b"old".to_vec());
+    let arguments = r#"{"path":"/home/root/note.txt","content":"new"}"#;
+    let asked = harness.send(&stateless_call(1, arguments, "")).unwrap();
+    let state: String = parsed(&asked)
+        .get("result")
+        .unwrap()
+        .get("requestState")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .chars()
+        .collect();
+    let no = format!(
+        r#","inputResponses":{{"confirm":{{"action":"decline"}}}},"requestState":"{state}""#
+    );
+    let declined = harness.send(&stateless_call(2, arguments, &no)).unwrap();
+    assert!(declined.contains("declined"), "{declined}");
+    let forged = r#","inputResponses":{"confirm":{"action":"accept","content":{"confirm":true}}},"requestState":"AAAA""#;
+    let refused = harness.send(&stateless_call(3, arguments, forged)).unwrap();
+    assert!(refused.contains("not one this server gave"), "{refused}");
+    assert_eq!(harness.system.files["/home/root/note.txt"], b"old");
+}
+
+#[test]
+fn subscriptions_listen_is_acknowledged_and_grants_changes_are_news() {
+    let mut harness = Harness::with_grants(Grants::ALL);
+    let acknowledged = harness
+        .send(&format!(
+            r#"{{"jsonrpc":"2.0","id":"s","method":"subscriptions/listen","params":{{"notifications":{{"toolsListChanged":true,"resourcesUpdated":["eggos://grants"]}},{MODERN_META}}}}}"#
+        ))
+        .unwrap();
+    assert!(
+        acknowledged.contains("notifications/subscriptions/acknowledged")
+            && acknowledged.contains(r#""resourcesUpdated":["eggos://grants"]"#),
+        "{acknowledged}"
+    );
+    let mut out = vec![0u8; 1 << 20];
+    let (mut scratch, _) = harness.buffers.scratch();
+    let first = harness
+        .server
+        .subscription_news(&mut harness.system, &mut scratch, &mut out);
+    assert_eq!(first, 0);
+    let again = harness
+        .server
+        .subscription_news(&mut harness.system, &mut scratch, &mut out);
+    assert_eq!(again, 0);
+    let mut stateful = Harness::granted(Grants::ALL, "{}");
+    let refused = stateful
+        .send(r#"{"jsonrpc":"2.0","id":9,"method":"subscriptions/listen","params":{}}"#)
+        .unwrap();
+    assert!(refused.contains("2026-07-28"), "{refused}");
+}

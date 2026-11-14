@@ -13,7 +13,7 @@ mod advertise;
 mod relay;
 
 use super::{
-    AT_FDCWD, BUFFERS, Buffers, Linux, O_CREAT, O_EXCL, O_RDONLY, O_WRONLY, POLLERR, POLLHUP,
+    AT_FDCWD, BUFFERS, Buffers, Linux, request_state_key, O_CREAT, O_EXCL, O_RDONLY, O_WRONLY, POLLERR, POLLHUP,
     POLLIN, PollDescriptor, call, close, ignore_broken_pipes, now_ms, open, pause, rename, say,
 };
 use crate::grants::{AgentId, GrantStore, Grants, STORE_BYTES, StoreState, Unknown};
@@ -69,6 +69,9 @@ pub const MAX_CONNECTIONS_PER_ADDRESS: usize = 4;
 pub const MAX_SESSIONS: usize = 16;
 /// How often an idle event stream gets a keep-alive, in milliseconds.
 pub const STREAM_KEEP_ALIVE_MS: u64 = 15_000;
+/// How often what `subscriptions/listen` streams are asked to hear is checked, in
+/// milliseconds.
+pub const SUBSCRIPTION_CHECK_MS: u64 = 5_000;
 
 struct Socket {
     descriptor: usize,
@@ -381,6 +384,9 @@ impl Servers {
             server.set_grants(Grants::ALL, Unknown::default());
             server.set_agent(agent);
             server.set_answers_only();
+            if let Some(key) = request_state_key() {
+                server.set_request_state_key(key);
+            }
             server.start(false, system, scratch);
             *slot = Some(server);
         }
@@ -504,6 +510,9 @@ impl Sessions {
         server.set_grants(Grants::ALL, Unknown::default());
         server.set_agent(agent);
         server.set_answers_only();
+        if let Some(key) = request_state_key() {
+            server.set_request_state_key(key);
+        }
         server.start(false, system, scratch);
         self.slots[index] = Some(OpenSession {
             id,
@@ -550,6 +559,8 @@ struct Exchange<'b> {
     response: &'b mut [u8],
     servers: Servers,
     sessions: Sessions,
+    subscribers: [Option<AgentId>; MAX_CONNECTIONS],
+    next_subscription_check_ms: u64,
 }
 
 struct Outcome {
@@ -654,6 +665,34 @@ impl Exchange<'_> {
             end: lines.len(),
             opened,
             listener,
+        }
+    }
+
+    fn subscription_news(&mut self, connections: &[Option<Connection>]) {
+        let now = now_ms();
+        if now < self.next_subscription_check_ms {
+            return;
+        }
+        self.next_subscription_check_ms = now + SUBSCRIPTION_CHECK_MS;
+        for index in 0..MAX_CONNECTIONS {
+            let (Some(agent), Some(connection)) = (self.subscribers[index], connections[index]) else {
+                continue;
+            };
+            let Exchange {
+                system,
+                scratch,
+                response,
+                servers,
+                ..
+            } = self;
+            let Some(server) = servers.for_agent(agent, system, scratch) else {
+                continue;
+            };
+            let length = server.subscription_news(system, scratch, response);
+            let lines = response.get(..length).unwrap_or_default();
+            for line in lines.split(|&byte| byte == b'\n').filter(|line| !line.is_empty()) {
+                relay::write_frame(connection.control, relay::kind::EVENT, &[line]);
+            }
         }
     }
 
@@ -772,16 +811,25 @@ fn answer(
         && (body.is_empty() || session.write(socket, body).is_ok())
 }
 
+fn write_event(session: &mut Session<'_>, socket: &mut Socket, line: &[u8]) -> bool {
+    session.write(socket, b"event: message\ndata: ").is_ok()
+        && session.write(socket, line).is_ok()
+        && session.write(socket, b"\n\n").is_ok()
+}
+
 fn stream_events(
     session: &mut Session<'_>,
     socket: &mut Socket,
     relay: &mut Relay,
-    session_id: &[u8],
+    (session_id, first): (&[u8], &[u8]),
     buffer: &mut [u8],
 ) {
     let mut head = [0u8; http::MAX_RESPONSE_HEADER_BYTES];
     let length = http::event_stream_head(&mut head, session_id);
     if session.write(socket, &head[..length]).is_err() {
+        return;
+    }
+    if !first.is_empty() && !write_event(session, socket, first) {
         return;
     }
     loop {
@@ -801,10 +849,7 @@ fn stream_events(
         if line.contains(&b'\n') {
             continue;
         }
-        let written = session.write(socket, b"event: message\ndata: ").is_ok()
-            && session.write(socket, line).is_ok()
-            && session.write(socket, b"\n\n").is_ok();
-        if !written {
+        if !write_event(session, socket, line) {
             return;
         }
     }
@@ -888,7 +933,7 @@ fn serve_connection(
                         let mut id = [0u8; http::MAX_SESSION_ID_BYTES];
                         id[..session_id.len()].copy_from_slice(session_id);
                         let id = &id[..session_id.len()];
-                        stream_events(&mut session, socket, relay, id, exchange.response);
+                        stream_events(&mut session, socket, relay, (id, &[]), exchange.response);
                     }
                     Some(status) => {
                         let length = http::error_body("no such session: initialize again", &mut error);
@@ -939,6 +984,19 @@ fn serve_connection(
                     return;
                 };
                 let (start, end) = (answered.start, answered.end);
+                let listens = request.session_id.is_none()
+                    && answered.status == Status::Ok
+                    && http::is_method(body, "subscriptions/listen");
+                if listens {
+                    let mut first = [0u8; 512];
+                    let acknowledged = exchange.response.get(start..end).unwrap_or_default();
+                    let length = acknowledged.len().min(first.len());
+                    first[..length].copy_from_slice(&acknowledged[..length]);
+                    socket.deadline_ms = u64::MAX;
+                    stream_events(&mut session, socket, relay, (&[], &first[..length]), exchange.response);
+                    let _ = session.close(socket);
+                    return;
+                }
                 let status = match (stateless, answered.status) {
                     (true, Status::Ok) => http::stateless_status(
                         exchange.response.get(start..end).unwrap_or_default(),
@@ -1011,6 +1069,12 @@ fn end_connection(connections: &mut [Option<Connection>], index: usize, sessions
         [connection.process, (&raw mut status) as usize, 0, 0, 0, 0],
     );
     sessions.forget_listener(index);
+}
+
+fn forget_subscriber(exchange: &mut Exchange<'_>, index: usize) {
+    if let Some(slot) = exchange.subscribers.get_mut(index) {
+        *slot = None;
+    }
 }
 
 fn accept_connection(
@@ -1106,6 +1170,7 @@ fn answer_connection(
     };
     let Some((kind, length)) = relay::read_frame(connection.control, input) else {
         end_connection(connections, index, &mut exchange.sessions);
+        forget_subscriber(exchange, index);
         return;
     };
     let Some((token_hash, session, body)) = relay::split_request(&input[..length]) else {
@@ -1115,6 +1180,12 @@ fn answer_connection(
     match kind {
         relay::kind::REQUEST => {
             let outcome = exchange.mcp(&token_hash, session, body);
+            if session.is_none()
+                && outcome.status == Status::Ok
+                && http::is_method(body, "subscriptions/listen")
+            {
+                exchange.subscribers[index] = exchange.agent(&token_hash);
+            }
             let named = outcome.opened.as_ref().map(|id| &id[..]).or(session);
             let answered = exchange.response.get(outcome.start..outcome.end).unwrap_or_default();
             relay::write_answer(connection.control, outcome.status, named, answered);
@@ -1228,6 +1299,8 @@ pub fn run() -> i32 {
         sessions: Sessions {
             slots: [const { None }; MAX_SESSIONS],
         },
+        subscribers: [None; MAX_CONNECTIONS],
+        next_subscription_check_ms: 0,
     };
     let mut connections: [Option<Connection>; MAX_CONNECTIONS] = [None; MAX_CONNECTIONS];
     let mut advertiser = advertise::Advertiser::start(port_number, identity.certificate);
@@ -1249,10 +1322,14 @@ pub fn run() -> i32 {
                 watched[2 + index].descriptor = connection.control as i32;
             }
         }
-        let wait = advertiser.as_ref().map(|advertiser| {
-            let left = advertiser.timeout_ms();
-            [(left / 1000) as i64, (left % 1000 * 1_000_000) as i64]
-        });
+        let mut left = advertiser
+            .as_ref()
+            .map_or(u64::MAX, |advertiser| advertiser.timeout_ms());
+        if exchange.subscribers.iter().any(Option::is_some) {
+            left = left.min(SUBSCRIPTION_CHECK_MS);
+        }
+        let wait = (left != u64::MAX)
+            .then(|| [(left / 1000) as i64, (left % 1000 * 1_000_000) as i64]);
         let wait_pointer = wait.as_ref().map_or(0, |wait| wait.as_ptr() as usize);
         match call(
             number::PPOLL,
@@ -1266,6 +1343,7 @@ pub fn run() -> i32 {
         {
             advertiser.readable();
         }
+        exchange.subscription_news(&connections);
         for index in 0..MAX_CONNECTIONS {
             if watched[2 + index].returned_events & (POLLIN | POLLHUP | POLLERR) != 0 {
                 answer_connection(&mut connections, index, &mut exchange, &mut input[..]);
