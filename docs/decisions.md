@@ -26636,3 +26636,17 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; larger framebuffers for the other display drivers that
   allocate one block (Apple, the SoC displays); a large mode first chosen after boot when no
   spare is big enough.
+
+## D581 virtio-gpu 3D's last pieces: host blobs mapped with the device's cache type, and the host-visible window on virtio-mmio (M11; D112's "3D (virgl, then Venus)" and D440's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the virtio 1.2 specification's GPU device and transports)
+- **The item.** virgl and Venus contexts, blobs, host-visible memory, PRIME and zero-copy
+  composition were written in round 1 (D415, D439, D440, D441, D442, D459, D461); this closes
+  what D440 left. `RESOURCE_MAP_BLOB`'s answer (`OK_MAP_INFO`) now gives the mapping's cache
+  type: uncached host blobs are mapped as device memory and write-combining ones as such
+  (`LentFrames::memory_type`), cached ones as RAM, so a program's view of a host blob matches
+  the device's. A failed map gives the window range back and drops the resource.
+- **virtio-mmio.** `MmioTransport::shared_memory` reads a region's base and length (`SHMSel`,
+  `SHMLen`, `SHMBase`; all ones is "no region"), and a GPU on virtio-mmio offers its
+  host-visible window as one on PCI does. virtio-ccw has no shared memory registers in the
+  specification and keeps host blobs off.
+- **Not yet.** Building and running; real fences on host blobs (the per-context timelines
+  item).

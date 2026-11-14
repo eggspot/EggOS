@@ -374,8 +374,8 @@ pub trait LentFrames: Send + Sync {
     fn frame_at(&self, offset: u64) -> u64;
     /// How many bytes, whole frames, may be mapped.
     fn length(&self) -> u64;
-    /// The memory type the frames must be mapped with, when not RAM's (D582): a GPU's host
-    /// blob mapped uncached or write-combining as the device asks.
+    /// The memory type the frames must be mapped with, when not RAM's: a GPU's host
+    /// blob mapped uncached or write-combining as the device asks (D581).
     fn memory_type(&self) -> Option<eggos_hal::paging::MemoryType> {
         None
     }
