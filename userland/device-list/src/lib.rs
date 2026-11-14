@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod pointers;
 pub mod power;
 
 /// Where the kernel lists the devices.

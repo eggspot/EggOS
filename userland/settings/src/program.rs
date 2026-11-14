@@ -37,7 +37,9 @@ use eggos_settings::facts::Facts;
 use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
-use eggos_settings::keys::{DisplayChange, InputChange, KeyboardChoice, KeysChange};
+use eggos_settings::keys::{
+    DeviceChange, DeviceField, DisplayChange, InputChange, KeyboardChoice, KeysChange,
+};
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, POWER, Request,
@@ -276,6 +278,25 @@ fn remove_stale_temporary_files(own: u32) {
     }
 }
 
+fn save_device_change(device: u8, change: DeviceChange) -> Result<(), Errno> {
+    let names = settings_file::MOUSE_DEVICE_KEYS
+        .get(usize::from(device).wrapping_sub(1))
+        .ok_or(Errno::EINVAL)?;
+    let saved: alloc::vec::Vec<(DeviceField, eggos_settings::keys::Value)> =
+        change.saved().collect();
+    let values: alloc::vec::Vec<(&str, &str)> = saved
+        .iter()
+        .map(|(field, value)| {
+            let value = match value.as_str() {
+                settings_file::FOLLOW_GLOBAL => "",
+                value => value,
+            };
+            (names[*field as usize], value)
+        })
+        .collect();
+    save_values_through_a_temporary_file(&values)
+}
+
 fn save_through_a_temporary_file(key: &str, value: &str) -> Result<(), Errno> {
     save_values_through_a_temporary_file(&[(key, value)])
 }
@@ -300,8 +321,11 @@ fn save_values_through_a_temporary_file(values: &[(&str, &str)]) -> Result<(), E
             0 => old[..length].to_vec(),
             _ => new[..new_length].to_vec(),
         };
-        new_length = settings_file::with_value(&from, key, value.as_bytes(), &mut new)
-            .map_err(|_| Errno::E2BIG)?;
+        new_length = match value {
+            "" => settings_file::without_value(&from, key, &mut new),
+            _ => settings_file::with_value(&from, key, value.as_bytes(), &mut new),
+        }
+        .map_err(|_| Errno::E2BIG)?;
     }
     let process_id = syscall(number::GETPID, [0; 6])? as u32;
     remove_stale_temporary_files(process_id);
@@ -369,6 +393,14 @@ fn power_facts() -> eggos_device_list::power::PowerFacts {
     let length = read_file(eggos_device_list::power::POWER_FILE, &mut text).unwrap_or(0);
     eggos_device_list::power::PowerFacts::parse(&text[..length])
 }
+
+fn pointing_devices() -> eggos_device_list::pointers::PointingDevices {
+    let mut text = [0u8; POINTERS_TEXT_CAPACITY];
+    let length = read_file(eggos_device_list::pointers::POINTERS_FILE, &mut text).unwrap_or(0);
+    eggos_device_list::pointers::PointingDevices::parse(&text[..length])
+}
+
+const POINTERS_TEXT_CAPACITY: usize = 256;
 
 fn sleep_available() -> bool {
     let mut text = [0u8; SLEEP_STATES_CAPACITY];
@@ -654,6 +686,10 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         display: saved_display(&file[..length], server),
         network_adapter: network_adapter(),
         power: power_facts(),
+        pointing_devices: pointing_devices(),
+        device_input: core::array::from_fn(|index| {
+            settings_file::device_input_preferences(&file[..length], index + 1)
+        }),
         sleep_available: sleep_available(),
         lid_action: settings_file::lid_action(&file[..length]),
         form_setting: form.map_or(0, |(_, setting, _)| setting as usize),
@@ -1184,6 +1220,35 @@ impl command::Machine for Machine {
         }
     }
 
+    fn save_device_input(
+        &mut self,
+        device: u8,
+        change: DeviceChange,
+    ) -> Result<(), &'static [u8]> {
+        save_device_change(device, change).map_err(Errno::message)
+    }
+
+    fn apply_device_input(
+        &mut self,
+        device: u8,
+        own: settings_file::DeviceInputPreferences,
+    ) -> Result<(), &'static [u8]> {
+        let opened;
+        let server = match self.server.as_ref() {
+            Some(server) => Some(server),
+            None => {
+                opened = WindowServer::open();
+                opened.as_ref().ok()
+            }
+        };
+        match server {
+            Some(server) => server
+                .set_device_input_preferences(own.request_words(u32::from(device) - 1))
+                .map_err(Errno::message),
+            None => Ok(()),
+        }
+    }
+
     fn save_lid_action(&mut self, action: settings_file::LidAction) -> Result<(), &'static [u8]> {
         save_through_a_temporary_file(settings_file::POWER_LID_ACTION, action.name())
             .map_err(Errno::message)
@@ -1490,6 +1555,25 @@ impl Application<CAPACITY> for Settings {
                     _ => Ok(()),
                 };
                 self.window.keys_changed(change, saved, applied);
+            }
+            Some(Request::ChangeDevice { device, change }) => {
+                let saved = save_device_change(device, change);
+                let applied = match (saved, self.server.as_ref()) {
+                    (Ok(()), Some(server)) => {
+                        let own = self
+                            .window
+                            .facts()
+                            .device_input
+                            .get(usize::from(device) - 1)
+                            .copied()
+                            .unwrap_or_default();
+                        server.set_device_input_preferences(
+                            change.applied_to(own).request_words(u32::from(device) - 1),
+                        )
+                    }
+                    _ => Ok(()),
+                };
+                self.window.device_changed(device, change, saved, applied);
             }
             Some(Request::SetLidAction(action)) => {
                 let saved =

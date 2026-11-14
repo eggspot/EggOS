@@ -2193,7 +2193,10 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
      accessibility.slow_keys_ms can be set with settings_set; the others report facts: the display's resolution and pointer, the \
      network's state (network.state: connected, getting-address, no-address, cable-unplugged \
      or none), address, router, DNS servers and hardware address, the version, architecture, \
-     CPUs, memory and uptime. With limit, a page of at most that many by key; structuredContent \
+     CPUs, memory and uptime. mouse.device.<n>.buttons, .scrolling, .speed and .acceleration (n 1 to \
+     16) take the global key's values or global to follow it; mouse.devices lists the \
+     pointing devices present. With limit, a page of at most that \
+     many by key; structuredContent \
      then says whether more follow and their next_cursor, to pass as after.",
     &["settings", "list"],
     &[],
@@ -2231,7 +2234,10 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   mouse and keys behave so from the next event. accessibility.sticky_keys and \
                   accessibility.slow_keys take true or false, accessibility.slow_keys_ms 100 \
                   to 1000: a modifier pressed alone then stays down for the next key, or a key \
-                  counts once held that long, from the next key. The other keys report facts \
+                  counts once held that long, from the next key. mouse.device.<n>.buttons, \
+                  .scrolling, .speed and .acceleration (n 1 to 16) take the global key's \
+                  values or global to follow it; mouse.devices lists the pointing devices \
+                  present. The other keys report facts \
                   and fail with setting_read_only. dry_run: true checks the key and the value and says what \
                   would change, and changes nothing. Needs the run grant: a setting changes how \
                   the machine behaves for its user.",

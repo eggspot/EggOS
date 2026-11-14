@@ -394,7 +394,8 @@ pub struct PendingReport {
     pending: bool,
     /// The accelerometer's last x and y, until its z completes a reading (D435).
     acceleration: (i32, i32),
-    /// The device's place among the sources, which its own preferences are kept by (D589).
+    /// The device's number among the pointing devices, from 0, which its own preferences are
+    /// kept by (D589, D601: `mouse.device.<number + 1>.*`); [`NOT_A_POINTER`] for the others.
     device: u8,
     /// What a move left over below a pixel, in 1/256 of a pixel, carried to the next (D589).
     carry: (i32, i32),
@@ -752,6 +753,8 @@ pub struct DevicePreferences {
 /// Devices whose preferences are kept, the most.
 pub const MOST_DEVICE_PREFERENCES: usize = 16;
 
+const NOT_A_POINTER: u8 = u8::MAX;
+
 static DEVICE_PREFERENCES: crate::sync::LeafSpinLock<[DevicePreferences; MOST_DEVICE_PREFERENCES]> =
     crate::sync::LeafSpinLock::new_leaf([DevicePreferences {
         pointer_speed: None,
@@ -772,8 +775,9 @@ pub fn pointer_acceleration() -> bool {
     POINTER_ACCELERATION.load(Ordering::Relaxed)
 }
 
-/// Sets device `device`'s own preferences (its place among the input devices); `false` for a
-/// place past [`MOST_DEVICE_PREFERENCES`] or a speed out of 1 to 10.
+/// Sets pointing device `device`'s own preferences (its number among the pointing devices,
+/// from 0, D601); `false` for a number past [`MOST_DEVICE_PREFERENCES`] or a speed out of 1 to
+/// 10.
 pub fn set_device_preferences(device: usize, preferences: DevicePreferences) -> bool {
     if preferences.pointer_speed.is_some_and(|speed| !(1..=10).contains(&speed)) {
         return false;
@@ -1787,25 +1791,61 @@ fn install_source(
             drop(unsafe { Box::from_raw(queue) });
         }
     }
-    let Some((index, slot)) = input.as_mut().and_then(|input| {
-        input
-            .sources
-            .iter_mut()
-            .enumerate()
-            .find(|(_, slot)| slot.is_none())
-    }) else {
+    let pointer_number = match capabilities.is_pointer() {
+        true => input.as_ref().map_or(0, |input| {
+            input
+                .sources
+                .iter()
+                .flatten()
+                .filter(|source| source.capabilities.is_pointer())
+                .map(|source| source.report.device.saturating_add(1))
+                .max()
+                .unwrap_or(0)
+        }),
+        false => NOT_A_POINTER,
+    };
+    let Some(slot) = input
+        .as_mut()
+        .and_then(|input| input.sources.iter_mut().find(|slot| slot.is_none()))
+    else {
         return Err(device);
     };
     *slot = Some(Source {
         device,
         capabilities,
         report: PendingReport {
-            device: index as u8,
+            device: pointer_number,
             ..PendingReport::default()
         },
         interrupting,
     });
     Ok(())
+}
+
+/// The pointing devices' kinds, one word a line in their numbers' order (`/proc/driver/pointers`,
+/// D601): `mouse` for relative axes (a mouse or a touchpad), `tablet` for absolute ones.
+pub fn pointing_devices_text() -> alloc::string::String {
+    let input = INPUT.lock();
+    let mut devices: alloc::vec::Vec<(u8, &'static str)> = input
+        .iter()
+        .flat_map(|input| input.sources.iter().flatten())
+        .filter(|source| source.capabilities.is_pointer())
+        .map(|source| {
+            let kind = match source.capabilities.relative {
+                true => "mouse",
+                false => "tablet",
+            };
+            (source.report.device, kind)
+        })
+        .collect();
+    drop(input);
+    devices.sort_unstable_by_key(|&(number, _)| number);
+    let mut text = alloc::string::String::new();
+    for (_, kind) in devices {
+        text.push_str(kind);
+        text.push('\n');
+    }
+    text
 }
 
 /// Whether [`install`] would take another device.

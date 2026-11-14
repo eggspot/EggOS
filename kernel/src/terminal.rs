@@ -554,6 +554,22 @@ pub fn load_saved_settings<P: Platform>() {
         repeat_delay_ms: input.repeat_delay_ms,
         repeat_rate: input.repeat_rate,
     });
+    crate::input::set_pointer_acceleration(input.pointer_acceleration);
+    for number in 1..=eggos_settings_file::MOST_POINTING_DEVICES {
+        let own = eggos_settings_file::device_input_preferences(&file[..length], number);
+        if own.follows_all() {
+            continue;
+        }
+        crate::input::set_device_preferences(
+            number - 1,
+            crate::input::DevicePreferences {
+                pointer_speed: own.pointer_speed,
+                acceleration: own.acceleration,
+                left_handed: own.left_handed,
+                natural_scrolling: own.natural_scrolling,
+            },
+        );
+    }
     if let Some(resolution) = eggos_settings_file::display_resolution(&file[..length]) {
         crate::display::set_follows_device(resolution.is_none());
         let mode = resolution.map(|(width, height)| crate::display::Mode::new(width, height));

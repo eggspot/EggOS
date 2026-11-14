@@ -8,9 +8,9 @@ use core::fmt::Write;
 use eggos_net::status::{InterfaceStatus, State, state_word};
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
-    DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY, KEYBOARD_LAYOUTS,
-    KeyAccessibility, KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS, PROFILES,
-    SwitchKey,
+    DeviceInputPreferences, DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY,
+    KEYBOARD_LAYOUTS, KeyAccessibility, KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS,
+    PROFILES, SwitchKey,
 };
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
@@ -46,6 +46,8 @@ pub enum Key {
     MouseScrolling,
     MouseSpeed,
     MouseAcceleration,
+    MouseDevices,
+    MouseDevice(u8, DeviceField),
     KeyboardRepeatDelay,
     KeyboardRepeatRate,
     HighContrast,
@@ -70,6 +72,98 @@ pub enum Key {
     SystemCpus,
     SystemMemoryMb,
     SystemUptimeS,
+}
+
+/// Which of a pointing device's own preferences a `mouse.device.<n>.*` key holds (D601), in
+/// the global keys' order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceField {
+    Buttons,
+    Scrolling,
+    Speed,
+    Acceleration,
+}
+
+impl DeviceField {
+    /// Every field, in the order `settings list` prints them.
+    pub const ALL: [Self; 4] = [Self::Buttons, Self::Scrolling, Self::Speed, Self::Acceleration];
+}
+
+/// One change of a pointing device's own preferences (D601): `None` follows the global one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceChange {
+    LeftHanded(Option<bool>),
+    NaturalScrolling(Option<bool>),
+    Speed(Option<u32>),
+    Acceleration(Option<bool>),
+    /// Every field follows the global one.
+    FollowAll,
+}
+
+impl DeviceChange {
+    /// The preferences `own` become.
+    pub fn applied_to(self, own: DeviceInputPreferences) -> DeviceInputPreferences {
+        match self {
+            Self::LeftHanded(value) => DeviceInputPreferences {
+                left_handed: value,
+                ..own
+            },
+            Self::NaturalScrolling(value) => DeviceInputPreferences {
+                natural_scrolling: value,
+                ..own
+            },
+            Self::Speed(value) => DeviceInputPreferences {
+                pointer_speed: value,
+                ..own
+            },
+            Self::Acceleration(value) => DeviceInputPreferences {
+                acceleration: value,
+                ..own
+            },
+            Self::FollowAll => DeviceInputPreferences::default(),
+        }
+    }
+
+    /// The fields it saves, with each one's value in the settings file: `global` removes it.
+    pub fn saved(self) -> impl Iterator<Item = (DeviceField, Value)> {
+        let word = |value: Option<bool>, on: &str, off: &str| -> Value {
+            let mut text = Value::new();
+            let _ = text.write_str(match value {
+                None => eggos_settings_file::FOLLOW_GLOBAL,
+                Some(true) => on,
+                Some(false) => off,
+            });
+            text
+        };
+        let follow = || word(None, "", "");
+        let fields: [Option<(DeviceField, Value)>; 4] = match self {
+            Self::LeftHanded(value) => {
+                [Some((DeviceField::Buttons, word(value, "left", "right"))), None, None, None]
+            }
+            Self::NaturalScrolling(value) => [
+                Some((DeviceField::Scrolling, word(value, "natural", "traditional"))),
+                None,
+                None,
+                None,
+            ],
+            Self::Speed(value) => {
+                let mut text = Value::new();
+                let _ = match value {
+                    Some(speed) => write!(text, "{speed}"),
+                    None => text.write_str(eggos_settings_file::FOLLOW_GLOBAL),
+                };
+                [Some((DeviceField::Speed, text)), None, None, None]
+            }
+            Self::Acceleration(value) => [
+                Some((DeviceField::Acceleration, word(value, "on", "off"))),
+                None,
+                None,
+                None,
+            ],
+            Self::FollowAll => DeviceField::ALL.map(|field| Some((field, follow()))),
+        };
+        fields.into_iter().flatten()
+    }
 }
 
 /// Why a setting could not be set.
@@ -121,6 +215,8 @@ pub enum Change {
     Display(DisplayChange),
     /// What closing the lid does, from the next close (D599).
     LidAction(eggos_settings_file::LidAction),
+    /// One pointing device's own preferences (`device` 1 to 16), used from its next move (D601).
+    Device { device: u8, change: DeviceChange },
 }
 
 /// What the keyboard uses, all of it (D221): the layouts the switch key cycles through, the
@@ -367,7 +463,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -390,6 +486,7 @@ impl Key {
         Self::MouseScrolling,
         Self::MouseSpeed,
         Self::MouseAcceleration,
+        Self::MouseDevices,
         Self::KeyboardRepeatDelay,
         Self::KeyboardRepeatRate,
         Self::HighContrast,
@@ -441,6 +538,10 @@ impl Key {
             Self::MouseScrolling => eggos_settings_file::MOUSE_SCROLLING,
             Self::MouseSpeed => eggos_settings_file::MOUSE_SPEED,
             Self::MouseAcceleration => eggos_settings_file::MOUSE_ACCELERATION,
+            Self::MouseDevices => "mouse.devices",
+            Self::MouseDevice(index, field) => {
+                eggos_settings_file::MOUSE_DEVICE_KEYS[index as usize][field as usize]
+            }
             Self::KeyboardRepeatDelay => eggos_settings_file::KEYBOARD_REPEAT_DELAY,
             Self::KeyboardRepeatRate => eggos_settings_file::KEYBOARD_REPEAT_RATE,
             Self::HighContrast => eggos_settings_file::HIGH_CONTRAST,
@@ -470,7 +571,36 @@ impl Key {
 
     /// The setting named `name`.
     pub fn named(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|key| key.name() == name)
+        Self::ALL.into_iter().find(|key| key.name() == name).or_else(|| {
+            eggos_settings_file::MOUSE_DEVICE_KEYS
+                .iter()
+                .enumerate()
+                .find_map(|(index, names)| {
+                    let field = names.iter().position(|own| *own == name)?;
+                    Some(Self::MouseDevice(index as u8, DeviceField::ALL[field]))
+                })
+        })
+    }
+
+    /// The keys `settings list` prints with `facts`: [`Self::ALL`], with after `mouse.devices`
+    /// the four keys of every pointing device present or with a value of its own (D601).
+    pub fn listed(facts: &Facts) -> alloc::vec::Vec<Self> {
+        let mut keys = alloc::vec::Vec::with_capacity(Self::ALL.len());
+        for key in Self::ALL {
+            keys.push(key);
+            if key != Self::MouseDevices {
+                continue;
+            }
+            for index in 0..eggos_settings_file::MOST_POINTING_DEVICES {
+                let present = facts.pointing_devices.kind(index + 1).is_some();
+                if present || !facts.device_input[index].follows_all() {
+                    keys.extend(
+                        DeviceField::ALL.map(|field| Self::MouseDevice(index as u8, field)),
+                    );
+                }
+            }
+        }
+        keys
     }
 
     /// Whether it can be set; the others report facts.
@@ -493,6 +623,7 @@ impl Key {
                 | Self::MouseScrolling
                 | Self::MouseSpeed
                 | Self::MouseAcceleration
+                | Self::MouseDevice(..)
                 | Self::KeyboardRepeatDelay
                 | Self::KeyboardRepeatRate
                 | Self::HighContrast
@@ -550,6 +681,14 @@ impl Key {
             }
             Self::MouseAcceleration => {
                 let _ = choices.write_str("on or off");
+            }
+            Self::MouseDevice(_, field) => {
+                let _ = choices.write_str(match field {
+                    DeviceField::Buttons => "global, right or left",
+                    DeviceField::Scrolling => "global, traditional or natural",
+                    DeviceField::Speed => "global or 1 to 10",
+                    DeviceField::Acceleration => "global, on or off",
+                });
             }
             Self::KeyboardRepeatDelay => {
                 let _ = choices.write_str("150 to 2000");
@@ -647,6 +786,31 @@ impl Key {
                 true => "on",
                 false => "off",
             }),
+            Self::MouseDevices => facts.pointing_devices.write_words(&mut value),
+            Self::MouseDevice(index, field) => {
+                let own = facts.device_input[index as usize];
+                let global = eggos_settings_file::FOLLOW_GLOBAL;
+                let choice = |value: Option<bool>, on: &'static str, off: &'static str| match value {
+                    None => global,
+                    Some(true) => on,
+                    Some(false) => off,
+                };
+                match field {
+                    DeviceField::Buttons => {
+                        value.write_str(choice(own.left_handed, "left", "right"))
+                    }
+                    DeviceField::Scrolling => {
+                        value.write_str(choice(own.natural_scrolling, "natural", "traditional"))
+                    }
+                    DeviceField::Speed => match own.pointer_speed {
+                        Some(speed) => write!(value, "{speed}"),
+                        None => value.write_str(global),
+                    },
+                    DeviceField::Acceleration => {
+                        value.write_str(choice(own.acceleration, "on", "off"))
+                    }
+                }
+            }
             Self::KeyboardRepeatDelay => write!(value, "{}", facts.input.repeat_delay_ms),
             Self::KeyboardRepeatRate => write!(value, "{}", facts.input.repeat_rate),
             Self::HighContrast => value.write_str(boolean_name(facts.display.high_contrast)),
@@ -786,6 +950,30 @@ impl Key {
             Self::PowerLidAction => eggos_settings_file::LidAction::named(value.as_bytes())
                 .map(Change::LidAction)
                 .ok_or(Refusal::InvalidValue),
+            Self::MouseDevice(index, field) => {
+                let follows = value == eggos_settings_file::FOLLOW_GLOBAL;
+                let choice = |on: &str, off: &str| match value {
+                    _ if follows => Ok(None),
+                    _ if value == on => Ok(Some(true)),
+                    _ if value == off => Ok(Some(false)),
+                    _ => Err(Refusal::InvalidValue),
+                };
+                let change = match field {
+                    DeviceField::Buttons => DeviceChange::LeftHanded(choice("left", "right")?),
+                    DeviceField::Scrolling => {
+                        DeviceChange::NaturalScrolling(choice("natural", "traditional")?)
+                    }
+                    DeviceField::Speed => DeviceChange::Speed(match follows {
+                        true => None,
+                        false => Some(number_within(value, 1, 10)?),
+                    }),
+                    DeviceField::Acceleration => DeviceChange::Acceleration(choice("on", "off")?),
+                };
+                Ok(Change::Device {
+                    device: index + 1,
+                    change,
+                })
+            }
             _ => Err(Refusal::ReadOnly),
         }
     }
@@ -881,6 +1069,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_device_key_takes_global_or_the_global_key_s_values() {
+        assert_eq!(
+            change("mouse.device.2.speed", "7"),
+            Ok((
+                Key::MouseDevice(1, DeviceField::Speed),
+                Change::Device {
+                    device: 2,
+                    change: DeviceChange::Speed(Some(7)),
+                }
+            ))
+        );
+        assert_eq!(
+            change("mouse.device.1.scrolling", "global").map(|(_, change)| change),
+            Ok(Change::Device {
+                device: 1,
+                change: DeviceChange::NaturalScrolling(None),
+            })
+        );
+        assert_eq!(
+            change("mouse.device.1.speed", "11"),
+            Err(Refusal::InvalidValue)
+        );
+        assert_eq!(change("mouse.device.17.speed", "7"), Err(Refusal::NoSuchSetting));
+        assert_eq!(change("mouse.devices", "mouse"), Err(Refusal::ReadOnly));
+        assert_eq!(
+            Key::MouseDevice(0, DeviceField::Buttons).choices().as_str(),
+            "global, right or left"
+        );
+    }
+
+    #[test]
+    fn the_list_holds_the_present_devices_and_those_with_values() {
+        let mut facts = Facts::example();
+        facts.pointing_devices = eggos_device_list::pointers::PointingDevices::parse(b"mouse\n");
+        facts.device_input[2].pointer_speed = Some(7);
+        let names: Vec<&str> = Key::listed(&facts)
+            .into_iter()
+            .map(Key::name)
+            .filter(|name| name.starts_with("mouse.device"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "mouse.devices",
+                "mouse.device.1.buttons",
+                "mouse.device.1.scrolling",
+                "mouse.device.1.speed",
+                "mouse.device.1.acceleration",
+                "mouse.device.3.buttons",
+                "mouse.device.3.scrolling",
+                "mouse.device.3.speed",
+                "mouse.device.3.acceleration",
+            ]
+        );
+        assert_eq!(
+            Key::MouseDevice(2, DeviceField::Speed).value(&facts).as_str(),
+            "7"
+        );
+    }
+
+    #[test]
     fn every_key_has_a_value_from_the_facts() {
         let facts = Facts::example();
         let values: Vec<(&str, String)> = Key::ALL
@@ -912,6 +1161,7 @@ mod tests {
                 ("mouse.scrolling", "traditional".to_owned()),
                 ("mouse.speed", "5".to_owned()),
                 ("mouse.acceleration", "on".to_owned()),
+                ("mouse.devices", String::new()),
                 ("keyboard.repeat_delay_ms", "400".to_owned()),
                 ("keyboard.repeat_rate", "25".to_owned()),
                 ("accessibility.high_contrast", "false".to_owned()),

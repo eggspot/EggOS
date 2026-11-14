@@ -847,6 +847,16 @@ impl InputPanes {
         show_status(tree, status, Some((line, Token::Text)));
     }
 
+    /// The Mouse pane's global rows and status line, which the device rows place and hide
+    /// (D601).
+    pub fn mouse_rows(&self) -> crate::mouse_devices::GlobalRows {
+        crate::mouse_devices::GlobalRows {
+            labels: [self.labels[0], self.labels[1], self.labels[2]],
+            controls: [self.hands, self.scrolling, self.speed],
+            status: self.mouse_status,
+        }
+    }
+
     /// The Mouse pane's status line when shown.
     pub fn mouse_status<'a>(&self, tree: &'a WidgetTree<CAPACITY>) -> Option<&'a str> {
         tree.is_shown(self.mouse_status)

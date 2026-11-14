@@ -329,6 +329,169 @@ pub fn input_preferences(file: &[u8]) -> InputPreferences {
     }
 }
 
+/// Pointing devices whose own preferences are kept, the most (D589, D601).
+pub const MOST_POINTING_DEVICES: usize = 16;
+/// The value of a `mouse.device.<n>.*` key that follows the global one (D601).
+pub const FOLLOW_GLOBAL: &str = "global";
+/// Each pointing device's keys, device `n` at `n - 1`: its buttons, scrolling, speed and
+/// acceleration, each [`FOLLOW_GLOBAL`] or the global key's values (D601).
+pub const MOUSE_DEVICE_KEYS: [[&str; 4]; MOST_POINTING_DEVICES] = [
+    [
+        "mouse.device.1.buttons",
+        "mouse.device.1.scrolling",
+        "mouse.device.1.speed",
+        "mouse.device.1.acceleration",
+    ],
+    [
+        "mouse.device.2.buttons",
+        "mouse.device.2.scrolling",
+        "mouse.device.2.speed",
+        "mouse.device.2.acceleration",
+    ],
+    [
+        "mouse.device.3.buttons",
+        "mouse.device.3.scrolling",
+        "mouse.device.3.speed",
+        "mouse.device.3.acceleration",
+    ],
+    [
+        "mouse.device.4.buttons",
+        "mouse.device.4.scrolling",
+        "mouse.device.4.speed",
+        "mouse.device.4.acceleration",
+    ],
+    [
+        "mouse.device.5.buttons",
+        "mouse.device.5.scrolling",
+        "mouse.device.5.speed",
+        "mouse.device.5.acceleration",
+    ],
+    [
+        "mouse.device.6.buttons",
+        "mouse.device.6.scrolling",
+        "mouse.device.6.speed",
+        "mouse.device.6.acceleration",
+    ],
+    [
+        "mouse.device.7.buttons",
+        "mouse.device.7.scrolling",
+        "mouse.device.7.speed",
+        "mouse.device.7.acceleration",
+    ],
+    [
+        "mouse.device.8.buttons",
+        "mouse.device.8.scrolling",
+        "mouse.device.8.speed",
+        "mouse.device.8.acceleration",
+    ],
+    [
+        "mouse.device.9.buttons",
+        "mouse.device.9.scrolling",
+        "mouse.device.9.speed",
+        "mouse.device.9.acceleration",
+    ],
+    [
+        "mouse.device.10.buttons",
+        "mouse.device.10.scrolling",
+        "mouse.device.10.speed",
+        "mouse.device.10.acceleration",
+    ],
+    [
+        "mouse.device.11.buttons",
+        "mouse.device.11.scrolling",
+        "mouse.device.11.speed",
+        "mouse.device.11.acceleration",
+    ],
+    [
+        "mouse.device.12.buttons",
+        "mouse.device.12.scrolling",
+        "mouse.device.12.speed",
+        "mouse.device.12.acceleration",
+    ],
+    [
+        "mouse.device.13.buttons",
+        "mouse.device.13.scrolling",
+        "mouse.device.13.speed",
+        "mouse.device.13.acceleration",
+    ],
+    [
+        "mouse.device.14.buttons",
+        "mouse.device.14.scrolling",
+        "mouse.device.14.speed",
+        "mouse.device.14.acceleration",
+    ],
+    [
+        "mouse.device.15.buttons",
+        "mouse.device.15.scrolling",
+        "mouse.device.15.speed",
+        "mouse.device.15.acceleration",
+    ],
+    [
+        "mouse.device.16.buttons",
+        "mouse.device.16.scrolling",
+        "mouse.device.16.speed",
+        "mouse.device.16.acceleration",
+    ],
+];
+
+/// One pointing device's own mouse preferences, `None` where it follows the global one (D601).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeviceInputPreferences {
+    pub left_handed: Option<bool>,
+    pub natural_scrolling: Option<bool>,
+    /// 1 to 10.
+    pub pointer_speed: Option<u32>,
+    pub acceleration: Option<bool>,
+}
+
+impl DeviceInputPreferences {
+    /// Whether it follows the global preferences in everything.
+    pub fn follows_all(self) -> bool {
+        self == Self::default()
+    }
+
+    /// `SET_DEVICE_INPUT_PREFERENCES`' words for device `device` (0 for device 1): the speed,
+    /// then acceleration, left-handed buttons and natural scrolling as 0 to follow, 1 on, 2 off.
+    pub fn request_words(self, device: u32) -> [u32; 5] {
+        let choice = |value: Option<bool>| match value {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        };
+        [
+            device,
+            self.pointer_speed.unwrap_or(0),
+            choice(self.acceleration),
+            choice(self.left_handed),
+            choice(self.natural_scrolling),
+        ]
+    }
+}
+
+fn own_choice(file: &[u8], key: &str, on: &[u8], off: &[u8]) -> Option<bool> {
+    match value(file, key)? {
+        word if word == on => Some(true),
+        word if word == off => Some(false),
+        _ => None,
+    }
+}
+
+/// Pointing device `number`'s (1 to [`MOST_POINTING_DEVICES`]) own preferences `file` holds.
+pub fn device_input_preferences(file: &[u8], number: usize) -> DeviceInputPreferences {
+    let Some([buttons, scrolling, speed, acceleration]) = number
+        .checked_sub(1)
+        .and_then(|index| MOUSE_DEVICE_KEYS.get(index))
+    else {
+        return DeviceInputPreferences::default();
+    };
+    DeviceInputPreferences {
+        left_handed: own_choice(file, buttons, b"left", b"right"),
+        natural_scrolling: own_choice(file, scrolling, b"natural", b"traditional"),
+        pointer_speed: number_in(file, speed, 1, 10),
+        acceleration: own_choice(file, acceleration, b"on", b"off"),
+    }
+}
+
 /// The keyboard layout: the name of one of [`KEYBOARD_LAYOUTS`] (D185).
 pub const KEYBOARD_LAYOUT: &str = "keyboard.layout";
 
@@ -851,9 +1014,45 @@ pub fn with_value(file: &[u8], key: &str, value: &[u8], out: &mut [u8]) -> Resul
     Ok(writer.length)
 }
 
+/// Writes into `out` the file `file` becomes without setting `key`: the header and every other
+/// setting in its order (D601: a `mouse.device.<n>.*` key set back to `global`); returns the new
+/// file's length.
+pub fn without_value(file: &[u8], key: &str, out: &mut [u8]) -> Result<usize, Refused> {
+    if !is_key(key.as_bytes()) {
+        return Err(Refused::InvalidKey);
+    }
+    let mut writer = Writer { out, length: 0 };
+    writer.put(&[HEADER, b"\n"])?;
+    for (name, old) in entries(file) {
+        if name != key.as_bytes() {
+            writer.put(&[name, b"=", old, b"\n"])?;
+        }
+    }
+    Ok(writer.length)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_key_set_back_to_global_leaves_the_file() {
+        let file = b"eggos-settings 1\nmouse.speed=5\nmouse.device.2.speed=7\n";
+        assert_eq!(device_input_preferences(file, 2).pointer_speed, Some(7));
+        let mut out = [0u8; 128];
+        let length = without_value(file, MOUSE_DEVICE_KEYS[1][2], &mut out).unwrap();
+        assert_eq!(&out[..length], b"eggos-settings 1\nmouse.speed=5\n");
+        assert!(device_input_preferences(&out[..length], 2).follows_all());
+        assert_eq!(
+            DeviceInputPreferences {
+                pointer_speed: Some(7),
+                natural_scrolling: Some(true),
+                ..DeviceInputPreferences::default()
+            }
+            .request_words(1),
+            [1, 7, 0, 0, 1]
+        );
+    }
 
     #[test]
     fn the_clock_is_automatic_unless_the_session_or_else_the_disk_says_off() {

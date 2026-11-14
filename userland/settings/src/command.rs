@@ -6,7 +6,8 @@
 
 use crate::facts::Facts;
 use crate::keys::{
-    self, Change, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange, Refusal,
+    self, Change, DeviceChange, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange,
+    Refusal,
 };
 use core::fmt::Write;
 use eggos_commands::commands::LIST_PAGE_LIMIT;
@@ -14,7 +15,9 @@ use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::{write_error, write_page};
-use eggos_settings_file::{DisplayAccessibility, InputPreferences, KeyAccessibility, PATH};
+use eggos_settings_file::{
+    DeviceInputPreferences, DisplayAccessibility, InputPreferences, KeyAccessibility, PATH,
+};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
 
@@ -106,6 +109,24 @@ pub trait Machine {
     fn save_input(&mut self, change: InputChange) -> Result<(), &'static [u8]>;
     /// Uses `preferences` from the next mouse and key event on.
     fn apply_input(&mut self, preferences: InputPreferences) -> Result<(), &'static [u8]>;
+    /// Saves pointing device `device`'s (1 to 16) keys `change` touches (D601).
+    fn save_device_input(
+        &mut self,
+        _device: u8,
+        _change: DeviceChange,
+    ) -> Result<(), &'static [u8]> {
+        Ok(())
+    }
+
+    /// Gives pointing device `device` (1 to 16) its own preferences `own` (D601).
+    fn apply_device_input(
+        &mut self,
+        _device: u8,
+        _own: DeviceInputPreferences,
+    ) -> Result<(), &'static [u8]> {
+        Ok(())
+    }
+
     /// Saves `power.lid_action` to the settings file (D599).
     fn save_lid_action(&mut self, _action: eggos_settings_file::LidAction) -> Result<(), &'static [u8]> {
         Ok(())
@@ -401,8 +422,8 @@ fn write_record(machine: &mut impl Machine, key: Key, facts: &Facts) {
     }
 }
 
-fn key_name(index: usize, out: &mut [u8; MAX_KEY_BYTES]) -> usize {
-    let name = Key::ALL.get(index).map_or("", |key| key.name()).as_bytes();
+fn key_name(keys: &[Key], index: usize, out: &mut [u8; MAX_KEY_BYTES]) -> usize {
+    let name = keys.get(index).map_or("", |key| key.name()).as_bytes();
     let length = name.len().min(out.len());
     out[..length].copy_from_slice(&name[..length]);
     length
@@ -434,11 +455,13 @@ fn more(machine: &mut impl Machine, json: bool, last_key: &str) {
 
 fn list(machine: &mut impl Machine, json: bool, page: &Page) -> i32 {
     let facts = machine.facts();
-    let count = Key::ALL.len();
+    let keys = Key::listed(&facts);
+    let count = keys.len();
     let after = page.after();
-    for (index, key) in Key::ALL.into_iter().enumerate() {
+    let listed_name = |index: usize, out: &mut [u8; MAX_KEY_BYTES]| key_name(&keys, index, out);
+    for (index, &key) in keys.iter().enumerate() {
         if page.is_paged() {
-            let Some(rank) = page::rank(count, index, after, &key_name) else {
+            let Some(rank) = page::rank(count, index, after, &listed_name) else {
                 continue;
             };
             if page.limit.is_some_and(|limit| rank >= limit) {
@@ -457,8 +480,8 @@ fn list(machine: &mut impl Machine, json: bool, page: &Page) -> i32 {
     }
     let end = page
         .limit
-        .and_then(|limit| page::page_end(count, limit, after, &key_name));
-    if let Some(key) = end.and_then(|end| Key::ALL.get(end)) {
+        .and_then(|limit| page::page_end(count, limit, after, &listed_name));
+    if let Some(key) = end.and_then(|end| keys.get(end)) {
         more(machine, json, key.name());
     }
     0
@@ -534,6 +557,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Keys(keys) => machine.save_keys(keys),
         Change::Display(display) => machine.save_display(display),
         Change::LidAction(action) => machine.save_lid_action(action),
+        Change::Device { device, change } => machine.save_device_input(device, change),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -568,6 +592,15 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
             machine.apply_display(facts.theme, display.applied_to(facts.display))
         }
         Change::LidAction(action) => machine.apply_lid_action(action),
+        Change::Device { device, change } => {
+            let facts = machine.facts();
+            let own = facts
+                .device_input
+                .get(usize::from(device) - 1)
+                .copied()
+                .unwrap_or_default();
+            machine.apply_device_input(device, change.applied_to(own))
+        }
     };
     if let Err(why) = applied {
         let mut message = Message::new();

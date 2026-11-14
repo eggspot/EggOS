@@ -74,6 +74,11 @@ pub struct Facts {
     pub network_adapter: Option<InterfaceStatus>,
     /// The power state as `/proc/driver/power` reports it (D599).
     pub power: eggos_device_list::power::PowerFacts,
+    /// The pointing devices present, from `/proc/driver/pointers` (D601).
+    pub pointing_devices: eggos_device_list::pointers::PointingDevices,
+    /// Each pointing device's own preferences, device `n` at `n - 1` (D601).
+    pub device_input:
+        [eggos_settings_file::DeviceInputPreferences; eggos_settings_file::MOST_POINTING_DEVICES],
     /// Whether the machine can sleep: `/sys/power/state` lists `mem` (D597, D599).
     pub sleep_available: bool,
     /// What closing the lid does, `power.lid_action` (D599).
@@ -143,6 +148,8 @@ impl Facts {
             network_adapter: eggos_net::status::parse_interface(EXAMPLE_ADAPTER.as_bytes()),
             power: eggos_device_list::power::PowerFacts::parse(EXAMPLE_POWER.as_bytes()),
             sleep_available: false,
+            pointing_devices: eggos_device_list::pointers::PointingDevices::default(),
+            device_input: Default::default(),
             lid_action: eggos_settings_file::LidAction::Sleep,
             form_setting: 0,
             on_screen_keyboard: 0,

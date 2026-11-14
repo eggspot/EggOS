@@ -15,7 +15,8 @@ use crate::automatic_clock::{Adapter, AutomaticClock, ClockWidgets};
 use crate::components_pane::{self, ComponentsPane, ComponentsRead};
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
-use crate::keys::{DisplayChange, InputChange, KeysChange};
+use crate::keys::{DeviceChange, DisplayChange, InputChange, KeysChange};
+use crate::mouse_devices::MouseDevices;
 use crate::power_pane::{POWER_PANE_HEIGHT, PowerPane};
 use crate::network_pane::NetworkPane;
 use crate::network_view::NetworkRead;
@@ -55,7 +56,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 230
+pub const CAPACITY: usize = 261
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -350,6 +351,14 @@ const PANE_WORDS: [&[&str]; 13] = [
         "acceleration",
         "cursor",
         "touchpad",
+        "Pointer acceleration",
+        "Mouse acceleration",
+        "Enhance pointer precision",
+        "precision",
+        "devices",
+        "tablet",
+        "pen",
+        "per device",
     ],
     &[
         "accessibility",
@@ -604,6 +613,9 @@ pub enum Request {
     /// Save this display accessibility setting, then apply it, then say how both went
     /// ([`SettingsWindow::display_changed`]) (D224).
     ChangeDisplay(DisplayChange),
+    /// Save pointing device `device`'s (1 to 16) keys this change touches, then apply its own
+    /// preferences, then say how both went ([`SettingsWindow::device_changed`]) (D601).
+    ChangeDevice { device: u8, change: DeviceChange },
     /// Save `power.lid_action`, then apply it, then say how both went
     /// ([`SettingsWindow::lid_action_changed`]) (D599).
     SetLidAction(LidAction),
@@ -905,6 +917,7 @@ pub struct SettingsWindow {
     display: DisplayPane,
     inputs: InputPanes,
     accessibility: AccessibilityPane,
+    mouse_devices: MouseDevices,
     power: PowerPane,
     about: AboutPane,
     network: NetworkPane,
@@ -1445,6 +1458,8 @@ impl SettingsWindow {
             keyboard_no_disk,
             facts.input,
         );
+        let mouse_devices =
+            MouseDevices::build(&mut tree, panes[MOUSE], inputs.mouse_rows(), &facts);
         let accessibility =
             AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], Shown::of(&facts));
         let power = PowerPane::build(&mut tree, panes[POWER], &facts);
@@ -1526,6 +1541,7 @@ impl SettingsWindow {
             clock,
             display,
             inputs,
+            mouse_devices,
             accessibility,
             power,
             about: about_devices,
@@ -1689,6 +1705,31 @@ impl SettingsWindow {
         }
         self.inputs
             .changed(&mut self.tree, change, self.facts.input, saved, applied);
+        if let Some(height) = self.mouse_devices.show(&mut self.tree, &self.facts) {
+            self.set_pane_height(MOUSE, height);
+        }
+    }
+
+    /// How saving, then applying, pointing device `device`'s change went
+    /// ([`Request::ChangeDevice`], D601): `applied` is only looked at when `saved` worked.
+    pub fn device_changed(
+        &mut self,
+        device: u8,
+        change: DeviceChange,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        if let Some(own) = self.facts.device_input.get_mut(usize::from(device).wrapping_sub(1))
+            && saved.is_ok()
+        {
+            *own = change.applied_to(*own);
+        }
+        if let Some(height) =
+            self.mouse_devices
+                .changed(&mut self.tree, &self.facts, saved, applied)
+        {
+            self.set_pane_height(MOUSE, height);
+        }
     }
 
     fn show_pane(&mut self, pane: usize) -> Option<Request> {
@@ -1709,6 +1750,11 @@ impl SettingsWindow {
         }
         if pane == MOUSE || pane == KEYBOARD {
             self.inputs.reset(&mut self.tree, &self.facts);
+        }
+        if pane == MOUSE {
+            if let Some(height) = self.mouse_devices.reset(&mut self.tree, &self.facts) {
+                self.set_pane_height(MOUSE, height);
+            }
         }
         if pane == ACCESSIBILITY {
             self.accessibility.reset(&mut self.tree, &self.facts);
@@ -1800,12 +1846,13 @@ impl SettingsWindow {
             Shape::Sidebar { .. } => None,
         };
         self.reflow_keyboard(content);
-        let (mouse_height, keyboard_bottom) =
+        let (_, keyboard_bottom) =
             self.inputs
                 .reflow(&mut self.tree, content, KEYBOARD_REPEAT_TOP_NARROW);
+        let mouse_height = self.mouse_devices.reflow(&mut self.tree, content);
         let heights = match content {
             Some(_) => (mouse_height, keyboard_bottom + PADDING),
-            None => (PANE_HEIGHT, PANE_HEIGHT),
+            None => (mouse_height, PANE_HEIGHT),
         };
         self.tree.set_place(
             self.widgets.panes[MOUSE],
@@ -2978,6 +3025,12 @@ impl SettingsWindow {
             return request;
         }
         if let input_panes::Reply::Done(request) = self.display.respond(response, &self.facts) {
+            return request;
+        }
+        if let input_panes::Reply::Done(request) =
+            self.mouse_devices
+                .respond(&mut self.tree, response, &self.facts)
+        {
             return request;
         }
         if let input_panes::Reply::Done(request) = self.inputs.respond(response, self.facts.input) {
