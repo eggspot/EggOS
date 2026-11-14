@@ -473,8 +473,6 @@ impl ThreadList {
             // it is live.
             unsafe { (*self.tail.as_ptr()).next = Some(thread) };
         }
-        // Written after the list is read, so that the compiler need not read it again (it
-        // cannot tell the thread from the list's memory).
         // SAFETY: owned by this list now and in no other (it was in none, so it is not the
         // tail); no reference to it is live.
         unsafe { (*thread.as_ptr()).next = None };
@@ -556,8 +554,6 @@ impl ThreadList {
 
 impl Drop for ThreadList {
     fn drop(&mut self) {
-        // A thread in a list is waiting to run; dropping it would free a stack it may still
-        // be needed for, and leave whoever joins it waiting forever.
         assert!(self.is_empty(), "a list of waiting threads was dropped");
     }
 }
@@ -914,7 +910,6 @@ impl Schedulers {
                 continue;
             }
             let scheduler = self.of(cpu);
-            // Its idle thread is in its slot only while another thread runs.
             let busy = scheduler.idle.is_some();
             let movable = scheduler
                 .ready
@@ -962,7 +957,6 @@ impl Schedulers {
                 cpu.request_reschedule();
             }
         }
-        // Also before the CPU table exists.
         self.of(here).slice_ticks = slice_ticks;
     }
 }
@@ -975,7 +969,6 @@ fn make_ready<P: Platform>(schedulers: &mut Schedulers, thread: ThreadBox) -> Op
     match schedulers.of(target).push_ready(thread) {
         Notice::Nothing => None,
         Notice::Reschedule => schedulers.of(target).request_reschedule::<P>(target),
-        // This CPU's own idle thread looks at its ready threads once it runs on.
         Notice::Wake => (!ptr::eq(target, cpu::current::<P>())).then_some(target),
     }
 }
@@ -1262,8 +1255,6 @@ impl Scheduler {
     /// [`timer_events`]' slow path, for this CPU's own scheduler.
     #[inline]
     fn timer_fired<P: Platform>(&mut self) -> bool {
-        // The timer fires once per arming, so whatever was armed has fired, unless only a
-        // reschedule request came.
         if cpu::current::<P>().see_scheduler_events() != 0 {
             self.armed = u64::MAX;
         }
@@ -1276,7 +1267,6 @@ impl Scheduler {
             let thread = self.sleeping.pop_front().expect("a sleeper is due");
             self.ready.push_back(thread);
         }
-        // Whatever happens next, the timer is armed again: the sleepers and the tick need it.
         let slice_over = self.tick_needed() && now >= self.slice_end;
         if slice_over {
             self.start_slice_now::<P>();
@@ -1425,7 +1415,6 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
 ) -> Result<JoinHandle, SpawnError> {
     let stack = Stack::allocate().ok_or(SpawnError::OutOfMemory)?;
     let function: Box<dyn FnOnce() + Send> = Box::new(function);
-    // A thin pointer, so it fits the one-word argument.
     let start = Box::into_raw(Box::new(function));
     // SAFETY: the stack's frames are allocated, writable through the direct map and used by
     // nothing else; they stay allocated until the thread has exited (`finish_switch`).
@@ -1683,7 +1672,6 @@ pub fn running_turn_ticks<P: Platform>() -> u64 {
 /// again.
 pub fn yield_now<P: Platform>() {
     let mut schedulers = SCHEDULER.lock();
-    // Sleepers that are due run before this thread's next turn.
     timer_events::<P>(&mut schedulers);
     let here = cpu::current::<P>();
     let Some(next) = schedulers.of(here).ready.pop_front() else {
@@ -1902,7 +1890,6 @@ fn switch_now<P: Platform>(
     }
     let save = previous.context();
     park(&mut schedulers, here, previous);
-    // Held across the switch, for the thread it resumes to release.
     SpinLockGuard::leak(schedulers);
     // SAFETY: interrupts are masked, as the kernel runs. `save` points into the previous
     // thread, which `park` keeps allocated (in a list or a slot of the scheduler) and which is
@@ -1945,9 +1932,6 @@ fn finish_switch<P: Platform>() {
     // SAFETY: every switch is made holding the scheduler's lock and leaves it held for the
     // thread it resumes, which is this one, once.
     let mut schedulers = unsafe { SCHEDULER.assume_locked() };
-    // Checked before it is taken, so a switch from a thread that did not exit writes nothing;
-    // with one load through the per-CPU register where the slot is one word (a null pointer
-    // for none: `ThreadBox` is a transparent `NonNull`), as cheap as a global was.
     let none_exited = if EXITED_SLOT_IS_ONE_WORD {
         // SAFETY: the per-CPU register holds this CPU's block, where `EXITED_SLOT` is the
         // offset of its scheduler's `exited` slot: an aligned word in the state's `UnsafeCell`,
@@ -2007,11 +1991,8 @@ extern "C" fn idle_thread<P: Platform>(_: usize) -> ! {
 fn idle_loop<P: Platform>() -> ! {
     let here = cpu::current::<P>();
     loop {
-        // A process that ended while its address space stayed loaded here is freed now (D48).
         crate::address_space::release_unused::<P>(here);
         let mut schedulers = SCHEDULER.lock();
-        // This look answers every wake-up sent so far: a thread made ready from now on needs
-        // one of its own.
         schedulers.of(here).wakeup_sent = false;
         timer_events::<P>(&mut schedulers);
         let next = match schedulers.of(here).ready.pop_front() {
@@ -2022,21 +2003,16 @@ fn idle_loop<P: Platform>() -> ! {
             switch_to::<P>(schedulers, here, next, |schedulers, here, idle| {
                 let scheduler = schedulers.of(here);
                 scheduler.idle = Some(idle);
-                // A fresh slice: the one under way was the idle thread's.
                 scheduler.start_slice::<P>();
             });
             continue;
         }
         let scheduler = schedulers.of(here);
-        // Exactly what is needed, so the CPU is not woken early for a stale deadline.
         let deadline = scheduler.timer_needed();
         if deadline != scheduler.armed {
             scheduler.arm::<P>(deadline);
         }
         drop(schedulers);
-        // A thread becomes ready on this CPU, or one to take waits on a busy CPU, only through
-        // an interrupt: the timer's, or the wake-up interrupt from the CPU that made it ready
-        // here or whose slice ended with threads ready. One already pending is taken at once.
         P::wait_for_interrupt();
         #[cfg(feature = "qemu-bench")]
         crate::bench::IDLE_WAKEUPS.fetch_add(1, Ordering::Relaxed);
@@ -2113,8 +2089,6 @@ pub(crate) mod host {
     /// each, and tests run in parallel.
     pub(crate) fn lock_kernel_state_for_test() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
-        // A test that panicked while holding the lock may leave the scheduler unusable, but
-        // reporting that test's failure is what matters.
         LOCK.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -2132,7 +2106,6 @@ pub(crate) mod host {
             use eggos_hal::{MemoryMap, PhysicalRange};
             const BASE: u64 = 0x40_0000;
             const FRAMES: u64 = 64;
-            // Aligned to the largest buddy block, as the direct maps are.
             let block = (FRAME_SIZE as usize) << crate::memory::MAX_ORDER;
             let memory = vec![0u8; FRAMES as usize * FRAME_SIZE as usize + block].leak();
             let start = (memory.as_mut_ptr() as usize).next_multiple_of(block);
@@ -2157,7 +2130,6 @@ pub(crate) mod host {
 
     impl Drop for FramesForTest {
         fn drop(&mut self) {
-            // Before the lock is released (fields drop after this).
             if self.installed {
                 crate::memory::FRAMES.lock().take();
             }
@@ -2209,7 +2181,6 @@ mod tests {
     #[test]
     fn a_thread_that_exited_has_its_stack_freed() {
         let _frames = host::frames_for_test();
-        // The idle thread's stack is taken once, when the scheduler starts.
         start::<P>().unwrap();
         let before = free_frames();
         let handle = spawn::<P, _>(|| {}).unwrap();
@@ -2236,8 +2207,6 @@ mod tests {
         SECOND_RAN.store(false, Ordering::Relaxed);
         PASSED.store(0, Ordering::Relaxed);
         let first = spawn::<P, _>(|| {
-            // The test platform's clock advances one tick per preemption point, so the 10 ms
-            // slice is 10 000 of them at its 1 MHz; a million means it never ended.
             while !SECOND_RAN.load(Ordering::Relaxed)
                 && PASSED.fetch_add(1, Ordering::Relaxed) < 1_000_000
             {
@@ -2264,10 +2233,8 @@ mod tests {
         let _frames = host::frames_for_test();
         static RAN: AtomicBool = AtomicBool::new(false);
         RAN.store(false, Ordering::Relaxed);
-        // Off even if a test that turned it on failed before turning it off.
         disable_preemption::<P>();
         let other = spawn::<P, _>(|| RAN.store(true, Ordering::Relaxed)).unwrap();
-        // A timer interrupt for someone else ends no slice while preemption is off.
         crate::interrupt::handle::<P>(eggos_hal::Interrupt::Timer);
         preemption_point::<P>();
         preemption_point::<P>();
@@ -2284,7 +2251,6 @@ mod tests {
         static WOKEN: SpinLock<Vec<(u64, bool)>> = SpinLock::new(Vec::new());
         WOKEN.lock().clear();
         let base = P::clock_ticks();
-        // Each sleeps until `base + 1000 * order`; spawned out of order.
         let handles: Vec<JoinHandle> = [3u64, 1, 2]
             .into_iter()
             .map(|order| {
@@ -2297,8 +2263,6 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        // The boot thread blocks in `join`; with every thread asleep, the idle thread runs
-        // and waits for the timer, which the test platform's clock jumps to.
         for handle in handles {
             handle.join::<P>();
         }
@@ -2338,16 +2302,12 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        // Every thread runs once and waits.
         yield_now::<P>();
         assert!(LOG.lock().is_empty());
-        // Woken while its condition does not hold, a thread waits again.
         assert!(QUEUE.wake_one::<P>());
         yield_now::<P>();
         assert!(LOG.lock().is_empty());
         OPEN.store(1, Ordering::Relaxed);
-        // Thread 1 waited again after threads 2 and 3: wake all of them, then two of them
-        // wait again.
         assert_eq!(QUEUE.wake_all::<P>(), 3);
         yield_now::<P>();
         assert_eq!(*LOG.lock(), [1]);
@@ -2382,10 +2342,8 @@ mod tests {
         start::<P>().unwrap();
         disable_preemption::<P>();
         enable_preemption::<P>();
-        // Only the boot thread is runnable: no tick.
         assert_eq!(crate::tests::timer_deadline(), u64::MAX);
         let other = spawn::<P, _>(|| {}).unwrap();
-        // The new thread asks for the tick, which the next preemption point arms (D43).
         assert!(cpu::current::<P>().reschedule_requested());
         preemption_point::<P>();
         let deadline = crate::tests::timer_deadline();
@@ -2405,12 +2363,9 @@ mod tests {
         disable_preemption::<P>();
         enable_preemption::<P>();
         let other = spawn::<P, _>(|| {
-            // The boot thread is ready: the tick must be armed.
             ARMED_WHILE_OTHER_READY.store(crate::tests::timer_deadline(), Ordering::Relaxed);
         })
         .unwrap();
-        // The slice ends (the test platform jumps its clock to the deadline) and the boot
-        // thread notices in `yield_now`, not at a preemption point.
         P::wait_for_interrupt();
         yield_now::<P>();
         other.join::<P>();
@@ -2426,10 +2381,7 @@ mod tests {
         disable_preemption::<P>();
         enable_preemption::<P>();
         let sleeper = spawn::<P, _>(|| {
-            // Longer than a slice; the boot thread blocks in `join`, so the idle thread runs.
             sleep_until::<P>(P::clock_ticks() + 50_000);
-            // Another thread ready brings the tick back, at the next preemption point: one
-            // slice from now, not the old one.
             let other = spawn::<P, _>(|| {}).unwrap();
             preemption_point::<P>();
             SLICE_LEFT.store(
@@ -2464,7 +2416,6 @@ mod tests {
     fn a_thread_made_ready_on_an_idle_cpu_wakes_it_once_per_look() {
         let cpu = Cpu::for_test(1);
         let mut scheduler = Scheduler::new();
-        // Started, and its idle thread runs: it is not in its slot.
         scheduler.current = Some(idle_thread_for_test(cpu));
         assert!(scheduler.is_idle());
         assert_eq!(
@@ -2472,7 +2423,6 @@ mod tests {
             Notice::Wake
         );
         assert!(!scheduler.is_idle());
-        // The wake-up sent covers the next thread too, until the idle thread looks.
         assert_eq!(
             scheduler.push_ready(idle_thread_for_test(cpu)),
             Notice::Nothing
@@ -2491,7 +2441,6 @@ mod tests {
         let mut scheduler = Scheduler::new();
         scheduler.current = Some(idle_thread_for_test(cpu));
         scheduler.idle = Some(idle_thread_for_test(cpu));
-        // Without preemption, it runs when the running thread yields or blocks.
         assert_eq!(
             scheduler.push_ready(idle_thread_for_test(cpu)),
             Notice::Nothing
@@ -2500,12 +2449,10 @@ mod tests {
         scheduler.current = Some(idle_thread_for_test(cpu));
         scheduler.idle = Some(idle_thread_for_test(cpu));
         scheduler.slice_ticks = 10;
-        // The running thread was alone: no tick is armed.
         assert_eq!(
             scheduler.push_ready(idle_thread_for_test(cpu)),
             Notice::Reschedule
         );
-        // Another was ready already, so the tick is armed.
         assert_eq!(
             scheduler.push_ready(idle_thread_for_test(cpu)),
             Notice::Nothing
@@ -2518,17 +2465,14 @@ mod tests {
         let (here, other) = (cpu::current::<P>(), Cpu::for_test(2));
         let mut scheduler = Scheduler::new();
         scheduler.current = Some(idle_thread_for_test(other));
-        // A kernel thread passes a preemption point soon: the request alone does.
         assert!(scheduler.request_reschedule::<P>(other).is_none());
         empty(&mut scheduler);
         scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, other, true, None));
-        // In user mode it may never pass one: the interrupt takes the CPU back.
         assert!(
             scheduler
                 .request_reschedule::<P>(other)
                 .is_some_and(|cpu| ptr::eq(cpu, other))
         );
-        // On this CPU, the user thread runs kernel code now, and passes one before user mode.
         assert!(scheduler.request_reschedule::<P>(here).is_none());
         empty(&mut scheduler);
     }
@@ -2564,10 +2508,8 @@ mod tests {
             slice_ticks: 0,
             next_placement: 0,
         };
-        // Nothing started but this CPU: nowhere else to go.
         assert!(ptr::eq(schedulers.place_among(cpus, here), here));
         assert!(ptr::eq(schedulers.place_among(&cpus[..1], here), here));
-        // CPUs 0, 1 and 3 run threads; CPU 2 has not started.
         for &cpu in [cpus[0], cpus[1], cpus[3]].iter() {
             let state = schedulers.of(cpu);
             state.current = Some(idle_thread_for_test(cpu));
@@ -2577,7 +2519,6 @@ mod tests {
             .map(|_| schedulers.place_among(cpus, here).index())
             .collect();
         assert_eq!(placed, [0, 1, 3, 0]);
-        // CPU 3 goes idle: its idle thread runs.
         let idle = schedulers.of(cpus[3]).idle.take();
         assert_eq!(schedulers.place_among(cpus, here).index(), 3);
         schedulers.of(cpus[3]).idle = idle;
@@ -2594,14 +2535,11 @@ mod tests {
             slice_ticks: 0,
             next_placement: 0,
         };
-        // CPU 1 looks; its idle thread runs and nothing is ready there.
         schedulers.of(cpus[1]).current = Some(idle_thread_for_test(cpus[1]));
         assert!(schedulers.steal_among(cpus, cpus[1]).is_none());
-        // CPU 2's idle thread runs too, with a thread just made ready there: it runs it itself.
         let woken = schedulers.of(cpus[2]);
         woken.current = Some(idle_thread_for_test(cpus[2]));
         woken.ready.push_back(idle_thread_for_test(cpus[2]));
-        // CPUs 3 and 0 are busy, with threads ready: the boot thread first on CPU 3.
         for &cpu in [cpus[3], cpus[0]].iter() {
             let busy = schedulers.of(cpu);
             busy.current = Some(idle_thread_for_test(cpu));
@@ -2612,7 +2550,6 @@ mod tests {
         let waiting = idle_thread_for_test(cpus[0]);
         let id = waiting.get().id;
         schedulers.of(cpus[0]).ready.push_back(waiting);
-        // From CPU 1 on, CPU 2 is left alone and CPU 3's boot thread stays: CPU 0's is taken.
         let taken = schedulers
             .steal_among(cpus, cpus[1])
             .expect("CPU 0 has one ready");
@@ -2620,7 +2557,6 @@ mod tests {
         assert!(ptr::eq(taken.get().cpu, cpus[1]));
         assert!(schedulers.of(cpus[0]).ready.is_empty());
         assert!(schedulers.steal_among(cpus, cpus[1]).is_none());
-        // A CPU never takes from itself.
         assert!(schedulers.steal_among(cpus, cpus[3]).is_none());
         drop(taken);
         for &cpu in cpus {
@@ -2636,7 +2572,6 @@ mod tests {
             slice_ticks: 10,
             next_placement: 0,
         };
-        // CPUs 0 and 1 are busy; CPU 2 has not started; CPU 3's idle thread runs.
         for &cpu in [cpus[0], cpus[1]].iter() {
             let busy = schedulers.of(cpu);
             busy.current = Some(idle_thread_for_test(cpu));
@@ -2645,10 +2580,8 @@ mod tests {
         schedulers.of(cpus[3]).current = Some(idle_thread_for_test(cpus[3]));
         let woken = schedulers.idle_cpu_to_wake_among(cpus, cpus[0]);
         assert!(woken.is_some_and(|cpu| ptr::eq(cpu, cpus[3])));
-        // Until it looks, the wake-up already sent covers it.
         assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[1]).is_none());
         schedulers.of(cpus[3]).wakeup_sent = false;
-        // A CPU never wakes itself.
         assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[3]).is_none());
         assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[1]).is_some());
         for &cpu in cpus {
@@ -2802,8 +2735,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "overflowed its stack")]
     fn a_clobbered_canary_stops_the_kernel_when_checked() {
-        // No scheduler and no frame allocator: the thread never runs, and its stack is leaked
-        // host memory, which must not reach the frame allocator, so the thread is never dropped.
         let memory = Box::leak(Box::new([0u64; STACK_SIZE / 8]));
         let stack = Stack {
             base: NonZeroUsize::new(memory.as_mut_ptr() as usize).unwrap(),
