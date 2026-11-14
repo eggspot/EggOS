@@ -8,7 +8,7 @@
 //! line is level-triggered and its driver quiets the device only when its thread looks, so the
 //! input is masked when its interrupt arrives and unmasked when the driver waits again.
 
-use super::{acpi_table, console_input, timer};
+use super::{acpi_table, console_input, remapping, timer};
 use crate::acpi;
 use crate::{DeviceLine, Interrupt, InterruptMessage};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -40,21 +40,39 @@ fn vector_of(line: DeviceLine) -> u8 {
     FIRST_DEVICE_VECTOR + line.index() as u8
 }
 
-fn message(line: DeviceLine, apic_id: u8) -> InterruptMessage {
+fn message(line: DeviceLine, apic_id: u32) -> InterruptMessage {
+    if remapping::is_on() {
+        return remapping::message(line, vector_of(line), apic_id);
+    }
     InterruptMessage {
         address: MESSAGE_ADDRESS | u64::from(apic_id) << DESTINATION_ID_SHIFT,
         data: u32::from(vector_of(line)),
     }
 }
 
-fn apic_id_of(cpu: u64) -> Result<u8, &'static str> {
-    u8::try_from(cpu).map_err(|_| "messages and the I/O APIC name APIC IDs up to 255 only")
+fn apic_id_of(cpu: u64) -> Result<u32, &'static str> {
+    match remapping::is_on() {
+        true => u32::try_from(cpu).map_err(|_| "no such APIC ID"),
+        false => u8::try_from(cpu)
+            .map(u32::from)
+            .map_err(|_| "without interrupt remapping, messages and the I/O APIC name APIC IDs up to 255 only"),
+    }
+}
+
+fn route_input(controller: &Controller, input: u32, line: DeviceLine, apic_id: u32) {
+    if remapping::is_on() {
+        let level = controller.is_level_triggered(input);
+        let (vector, high) = remapping::io_apic_entry(line, vector_of(line), apic_id, level);
+        controller.set_remapped(input, vector, high);
+    } else {
+        controller.set_destination(input, apic_id as u8);
+    }
 }
 
 /// Takes a free device line and the message that raises it on the boot CPU.
 pub(super) fn take() -> Result<(DeviceLine, InterruptMessage), &'static str> {
     let line = take_line()?;
-    Ok((line, message(line, timer::boot_apic_id())))
+    Ok((line, message(line, u32::from(timer::boot_apic_id()))))
 }
 
 /// The message that raises the taken message line `line` on the CPU whose APIC ID is `cpu`
@@ -77,7 +95,7 @@ pub(super) fn steer(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
     }
     let apic_id = apic_id_of(cpu)?;
     with_input(global, |input, controller| {
-        controller.set_destination(input, apic_id)
+        route_input(controller, input, line, apic_id)
     })
     .ok_or("no I/O APIC receives that interrupt")
 }
@@ -102,6 +120,9 @@ pub(super) fn take_pin(global: u32, signal: LineSignal) -> Result<DeviceLine, &'
     let line = take_line()?;
     let routed = with_input(global, |input, controller| {
         controller.route(input, signal, vector_of(line), timer::boot_apic_id());
+        if remapping::is_on() {
+            route_input(controller, input, line, u32::from(timer::boot_apic_id()));
+        }
     });
     if routed.is_none() {
         release(line);

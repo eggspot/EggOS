@@ -71,6 +71,85 @@ const CPUID_FEATURES_LEAF: u32 = 7;
 const CPUID_TSC_ADJUST: u32 = 1 << 1;
 const IA32_TSC_ADJUST: u32 = 0x3b;
 const NO_TSC_ADJUST: u64 = u64::MAX;
+const CPUID_POWER_MANAGEMENT_LEAF: u32 = 6;
+const CPUID_ALWAYS_RUNNING_APIC_TIMER: u32 = 1 << 2;
+const HPET_TIMER_COMPARATOR: usize = 0;
+
+static HPET_TIMER_BASE: AtomicUsize = AtomicUsize::new(0);
+static HPET_HERTZ: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the local APIC timer keeps counting in every idle state (CPUID 6:EAX[2]).
+fn apic_timer_always_runs() -> bool {
+    cpuid(0, 0)[0] >= CPUID_POWER_MANAGEMENT_LEAF
+        && cpuid(CPUID_POWER_MANAGEMENT_LEAF, 0)[0] & CPUID_ALWAYS_RUNNING_APIC_TIMER != 0
+}
+
+/// Takes the HPET's first comparator as the boot CPU's timer, when it can raise a message
+/// (D594): for CPUs whose local APIC timer may stop while idle.
+fn choose_hpet_timer() -> bool {
+    let Some(base) = hpet_base() else {
+        return false;
+    };
+    // SAFETY: as in `hpet`: the ACPI `HPET` table names this block, in the boot direct map,
+    // which nothing else drives.
+    let hpet = eggos_drivers::timer::Hpet::new(unsafe { Mmio::new(base, HPET_REGISTER_BYTES) });
+    let Some(hertz) = hpet.frequency() else {
+        return false;
+    };
+    if !hpet.can_send_messages(HPET_TIMER_COMPARATOR) {
+        return false;
+    }
+    hpet.enable();
+    HPET_HERTZ.store(hertz, Ordering::Relaxed);
+    HPET_TIMER_BASE.store(base, Ordering::Release);
+    true
+}
+
+fn hpet_timer() -> Option<eggos_drivers::timer::Hpet<Mmio>> {
+    let base = HPET_TIMER_BASE.load(Ordering::Acquire);
+    if base == 0 || local_apic().id() != BOOT_APIC_ID.load(Ordering::Relaxed) {
+        return None;
+    }
+    // SAFETY: recorded by `choose_hpet_timer`: the HPET's registers in the direct map, driven
+    // only by the boot CPU's timer.
+    Some(eggos_drivers::timer::Hpet::new(unsafe {
+        Mmio::new(base, HPET_REGISTER_BYTES)
+    }))
+}
+
+fn arm_hpet(hpet: &eggos_drivers::timer::Hpet<Mmio>, deadline: u64) {
+    let remaining = deadline.saturating_sub(now());
+    let ticks = mul_div_ceil(
+        remaining,
+        HPET_HERTZ.load(Ordering::Relaxed),
+        TSC_FREQUENCY.load(Ordering::Relaxed).max(1),
+    )
+    .max(1);
+    let apic_id = BOOT_APIC_ID.load(Ordering::Relaxed);
+    let (address, data) = match super::remapping::is_on() {
+        true => super::remapping::timer_message(TIMER_VECTOR, u32::from(apic_id)),
+        false => (
+            MESSAGE_ADDRESS | u32::from(apic_id) << 12,
+            u32::from(TIMER_VECTOR),
+        ),
+    };
+    hpet.arm_message(
+        HPET_TIMER_COMPARATOR,
+        hpet.counter().wrapping_add(ticks),
+        address,
+        data,
+    );
+}
+
+const MESSAGE_ADDRESS: u32 = 0xfee0_0000;
+
+/// Interrupt remapping turned on (D594): the HPET's message takes the remapped form.
+pub(super) fn after_remapping() {
+    let deadline = deadline();
+    if deadline != NO_DEADLINE && let Some(hpet) = hpet_timer() {
+        arm_hpet(&hpet, deadline);
+    }
+}
 
 static BOOT_TSC_ADJUST: AtomicU64 = AtomicU64::new(NO_TSC_ADJUST);
 
@@ -379,7 +458,11 @@ pub(super) extern "C" fn init() {
     if has_tsc_adjust() {
         BOOT_TSC_ADJUST.store(super::read_msr(IA32_TSC_ADJUST), Ordering::Relaxed);
     }
-    let deadline_mode = invariant && cpuid(1, 0)[2] & CPUID_TSC_DEADLINE != 0;
+    let always_runs = apic_timer_always_runs();
+    if !always_runs {
+        choose_hpet_timer();
+    }
+    let deadline_mode = invariant && always_runs && cpuid(1, 0)[2] & CPUID_TSC_DEADLINE != 0;
     if deadline_mode && let Some(tsc_frequency) = stated_tsc_frequency() {
         TSC_FREQUENCY.store(tsc_frequency, Ordering::Relaxed);
         TSC_DEADLINE.store(true, Ordering::Relaxed);
@@ -477,7 +560,7 @@ const HPET_ENABLE: u32 = 1;
 const HPET_REGISTER_BYTES: usize = 0x400;
 const GAS_SYSTEM_MEMORY: u8 = 0;
 
-fn hpet() -> Option<(Mmio, u64)> {
+fn hpet_base() -> Option<usize> {
     let table = super::acpi_table(b"HPET")?;
     let gas = table.get(HPET_TABLE_ADDRESS..HPET_TABLE_ADDRESS + 12)?;
     if gas[0] != GAS_SYSTEM_MEMORY {
@@ -487,14 +570,15 @@ fn hpet() -> Option<(Mmio, u64)> {
     if base == 0 || base + HPET_REGISTER_BYTES as u64 > super::BOOT_DIRECT_MAP_END {
         return None;
     }
+    Some(super::DIRECT_MAP_OFFSET + base as usize)
+}
+
+fn hpet() -> Option<(Mmio, u64)> {
+    let base = hpet_base()?;
     // SAFETY: the ACPI `HPET` table names this block as the HPET's registers, in the boot
-    // direct map (checked above), which nothing else drives; firmware maps it uncached.
-    let registers = unsafe {
-        Mmio::new(
-            super::DIRECT_MAP_OFFSET + base as usize,
-            HPET_REGISTER_BYTES,
-        )
-    };
+    // direct map (checked by `hpet_base`), which nothing else drives; firmware maps it
+    // uncached.
+    let registers = unsafe { Mmio::new(base, HPET_REGISTER_BYTES) };
     let period = u64::from(registers.read32(HPET_CAPABILITIES_HIGH));
     if period == 0 || period > HPET_LONGEST_PERIOD_FS {
         return None;
@@ -607,6 +691,12 @@ pub(super) fn frequency() -> u64 {
 /// instead, it would wake an idle CPU for nothing (after about 4.3 s at QEMU's 1 GHz APIC clock).
 pub(super) fn set_deadline(deadline: u64) {
     set_deadline_word(deadline);
+    if deadline == NO_DEADLINE
+        && let Some(hpet) = hpet_timer()
+    {
+        hpet.disarm(HPET_TIMER_COMPARATOR);
+        return;
+    }
     match (
         deadline == NO_DEADLINE,
         TSC_DEADLINE.load(Ordering::Relaxed),
@@ -618,6 +708,10 @@ pub(super) fn set_deadline(deadline: u64) {
 }
 
 fn arm(deadline: u64) {
+    if let Some(hpet) = hpet_timer() {
+        arm_hpet(&hpet, deadline);
+        return;
+    }
     if TSC_DEADLINE.load(Ordering::Relaxed) {
         write_tsc_deadline(deadline.max(1));
         return;

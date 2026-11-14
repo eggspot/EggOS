@@ -86,6 +86,27 @@ impl<R: RegisterIo> IoApic<R> {
         self.write(high, u32::from(destination) << DESTINATION_SHIFT);
     }
 
+    /// Whether line `line`'s entry is level-triggered (D594).
+    pub fn is_level_triggered(&self, line: u32) -> bool {
+        line < self.lines()
+            && self.read(FIRST_REDIRECTION + line * 2) & REDIRECTION_LEVEL_TRIGGERED != 0
+    }
+
+    /// Gives line `line` an interrupt remapping unit's format (D594): `vector` in the low word's
+    /// vector field (what the remapping entry it names says, or the entry's index on AMD-Vi),
+    /// `high` as the whole high word (the entry's handle), keeping its polarity, trigger and
+    /// mask. Written while the line is masked.
+    pub fn set_remapped(&self, line: u32, vector: u8, high: u32) {
+        if line >= self.lines() {
+            return;
+        }
+        let low = FIRST_REDIRECTION + line * 2;
+        let entry = self.read(low);
+        self.write(low, entry | REDIRECTION_MASKED);
+        self.write(low + 1, high);
+        self.write(low, entry & !0xff | u32::from(vector));
+    }
+
     /// Masks (`masked`) or unmasks line `line`, keeping the rest of its entry (D413): a
     /// level-triggered device line is masked while its driver looks at the device.
     pub fn set_masked(&self, line: u32, masked: bool) {

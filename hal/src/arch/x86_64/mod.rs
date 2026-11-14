@@ -18,6 +18,7 @@ mod message_interrupts;
 mod port;
 mod power_button;
 mod random;
+mod remapping;
 mod thread;
 mod timer;
 
@@ -613,6 +614,12 @@ impl Platform for X86_64 {
         cpu: u64,
     ) -> Result<crate::InterruptMessage, &'static str> {
         message_interrupts::message_for(line, cpu)
+    }
+
+    fn enable_interrupt_remapping(
+        memory: &mut dyn FnMut(usize) -> Option<(u64, usize)>,
+    ) -> Result<(), &'static str> {
+        remapping::enable(memory)
     }
 
     fn exit(_status: ExitStatus) -> ! {

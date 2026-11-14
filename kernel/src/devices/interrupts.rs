@@ -194,6 +194,31 @@ pub fn spread<P: Platform>() {
     }
 }
 
+/// Turns the machine's interrupt remapping on when it has one (D594), with blocks of zeroed
+/// DMA memory kept for good, then sends every connected line to the boot CPU again in the
+/// remapped form, so [`spread`] can then hand lines to CPUs whose ids are above 255.
+pub fn enable_remapping<P: Platform>() {
+    use eggos_drivers::dma::DmaMemory;
+    let mut memory = |bytes: usize| {
+        let region = super::dma::DmaRegion::allocate(bytes).ok()?;
+        let block = (region.physical(), region.as_mut_ptr() as usize);
+        core::mem::forget(region);
+        Some(block)
+    };
+    if P::enable_interrupt_remapping(&mut memory).is_err() {
+        return;
+    }
+    let Some(boot) = crate::cpu::CPUS.all().first().map(|cpu| cpu.hardware_id()) else {
+        return;
+    };
+    for (index, handler) in HANDLERS.iter().enumerate() {
+        let connected = !handler.load(Ordering::Acquire).is_null();
+        if connected && let Some(line) = DeviceLine::from_index(index) {
+            steer::<P>(line, boot);
+        }
+    }
+}
+
 /// The hardware id of the CPU whose turn is next, when more than one is online.
 fn next_cpu() -> Option<u64> {
     let cpus = crate::cpu::CPUS.all();

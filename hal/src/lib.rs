@@ -164,6 +164,18 @@ pub trait Platform: 'static {
         Err("this machine keeps message-signalled interrupts on the boot CPU")
     }
 
+    /// Turns the machine's interrupt remapping on (D594), so device interrupts reach CPUs whose
+    /// hardware ids are above 255: `memory(bytes)` gives a zeroed, page-aligned block of at
+    /// least `bytes` bytes that the kernel keeps for good, as its physical address and its
+    /// address in the direct map. From then on [`Self::message_for`] and
+    /// [`Self::steer_device_interrupt`] give remapped routes, and the caller sends every
+    /// connected line to its CPU again. Fails where the machine has no remapping (the default).
+    fn enable_interrupt_remapping(
+        _memory: &mut dyn FnMut(usize) -> Option<(u64, usize)>,
+    ) -> Result<(), &'static str> {
+        Err("this machine has no interrupt remapping")
+    }
+
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 
