@@ -211,6 +211,7 @@ impl Desktop {
             || self.launcher.is_some()
             || self.icons.menu.is_some()
             || self.responsiveness.dialog.is_some()
+            || self.overview.is_some()
     }
 
     pub(super) fn begin_popup(&mut self, events: &mut dyn EventSink) {
@@ -260,6 +261,7 @@ impl Desktop {
         self.close_launcher(damage, events);
         self.close_icon_menu(damage, events);
         self.close_end_app(damage);
+        self.close_overview(None, damage, events);
     }
 
     /// Window `slot` is going away: the switcher stops listing it and its window menu closes.
@@ -289,6 +291,9 @@ impl Desktop {
         }
         if self.window_menu.is_some_and(|menu| menu.window == slot) {
             self.close_window_menu(damage, events);
+        }
+        if self.overview.is_some() {
+            damage.add(self.work_area());
         }
     }
 

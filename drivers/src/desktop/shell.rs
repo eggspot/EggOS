@@ -60,6 +60,10 @@ const TOOLTIP_GAP: u32 = 4;
 const TOOLTIP_TEXT_Y: u32 = 4;
 const TOOLTIP_SCREEN_MARGIN: u32 = 8;
 const START_TOOLTIP: &str = "Start  Super";
+const TASK_VIEW_TOOLTIP: &str = "Task view  Super+Tab";
+const TASK_VIEW_ICON: (u32, u32) = (10, 13);
+const TASK_VIEW_BACK: Rect = Rect::new(0, 0, 14, 10);
+const TASK_VIEW_FRONT: Rect = Rect::new(6, 4, 14, 10);
 const APPS_TOOLTIP: &str = "Apps  Super";
 const ACTIVITIES_TOOLTIP: &str = "Activities  Super";
 const POWER_TOOLTIP: &str = "Power";
@@ -75,6 +79,8 @@ pub(super) enum PanelItem {
     Chip(u8),
     /// The taskbar's Start button.
     Start,
+    /// The taskbar's `Task view` item, which opens the overview (D591).
+    TaskView,
     /// The taskbar's item of the window in this slot.
     TaskbarWindow(u8),
     /// The dock's icon of this app.
@@ -390,7 +396,7 @@ impl Desktop {
         let Some(bar) = self.layout.taskbar else {
             return;
         };
-        let count = 1 + self.listed_windows().count() as u32;
+        let count = 2 + self.listed_windows().count() as u32;
         let group = count * (TASKBAR_ITEM + TASKBAR_GAP) - TASKBAR_GAP;
         let leftmost = self
             .sticky_strip()
@@ -409,7 +415,7 @@ impl Desktop {
             true => centred,
             false => TASKBAR_MARGIN,
         };
-        let items = core::iter::once(PanelItem::Start).chain(
+        let items = [PanelItem::Start, PanelItem::TaskView].into_iter().chain(
             self.listed_windows()
                 .map(|slot| PanelItem::TaskbarWindow(slot as u8)),
         );
@@ -667,6 +673,14 @@ impl Desktop {
             damage.add(rect);
         }
         match item {
+            PanelItem::System if self.profile == Profile::Linux => {
+                self.toggle_overview(damage, events);
+                Action::None
+            }
+            PanelItem::TaskView => {
+                self.toggle_overview(damage, events);
+                Action::None
+            }
             PanelItem::System | PanelItem::Start => {
                 self.toggle_launcher(damage, events);
                 Action::None
@@ -881,6 +895,7 @@ impl Desktop {
     fn tooltip_text(&self, item: PanelItem) -> Option<&str> {
         match (item, self.profile) {
             (PanelItem::Start, _) => Some(START_TOOLTIP),
+            (PanelItem::TaskView, _) => Some(TASK_VIEW_TOOLTIP),
             (PanelItem::System, Profile::Macos) => Some(APPS_TOOLTIP),
             (PanelItem::System, Profile::Linux) => Some(ACTIVITIES_TOOLTIP),
             (PanelItem::Agent, _) => Some(super::AGENT_TOOLTIP),
@@ -1046,7 +1061,10 @@ impl Desktop {
             Rect::new(0, bar.bottom() - 1, self.width, 1),
             colour::BAR_EDGE,
         );
-        let launcher_open = self.launcher.is_some();
+        let launcher_open = match self.profile {
+            Profile::Linux => self.overview.is_some(),
+            _ => self.launcher.is_some(),
+        };
         if let (Some(fill), Some(system)) = (
             self.item_fill(PanelItem::System, launcher_open)
                 .filter(|&fill| fill == colour::BAR_PRESSED),
@@ -1120,8 +1138,10 @@ impl Desktop {
             if !rect.overlaps(&canvas.clip()) {
                 return;
             }
-            let open = item == PanelItem::Start && self.launcher.is_some();
-            if let Some(fill) = self.item_fill(item, open) {
+            let open = (item == PanelItem::Start && self.launcher.is_some())
+                || (item == PanelItem::TaskView && self.overview.is_some());
+            let fill = self.item_fill(item, open);
+            if let Some(fill) = fill {
                 canvas.fill(
                     Rect::new(rect.x, rect.y + 1, rect.width, rect.height - 1),
                     fill,
@@ -1137,6 +1157,13 @@ impl Desktop {
                         START_MARK_HEIGHT,
                         self.width,
                     );
+                }
+                PanelItem::TaskView => {
+                    let at = (rect.x + TASK_VIEW_ICON.0, rect.y + TASK_VIEW_ICON.1);
+                    let place = |part: Rect| Rect::new(at.0 + part.x, at.1 + part.y, part.width, part.height);
+                    super::screenshots::outline(canvas, place(TASK_VIEW_BACK), 1, colour::TEXT);
+                    canvas.fill(place(TASK_VIEW_FRONT), fill.unwrap_or(colour::BAR));
+                    super::screenshots::outline(canvas, place(TASK_VIEW_FRONT), 1, colour::TEXT);
                 }
                 PanelItem::TaskbarWindow(slot) => {
                     let slot = usize::from(slot);

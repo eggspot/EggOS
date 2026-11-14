@@ -89,6 +89,9 @@ pub enum Shortcut {
     PowerMenu,
     /// Open the launcher, or close it.
     Launcher,
+    /// Open the overview, or close it (D591): Super+Tab in the Windows and Linux profiles, F3
+    /// and Ctrl+Up in the macOS one.
+    Overview,
     /// Open the Task Manager, or focus it (D200): Ctrl+Shift+Esc, and the Mac habit
     /// Cmd+Option+Esc, in every profile.
     TaskManager,
@@ -150,6 +153,10 @@ pub fn shortcut(
             back: shift,
             held: Held::Alt,
         },
+        key::TAB if only(super_key) && profile != Profile::Macos => Shortcut::Overview,
+        key::F3 if only(Modifiers::NONE) && profile == Profile::Macos => Shortcut::Overview,
+        key::UP if only(Modifiers::CTRL) && profile == Profile::Macos => Shortcut::Overview,
+        key::A if only(super_key) && profile == Profile::Linux => Shortcut::Launcher,
         key::TAB if without_shift == super_key && profile == Profile::Macos => Shortcut::Switch {
             back: shift,
             held: Held::Super,

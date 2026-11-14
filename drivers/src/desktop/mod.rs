@@ -32,6 +32,7 @@ mod main_menu;
 mod management;
 mod network;
 mod osk;
+mod overview;
 mod paint;
 mod panel_focus;
 mod phone;
@@ -422,6 +423,7 @@ pub struct Desktop {
     notice_owned: ([u8; 64], u8),
     /// The screenshot region picker, while its mode lasts (D590).
     picker: Option<screenshots::Picker>,
+    overview: Option<overview::Overview>,
     icons: DesktopIcons,
     super_alone: bool,
     shift_taps: (u8, u32),
@@ -517,6 +519,7 @@ impl Desktop {
             notice: None,
             notice_owned: ([0; 64], 0),
             picker: None,
+            overview: None,
             icons: DesktopIcons::default(),
             super_alone: false,
             shift_taps: (0, 0),
@@ -1378,6 +1381,10 @@ impl Desktop {
         if !self.is_visible(slot) {
             return Ok(());
         }
+        if self.overview.is_some() {
+            self.overview_commit(damage);
+            return Ok(());
+        }
         if !was_ready || rects.is_empty() {
             damage.add(window.content());
             return Ok(());
@@ -1860,6 +1867,11 @@ impl Desktop {
             self.update_pointer(damage);
             return;
         }
+        if self.overview.is_some() {
+            self.overview_motion(x, y, damage);
+            self.update_pointer(damage);
+            return;
+        }
         self.carry_motion(x, y, damage, events);
         if self.on_screen_keyboard_holds() {
             self.on_screen_keyboard_move(x, y, damage);
@@ -2022,6 +2034,11 @@ impl Desktop {
                 let (x, y) = self.pointer;
                 return self.on_screen_keyboard_release(x, y, damage, events);
             }
+            if code == button::LEFT && self.overview.is_some() {
+                let (x, y) = self.pointer;
+                self.overview_release(x, y, damage, events);
+                return Action::None;
+            }
             if code == button::LEFT {
                 self.phone_release(damage, events);
                 self.tablet_release(damage, events);
@@ -2067,6 +2084,9 @@ impl Desktop {
             return Action::None;
         }
         self.close_keyboard_strip(damage);
+        if let Some(action) = self.overview_press(code, x, y, damage, events) {
+            return action;
+        }
         if self.touch_form()
             && code == button::LEFT
             && let Some(action) = self.phone_press(x, y, damage, events)
@@ -2424,8 +2444,17 @@ impl Desktop {
             self.close_keyboard_layout_menu(damage);
             self.close_tray_overflow(damage);
             self.dismiss_shell_menu(damage, events);
-            self.toggle_launcher(damage, events);
+            match self.profile {
+                Profile::Linux => self.toggle_overview(damage, events),
+                _ => {
+                    self.close_overview(None, damage, events);
+                    self.toggle_launcher(damage, events);
+                }
+            }
             return Action::None;
+        }
+        if self.overview.is_some() {
+            return self.overview_key(code, pressed, modifiers, damage, events);
         }
         if self.icons.menu.is_some() {
             return self.icon_menu_key(code, pressed, damage, events);
@@ -2606,12 +2635,14 @@ impl Desktop {
             return;
         }
         self.draw_wallpaper(&mut canvas);
+        let overview = self.overview.is_some();
         match (self.form, self.touch_form()) {
+            _ if overview => {}
             (form::Form::Tv, _) => self.draw_tv_home(&mut canvas, contents),
             (_, true) => self.draw_phone_home(&mut canvas),
             (_, false) => self.draw_desktop_icons(&mut canvas),
         }
-        for &slot in &self.stack[..self.stack_length] {
+        for &slot in self.stack[..self.stack_length].iter().filter(|_| !overview) {
             let slot = usize::from(slot);
             let window = self.window_at(slot);
             if self.is_visible(slot) && window.with_shadow().overlaps(&clip) {
@@ -2625,6 +2656,7 @@ impl Desktop {
             }
         }
         self.draw_panels(&mut canvas);
+        self.draw_overview(&mut canvas, contents);
         self.draw_on_screen_keyboard(&mut canvas);
         self.draw_phone_overlays(&mut canvas, contents);
         self.draw_main_menu(&mut canvas);
@@ -2668,7 +2700,7 @@ impl Desktop {
             .tooltip_area
             .is_some_and(|rect| rect.overlaps(&clip));
         let panels = self.layout.panels().any(|panel| panel.overlaps(&clip));
-        if self.phone_overlay_open() || self.form == form::Form::Tv {
+        if self.phone_overlay_open() || self.form == form::Form::Tv || self.overview_covers(clip) {
             return None;
         }
         if (self.menu_open && self.menu_with_shadow().overlaps(&clip))

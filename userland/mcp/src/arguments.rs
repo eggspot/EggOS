@@ -169,6 +169,8 @@ pub enum ArgumentProblem {
     /// `screen_capture`'s `region` is not four whole numbers `x,y,width,height` with a width
     /// and a height of at least 1, or comes with `window` (D590).
     BadRegion,
+    /// `number` is not a desktop's number, a whole number from 1 to 8 (D591).
+    BadDesktop,
     /// `element` is not a whole number from 1 to 4294967295 (D161).
     BadElement,
     /// `action` is not invoke, focus, set-text or select, or `text` comes with an action other
@@ -292,6 +294,7 @@ impl ArgumentProblem {
             ArgumentProblem::BadSize => {
                 "width and height are whole numbers of pixels from 1 to 65535, given together"
             }
+            ArgumentProblem::BadDesktop => "number must be a desktop's number, 1 to 8",
             ArgumentProblem::BadRegion => {
                 "region is \"x,y,width,height\" in screen pixels, each a whole number up to 65535, \
                  width and height at least 1, and not given with window"
@@ -601,6 +604,9 @@ pub struct Checked {
     pub to_point: Option<(u32, u32)>,
     /// `wm_capture`'s widest image, in pixels.
     pub max_width: Option<u32>,
+    /// `wm_desktop_switch`'s, `wm_desktop_close`'s and `wm_desktop_move`'s desktop, from 1
+    /// (D591).
+    pub desktop: Option<u32>,
     /// `clock_set`'s time.
     pub time: Option<TimeText>,
     /// `wm_menu_choose`'s menu and entry numbers.
@@ -822,6 +828,9 @@ pub fn check(
     }
     if tool.kind == Kind::ScreenCapture {
         screen_capture_arguments(&get, &mut checked)?;
+    }
+    if matches!(tool.kind, Kind::WmDesktopSwitch | Kind::WmDesktopClose) {
+        checked.desktop = Some(desktop_number(get("number"))?);
     }
     if tool.kind == Kind::ClockSet {
         checked.time = Some(match get("time") {
@@ -1240,6 +1249,15 @@ fn screen_capture_arguments<'a>(
 }
 
 const REGION_BYTES: usize = 32;
+const MOST_DESKTOPS: u64 = 8;
+
+fn desktop_number(value: Option<Value<'_>>) -> Result<u32, ArgumentProblem> {
+    match whole(value, MOST_DESKTOPS, ArgumentProblem::BadDesktop)? {
+        None => Err(ArgumentProblem::Missing("number")),
+        Some(0) => Err(ArgumentProblem::BadDesktop),
+        Some(number) => Ok(number as u32),
+    }
+}
 
 /// `x,y,width,height` as four numbers up to [`MAX_COORDINATE`], the width and height at least 1.
 pub fn region_of(text: &[u8]) -> Option<[u32; 4]> {
@@ -1342,6 +1360,9 @@ fn window_arguments<'a>(
         }
         Kind::WmMove => {
             checked.point = Some(point(get("x"), get("y"))?.ok_or(ArgumentProblem::Missing("x"))?);
+        }
+        Kind::WmDesktopMove => {
+            checked.desktop = Some(desktop_number(get("number"))?);
         }
         Kind::WmSize => {
             let width = whole(get("width"), MAX_COORDINATE, ArgumentProblem::BadSize)?;

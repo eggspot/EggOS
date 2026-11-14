@@ -2566,6 +2566,10 @@ impl Server {
             }
         }
         let decimals = Decimals::of_window_call(&prepared.checked);
+        if matches!(tool.kind, Kind::WmDesktopSwitch | Kind::WmDesktopClose) {
+            push_word(&mut words, &mut count, "--");
+            push_word(&mut words, &mut count, decimals.get(Decimals::DESKTOP));
+        }
         if tool.kind == Kind::ScreenCapture {
             push_screen_words(
                 &mut words,
@@ -3315,7 +3319,7 @@ struct Decimals {
 }
 
 impl Decimals {
-    const COUNT: usize = 14;
+    const COUNT: usize = 15;
     const WINDOW: usize = 0;
     const X: usize = 1;
     const Y: usize = 2;
@@ -3330,6 +3334,7 @@ impl Decimals {
     const SIDEWAYS: usize = 11;
     const TO_X: usize = 12;
     const TO_Y: usize = 13;
+    const DESKTOP: usize = 14;
 
     fn of_window_call(checked: &Checked) -> Self {
         let (x, y) = checked.point.unwrap_or((0, 0));
@@ -3351,6 +3356,7 @@ impl Decimals {
             i64::from(checked.sideways.unwrap_or(0)),
             i64::from(to_x),
             i64::from(to_y),
+            i64::from(checked.desktop.unwrap_or(0)),
         ];
         let mut decimals = Self {
             digits: [[0; 20]; Self::COUNT],
@@ -3436,6 +3442,7 @@ fn push_window_words<'w>(
             push(decimals.get(Decimals::MENU));
             push(decimals.get(Decimals::ENTRY));
         }
+        Kind::WmDesktopMove => push(decimals.get(Decimals::DESKTOP)),
         Kind::WmMove => {
             push(decimals.get(Decimals::X));
             push(decimals.get(Decimals::Y));

@@ -54,6 +54,8 @@ pub struct ListedWindow {
     /// Whether its app reads its events: false while its title says `(not responding)`
     /// (D222).
     pub responding: bool,
+    /// The desktop it is on, from 0 (D591); a dialog's is its parent's.
+    pub desktop: u8,
 }
 
 /// What a point is on ([`Desktop::hit`]): a window's resize zone, or a window and its part.
@@ -134,6 +136,7 @@ impl Desktop {
             title: window.title,
             title_length: usize::from(window.title_length),
             responding: !window.not_responding,
+            desktop: self.window_at(self.owner_window(slot)).desktop,
         }
     }
 
@@ -811,6 +814,7 @@ impl Desktop {
                 self.menu_hover = Some(0);
             }
             Shortcut::Launcher => self.toggle_launcher(damage, events),
+            Shortcut::Overview => self.toggle_overview(damage, events),
             Shortcut::TaskManager => {
                 return self.launch(super::catalogue::AppId::TaskManager, damage, events);
             }
@@ -878,6 +882,9 @@ impl Desktop {
     pub(super) fn wanted_pointer(&self, hit: Hit) -> PointerShape {
         if self.picker.is_some() {
             return PointerShape::Crosshair;
+        }
+        if self.overview.is_some() {
+            return PointerShape::Arrow;
         }
         self.with_server_shapes(self.shape_over(hit))
     }

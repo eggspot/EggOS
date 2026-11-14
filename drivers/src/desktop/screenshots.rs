@@ -192,7 +192,12 @@ const SIZE_PILL_HEIGHT: u32 = 20;
 const SIZE_PILL_PADDING: u32 = 8;
 const WINDOW_OUTLINE: u32 = 2;
 
-fn outline(canvas: &mut super::paint::Canvas<'_>, rect: Rect, thickness: u32, colour: u32) {
+pub(super) fn outline(
+    canvas: &mut super::paint::Canvas<'_>,
+    rect: Rect,
+    thickness: u32,
+    colour: u32,
+) {
     if rect.width == 0 || rect.height == 0 {
         return;
     }

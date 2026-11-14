@@ -1158,9 +1158,10 @@ pub fn ioctl<P: Platform>(
 }
 
 fn listed_state(info: &ListedWindow) -> u32 {
+    let desktop = (u32::from(info.desktop) + 1) << list_reply::DESKTOP_SHIFT;
     match info.responding {
-        true => info.state.value(),
-        false => info.state.value() | list_reply::NOT_RESPONDING,
+        true => info.state.value() | desktop,
+        false => info.state.value() | list_reply::NOT_RESPONDING | desktop,
     }
 }
 

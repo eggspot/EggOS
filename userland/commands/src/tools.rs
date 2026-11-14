@@ -766,6 +766,53 @@ pub const WM_DESKTOP_NEW: ToolDefinition = operating(
     ToolResult::Text,
 );
 
+const DESKTOP: Argument = required(whole(
+    "number",
+    1,
+    8,
+    "The desktop's number, from 1, as wm_desktop_list shows it.",
+    Mapping::Operand,
+));
+
+const DESKTOP_ONLY: [Argument; 1] = [DESKTOP];
+const WINDOW_AND_DESKTOP: [Argument; 2] = [WINDOW, DESKTOP];
+
+/// `wm_desktop_switch` (D591).
+pub const WM_DESKTOP_SWITCH: ToolDefinition = operating(
+    "wm_desktop_switch",
+    "Show a virtual desktop",
+    "Shows desktop number: its windows become the ones on screen, as `wm desktop switch` does. \
+         Needs the run grant: it changes what the person sees.",
+    &["wm", "desktop", "switch"],
+    &[],
+    &DESKTOP_ONLY,
+    ToolResult::Text,
+);
+
+/// `wm_desktop_close` (D591).
+pub const WM_DESKTOP_CLOSE: ToolDefinition = operating(
+    "wm_desktop_close",
+    "Close a virtual desktop",
+    "Closes desktop number, as `wm desktop close` does: its windows move to the desktop before \
+         it; the last desktop cannot be closed. Needs the run grant.",
+    &["wm", "desktop", "close"],
+    &[],
+    &DESKTOP_ONLY,
+    ToolResult::Text,
+);
+
+/// `wm_desktop_move` (D591).
+pub const WM_DESKTOP_MOVE: ToolDefinition = operating(
+    "wm_desktop_move",
+    "Move a window to a virtual desktop",
+    "Moves window window, its dialogs with it, to desktop number without showing that desktop, \
+         as `wm desktop move` does. Needs the run grant.",
+    &["wm", "desktop", "move"],
+    &[],
+    &WINDOW_AND_DESKTOP,
+    ToolResult::Text,
+);
+
 /// `app_list`.
 pub const APP_LIST: ToolDefinition = reading(
     "app_list",
@@ -2686,7 +2733,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 87] = [
+pub const TOOLS: [ToolDefinition; 90] = [
     LS,
     CAT,
     PS,
@@ -2774,6 +2821,9 @@ pub const TOOLS: [ToolDefinition; 87] = [
     WIFI_CONNECT,
     WIFI_FORGET,
     SCREEN_CAPTURE,
+    WM_DESKTOP_SWITCH,
+    WM_DESKTOP_CLOSE,
+    WM_DESKTOP_MOVE,
 ];
 
 impl ToolDefinition {

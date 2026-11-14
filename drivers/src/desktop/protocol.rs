@@ -1508,6 +1508,8 @@ pub mod list_reply {
     pub const NOT_RESPONDING: u32 = 1 << 8;
     /// The bits of the `STATE` word that hold the state's number.
     pub const STATE_NUMBER: u32 = 0xff;
+    /// Where the `STATE` word holds the window's desktop, from 1, in 8 bits (D591).
+    pub const DESKTOP_SHIFT: u32 = 16;
     pub const X: usize = 8;
     pub const Y: usize = 12;
     pub const WIDTH: usize = 16;

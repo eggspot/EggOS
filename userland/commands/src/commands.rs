@@ -241,7 +241,7 @@ pub const PS_FIELDS: [Field; 7] = [
 ];
 
 /// `wm list --json`'s records; `client_pid` is `null` for the kernel's own windows.
-pub const WM_FIELDS: [Field; 9] = [
+pub const WM_FIELDS: [Field; 10] = [
     field("id", FieldType::Integer),
     field("state", FieldType::Text),
     field("x", FieldType::Integer),
@@ -249,6 +249,7 @@ pub const WM_FIELDS: [Field; 9] = [
     field("width", FieldType::Integer),
     field("height", FieldType::Integer),
     nullable("client_pid", FieldType::Integer),
+    field("desktop", FieldType::Integer),
     field("responding", FieldType::Boolean),
     field("title", FieldType::Text),
 ];
@@ -313,8 +314,8 @@ const PS_EXAMPLE: &str = concat!(
 );
 
 const WM_LIST_EXAMPLE: &str = concat!(
-    "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n",
-    "129 normal 100 80 640 480 67 Notes\n",
+    "ID STATE X Y WIDTH HEIGHT CLIENT DESKTOP TITLE\n",
+    "129 normal 100 80 640 480 67 1 Notes\n",
 );
 
 const PS_PAGE_EXAMPLE: &str = concat!("  PID  PPID  PGID S CMD\n", "    7     1     7 R eggsh\n");
@@ -463,7 +464,7 @@ pub const WM_LIST: CommandDefinition = CommandDefinition {
         example(
             "wm list --json",
             "{\"id\":129,\"state\":\"normal\",\"x\":100,\"y\":80,\"width\":640,\
-             \"height\":480,\"client_pid\":67,\"responding\":true,\"title\":\"Notes\"}\n",
+             \"height\":480,\"client_pid\":67,\"desktop\":1,\"responding\":true,\"title\":\"Notes\"}\n",
         ),
     ],
     surface: Surface::Gui("the taskbar, dock or top bar, and the window switcher"),

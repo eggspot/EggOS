@@ -222,6 +222,12 @@ pub enum Kind {
     WifiForget,
     /// `screen_capture`: the screen, a window with its frame or a region as a PNG (D590).
     ScreenCapture,
+    /// `wm_desktop_switch` (D591).
+    WmDesktopSwitch,
+    /// `wm_desktop_close` (D591).
+    WmDesktopClose,
+    /// `wm_desktop_move` (D591).
+    WmDesktopMove,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -463,7 +469,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 87] = [
+pub const TOOLS: [Tool; 90] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -922,6 +928,21 @@ pub const TOOLS: [Tool; 87] = [
             &["-o", CAPTURE_PATH, "--max-bytes", "716800", "--json"],
             Operand::None,
         ),
+    ),
+    tool(
+        &registry::WM_DESKTOP_SWITCH,
+        Kind::WmDesktopSwitch,
+        twin("/bin/wm", &["desktop", "switch"], Operand::None),
+    ),
+    tool(
+        &registry::WM_DESKTOP_CLOSE,
+        Kind::WmDesktopClose,
+        twin("/bin/wm", &["desktop", "close"], Operand::None),
+    ),
+    tool(
+        &registry::WM_DESKTOP_MOVE,
+        Kind::WmDesktopMove,
+        window_twin(&["desktop", "move"]),
     ),
 ];
 

@@ -34,7 +34,8 @@ pub const GET_TREE_SIZE: usize = eggos_element_tree::size::GET_TREE;
 pub const ACT_ON_ELEMENT: u32 = eggos_element_tree::request::ACT_ON_ELEMENT;
 pub const ACT_ON_ELEMENT_SIZE: usize = eggos_element_tree::size::ACT_ON_ELEMENT;
 pub const KERNEL_CLIENT: u32 = 0xffff;
-pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n";
+const DESKTOP_SHIFT: u32 = 16;
+pub const HEADER: &[u8] = b"ID STATE X Y WIDTH HEIGHT CLIENT DESKTOP TITLE\n";
 pub const USAGE_STATUS: i32 = 2;
 pub const BUSY_STATUS: i32 = 75;
 pub const NOT_RESPONDING_STATE: u32 = 0x100;
@@ -153,6 +154,10 @@ pub fn refused<S: System>(output: &mut Output<S>, window: &[u8], errno: Errno) -
     }
 }
 
+fn desktop_of(state: u32) -> u32 {
+    ((state >> DESKTOP_SHIFT) & 0xff).max(1)
+}
+
 fn state_name(state: u32) -> &'static [u8] {
     match state & STATE_NUMBER {
         1 => b"minimised",
@@ -256,6 +261,8 @@ fn write_entry<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
         client => output.write_number(u64::from(client), 0),
     }
     output.write(b" ");
+    output.write_number(u64::from(desktop_of(word(entry, 4))), 0);
+    output.write(b" ");
     let length = (word(entry, 28) as usize).min(TITLE_CAPACITY);
     output.write(&entry[TITLE_AT..TITLE_AT + length]);
     if word(entry, 4) & NOT_RESPONDING_STATE != 0 {
@@ -284,6 +291,8 @@ fn write_window<S: System>(output: &mut Output<S>, entry: &[u8; LIST_SIZE]) {
         KERNEL_CLIENT => out.null(),
         client => out.u64(u64::from(client)),
     }
+    out.key("desktop");
+    out.u64(u64::from(desktop_of(word(entry, 4))));
     out.key("responding");
     out.bool(word(entry, 4) & NOT_RESPONDING_STATE == 0);
     out.key("title");
@@ -544,9 +553,9 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(
             fake.output(),
-            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
-             64 normal 311 192 658 458 kernel Terminal\n\
-             129 maximised 0 28 1280 772 67 first\n"
+            "ID STATE X Y WIDTH HEIGHT CLIENT DESKTOP TITLE\n\
+             64 normal 311 192 658 458 kernel 1 Terminal\n\
+             129 maximised 0 28 1280 772 67 1 first\n"
         );
     }
 
@@ -580,9 +589,9 @@ mod tests {
         assert_eq!(
             fake.output(),
             "{\"id\":64,\"state\":\"normal\",\"x\":311,\"y\":192,\"width\":658,\
-             \"height\":458,\"client_pid\":null,\"responding\":true,\"title\":\"Terminal\"}\n\
+             \"height\":458,\"client_pid\":null,\"desktop\":1,\"responding\":true,\"title\":\"Terminal\"}\n\
              {\"id\":129,\"state\":\"maximised\",\"x\":0,\"y\":28,\"width\":1280,\
-             \"height\":772,\"client_pid\":67,\"responding\":true,\"title\":\"first\"}\n"
+             \"height\":772,\"client_pid\":67,\"desktop\":1,\"responding\":true,\"title\":\"first\"}\n"
         );
         let mut fake = windows();
         fake.window_server = false;
@@ -625,9 +634,9 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(
             fake.output(),
-            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
-             64 normal 311 192 658 458 kernel Terminal\n\
-             3 minimised 0 0 100 100 70 third\n"
+            "ID STATE X Y WIDTH HEIGHT CLIENT DESKTOP TITLE\n\
+             64 normal 311 192 658 458 kernel 1 Terminal\n\
+             3 minimised 0 0 100 100 70 1 third\n"
         );
         assert_eq!(fake.errors(), "more: --after 64\n");
         let arguments = [c"list", c"--after", c"64", c"--limit", c"2"];
@@ -635,8 +644,8 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(
             fake.output(),
-            "ID STATE X Y WIDTH HEIGHT CLIENT TITLE\n\
-             129 maximised 0 28 1280 772 67 first\n"
+            "ID STATE X Y WIDTH HEIGHT CLIENT DESKTOP TITLE\n\
+             129 maximised 0 28 1280 772 67 1 first\n"
         );
         assert_eq!(fake.errors(), "");
         let arguments = [c"list", c"--json", c"--after", c"64"];
@@ -743,7 +752,7 @@ mod tests {
         assert_eq!(status, 0);
         assert!(
             fake.output()
-                .ends_with("129 normal -542 100 658 330 67 Editor (not responding)\n"),
+                .ends_with("129 normal -542 100 658 330 67 1 Editor (not responding)\n"),
             "{}",
             fake.output()
         );
@@ -753,7 +762,7 @@ mod tests {
         assert_eq!(status, 0);
         assert!(fake.output().contains(
             "\"state\":\"maximised\",\"x\":0,\"y\":28,\"width\":1280,\"height\":772,\
-             \"client_pid\":67,\"responding\":false,\"title\":\"first\""
+             \"client_pid\":67,\"desktop\":1,\"responding\":false,\"title\":\"first\""
         ));
     }
 
