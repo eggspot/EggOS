@@ -87,6 +87,8 @@ const HEADER_BYTES: usize = 24;
 const DISPLAY_INFO_BYTES: usize = HEADER_BYTES + 16 * 24;
 const CREATE_2D_BYTES: usize = 40;
 const ATTACH_BACKING_BYTES: usize = 48;
+const ATTACH_BACKING_ENTRIES: usize = 32;
+const BACKING_ENTRY_BYTES: usize = 16;
 const SET_SCANOUT_BYTES: usize = 48;
 const TRANSFER_TO_HOST_2D_BYTES: usize = 56;
 const RESOURCE_FLUSH_BYTES: usize = 48;
@@ -322,7 +324,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         if self.scanout.is_some() {
             return Err((Error::ScanoutInUse, Some(framebuffer)));
         }
-        let Ok(length) = u32::try_from(mode.bytes()) else {
+        let Ok(_) = u32::try_from(mode.bytes()) else {
             return Err((Error::UnsupportedMode, Some(framebuffer)));
         };
         if mode.rect().is_empty() {
@@ -341,17 +343,16 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         }
         let request = self.header(0, command::RESOURCE_ATTACH_BACKING);
         self.put32(request + 24, RESOURCE_ID);
-        self.put32(request + 28, 1);
-        self.put64(request + 32, framebuffer.dma_addr().get());
-        self.put32(request + 40, length);
-        self.put32(request + 44, 0);
+        let Some(attach_bytes) = self.put_backing(request, &framebuffer) else {
+            return Err((Error::MemoryTooSmall, Some(framebuffer)));
+        };
         self.scanout = Some(Scanout {
             framebuffer,
             mode,
             shown: false,
             resource: RESOURCE_ID,
         });
-        self.run(1, ATTACH_BACKING_BYTES, keep_waiting)
+        self.run(1, attach_bytes, keep_waiting)
             .map_err(|error| (error, None))?;
         let request = self.header(0, command::SET_SCANOUT);
         self.put_rect(request + 24, mode.rect());
@@ -383,7 +384,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         let Some(old_resource) = self.shown().map(|scanout| scanout.resource) else {
             return Err((Error::NoScanout, Some(framebuffer)));
         };
-        let Ok(length) = u32::try_from(mode.bytes()) else {
+        let Ok(_) = u32::try_from(mode.bytes()) else {
             return Err((Error::UnsupportedMode, Some(framebuffer)));
         };
         if mode.rect().is_empty() {
@@ -406,10 +407,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         }
         let request = self.header(0, command::RESOURCE_ATTACH_BACKING);
         self.put32(request + 24, resource);
-        self.put32(request + 28, 1);
-        self.put64(request + 32, framebuffer.dma_addr().get());
-        self.put32(request + 40, length);
-        self.put32(request + 44, 0);
+        let Some(attach_bytes) = self.put_backing(request, &framebuffer) else {
+            return Err((Error::MemoryTooSmall, Some(framebuffer)));
+        };
         let replaced = self.scanout.replace(Scanout {
             framebuffer,
             mode,
@@ -419,7 +419,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         let Some(old) = replaced else {
             return Err((Error::NoScanout, None));
         };
-        self.run(1, ATTACH_BACKING_BYTES, keep_waiting)
+        self.run(1, attach_bytes, keep_waiting)
             .map_err(|error| (error, None))?;
         let request = self.header(0, command::SET_SCANOUT);
         self.put_rect(request + 24, mode.rect());
@@ -1406,6 +1406,31 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             }
         }
         Ok(())
+    }
+
+    fn put_backing(&self, request: usize, memory: &M) -> Option<usize> {
+        let mut count = 0usize;
+        let mut fits = true;
+        memory.each_piece(&mut |address, length| {
+            let entry = request + ATTACH_BACKING_ENTRIES + count * BACKING_ENTRY_BYTES;
+            let Ok(length) = u32::try_from(length) else {
+                fits = false;
+                return;
+            };
+            if entry + BACKING_ENTRY_BYTES > RESPONSES {
+                fits = false;
+                return;
+            }
+            self.put64(entry, address.get());
+            self.put32(entry + 8, length);
+            self.put32(entry + 12, 0);
+            count += 1;
+        });
+        if !fits || count == 0 {
+            return None;
+        }
+        self.put32(request + 28, count as u32);
+        Some(ATTACH_BACKING_ENTRIES + count * BACKING_ENTRY_BYTES)
     }
 
     fn header(&mut self, slot: usize, command: u32) -> usize {

@@ -26,13 +26,51 @@ pub enum DmaError {
     TooLarge,
 }
 
-/// Memory one device reaches by DMA: whole frames, zeroed when made.
+/// Memory one device reaches by DMA: whole frames, zeroed when made. A large one
+/// ([`DmaRegion::allocate_mapped`], D580) is several blocks the CPU reaches contiguously
+/// through a mapping of its own and the device piece by piece.
 #[derive(Debug)]
 pub struct DmaRegion {
     first: u64,
     order: u32,
     virt: usize,
     coherent: bool,
+    more: Vec<(u64, u32)>,
+}
+
+fn allocate_block(order: u32) -> Result<(u64, usize), DmaError> {
+    let mut allocator = FRAMES.lock();
+    let allocator = allocator.as_mut().ok_or(DmaError::OutOfMemory)?;
+    let first = allocator
+        .allocate_contiguous(order)
+        .ok_or(DmaError::OutOfMemory)?;
+    Ok((first, (first as usize).wrapping_add(allocator.physical_memory_offset())))
+}
+
+fn free_block(first: u64, order: u32) {
+    let length = (FRAME_SIZE as usize) << order;
+    LIVE.lock().retain(|&(start, _)| start != first);
+    let translation = *TRANSLATION.lock();
+    if let Some(translation) = translation {
+        translation.unmap(first, length as u64);
+    }
+    if let Some(allocator) = FRAMES.lock().as_mut() {
+        // SAFETY: the block came from `allocate_contiguous` with this order and is freed once;
+        // the caller guarantees no device uses it.
+        unsafe { allocator.free_contiguous(first, order) };
+    }
+}
+
+fn live_block(first: u64, virt: usize, order: u32) {
+    let length = (FRAME_SIZE as usize) << order;
+    // SAFETY: the block was just allocated, so nothing else uses it, and the direct map
+    // reaches all of it at `virt`.
+    unsafe { eggos_hal::memory::zero(virt as *mut u8, length) };
+    LIVE.lock().push((first, length as u64));
+    let translation = *TRANSLATION.lock();
+    if let Some(translation) = translation {
+        translation.map(first, length as u64);
+    }
 }
 
 impl DmaRegion {
@@ -44,30 +82,72 @@ impl DmaRegion {
         if order > crate::memory::MAX_ORDER {
             return Err(DmaError::TooLarge);
         }
-        let (first, virt) = {
-            let mut allocator = FRAMES.lock();
-            let allocator = allocator.as_mut().ok_or(DmaError::OutOfMemory)?;
-            let first = allocator
-                .allocate_contiguous(order)
-                .ok_or(DmaError::OutOfMemory)?;
-            let virt = (first as usize).wrapping_add(allocator.physical_memory_offset());
-            (first, virt)
-        };
-        let region = Self {
+        let (first, virt) = allocate_block(order)?;
+        live_block(first, virt, order);
+        Ok(Self {
             first,
             order,
             virt,
             coherent: true,
-        };
-        // SAFETY: the block was just allocated, so nothing else uses it, and the direct map
-        // reaches all of it at `virt`.
-        unsafe { eggos_hal::memory::zero(virt as *mut u8, region.len()) };
-        LIVE.lock().push((first, region.len() as u64));
-        let translation = *TRANSLATION.lock();
-        if let Some(translation) = translation {
-            translation.map(first, region.len() as u64);
+            more: Vec::new(),
+        })
+    }
+
+    /// A zeroed region of at least `bytes` bytes for a device that takes its memory in pieces
+    /// (D580): one block as [`Self::allocate`] makes when one fits, else blocks of the largest
+    /// size the allocator gives, which `map` (given each block's physical address and length,
+    /// in order) maps contiguously for the CPU and returns the address of. Such a region is
+    /// never given back to the allocator ([`Self::free`] keeps it), since its mapping is the
+    /// kernel's for good.
+    pub fn allocate_mapped(
+        bytes: usize,
+        map: impl FnOnce(&[(u64, u64)]) -> Option<usize>,
+    ) -> Result<Self, DmaError> {
+        let largest = (FRAME_SIZE as usize) << crate::memory::MAX_ORDER;
+        if bytes <= largest {
+            return Self::allocate(bytes);
         }
-        Ok(region)
+        let mut blocks: Vec<(u64, u32, usize)> = Vec::new();
+        let mut covered = 0usize;
+        while covered < bytes {
+            let left = bytes - covered;
+            let frames = (left as u64).div_ceil(FRAME_SIZE).max(1);
+            let order = frames
+                .next_power_of_two()
+                .ilog2()
+                .min(crate::memory::MAX_ORDER);
+            match allocate_block(order) {
+                Ok((first, virt)) => {
+                    live_block(first, virt, order);
+                    blocks.push((first, order, virt));
+                    covered += (FRAME_SIZE as usize) << order;
+                }
+                Err(error) => {
+                    for &(first, order, _) in &blocks {
+                        free_block(first, order);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let ranges: Vec<(u64, u64)> = blocks
+            .iter()
+            .map(|&(first, order, _)| (first, (FRAME_SIZE << order)))
+            .collect();
+        let Some(virt) = map(&ranges) else {
+            for &(first, order, _) in &blocks {
+                free_block(first, order);
+            }
+            return Err(DmaError::OutOfMemory);
+        };
+        let (first, order, _) = blocks[0];
+        Ok(Self {
+            first,
+            order,
+            virt,
+            coherent: true,
+            more: blocks[1..].iter().map(|&(first, order, _)| (first, order)).collect(),
+        })
     }
 
     /// A region as [`Self::allocate`] makes, for a device whose DMA is `coherence` (D563): a
@@ -104,18 +184,15 @@ impl DmaRegion {
     /// No device may read or write the region any more: it was never given to one, or that
     /// device was reset (its driver's contract says which).
     pub unsafe fn free(self) {
-        let length = self.len() as u64;
-        let Self { first, order, .. } = self;
-        LIVE.lock().retain(|&(start, _)| start != first);
-        let translation = *TRANSLATION.lock();
-        if let Some(translation) = translation {
-            translation.unmap(first, length);
+        if !self.more.is_empty() {
+            return;
         }
-        if let Some(allocator) = FRAMES.lock().as_mut() {
-            // SAFETY: the block came from `allocate_contiguous` with this order and is freed
-            // once, as `self` is gone; the caller guarantees no device uses it.
-            unsafe { allocator.free_contiguous(first, order) };
-        }
+        free_block(self.first, self.order);
+    }
+
+    /// Whether it is a large region of several blocks, which is kept rather than freed.
+    pub fn is_mapped(&self) -> bool {
+        !self.more.is_empty()
     }
 }
 
@@ -153,7 +230,8 @@ pub(super) fn set_device_offset(offset: u64) {
 }
 
 // SAFETY: the frames are owned by the region from `allocate` until `free`, reached at `virt`
-// through the direct map (normal, cached memory, aligned to at least a frame); the device reaches
+// through the direct map (normal, cached memory, aligned to at least a frame), or for a large
+// region through its own mapping of its blocks in order, never unmapped; the device reaches
 // them at their physical address plus `DEVICE_OFFSET` (a window without translation: identity
 // with no IOMMU, POWER's bypass window, D312); and a region made for a non-coherent device
 // names the cache maintenance its drivers do (D563).
@@ -165,7 +243,18 @@ unsafe impl DmaMemory for DmaRegion {
         DmaAddr::new(self.first + DEVICE_OFFSET.load(Ordering::Relaxed))
     }
     fn len(&self) -> usize {
-        (FRAME_SIZE as usize) << self.order
+        self.more
+            .iter()
+            .fold((FRAME_SIZE as usize) << self.order, |total, &(_, order)| {
+                total + ((FRAME_SIZE as usize) << order)
+            })
+    }
+    fn each_piece(&self, piece: &mut dyn FnMut(DmaAddr, usize)) {
+        let offset = DEVICE_OFFSET.load(Ordering::Relaxed);
+        piece(DmaAddr::new(self.first + offset), (FRAME_SIZE as usize) << self.order);
+        for &(first, order) in &self.more {
+            piece(DmaAddr::new(first + offset), (FRAME_SIZE as usize) << order);
+        }
     }
     fn cache_maintenance(&self) -> Option<CacheMaintenance> {
         (!self.coherent).then_some(CacheMaintenance {

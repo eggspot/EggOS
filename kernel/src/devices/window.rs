@@ -113,6 +113,57 @@ fn map_as<P: Platform>(
     Ok((virt + (region.start - frames.start)) as usize)
 }
 
+/// Maps RAM blocks (`pieces`, each a physical address and a length, page-aligned) one after
+/// another at new addresses of the device window, as normal memory like the direct map's, and
+/// returns the address of the first (D580): a large framebuffer the CPU draws into
+/// contiguously while the device takes it in pieces. The mapping is for good. Must run where
+/// [`map`] may.
+pub fn map_ram<P: Platform>(memory: &mut Memory<P>, pieces: &[(u64, u64)]) -> Result<usize, MapError> {
+    let total = pieces
+        .iter()
+        .try_fold(0u64, |total, &(_, length)| total.checked_add(length))
+        .ok_or(MapError::InvalidAddress)?;
+    if total == 0 {
+        return Err(MapError::InvalidAddress);
+    }
+    let window = paging::device_window::<P>();
+    let large = <P::PageTableFormat as Format>::leaf_bytes(
+        <P::PageTableFormat as Format>::max_leaf_level()
+            .min(<P::PageTableFormat as Format>::LEVELS - 2)
+            .min(1),
+    );
+    let mut windows = WINDOWS.lock();
+    if windows.next == 0 {
+        windows.next = window.start;
+    }
+    let start = windows
+        .next
+        .checked_next_multiple_of(large)
+        .ok_or(MapError::OutsideDeviceWindow)?;
+    let end = start.checked_add(total).ok_or(MapError::OutsideDeviceWindow)?;
+    if end > window.end {
+        return Err(MapError::OutsideDeviceWindow);
+    }
+    windows.next = end;
+    drop(windows);
+    let mut allocator = FRAMES.lock();
+    let allocator = allocator.as_mut().ok_or(MapError::OutOfMemory)?;
+    let mut virt = start;
+    for &(phys, length) in pieces {
+        memory.page_tables.map_window_as(
+            &window,
+            virt,
+            phys,
+            length,
+            allocator,
+            Attributes::READ_WRITE,
+        )?;
+        virt += length;
+    }
+    P::make_kernel_mappings_visible(start as usize, total as usize);
+    Ok(start as usize)
+}
+
 /// Gives back a window [`map`] or [`map_write_combining`] returned `address` in: when its last
 /// user gives it back it is unmapped and every CPU's translations of it are dropped (D554).
 /// A window the module could not remember (past [`REMEMBERED`]) stays mapped.

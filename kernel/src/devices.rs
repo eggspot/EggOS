@@ -186,6 +186,12 @@ pub trait Probe {
     fn map_write_combining(&mut self, _region: PhysicalRange) -> Result<usize, ProbeError> {
         Err(ProbeError::Refused("no write-combining mappings"))
     }
+    /// A zeroed framebuffer of at least `bytes` bytes for a device that takes its memory in
+    /// pieces (D580): larger than one DMA block when the kernel can map several contiguously
+    /// for the CPU ([`dma::DmaRegion::allocate_mapped`]), else one block.
+    fn allocate_framebuffer(&mut self, bytes: usize) -> Result<dma::DmaRegion, ProbeError> {
+        dma::DmaRegion::allocate(bytes).map_err(|_| ProbeError::Refused("no memory for the framebuffer"))
+    }
     /// The framebuffer the firmware lit and the loader passed on (D236), if any. None by
     /// default.
     fn boot_framebuffer(&self) -> Option<eggos_hal::handoff::Framebuffer> {
@@ -645,6 +651,12 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
     fn map_write_combining(&mut self, region: PhysicalRange) -> Result<usize, ProbeError> {
         window::map_write_combining::<P>(self.memory, region)
             .map_err(|error| ProbeError::Refused(error.description()))
+    }
+
+    fn allocate_framebuffer(&mut self, bytes: usize) -> Result<dma::DmaRegion, ProbeError> {
+        let memory = &mut *self.memory;
+        dma::DmaRegion::allocate_mapped(bytes, |pieces| window::map_ram::<P>(memory, pieces).ok())
+            .map_err(|_| ProbeError::Refused("no memory for the framebuffer"))
     }
 
     fn boot_framebuffer(&self) -> Option<eggos_hal::handoff::Framebuffer> {

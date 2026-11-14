@@ -538,6 +538,7 @@ mod gpu {
         cursor: bool,
         events: Option<&'static DeviceEvents>,
         three_d: bool,
+        spare: Option<DmaRegion>,
     }
 
     impl Renderer for GpuScanout {
@@ -700,24 +701,35 @@ mod gpu {
             if mode == self.mode {
                 return Ok(());
             }
-            let framebuffer =
-                DmaRegion::allocate(mode.bytes()).map_err(|_| "no memory for the framebuffer")?;
+            let framebuffer = match self.spare.take() {
+                Some(spare) if eggos_drivers::dma::DmaMemory::len(&spare) >= mode.bytes() => spare,
+                spare => {
+                    self.spare = spare;
+                    DmaRegion::allocate(mode.bytes()).map_err(|_| "no memory for the framebuffer")?
+                }
+            };
             match self
                 .gpu
                 .replace_framebuffer(framebuffer, mode, &mut || deadline.keep_waiting())
             {
                 Ok(old) => {
-                    // SAFETY: handed back by `replace_framebuffer` after the device detached and
-                    // destroyed the resource it backed, so the device no longer reads it.
-                    unsafe { old.free() };
+                    match old.is_mapped() {
+                        true => self.spare = Some(old),
+                        // SAFETY: handed back by `replace_framebuffer` after the device detached
+                        // and destroyed the resource it backed, so the device no longer reads it.
+                        false => unsafe { old.free() },
+                    }
                     self.mode = mode;
                     Ok(())
                 }
                 Err((error, framebuffer)) => {
                     if let Some(framebuffer) = framebuffer {
-                        // SAFETY: handed back by `replace_framebuffer`, which does so only when
-                        // the device was never given it.
-                        unsafe { framebuffer.free() };
+                        match framebuffer.is_mapped() {
+                            true => self.spare = Some(framebuffer),
+                            // SAFETY: handed back by `replace_framebuffer`, which does so only
+                            // when the device was never given it.
+                            false => unsafe { framebuffer.free() },
+                        }
                     }
                     Err(error.description())
                 }
@@ -755,7 +767,7 @@ mod gpu {
                 return Err(ProbeError::Refused(error.description()));
             }
         };
-        let shown = attach_framebuffer(&mut gpu, &mut deadline);
+        let shown = attach_framebuffer(probe, &mut gpu, &mut deadline);
         let cursor = shown.is_ok() && attach_cursor(&mut gpu, &mut deadline);
         let three_d = shown.is_ok() && attach_three_d(&mut gpu);
         let events = shown
@@ -772,6 +784,7 @@ mod gpu {
             cursor,
             events,
             three_d,
+            spare: None,
         };
         let refused = match shown {
             Ok(mode) => match crate::display::install(installed(gpu, mode)) {
@@ -793,11 +806,15 @@ mod gpu {
         Err(ProbeError::Refused(refused.1))
     }
 
-    fn attach_framebuffer(gpu: &mut Gpu, deadline: &mut Deadline) -> Result<Mode, &'static str> {
+    fn attach_framebuffer(
+        probe: &mut dyn Probe,
+        gpu: &mut Gpu,
+        deadline: &mut Deadline,
+    ) -> Result<Mode, &'static str> {
         let display = gpu.display_mode();
         let (framebuffer, mode) = [display, FALLBACK_MODE]
             .into_iter()
-            .find_map(|mode| Some((DmaRegion::allocate(mode.bytes()).ok()?, mode)))
+            .find_map(|mode| Some((probe.allocate_framebuffer(mode.bytes()).ok()?, mode)))
             .ok_or("no memory for the framebuffer")?;
         gpu.attach_framebuffer(framebuffer, mode, &mut || deadline.keep_waiting())
             .map(|()| mode)

@@ -52,6 +52,13 @@ pub unsafe trait DmaMemory {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// The memory as the device sees it, piece by piece in order: each piece's device address
+    /// and length (D580). One piece, [`Self::dma_addr`] and [`Self::len`], for memory that is
+    /// contiguous to the device (the default); a large framebuffer made of several blocks
+    /// that the CPU reaches contiguously has several.
+    fn each_piece(&self, piece: &mut dyn FnMut(DmaAddr, usize)) {
+        piece(self.dma_addr(), self.len());
+    }
     /// The cache maintenance a device that does not snoop the CPU's caches needs, `None` for
     /// coherent memory (the default).
     fn cache_maintenance(&self) -> Option<CacheMaintenance> {

@@ -782,3 +782,43 @@ fn streams_left_unanswered_wedge_the_device_when_given_up() {
     assert!(!gpu.streams_in_flight());
     assert_eq!(gpu.start_stream(0, 1, 4), Err(Error::TimedOut));
 }
+
+struct Pieces {
+    memory: Vec<u8>,
+    pieces: Vec<(u64, usize)>,
+}
+
+// SAFETY: the vector's buffer is owned by the value for its life and the fake device in these
+// tests never reaches the addresses it is given; it only reads the request.
+unsafe impl DmaMemory for Pieces {
+    fn as_mut_ptr(&self) -> *mut u8 {
+        self.memory.as_ptr().cast_mut()
+    }
+    fn dma_addr(&self) -> crate::dma::DmaAddr {
+        crate::dma::DmaAddr::new(self.pieces[0].0)
+    }
+    fn len(&self) -> usize {
+        self.pieces.iter().map(|&(_, length)| length).sum()
+    }
+    fn each_piece(&self, piece: &mut dyn FnMut(crate::dma::DmaAddr, usize)) {
+        for &(address, length) in &self.pieces {
+            piece(crate::dma::DmaAddr::new(address), length);
+        }
+    }
+}
+
+#[test]
+fn a_framebuffer_in_pieces_is_attached_with_one_entry_per_piece() {
+    let pieces = Pieces {
+        memory: vec![0; 64],
+        pieces: vec![(0x10_0000, 0x40_0000), (0x90_0000, 0x40_0000), (0x200_0000, 0x10_0000)],
+    };
+    let mut count = 0;
+    let mut total = 0;
+    pieces.each_piece(&mut |_, length| {
+        count += 1;
+        total += length;
+    });
+    assert_eq!((count, total), (3, pieces.len()));
+    assert_eq!(ATTACH_BACKING_ENTRIES + 3 * BACKING_ENTRY_BYTES, 80);
+}
