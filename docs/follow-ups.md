@@ -113,7 +113,7 @@ and is not listed per item.
 - [x] eggsh: aliases (`alias`, `unalias`) and `set -u`, `-x`, `-f`, `-n` with `$-` (D182) — code written, unbuilt, D572
 - [x] eggsh: `disown`, `suspend`, `set -b`, and `history` with `^R` reverse search (D181) — code written, unbuilt, D572
 - [x] `shutdown` with a delay and a message, and `wall` (D183) — code written, unbuilt, D572
-- [ ] MCP over the network: `Mcp-Session-Id`, the `GET` event stream, more than one connection at a time, per-address limits (D193)
+- [x] MCP over the network: `Mcp-Session-Id`, the `GET` event stream, more than one connection at a time, per-address limits (D193) — code written, unbuilt, D576
 - [ ] MCP over the network: mDNS advertisement of the agent endpoint (`_mcp._tcp`) (D193)
 - [ ] MCP: `subscriptions/listen` and `input_required` with a signed `requestState` (D193)
 - [ ] Time zones: past rules of a zone (transitions from TZif data) and `localtime`/`_tzset` in the Windows layer (D194)

@@ -26503,3 +26503,32 @@ the license, by an explicit instruction recorded here.
   apps need; `UpdateActivationEnvironment` answers `AccessDenied`.
 - **Not yet.** Building and running; activation; the system bus and its policy files;
   `org.freedesktop.DBus.Monitoring`; the portals and AT-SPI services on top of the bus.
+
+## D576 MCP over the network: sessions with `Mcp-Session-Id`, the `GET` event stream, many connections at once and limits per address (M10; D193's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the MCP specification's Streamable HTTP transport, 2025-06-18 and 2025-11-25)
+- **Sessions.** An `initialize` sent without `Mcp-Session-Id` opens a session: a server of its
+  own pinned to the agent, and an id of 32 random hex digits that the answer carries in
+  `Mcp-Session-Id`. A request naming the session goes to that server; an id that is not one
+  of the agent's sessions answers 404, so the client initializes again, as the specification
+  says. `DELETE /mcp` with the id ends it. At most 16 sessions; opening another ends the one
+  unused longest. Requests without an id keep D193's server per agent, so stateless
+  (2026-07-28) clients and clients that ignore the header work as before.
+- **The event stream.** `GET /mcp` with the session's id and `Accept: text/event-stream`
+  opens the session's stream (406 without that `Accept`, 405 without a session): what the
+  session's server says besides its answer to a request (notifications) goes there as
+  `event: message` events, with an SSE comment every 15 s while idle. The stream ends with
+  the connection; a newer stream for the session replaces the older one.
+- **Connections.** Up to 16 at once, at most 4 from one address; more are closed at once,
+  before TLS. Each connection runs in a process of its own (forked), which does the TLS
+  handshake and HTTP and hands every MCP message to the network server's process over a
+  socket pair (`linux/network/relay.rs`: frames of a kind and a length), where the agents'
+  servers and sessions live; the server's process waits for the person's answer to a
+  question as before, so calls from all agents are answered one after another. When a
+  connection's process ends, its socket pair closes and the server's process reaps it.
+  `SOCKETPAIR` joins the runtime's system-call numbers.
+- **Decided by research.** Processes rather than threads or an event-driven TLS: the TLS
+  code reads and writes through a blocking transport, and a process per connection isolates
+  one agent's connection from another's at no cost to the hot path (MCP calls are answered
+  one at a time anyway, by D193). Per-address limits close extra connections before the
+  handshake, the cheapest point; the count is per IPv4 address, as the listener is IPv4.
+- **Not yet.** Building and running; resuming a stream after a reconnect (`Last-Event-ID`);
+  IPv6; answering two agents' calls at the same time.
