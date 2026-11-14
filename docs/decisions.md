@@ -27164,3 +27164,41 @@ the license, by an explicit instruction recorded here.
   sits under its title and the dropdown is a 48 px row.
 - **Not yet.** Building and running; a time estimate (the kernel reads no rates); per-battery
   thresholds; hibernation.
+
+## D600 High memory on RV32 and 32-bit Arm: RAM beyond the direct map, for programs' pages (M9; D475's and D476's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **What it is.** A 32-bit address space has room for 896 MiB (RV32) or 768 MiB (32-bit Arm)
+  of direct map beside the user half (D475, D476). RAM above that was dropped. Now the HAL
+  reports it (`Platform::high_memory`, empty by default; RV32 up to Sv32's 34-bit physical
+  addresses, Arm up to LPAE's 40). The kernel gives it only to programs' anonymous pages
+  (`FrameAllocator::allocate_user_page`, which the per-CPU frame caches and
+  `allocate_user_frame` use). Everything the kernel itself allocates stays in the direct map:
+  page tables, the heap, file pages, DMA, window buffers, memfd frames, fork's copies. This is
+  the split Linux's `HIGHMEM` uses, and it keeps every other path unchanged.
+- **Free high frames are a bitmap**, one bit a frame, set while free, in low memory taken from
+  the allocator for good (`HighFrames`). The free stack links frames through their first words
+  (D28), which a high frame cannot hold. Allocation scans from a hint; `FrameAllocator::free`
+  routes a high frame there. Unmapping collects high frames apart from the `FramesToFree` chain
+  and frees them after the walk, once translations are dropped as for the chain.
+- **Reaching a high frame: a per-CPU temporary window.** One last-level table's reach (4 MiB on
+  Sv32, 2 MiB with LPAE) just below the device window, linked into the kernel half at boot,
+  before any user address space copies its root entries. Each CPU has four pages of it
+  (`SLOTS_PER_CPU`: a copy holds two, nested at most four deep); CPUs past the table's room
+  (255 groups) share one last group, one CPU at a time. `high_memory::with_frame(frame, ...)`
+  gives the direct map's address for a low frame. For a high one it writes the slot's entry,
+  drops this CPU's translation of the page (new `drop_kernel_translations` on RV32,
+  `sfence.vma`, and Arm, `TLBIMVAA`), runs the closure, then clears the entry. It is safe
+  without a lock because the kernel runs with interrupts masked and is not preempted (D91), and
+  the closure must not sleep. On 64-bit machines `is_high` is one relaxed load and a compare
+  against `u64::MAX`, so nothing changes there.
+- **Paths changed.** The paths that touch a program's frame now go through `with_frame`:
+  - filling a new page (`map_frame`);
+  - copy on write;
+  - fork's copy;
+  - joining a pair into a huge block;
+  - `mprotect`'s instruction-cache sync;
+  - the kernel's copies to and from user memory, and the futex word (`user_physical`, which
+    replaces `in_direct_map`, returns the physical address, and the copy runs inside the
+    window).
+  `/proc/meminfo`'s totals include high memory, and `user_may_take` counts it.
+- **Not yet.** Building and running on QEMU with more RAM than the direct map; high memory for
+  the page cache and memfd; a larger window for machines with more than 255 CPUs.
