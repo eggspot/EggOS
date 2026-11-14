@@ -43,7 +43,7 @@ and is not listed per item.
 - [x] Moving device lines off CPUs that go offline, and balancing lines by load (D536) — code written, unbuilt, D596
 - [ ] The power state's front-ends: `power` CLI, MCP `power_status`, a battery indicator on the bar; acting on the lid and critical temperatures (D556)
 - [x] ACPI: the ECDT, EC burst mode, GPE block devices (`ACPI0006`), acting on lid, battery, thermal and dock notifications (D539) — code written, unbuilt, D556
-- [ ] ACPI sleep states other than S5 (S3 suspend to RAM with wake events) (D538, D539)
+- [x] ACPI sleep states other than S5 (S3 suspend to RAM with wake events) (D538, D539) — code written, unbuilt, D597
 
 ## M6 Linux system-call ABI
 

@@ -27058,3 +27058,31 @@ the license, by an explicit instruction recorded here.
   waiting for interrupts. A thread parked with a deadline on a leaving CPU keeps that CPU in its
   `Parker`; an unpark that does not find it there looks through every CPU's sleepers.
 
+## D597 Suspend to RAM (ACPI S3) on x86_64, with wake events (M5; D538 and D539's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the ACPI 6.5 specification, 7.4 and 16.1, and Intel's SDM)
+- **Front-end.** `/sys/power/state` lists `mem` when the DSDT has `\_S3`, and writing `mem`
+  suspends, as on Linux (`systemctl suspend` and `echo mem > /sys/power/state` work). The
+  `power` CLI, MCP and bar front-ends come with the power design (D556's other follow-up).
+- **Sequence** (`kernel::suspend::suspend_to_ram`, on the boot CPU): arm the wake events
+  (every device whose `_PRW` wakes from S3 gets its GPE on, every other GPE off, and
+  `_DSW(1, 3, 0)` or `_PSW(1)`), run `\_PTS(3)`; take every other CPU out of service (D596)
+  and, once parked, have each save its context and halt (`Platform::hold_cpu_for_suspend`);
+  enter S3 (`Platform::suspend_to_ram`); once woken, start the held CPUs from their contexts
+  (`wake_held_cpu`) and put them back in service, route every device line again, run
+  `\_WAK(3)`, turn the handled GPEs back on and read the power devices again.
+- **x86_64** (`hal/src/arch/x86_64/sleep.rs`): a CPU saves its callee-saved registers, stack,
+  `CR3`, GS/FS/kernel-GS bases, PAT and `fxsave` area; the boot CPU writes the FACS's 32-bit
+  waking vector (the AP start-up trampoline at 0x8000; the 64-bit vector 0), puts its saved
+  context in the trampoline's new resume slot, writes back the caches and writes the `_S3`
+  sleep type with `SLP_EN` to PM1 control. The firmware enters the trampoline in real mode;
+  its 64-bit code, finding the resume slot set, jumps to `eggos_resume_cpu`, which loads the
+  saved page tables and stack, a small GDT, and calls `restore_cpu`: the MSRs, the per-CPU GDT,
+  TSS and `syscall` MSRs again (`set_cpu_local`), the IDT, the local APIC and timer, and the FP
+  state; the save call then returns a second time. The other CPUs come back the same way,
+  started by INIT-less start-up IPIs with their own context in the slot. After the boot CPU
+  wakes, the remapping units are programmed again from their kept tables (D594), and every
+  I/O APIC input (device lines with their kept signal and CPU, COM1, the SCI) is routed again.
+- **Not yet.** Building and running; devices' own state (PCI functions are reset by S3: their
+  drivers need suspend and resume hooks, so only devices that keep state or that the firmware
+  restores work after wake); S3 on other architectures (PSCI `SYSTEM_SUSPEND` on Arm, SBI's
+  system suspend on RISC-V); CPUs with APIC IDs of 64 or more; S1, S2 and S4.
+
