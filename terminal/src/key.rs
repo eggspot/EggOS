@@ -2,6 +2,9 @@
 //! highest one.
 
 pub const ESC: u16 = 1;
+pub const KEY_3: u16 = 4;
+pub const KEY_4: u16 = 5;
+pub const KEY_5: u16 = 6;
 pub const MINUS: u16 = 12;
 pub const BACKSPACE: u16 = 14;
 pub const TAB: u16 = 15;
@@ -10,6 +13,7 @@ pub const T: u16 = 20;
 pub const ENTER: u16 = 28;
 pub const LEFT_CTRL: u16 = 29;
 pub const A: u16 = 30;
+pub const S: u16 = 31;
 pub const D: u16 = 32;
 pub const H: u16 = 35;
 pub const LEFT_SHIFT: u16 = 42;
@@ -37,6 +41,7 @@ pub const F11: u16 = 87;
 pub const F12: u16 = 88;
 pub const KEYPAD_ENTER: u16 = 96;
 pub const RIGHT_CTRL: u16 = 97;
+pub const SYSRQ: u16 = 99;
 pub const RIGHT_ALT: u16 = 100;
 pub const HOME: u16 = 102;
 pub const UP: u16 = 103;

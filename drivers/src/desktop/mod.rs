@@ -40,6 +40,7 @@ mod pointer;
 mod popups;
 pub mod protocol;
 mod responsiveness;
+pub mod screenshots;
 mod shell;
 mod shell_menu;
 pub mod shortcuts;
@@ -275,6 +276,8 @@ pub const HANGING_TITLE_KEPT: u32 = 48;
 pub enum Action {
     /// Nothing more.
     None,
+    /// Start `/bin/screenshot --notify` for this target (D590).
+    Screenshot(screenshots::ScreenshotRequest),
     /// Power the machine off, as `poweroff` does.
     PowerOff,
     /// Restart the machine, as `reboot` does.
@@ -415,6 +418,10 @@ pub struct Desktop {
     panels: PanelState,
     launcher: Option<Launcher>,
     notice: Option<Notice>,
+    /// A notice's own text (`SHOW_NOTICE`, D590): its bytes and length.
+    notice_owned: ([u8; 64], u8),
+    /// The screenshot region picker, while its mode lasts (D590).
+    picker: Option<screenshots::Picker>,
     icons: DesktopIcons,
     super_alone: bool,
     shift_taps: (u8, u32),
@@ -508,6 +515,8 @@ impl Desktop {
             panels: PanelState::default(),
             launcher: None,
             notice: None,
+            notice_owned: ([0; 64], 0),
+            picker: None,
             icons: DesktopIcons::default(),
             super_alone: false,
             shift_taps: (0, 0),
@@ -1843,6 +1852,14 @@ impl Desktop {
         self.note_person_motion(x, y);
         self.pointer = (x, y);
         self.pointer_visible = true;
+        if let Some(mut picker) = self.picker {
+            damage.add(self.picker_area(&picker));
+            picker.moved((x, y));
+            self.picker = Some(picker);
+            damage.add(self.picker_area(&picker));
+            self.update_pointer(damage);
+            return;
+        }
         self.carry_motion(x, y, damage, events);
         if self.on_screen_keyboard_holds() {
             self.on_screen_keyboard_move(x, y, damage);
@@ -1970,6 +1987,9 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Action {
         self.note_person_input();
+        if let Some(action) = self.picker_button(code, pressed, damage) {
+            return action;
+        }
         if pressed {
             self.end_panel_focus(damage);
         }
@@ -2308,6 +2328,9 @@ impl Desktop {
     ) -> Action {
         self.typed = character;
         self.note_person_input();
+        if let Some(action) = self.picker_key(code, pressed, damage) {
+            return action;
+        }
         let own_key = pressed && self.take_own_screen_key(code);
         if pressed
             && !own_key

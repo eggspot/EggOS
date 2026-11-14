@@ -805,6 +805,7 @@ impl Desktop {
             }
             Shortcut::ShowDesktop => self.show_desktop(damage, events),
             Shortcut::FocusPanel => self.focus_panel(damage),
+            Shortcut::Screenshot(target) => return self.screenshot(target, damage),
             Shortcut::PowerMenu => {
                 self.open_menu(damage);
                 self.menu_hover = Some(0);
@@ -875,6 +876,9 @@ impl Desktop {
     /// The pointer shape the desktop shows now at the pointer, over `hit`: `Working` in the
     /// arrow's place while an app starts (D222).
     pub(super) fn wanted_pointer(&self, hit: Hit) -> PointerShape {
+        if self.picker.is_some() {
+            return PointerShape::Crosshair;
+        }
         self.with_server_shapes(self.shape_over(hit))
     }
 

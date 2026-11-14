@@ -24,6 +24,7 @@ use crate::output::{FAILURE, Output};
 use crate::ping::ping;
 use crate::power::{HALT, POWER_OFF, RESTART, power, shutdown, sync, wall};
 use crate::processes::{free, ps, uptime};
+use crate::screenshot::screenshot;
 use crate::properties::{getprop, setprop};
 use crate::sleep::sleep;
 use crate::stty::stty;
@@ -79,6 +80,7 @@ pub enum Utility {
     Readlink,
     Reboot,
     Rm,
+    Screenshot,
     Setprop,
     Shutdown,
     Sleep,
@@ -99,7 +101,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -134,6 +136,7 @@ impl Utility {
         Self::Readlink,
         Self::Reboot,
         Self::Rm,
+        Self::Screenshot,
         Self::Setprop,
         Self::Shutdown,
         Self::Sleep,
@@ -189,6 +192,7 @@ impl Utility {
             Self::Readlink => b"readlink",
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
+            Self::Screenshot => b"screenshot",
             Self::Setprop => b"setprop",
             Self::Shutdown => b"shutdown",
             Self::Sleep => b"sleep",
@@ -249,6 +253,7 @@ impl Utility {
             Self::Readlink => readlink(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
+            Self::Screenshot => screenshot(output, arguments),
             Self::Setprop => setprop(output, arguments),
             Self::Shutdown => shutdown(output, arguments),
             Self::Sleep => sleep(output, arguments),

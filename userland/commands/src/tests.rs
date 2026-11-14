@@ -260,7 +260,11 @@ fn every_tool_declares_its_result_and_new_list_tools_answer_items() {
         };
         match tool.result {
             ToolResult::Items(fields) => assert_eq!(Some(fields), records, "{}", tool.name),
-            ToolResult::Image => assert_eq!(tool.name, "wm_capture"),
+            ToolResult::Image => assert!(
+                ["wm_capture", "screen_capture"].contains(&tool.name),
+                "{}",
+                tool.name
+            ),
             ToolResult::Icon => assert_eq!(tool.name, "app_icon"),
             ToolResult::Run => assert_eq!(tool.name, "run"),
             ToolResult::Text => assert!(

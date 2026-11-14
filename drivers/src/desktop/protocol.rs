@@ -45,6 +45,11 @@ const fn encode(direction: u32, number: u32, size: usize) -> u32 {
     direction << 30 | (size as u32) << 16 | (IOCTL_TYPE as u32) << 8 | number
 }
 
+/// The most bytes `SHOW_NOTICE` shows (D590).
+pub const NOTICE_TEXT_CAPACITY: usize = 64;
+/// Where `SHOW_NOTICE`'s text starts.
+pub const NOTICE_TEXT: usize = 8;
+
 /// `SET_DEVICE_INPUT_PREFERENCES`' device for every mouse (D589).
 pub const EVERY_DEVICE: u32 = u32::MAX;
 
@@ -95,6 +100,9 @@ pub mod size {
     pub const SET_KEYBOARD_LAYOUT: usize = 4;
     pub const SET_INPUT_PREFERENCES: usize = 20;
     pub const SET_DEVICE_INPUT_PREFERENCES: usize = 20;
+    pub const CAPTURE_SCREEN: usize = 48;
+    pub const SHOW_NOTICE: usize = 8 + super::NOTICE_TEXT_CAPACITY;
+    pub const PICK_REGION: usize = 4;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
@@ -191,6 +199,9 @@ pub mod request {
     pub const GET_SCREENS: u32 = encode(READ, 59, size::GET_SCREENS);
     pub const SET_DEVICE_INPUT_PREFERENCES: u32 =
         encode(WRITE, 60, size::SET_DEVICE_INPUT_PREFERENCES);
+    pub const CAPTURE_SCREEN: u32 = encode(READ | WRITE, 61, size::CAPTURE_SCREEN);
+    pub const SHOW_NOTICE: u32 = encode(WRITE, 62, size::SHOW_NOTICE);
+    pub const PICK_REGION: u32 = encode(WRITE, 63, size::PICK_REGION);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -552,6 +563,9 @@ pub enum PointerShape {
     /// The arrow with a small hourglass: working, but it still takes clicks (D222). The server
     /// shows it itself while an app it started has no window yet.
     Working,
+    /// A crosshair, the screenshot region picker's (D590): the server's own, which clients
+    /// cannot ask for.
+    Crosshair,
 }
 
 impl PointerShape {
@@ -661,6 +675,28 @@ pub enum Request {
         left_handed: u32,
         natural_scrolling: u32,
     },
+    /// Rows of the screen as composed now, without the pointer and the picker (D590): of the
+    /// region `x, y, width, height`, or of window `window`'s outside (0 for the region), from
+    /// `first_row`, at most `row_count` rows, into `buffer` (`length` bytes); the reply is
+    /// [`capture_reply`]'s.
+    CaptureScreen {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        buffer: u64,
+        length: u64,
+    },
+    /// Shows `text` (the first `length` bytes) in the shell's notice for `duration_ms`.
+    ShowNotice {
+        length: u32,
+        duration_ms: u32,
+    },
+    /// Opens the screenshot region picker.
+    PickRegion,
     ListWindow {
         index: u32,
     },
@@ -947,6 +983,9 @@ impl Request {
             request::GET_WORK_AREA => size::GET_WORK_AREA,
             request::GET_SCREENS => size::GET_SCREENS,
             request::SET_DEVICE_INPUT_PREFERENCES => size::SET_DEVICE_INPUT_PREFERENCES,
+            request::CAPTURE_SCREEN => size::CAPTURE_SCREEN,
+            request::SHOW_NOTICE => size::SHOW_NOTICE,
+            request::PICK_REGION => size::PICK_REGION,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1268,6 +1307,22 @@ impl Request {
                 offset: double_word(bytes, 16),
             },
             request::GET_SCREENS => Self::GetScreens,
+            request::CAPTURE_SCREEN => Self::CaptureScreen {
+                x: at(0),
+                y: at(4),
+                width: at(8),
+                height: at(12),
+                window: at(16),
+                first_row: at(20),
+                row_count: at(24),
+                buffer: double_word(bytes, 32),
+                length: double_word(bytes, 40),
+            },
+            request::SHOW_NOTICE => Self::ShowNotice {
+                length: at(0),
+                duration_ms: at(4),
+            },
+            request::PICK_REGION => Self::PickRegion,
             request::SET_DEVICE_INPUT_PREFERENCES => Self::SetDeviceInputPreferences {
                 device: at(0),
                 pointer_speed: at(4),

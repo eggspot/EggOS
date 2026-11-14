@@ -250,6 +250,9 @@ pub struct Fake {
     pub clipboard_serial: u32,
     pub capture_fails_at: Option<(usize, Errno)>,
     pub resized_at: Option<(usize, u32, u32)>,
+    pub screen_pixels: Option<(u32, u32, Vec<u32>)>,
+    pub notices: Vec<Vec<u8>>,
+    pub picks: usize,
     pub window_server: bool,
     pub working_directory: String,
     pub network: FakeNetwork,
@@ -324,6 +327,9 @@ impl Default for Fake {
             clipboard_serial: 0,
             capture_fails_at: None,
             resized_at: None,
+            screen_pixels: None,
+            notices: Vec::new(),
+            picks: 0,
             window_server: true,
             working_directory: "/".to_owned(),
             network: FakeNetwork::default(),
@@ -1005,6 +1011,16 @@ impl System for Fake {
             u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
         match (request, argument.len()) {
+            (crate::screenshot::SHOW_NOTICE, crate::screenshot::SHOW_NOTICE_SIZE) => {
+                let length = (word(argument, 0) as usize).min(crate::screenshot::NOTICE_CAPACITY);
+                let start = crate::screenshot::NOTICE_TEXT;
+                self.notices.push(argument[start..start + length].to_vec());
+                Ok(())
+            }
+            (crate::screenshot::PICK_REGION, crate::screenshot::PICK_REGION_SIZE) => {
+                self.picks += 1;
+                Ok(())
+            }
             (crate::window_desktop::LIST_DESKTOPS, 16) => {
                 let windows = self.windows.len().min(usize::from(u8::MAX)) as u8;
                 argument[..4].copy_from_slice(&[2, 1, windows, 0]);
@@ -1165,6 +1181,63 @@ impl System for Fake {
             .zip(pixels.as_chunks_mut::<4>().0.iter_mut())
         {
             place.copy_from_slice(&pixel.to_ne_bytes());
+        }
+        Ok(CapturedRows {
+            width,
+            height,
+            rows,
+        })
+    }
+
+    fn capture_screen_rows(
+        &mut self,
+        descriptor: usize,
+        region: [u32; 4],
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        if self.file(descriptor)?.path != crate::wm::DEVICE.to_bytes() {
+            return Err(Errno::ENOTTY);
+        }
+        let Some((screen_width, screen_height, content)) = self.screen_pixels.as_ref() else {
+            return Err(Errno::ENXIO);
+        };
+        let (screen_width, screen_height) = (*screen_width, *screen_height);
+        let [x, y, width, height] = match window {
+            0 if region[2] == 0 && region[3] == 0 => [0, 0, screen_width, screen_height],
+            0 => region,
+            window => self
+                .windows
+                .iter()
+                .find(|known| known.id == window)
+                .ok_or(Errno::ENOENT)?
+                .rect,
+        };
+        let inside = width > 0
+            && height > 0
+            && x.checked_add(width).is_some_and(|right| right <= screen_width)
+            && y.checked_add(height).is_some_and(|bottom| bottom <= screen_height);
+        if !inside {
+            return Err(Errno::EINVAL);
+        }
+        let rows = height
+            .checked_sub(first_row)
+            .ok_or(Errno::EINVAL)?
+            .min(row_count);
+        if rows as usize * width as usize * 4 > pixels.len() {
+            return Err(Errno::EINVAL);
+        }
+        let mut places = pixels.as_chunks_mut::<4>().0.iter_mut();
+        for row in first_row..first_row + rows {
+            let start = ((y + row) * screen_width + x) as usize;
+            for (pixel, place) in content[start..start + width as usize]
+                .iter()
+                .zip(places.by_ref())
+            {
+                place.copy_from_slice(&pixel.to_ne_bytes());
+            }
         }
         Ok(CapturedRows {
             width,

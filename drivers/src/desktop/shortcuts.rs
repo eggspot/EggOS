@@ -103,6 +103,10 @@ pub enum Shortcut {
     /// Move the keys to the bar's items, then the dock's, then back to the window (D224):
     /// Ctrl+Alt+Tab, Super+T and Ctrl+F3 in every profile.
     FocusPanel,
+    /// Take a screenshot (D590): PrtScn and Super+Shift+3 the screen, Alt+PrtScn the focused
+    /// window, Super+Shift+S and Super+Shift+4 a region; Super+PrtScn the screen in the
+    /// Windows profile, Shift+PrtScn in the Linux one, Super+Shift+5 a region in the macOS one.
+    Screenshot(super::screenshots::ScreenshotTarget),
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -121,6 +125,23 @@ pub fn shortcut(
     let super_key = Modifiers::SUPER;
     let ctrl_super = Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::SUPER.bits());
     let ctrl_alt = Modifiers::from_bits(Modifiers::CTRL.bits() | Modifiers::ALT.bits());
+    let super_shift = Modifiers::from_bits(Modifiers::SUPER.bits() | Modifiers::SHIFT.bits());
+    {
+        use super::screenshots::ScreenshotTarget as Target;
+        let screenshot = match code {
+            key::SYSRQ if only(Modifiers::NONE) => Some(Target::Screen),
+            key::SYSRQ if only(alt) => Some(Target::FocusedWindow),
+            key::SYSRQ if only(super_key) && profile == Profile::Windows => Some(Target::Screen),
+            key::SYSRQ if only(Modifiers::SHIFT) && profile == Profile::Linux => Some(Target::Screen),
+            key::KEY_3 if only(super_shift) => Some(Target::Screen),
+            key::KEY_4 | key::S if only(super_shift) => Some(Target::Region),
+            key::KEY_5 if only(super_shift) && profile == Profile::Macos => Some(Target::Region),
+            _ => None,
+        };
+        if let Some(target) = screenshot {
+            return Some(Shortcut::Screenshot(target));
+        }
+    }
     Some(match code {
         key::TAB if only(ctrl_alt) => Shortcut::FocusPanel,
         key::T if only(super_key) => Shortcut::FocusPanel,

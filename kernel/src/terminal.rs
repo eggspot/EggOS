@@ -58,6 +58,8 @@ pub use eggos_drivers::terminal::ViewMove;
 /// The shortest time between two flushes of the terminal: 60 frames a second.
 pub const FRAME_INTERVAL_MS: u64 = 16;
 
+const SCREENSHOT_NOTICE_MS: u32 = 3000;
+
 /// How long the cursor shows, then hides, in each blink (docs/ux/terminal-v0.3.md, "Cursor").
 pub const BLINK_HALF_MS: u64 = 500;
 
@@ -1295,6 +1297,24 @@ fn run_launch<P: Platform>(action: Action) {
             .as_ref()
             .and_then(|screen| screen.desktop.as_ref()?.app_do_command(app, chosen))
             .map(Launch::Start),
+        Action::Screenshot(request) => {
+            let command = SCREEN
+                .lock()
+                .as_ref()
+                .and_then(|screen| screen.desktop.as_ref()?.screenshot_command(request));
+            if let Some(command) = command
+                && crate::apps::start_program(command.as_bytes()).is_err()
+            {
+                with_windows::<P, _>(|desktop, _, damage, _| {
+                    desktop.show_text_notice(
+                        eggos_drivers::desktop::screenshots::NOT_INSTALLED.as_bytes(),
+                        SCREENSHOT_NOTICE_MS,
+                        damage,
+                    )
+                });
+            }
+            return;
+        }
         _ => None,
     };
     match launch {
@@ -1469,7 +1489,11 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
         Some(Action::Restart) => reboot::shut_down::<P>(reboot::Action::Restart),
         Some(
             action
-            @ (Action::Start(_) | Action::Type(_) | Action::Uninstall(_) | Action::AppDo(..)),
+            @ (Action::Start(_)
+            | Action::Type(_)
+            | Action::Uninstall(_)
+            | Action::AppDo(..)
+            | Action::Screenshot(_)),
         ) => run_launch::<P>(action),
         Some(Action::ShowAgentLog) => {
             move_view::<P>(ViewMove::Live);

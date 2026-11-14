@@ -220,6 +220,8 @@ pub enum Kind {
     WifiConnect,
     /// `wifi_forget`: stops naming a Wi-Fi network to join (D280).
     WifiForget,
+    /// `screen_capture`: the screen, a window with its frame or a region as a PNG (D590).
+    ScreenCapture,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -461,7 +463,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 86] = [
+pub const TOOLS: [Tool; 87] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -911,6 +913,15 @@ pub const TOOLS: [Tool; 86] = [
         &registry::WIFI_FORGET,
         Kind::WifiForget,
         twin("/bin/wifi", &["forget"], Operand::None),
+    ),
+    tool(
+        &registry::SCREEN_CAPTURE,
+        Kind::ScreenCapture,
+        twin(
+            "/bin/screenshot",
+            &["-o", CAPTURE_PATH, "--max-bytes", "716800", "--json"],
+            Operand::None,
+        ),
     ),
 ];
 

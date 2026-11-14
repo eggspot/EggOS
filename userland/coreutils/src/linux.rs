@@ -706,6 +706,52 @@ impl System for Linux {
         })
     }
 
+    fn capture_screen_rows(
+        &mut self,
+        descriptor: usize,
+        region: [u32; 4],
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        let mut request = [0u8; crate::screenshot::CAPTURE_SCREEN_SIZE];
+        for (index, value) in region
+            .into_iter()
+            .chain([window, first_row, row_count])
+            .enumerate()
+        {
+            request[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+        request[32..40].copy_from_slice(&(pixels.as_mut_ptr() as u64).to_ne_bytes());
+        request[40..48].copy_from_slice(&(pixels.len() as u64).to_ne_bytes());
+        let pointer = request.as_mut_ptr() as usize;
+        call(
+            number::IOCTL,
+            [
+                descriptor,
+                crate::screenshot::CAPTURE_SCREEN as usize,
+                pointer,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        let word = |at: usize| {
+            u32::from_ne_bytes([
+                request[at],
+                request[at + 1],
+                request[at + 2],
+                request[at + 3],
+            ])
+        };
+        Ok(CapturedRows {
+            width: word(12),
+            height: word(16),
+            rows: word(20),
+        })
+    }
+
     fn set_affinity(&mut self, mask: u64) -> Result<(), Errno> {
         let words = [mask];
         call(

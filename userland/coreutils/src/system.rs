@@ -278,6 +278,15 @@ pub trait System {
         row_count: u32,
         pixels: &mut [u8],
     ) -> Result<CapturedRows, Errno>;
+    fn capture_screen_rows(
+        &mut self,
+        descriptor: usize,
+        region: [u32; 4],
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno>;
     fn window_tree(
         &mut self,
         descriptor: usize,
@@ -481,6 +490,18 @@ impl<T: System + ?Sized> System for &mut T {
         pixels: &mut [u8],
     ) -> Result<CapturedRows, Errno> {
         (**self).capture_window_rows(descriptor, window, first_row, row_count, pixels)
+    }
+
+    fn capture_screen_rows(
+        &mut self,
+        descriptor: usize,
+        region: [u32; 4],
+        window: u32,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        (**self).capture_screen_rows(descriptor, region, window, first_row, row_count, pixels)
     }
 
     fn window_tree(

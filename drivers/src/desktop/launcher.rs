@@ -454,10 +454,32 @@ impl Desktop {
 
     /// The notice shown now, its text.
     pub fn notice_text(&self) -> Option<&str> {
-        self.notice.map(|notice| match notice.balloon {
-            true => self.balloon_text(),
-            false => notice.text,
+        self.notice.map(|notice| match (notice.balloon, notice.text.is_empty()) {
+            (true, _) => self.balloon_text(),
+            (false, true) => {
+                let (bytes, length) = &self.notice_owned;
+                core::str::from_utf8(&bytes[..usize::from(*length)]).unwrap_or("")
+            }
+            (false, false) => notice.text,
         })
+    }
+
+    /// Shows `text` (at most 64 bytes of UTF-8, cut at a character) in the notice for
+    /// `milliseconds` (`SHOW_NOTICE`, D590).
+    pub fn show_text_notice(&mut self, text: &[u8], milliseconds: u32, damage: &mut Damage) {
+        let mut length = text.len().min(64);
+        while length > 0 && core::str::from_utf8(&text[..length]).is_err() {
+            length -= 1;
+        }
+        self.close_notice(damage);
+        self.notice_owned.0[..length].copy_from_slice(&text[..length]);
+        self.notice_owned.1 = length as u8;
+        self.notice = Some(Notice {
+            text: "",
+            until_ms: self.now_ms.wrapping_add(milliseconds),
+            balloon: false,
+        });
+        damage.add(with_shadow(self.notice_rect()));
     }
 
     fn content_x(&self) -> u32 {

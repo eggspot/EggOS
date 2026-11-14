@@ -166,6 +166,9 @@ pub enum ArgumentProblem {
     /// `width` or `height` is not a whole number from 1 to [`MAX_COORDINATE`], or only one is
     /// given (D160).
     BadSize,
+    /// `screen_capture`'s `region` is not four whole numbers `x,y,width,height` with a width
+    /// and a height of at least 1, or comes with `window` (D590).
+    BadRegion,
     /// `element` is not a whole number from 1 to 4294967295 (D161).
     BadElement,
     /// `action` is not invoke, focus, set-text or select, or `text` comes with an action other
@@ -288,6 +291,10 @@ impl ArgumentProblem {
             }
             ArgumentProblem::BadSize => {
                 "width and height are whole numbers of pixels from 1 to 65535, given together"
+            }
+            ArgumentProblem::BadRegion => {
+                "region is \"x,y,width,height\" in screen pixels, each a whole number up to 65535, \
+                 width and height at least 1, and not given with window"
             }
             ArgumentProblem::BadButton => "button is left, right or middle",
             ArgumentProblem::BadText => {
@@ -813,6 +820,9 @@ pub fn check(
     if tool.twin.operand == Operand::Window {
         window_arguments(tool.kind, &get, decoded.words, &mut checked)?;
     }
+    if tool.kind == Kind::ScreenCapture {
+        screen_capture_arguments(&get, &mut checked)?;
+    }
     if tool.kind == Kind::ClockSet {
         checked.time = Some(match get("time") {
             Some(Value::Str(text)) => {
@@ -1187,6 +1197,68 @@ fn short_text(
         true => Ok(decoded.len()),
         false => Err(problem),
     }
+}
+
+fn screen_capture_arguments<'a>(
+    get: &impl Fn(&str) -> Option<Value<'a>>,
+    checked: &mut Checked,
+) -> Result<(), ArgumentProblem> {
+    let window = whole(get("window"), MAX_WINDOW_ID, ArgumentProblem::BadWindow)?;
+    if window == Some(0) {
+        return Err(ArgumentProblem::BadWindow);
+    }
+    checked.window = window.map(|window| window as u32);
+    let region = match get("region") {
+        None => None,
+        Some(Value::Str(text)) => {
+            let mut bytes = [0u8; REGION_BYTES];
+            let decoded = text
+                .decode_into(&mut bytes)
+                .ok_or(ArgumentProblem::BadRegion)?;
+            Some(region_of(decoded.as_bytes()).ok_or(ArgumentProblem::BadRegion)?)
+        }
+        Some(_) => return Err(ArgumentProblem::BadRegion),
+    };
+    if let Some([x, y, width, height]) = region {
+        if checked.window.is_some() {
+            return Err(ArgumentProblem::BadRegion);
+        }
+        checked.point = Some((x, y));
+        checked.size = Some((width, height));
+    }
+    let width = whole(
+        get("max_width"),
+        u64::from(MAX_IMAGE_WIDTH),
+        ArgumentProblem::BadImageWidth,
+    )?
+    .unwrap_or(u64::from(DEFAULT_IMAGE_WIDTH));
+    if width < u64::from(MIN_IMAGE_WIDTH) {
+        return Err(ArgumentProblem::BadImageWidth);
+    }
+    checked.max_width = Some(width as u32);
+    Ok(())
+}
+
+const REGION_BYTES: usize = 32;
+
+/// `x,y,width,height` as four numbers up to [`MAX_COORDINATE`], the width and height at least 1.
+pub fn region_of(text: &[u8]) -> Option<[u32; 4]> {
+    let mut values = [0u32; 4];
+    let mut parts = text.split(|&byte| byte == b',');
+    for value in &mut values {
+        let part = parts.next()?;
+        if part.is_empty() || part.len() > 5 || !part.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        let number = part
+            .iter()
+            .fold(0u64, |number, &digit| number * 10 + u64::from(digit - b'0'));
+        if number > MAX_COORDINATE {
+            return None;
+        }
+        *value = number as u32;
+    }
+    (parts.next().is_none() && values[2] > 0 && values[3] > 0).then_some(values)
 }
 
 fn window_arguments<'a>(

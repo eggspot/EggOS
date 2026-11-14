@@ -1,5 +1,5 @@
 use crate::output::{FAILURE, Output};
-use crate::system::{CapturedRows, System};
+use crate::system::{CapturedRows, STANDARD_OUTPUT, System};
 use crate::window_input::parse;
 use crate::wm::{USAGE_STATUS, number, open_device, refused, usage};
 use core::ffi::CStr;
@@ -43,7 +43,54 @@ impl<S: System> PngSink for FileSink<'_, S> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Attempt {
+pub(crate) enum Source {
+    Window(u32),
+    Screen { region: [u32; 4], window: u32 },
+}
+
+impl Source {
+    fn rows<S: System>(
+        self,
+        system: &mut S,
+        device: usize,
+        first_row: u32,
+        row_count: u32,
+        pixels: &mut [u8],
+    ) -> Result<CapturedRows, Errno> {
+        match self {
+            Self::Window(window) => {
+                system.capture_window_rows(device, window, first_row, row_count, pixels)
+            }
+            Self::Screen { region, window } => {
+                system.capture_screen_rows(device, region, window, first_row, row_count, pixels)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Destination<'a> {
+    File(&'a CStr),
+    StandardOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Encoded {
+    pub size: CapturedRows,
+    pub factor: u32,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Failure {
+    Refused(Errno),
+    Unsized,
+    Create(Errno),
+    Failed(Attempt),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Attempt {
     Done(u64),
     TooBig,
     Resized(CapturedRows),
@@ -60,9 +107,21 @@ struct Buffers {
     sums: [u64; 3 * MAX_CAPTURE_WIDTH as usize],
 }
 
+impl Buffers {
+    fn new() -> Self {
+        Self {
+            work: EncoderWorkspace::new(),
+            band: [0; BAND_BYTES],
+            row: [0; MAX_CAPTURE_WIDTH as usize],
+            out: [0; MAX_CAPTURE_WIDTH as usize],
+            sums: [0; 3 * MAX_CAPTURE_WIDTH as usize],
+        }
+    }
+}
+
 struct Target {
     device: usize,
-    window: u32,
+    source: Source,
     size: CapturedRows,
     factor: u32,
     descriptor: usize,
@@ -105,9 +164,9 @@ fn encode_once<S: System>(system: &mut S, target: &Target, buffers: &mut Buffers
     let mut first_row = 0;
     while first_row < height {
         let wanted = rows_per_band.min(height - first_row);
-        let got = match encoder.sink_mut().system.capture_window_rows(
+        let got = match target.source.rows(
+            encoder.sink_mut().system,
             target.device,
-            target.window,
             first_row,
             wanted,
             &mut band[..wanted as usize * row_bytes],
@@ -150,7 +209,7 @@ fn default_name(window: u32, out: &mut [u8; NAME_CAPACITY]) -> &CStr {
     CStr::from_bytes_with_nul(&out[..length]).unwrap_or(c"window.png")
 }
 
-fn positive(text: Option<&[u8]>) -> Result<Option<u32>, ()> {
+pub(crate) fn positive(text: Option<&[u8]>) -> Result<Option<u32>, ()> {
     match text {
         None => Ok(None),
         Some(text) => number(text)
@@ -199,6 +258,72 @@ pub fn capture<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     status
 }
 
+pub(crate) fn encode_to<S: System>(
+    system: &mut S,
+    device: usize,
+    source: Source,
+    destination: Destination<'_>,
+    max_width: Option<u32>,
+    max_bytes: Option<u32>,
+) -> Result<Encoded, Failure> {
+    let mut size = source
+        .rows(system, device, 0, 0, &mut [])
+        .map_err(Failure::Refused)?;
+    let mut buffers = Buffers::new();
+    let mut factor = factor_for(size.width, max_width.unwrap_or(0));
+    let mut steps = 0;
+    let mut restarted = false;
+    let retries = matches!(destination, Destination::File(_));
+    loop {
+        if size.width == 0 || size.height == 0 || size.width > MAX_CAPTURE_WIDTH {
+            return Err(Failure::Unsized);
+        }
+        let descriptor = match destination {
+            Destination::File(file) => system
+                .create(file, FILE_MODE, true)
+                .map_err(Failure::Create)?,
+            Destination::StandardOutput => STANDARD_OUTPUT,
+        };
+        let target = Target {
+            device,
+            source,
+            size,
+            factor,
+            descriptor,
+            limit: max_bytes.map_or(u64::MAX, u64::from),
+        };
+        let attempt = encode_once(system, &target, &mut buffers);
+        if retries {
+            system.close(descriptor);
+        }
+        match attempt {
+            Attempt::Done(bytes) => {
+                return Ok(Encoded {
+                    size,
+                    factor,
+                    bytes,
+                });
+            }
+            Attempt::TooBig if retries && steps < MAX_SCALE_STEPS && factor < MAX_FACTOR => {
+                steps += 1;
+                factor += 1;
+                continue;
+            }
+            Attempt::Resized(new) if retries && !restarted => {
+                restarted = true;
+                size = new;
+                factor = factor_for(size.width, max_width.unwrap_or(0));
+                continue;
+            }
+            _ => {}
+        }
+        if let Destination::File(file) = destination {
+            let _ = system.remove(file, false);
+        }
+        return Err(Failure::Failed(attempt));
+    }
+}
+
 fn capture_to<S: System>(
     output: &mut Output<S>,
     device: usize,
@@ -208,87 +333,52 @@ fn capture_to<S: System>(
     max_width: Option<u32>,
     max_bytes: Option<u32>,
 ) -> i32 {
-    let mut size = match output
-        .system
-        .capture_window_rows(device, window, 0, 0, &mut [])
-    {
-        Ok(size) => size,
-        Err(errno) => return capture_refused(output, window_text, errno),
-    };
-    let mut buffers = Buffers {
-        work: EncoderWorkspace::new(),
-        band: [0; BAND_BYTES],
-        row: [0; MAX_CAPTURE_WIDTH as usize],
-        out: [0; MAX_CAPTURE_WIDTH as usize],
-        sums: [0; 3 * MAX_CAPTURE_WIDTH as usize],
-    };
-    let mut factor = factor_for(size.width, max_width.unwrap_or(0));
-    let mut steps = 0;
-    let mut restarted = false;
-    loop {
-        if size.width == 0 || size.height == 0 || size.width > MAX_CAPTURE_WIDTH {
+    let encoded = encode_to(
+        &mut output.system,
+        device,
+        Source::Window(window),
+        Destination::File(file),
+        max_width,
+        max_bytes,
+    );
+    let attempt = match encoded {
+        Ok(encoded) => {
+            report(output, window_text, &encoded, file);
+            return 0;
+        }
+        Err(Failure::Refused(errno)) => return capture_refused(output, window_text, errno),
+        Err(Failure::Unsized) => {
             output.error(&[window_text, b": the window's size can't be captured"]);
             return FAILURE;
         }
-        let descriptor = match output.system.create(file, FILE_MODE, true) {
-            Ok(descriptor) => descriptor,
-            Err(errno) => {
-                output.file_error(file, errno);
-                return FAILURE;
-            }
-        };
-        let target = Target {
-            device,
-            window,
-            size,
-            factor,
-            descriptor,
-            limit: max_bytes.map_or(u64::MAX, u64::from),
-        };
-        let attempt = encode_once(&mut output.system, &target, &mut buffers);
-        output.system.close(descriptor);
-        match attempt {
-            Attempt::Done(bytes) => {
-                report(output, window_text, &target, bytes, file);
-                return 0;
-            }
-            Attempt::TooBig if steps < MAX_SCALE_STEPS && factor < MAX_FACTOR => {
-                steps += 1;
-                factor += 1;
-                continue;
-            }
-            Attempt::Resized(new) if !restarted => {
-                restarted = true;
-                size = new;
-                factor = factor_for(size.width, max_width.unwrap_or(0));
-                continue;
-            }
-            _ => {}
+        Err(Failure::Create(errno)) => {
+            output.file_error(file, errno);
+            return FAILURE;
         }
-        let _ = output.system.remove(file, false);
-        return match attempt {
-            Attempt::TooBig => {
-                output.error(&[window_text, b": the PNG does not fit in --max-bytes"]);
-                FAILURE
-            }
-            Attempt::Resized(_) => {
-                output.error(&[window_text, b": the window kept changing size; try again"]);
-                FAILURE
-            }
-            Attempt::Refused(Errno::ENOENT) => {
-                output.error(&[b"window ", window_text, b" closed"]);
-                FAILURE
-            }
-            Attempt::Refused(errno) => capture_refused(output, window_text, errno),
-            Attempt::WriteFailed(errno) => {
-                output.file_error(file, errno);
-                FAILURE
-            }
-            _ => {
-                output.error(&[window_text, b": the capture failed"]);
-                FAILURE
-            }
-        };
+        Err(Failure::Failed(attempt)) => attempt,
+    };
+    match attempt {
+        Attempt::TooBig => {
+            output.error(&[window_text, b": the PNG does not fit in --max-bytes"]);
+            FAILURE
+        }
+        Attempt::Resized(_) => {
+            output.error(&[window_text, b": the window kept changing size; try again"]);
+            FAILURE
+        }
+        Attempt::Refused(Errno::ENOENT) => {
+            output.error(&[b"window ", window_text, b" closed"]);
+            FAILURE
+        }
+        Attempt::Refused(errno) => capture_refused(output, window_text, errno),
+        Attempt::WriteFailed(errno) => {
+            output.file_error(file, errno);
+            FAILURE
+        }
+        _ => {
+            output.error(&[window_text, b": the capture failed"]);
+            FAILURE
+        }
     }
 }
 
@@ -313,15 +403,9 @@ fn capture_refused<S: System>(output: &mut Output<S>, window_text: &[u8], errno:
     }
 }
 
-fn report<S: System>(
-    output: &mut Output<S>,
-    window_text: &[u8],
-    target: &Target,
-    bytes: u64,
-    file: &CStr,
-) {
-    let CapturedRows { width, height, .. } = target.size;
-    let (out_width, out_height) = scaled_size(width, height, target.factor);
+fn report<S: System>(output: &mut Output<S>, window_text: &[u8], encoded: &Encoded, file: &CStr) {
+    let CapturedRows { width, height, .. } = encoded.size;
+    let (out_width, out_height) = scaled_size(width, height, encoded.factor);
     output.write(b"window ");
     output.write(window_text);
     output.write(b": ");
@@ -336,13 +420,13 @@ fn report<S: System>(
             _ => b" (scale 1/",
         });
     }
-    output.write_number(u64::from(target.factor), 0);
+    output.write_number(u64::from(encoded.factor), 0);
     output.write(b"), ");
-    output.write_number(bytes, 0);
+    output.write_number(encoded.bytes, 0);
     output.write(b" bytes, ");
     output.write(file.to_bytes());
     output.write(b"; input coordinates are window pixels: multiply image coordinates by ");
-    output.write_number(u64::from(target.factor), 0);
+    output.write_number(u64::from(encoded.factor), 0);
     output.write(b"\n");
 }
 

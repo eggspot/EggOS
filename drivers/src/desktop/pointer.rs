@@ -152,6 +152,28 @@ const WORKING: [&[u8]; 19] = [
     b".............XXXXXXXXX",
 ];
 
+const CROSSHAIR: [&[u8]; 19] = [
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"oooooooo...oooooooo",
+    b"XXXXXXXX...XXXXXXXX",
+    b"oooooooo...oooooooo",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+    b"........oXo........",
+];
+
 /// The side of the square cursor image a display draws the pointer from: every shape fits it.
 pub const CURSOR_SIDE: u32 = 64;
 
@@ -183,6 +205,7 @@ fn bitmap(shape: PointerShape) -> Bitmap {
         PointerShape::Hand => (&HAND, Transform::None),
         PointerShape::Busy => (&HOURGLASS, Transform::None),
         PointerShape::Working => (&WORKING, Transform::None),
+        PointerShape::Crosshair => (&CROSSHAIR, Transform::None),
     };
     Bitmap { rows, transform }
 }
@@ -228,6 +251,7 @@ pub const fn size_and_hotspot(shape: PointerShape) -> ((u32, u32), (u32, u32)) {
         PointerShape::Hand => ((17, 19), (5, 0)),
         PointerShape::Busy => ((13, 16), (6, 8)),
         PointerShape::Working => ((22, 19), (0, 0)),
+        PointerShape::Crosshair => ((19, 19), (9, 9)),
     }
 }
 

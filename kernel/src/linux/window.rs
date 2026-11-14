@@ -144,8 +144,13 @@ pub fn ioctl<P: Platform>(
     if changes_settings && !may_change_desktop_settings(process) {
         return Err(Errno::EPERM);
     }
-    if matches!(request, Request::OpenApp { .. } | Request::GetLaunch { .. })
-        && !may_open_apps(process)
+    if matches!(
+        request,
+        Request::OpenApp { .. }
+            | Request::GetLaunch { .. }
+            | Request::ShowNotice { .. }
+            | Request::PickRegion
+    ) && !may_open_apps(process)
     {
         return Err(Errno::EPERM);
     }
@@ -154,7 +159,7 @@ pub fn ioctl<P: Platform>(
     }
     let reads = matches!(
         request,
-        Request::CaptureWindow { .. } | Request::GetTree { .. }
+        Request::CaptureWindow { .. } | Request::GetTree { .. } | Request::CaptureScreen { .. }
     );
     if reads && !may_capture_windows(process) {
         return Err(Errno::EPERM);
@@ -778,6 +783,55 @@ pub fn ioctl<P: Platform>(
                 return Err(Errno::EINVAL);
             }
         }
+        Request::CaptureScreen {
+            x,
+            y,
+            width,
+            height,
+            window,
+            first_row,
+            row_count,
+            buffer,
+            length,
+        } => {
+            let area = match window {
+                0 if width == 0 && height == 0 => ScreenArea::Whole,
+                0 => ScreenArea::Exactly(eggos_drivers::display::Rect::new(x, y, width, height)),
+                window => {
+                    let id = u16::try_from(window).map_err(|_| Errno::ENOENT)?;
+                    ScreenArea::Clipped(on_windows::<P, _>(|desktop, _, _, _| {
+                        desktop.window_rect(id).ok_or(WindowError::NoSuchWindow)
+                    })?)
+                }
+            };
+            let rows = capture_screen(process, area, first_row, row_count, buffer, length)?;
+            put_word(bytes, capture_reply::WIDTH, rows.width);
+            put_word(bytes, capture_reply::HEIGHT, rows.height);
+            put_word(bytes, capture_reply::ROWS, rows.copied);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::ShowNotice {
+            length,
+            duration_ms,
+        } => {
+            let length = (length as usize).min(eggos_drivers::desktop::protocol::NOTICE_TEXT_CAPACITY);
+            let start = eggos_drivers::desktop::protocol::NOTICE_TEXT;
+            let text = &bytes[start..start + length];
+            let mut copied = [0u8; eggos_drivers::desktop::protocol::NOTICE_TEXT_CAPACITY];
+            copied[..length].copy_from_slice(text);
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                desktop.show_text_notice(&copied[..length], duration_ms.clamp(500, 10_000), damage);
+                Ok(())
+            })?;
+        }
+        Request::PickRegion => {
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                desktop.open_picker(damage);
+                Ok(())
+            })?;
+        }
         Request::SetDeviceInputPreferences {
             device,
             pointer_speed,
@@ -1218,6 +1272,68 @@ fn capture<P: Platform>(
     Ok(CapturedRows {
         width: layout.width,
         height: layout.height,
+        copied: rows,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreenArea {
+    Whole,
+    Exactly(eggos_drivers::display::Rect),
+    Clipped(eggos_drivers::display::Rect),
+}
+
+fn capture_screen<P: Platform>(
+    process: &Process<P>,
+    area: ScreenArea,
+    first_row: u32,
+    row_count: u32,
+    buffer: u64,
+    length: u64,
+) -> Result<CapturedRows, Errno> {
+    let mode = crate::display::mode().ok_or(Errno::ENXIO)?;
+    let region = match area {
+        ScreenArea::Whole => mode.rect(),
+        ScreenArea::Exactly(region) if region.clipped(mode.width, mode.height) == region => region,
+        ScreenArea::Exactly(_) => return Err(Errno::EINVAL),
+        ScreenArea::Clipped(region) => region.clipped(mode.width, mode.height),
+    };
+    if region.is_empty() {
+        return Err(Errno::EINVAL);
+    }
+    let rows = region
+        .height
+        .checked_sub(first_row)
+        .ok_or(Errno::EINVAL)?
+        .min(row_count);
+    let row_bytes = region.width as usize * 4;
+    let needed = (rows as usize)
+        .checked_mul(row_bytes)
+        .filter(|&needed| needed as u64 <= length)
+        .ok_or(Errno::EINVAL)?;
+    buffer.checked_add(needed as u64).ok_or(Errno::EFAULT)?;
+    let mut line = Vec::new();
+    line.try_reserve_exact(row_bytes).map_err(|_| Errno::ENOMEM)?;
+    line.resize(row_bytes, 0u8);
+    for row in 0..rows {
+        let screen_row = (region.y + first_row + row) as usize;
+        crate::display::draw(|framebuffer| {
+            let stride = framebuffer.mode().width as usize;
+            let start = screen_row * stride + region.x as usize;
+            if let Some(pixels) = framebuffer.pixels().get(start..start + region.width as usize) {
+                for (bytes, pixel) in line.chunks_exact_mut(4).zip(pixels) {
+                    bytes.copy_from_slice(&pixel.to_ne_bytes());
+                }
+            }
+        })
+        .ok_or(Errno::ENXIO)?;
+        process
+            .write_user_memory(buffer + u64::from(row) * row_bytes as u64, &line)
+            .map_err(|_| Errno::EFAULT)?;
+    }
+    Ok(CapturedRows {
+        width: region.width,
+        height: region.height,
         copied: rows,
     })
 }

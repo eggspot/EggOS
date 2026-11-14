@@ -560,6 +560,7 @@ impl Desktop {
         self.draw_icon_menu(canvas);
         self.draw_notice(canvas);
         self.draw_end_app(canvas);
+        self.draw_picker(canvas);
     }
 
     pub(super) fn popups_overlap(&self, clip: Rect) -> bool {

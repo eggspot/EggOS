@@ -242,6 +242,14 @@ fn the_window_tools_run_wm_and_input_needs_run() {
         r#""minimum":{MIN_IMAGE_WIDTH},"maximum":{MAX_IMAGE_WIDTH},"default":{DEFAULT_IMAGE_WIDTH}"#
     )));
     assert!(CAPTURE_PATH.starts_with("/run/"));
+    let screen = find("screen_capture").unwrap();
+    assert_eq!(screen.grant, Some(Grant::View));
+    assert_eq!(screen.kind, Kind::ScreenCapture);
+    assert_eq!(
+        screen.twin.words,
+        ["-o", CAPTURE_PATH, "--max-bytes", "716800", "--json"]
+    );
+    assert_eq!(MAX_IMAGE_BYTES, 716_800);
     assert_eq!(find("wm_menu_list").unwrap().twin.words, ["menu"]);
     assert_eq!(
         find("wm_menu_choose").unwrap().twin.words,

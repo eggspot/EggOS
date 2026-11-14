@@ -161,7 +161,7 @@ impl Command {
         command
     }
 
-    fn program(path: &str, arguments: &[&[u8]]) -> Option<Self> {
+    pub(super) fn program(path: &str, arguments: &[&[u8]]) -> Option<Self> {
         let mut command = Self::from(path);
         arguments
             .iter()
