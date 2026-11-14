@@ -345,6 +345,12 @@ impl<'a> Editor<'a> {
         self.edit(self.selection(), typed, kind)
     }
 
+    /// Puts `text` in place of the selection, one step to undo (a terminal's paste, a
+    /// replacement; D582).
+    pub fn insert_text(&mut self, text: &[u8]) -> Result<(), Full> {
+        self.edit(self.selection(), text, Kind::Other)
+    }
+
     /// Backspace: takes out the selection, else the character before the caret.
     pub fn backspace(&mut self) {
         let range = match self.has_selection() {

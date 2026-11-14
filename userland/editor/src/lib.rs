@@ -15,6 +15,7 @@ pub mod editor_window;
 pub mod file;
 pub mod find;
 pub mod highlight;
+pub mod terminal;
 pub mod history;
 #[cfg(all(feature = "window", eggos_user))]
 pub mod program;

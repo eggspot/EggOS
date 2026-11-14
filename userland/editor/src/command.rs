@@ -3,22 +3,28 @@
 //! left running on its own (a session of its own, its standard streams on a pipe nobody reads
 //! from), so a terminal or an agent's command goes on. A file the editor would refuse is
 //! refused here with the editor's words; a path with nothing at it opens as a new file. With
-//! no desktop there is no editor to open: the command says so and names `cat` and `tee`.
+//! no desktop, or with `-t`, it edits in the terminal it runs in ([`crate::terminal`], D582);
+//! with neither a desktop nor a terminal it says so and names `cat` and `tee`.
 
 /// What the command was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command<'a> {
     /// Open this file, or an untitled document.
     Open(Option<&'a [u8]>),
+    /// Edit this file, or an untitled document, in the terminal (`-t`, `--terminal`).
+    Terminal(Option<&'a [u8]>),
     /// Print the usage.
     Help,
 }
 
 /// The command's usage.
-pub const USAGE: &str = "usage: edit [--] [<path>]\n";
-/// What the command says with no desktop.
-pub const NO_DESKTOP: &str = "edit: there is no desktop to open the Text Editor on; `cat` \
-                              shows a file and `tee` writes one\n";
+pub const USAGE: &str = "usage: edit [-t|--terminal] [--] [<path>]\n";
+/// What the command says with neither a desktop nor a terminal.
+pub const NO_DESKTOP: &str = "edit: there is no desktop to open the Text Editor on and no \
+                              terminal to edit in; `cat` shows a file and `tee` writes one\n";
+/// What the command says when asked for the terminal with none.
+pub const NO_TERMINAL: &str = "edit: there is no terminal to edit in; `cat` shows a file and \
+                               `tee` writes one\n";
 /// The program that shows the window.
 pub const EDITOR_PROGRAM: &str = "/bin/text-editor";
 /// Exit status of a refused or failed command.
@@ -28,6 +34,12 @@ pub const USAGE_ERROR: i32 = 2;
 
 /// The command `arguments` (after the program's name) ask for; `None` for a usage error.
 pub fn parse<'a>(arguments: &[&'a [u8]]) -> Option<Command<'a>> {
+    if let [b"-t" | b"--terminal", rest @ ..] = arguments {
+        return match parse(rest)? {
+            Command::Open(path) => Some(Command::Terminal(path)),
+            _ => None,
+        };
+    }
     match arguments {
         [] | [b"--"] => Some(Command::Open(None)),
         [b"--help" | b"-h"] => Some(Command::Help),
@@ -125,19 +137,26 @@ mod program {
             words[count] = argument.to_bytes();
             count += 1;
         }
-        let given = match parse(&words[..count]) {
+        let (given, asked_terminal) = match parse(&words[..count]) {
             Some(Command::Help) => {
                 write_all(STANDARD_OUTPUT, USAGE.as_bytes());
                 return 0;
             }
-            Some(Command::Open(given)) => given,
+            Some(Command::Open(given)) => (given, false),
+            Some(Command::Terminal(given)) => (given, true),
             None => {
                 write_all(STANDARD_ERROR, USAGE.as_bytes());
                 return USAGE_ERROR;
             }
         };
-        if !has_desktop() {
-            write_all(STANDARD_ERROR, NO_DESKTOP.as_bytes());
+        let in_terminal = asked_terminal || !has_desktop();
+        let terminal = crate::terminal::program::is_terminal(0) && crate::terminal::program::is_terminal(1);
+        if in_terminal && !terminal {
+            let refusal = match asked_terminal {
+                true => NO_TERMINAL,
+                false => NO_DESKTOP,
+            };
+            write_all(STANDARD_ERROR, refusal.as_bytes());
             return FAILED;
         }
         let path = match given.map(absolute) {
@@ -152,6 +171,9 @@ mod program {
                 Ok(_) | Err(OpenProblem::Missing) => {}
                 Err(problem) => return complain(file::open_message(name, problem).as_str()),
             }
+        }
+        if in_terminal {
+            return crate::terminal::program::run(startup, path.as_ref().map(Path::as_bytes));
         }
         if let Err(error) = start(startup, path.as_ref().map(Path::as_bytes)) {
             let mut line = Line::new();
@@ -196,6 +218,12 @@ mod tests {
         assert_eq!(parse(&[b"-"]), Some(Command::Open(Some(&b"-"[..]))));
         assert_eq!(parse(&[b"--help"]), Some(Command::Help));
         assert_eq!(parse(&[b"--"]), Some(Command::Open(None)));
+        assert_eq!(parse(&[b"-t"]), Some(Command::Terminal(None)));
+        assert_eq!(
+            parse(&[b"--terminal", b"--", b"-n.txt"]),
+            Some(Command::Terminal(Some(&b"-n.txt"[..])))
+        );
+        assert_eq!(parse(&[b"-t", b"-t"]), None);
         for wrong in [
             &[&b"-x"[..]][..],
             &[b"a", b"b"],
