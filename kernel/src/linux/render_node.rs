@@ -52,7 +52,24 @@ mod number {
     pub const GET_CAPS: u32 = 0x49;
     pub const RESOURCE_CREATE_BLOB: u32 = 0x4a;
     pub const CONTEXT_INIT: u32 = 0x4b;
+    pub const SYNCOBJ_CREATE: u32 = 0xbf;
+    pub const SYNCOBJ_DESTROY: u32 = 0xc0;
+    pub const SYNCOBJ_HANDLE_TO_FD: u32 = 0xc1;
+    pub const SYNCOBJ_FD_TO_HANDLE: u32 = 0xc2;
+    pub const SYNCOBJ_WAIT: u32 = 0xc3;
+    pub const SYNCOBJ_RESET: u32 = 0xc4;
+    pub const SYNCOBJ_SIGNAL: u32 = 0xc5;
 }
+
+mod syncobj_flag {
+    pub const CREATE_SIGNALED: u32 = 1;
+    pub const WAIT_ALL: u32 = 1;
+    pub const WAIT_FOR_SUBMIT: u32 = 2;
+    pub const SYNC_FILE: u32 = 1;
+}
+
+const MOST_SYNCOBJS_PER_CALL: u32 = 64;
+const SYNCOBJ_ENTRY_BYTES: u32 = 16;
 
 mod capability {
     pub const DUMB_BUFFER: u64 = 0x1;
@@ -187,7 +204,8 @@ pub fn ioctl<P: Platform>(
                 capability::PRIME => PRIME_IMPORT | PRIME_EXPORT,
                 capability::DUMB_BUFFER => 0,
                 capability::TIMESTAMP_MONOTONIC => 1,
-                capability::SYNCOBJ | capability::SYNCOBJ_TIMELINE => 0,
+                capability::SYNCOBJ => 1,
+                capability::SYNCOBJ_TIMELINE => 0,
                 _ => return Err(Errno::EINVAL),
             };
             argument.set_u64(8, value);
@@ -286,6 +304,58 @@ pub fn ioctl<P: Platform>(
         }
         number::RESOURCE_CREATE_BLOB => create_blob(process, context, &mut argument, address),
         number::CONTEXT_INIT => context_init(process, context, &argument),
+        number::SYNCOBJ_CREATE => {
+            let signalled = argument.u32_at(4) & syncobj_flag::CREATE_SIGNALED != 0;
+            let handle = context.create_syncobj(signalled).map_err(errno)?;
+            argument.set_u32(0, handle);
+            argument.write_back(process, address)
+        }
+        number::SYNCOBJ_DESTROY => match context.destroy_syncobj(argument.u32_at(0)) {
+            true => Ok(0),
+            false => Err(Errno::EINVAL),
+        },
+        number::SYNCOBJ_RESET | number::SYNCOBJ_SIGNAL => {
+            let fence = match request & 0xff {
+                number::SYNCOBJ_RESET => crate::rendering::UNSIGNALLED,
+                _ => 0,
+            };
+            for handle in syncobj_handles(process, argument.u64_at(0), argument.u32_at(8))? {
+                if !context.set_syncobj(handle, fence) {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            Ok(0)
+        }
+        number::SYNCOBJ_WAIT => syncobj_wait::<P>(process, context, &mut argument, address),
+        number::SYNCOBJ_HANDLE_TO_FD => {
+            if argument.u32_at(4) & syncobj_flag::SYNC_FILE == 0 {
+                return Err(Errno::EINVAL);
+            }
+            let fence = context.syncobj(argument.u32_at(0)).ok_or(Errno::EINVAL)?;
+            let fence = match fence {
+                crate::rendering::UNSIGNALLED => return Err(Errno::EINVAL),
+                fence => fence,
+            };
+            let descriptor = fence_file(process, thread, Fence::new(fence))?;
+            argument.set_u32(8, descriptor);
+            argument.write_back(process, address)
+        }
+        number::SYNCOBJ_FD_TO_HANDLE => {
+            if argument.u32_at(4) & syncobj_flag::SYNC_FILE == 0 {
+                return Err(Errno::EINVAL);
+            }
+            let descriptor = argument.u32_at(8) as i32;
+            let file = thread
+                .files()
+                .file(u64::try_from(descriptor).map_err(|_| Errno::EBADF)?)?;
+            let FileKind::GpuFence(fence) = file.kind() else {
+                return Err(Errno::EINVAL);
+            };
+            match context.set_syncobj(argument.u32_at(0), fence.sequence()) {
+                true => Ok(0),
+                false => Err(Errno::EINVAL),
+            }
+        }
         _ => Err(Errno::EINVAL),
     }
 }
@@ -478,13 +548,155 @@ fn execbuffer<P: Platform>(
             .map(|buffer| buffer.last_fence())
             .max()
             .unwrap_or(0),
-        _ => context.submit::<P>(&stream, &buffers).map_err(errno)?,
+        _ => {
+            let ring = match flags & execbuffer_flag::RING_IDX {
+                0 => None,
+                _ => {
+                    let ring = argument.u32_at(32);
+                    if ring >= context.rings() {
+                        return Err(Errno::EINVAL);
+                    }
+                    Some(ring as u8)
+                }
+            };
+            for (handle, _) in execbuffer_syncobjs(process, &argument, IN_SYNCOBJS)? {
+                let fence = context.syncobj(handle).ok_or(Errno::EINVAL)?;
+                if fence != crate::rendering::UNSIGNALLED {
+                    crate::rendering::wait_fence::<P>(fence, false).map_err(errno)?;
+                }
+            }
+            context.submit::<P>(&stream, &buffers, ring).map_err(errno)?
+        }
     };
+    for (handle, _) in execbuffer_syncobjs(process, &argument, OUT_SYNCOBJS)? {
+        if !context.set_syncobj(handle, fence) {
+            return Err(Errno::EINVAL);
+        }
+    }
     if flags & execbuffer_flag::FENCE_FD_OUT == 0 {
         return Ok(0);
     }
     let descriptor = fence_file(process, thread, Fence::new(fence))?;
     argument.set_u32(28, descriptor);
+    argument.write_back(process, address)
+}
+
+const IN_SYNCOBJS: (usize, usize) = (40, 48);
+const OUT_SYNCOBJS: (usize, usize) = (44, 56);
+const EXECBUFFER_WITH_SYNCOBJS: usize = 64;
+
+fn execbuffer_syncobjs<P: Platform>(
+    process: &Process<P>,
+    argument: &Argument,
+    (count_at, list_at): (usize, usize),
+) -> Result<Vec<(u32, u32)>, Errno> {
+    if argument.size < EXECBUFFER_WITH_SYNCOBJS {
+        return Ok(Vec::new());
+    }
+    let count = argument.u32_at(count_at);
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if count > MOST_SYNCOBJS_PER_CALL {
+        return Err(Errno::EINVAL);
+    }
+    let stride = match argument.u32_at(36) {
+        0 => SYNCOBJ_ENTRY_BYTES,
+        stride if stride >= 8 => stride,
+        _ => return Err(Errno::EINVAL),
+    };
+    let list = argument.u64_at(list_at);
+    let mut found = Vec::new();
+    found
+        .try_reserve_exact(count as usize)
+        .map_err(|_| Errno::ENOMEM)?;
+    for index in 0..u64::from(count) {
+        let mut entry = [0u8; 8];
+        process
+            .read_user_memory(list + index * u64::from(stride), &mut entry)
+            .map_err(|_| Errno::EFAULT)?;
+        let handle = u32::from_ne_bytes(entry[..4].try_into().unwrap_or_default());
+        let flags = u32::from_ne_bytes(entry[4..].try_into().unwrap_or_default());
+        found.push((handle, flags));
+    }
+    Ok(found)
+}
+
+fn syncobj_handles<P: Platform>(
+    process: &Process<P>,
+    list: u64,
+    count: u32,
+) -> Result<Vec<u32>, Errno> {
+    if count > MOST_SYNCOBJS_PER_CALL {
+        return Err(Errno::EINVAL);
+    }
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(count as usize)
+        .map_err(|_| Errno::ENOMEM)?;
+    for index in 0..u64::from(count) {
+        let mut word = [0u8; 4];
+        process
+            .read_user_memory(list + 4 * index, &mut word)
+            .map_err(|_| Errno::EFAULT)?;
+        handles.push(u32::from_ne_bytes(word));
+    }
+    Ok(handles)
+}
+
+fn syncobj_wait<P: Platform>(
+    process: &Process<P>,
+    context: &Context,
+    argument: &mut Argument,
+    address: u64,
+) -> Result<u64, Errno> {
+    let flags = argument.u32_at(20);
+    let handles = syncobj_handles(process, argument.u64_at(0), argument.u32_at(16))?;
+    let nowait = argument.u64_at(8) == 0;
+    let all = flags & syncobj_flag::WAIT_ALL != 0;
+    let mut fences = Vec::new();
+    fences
+        .try_reserve_exact(handles.len())
+        .map_err(|_| Errno::ENOMEM)?;
+    for &handle in &handles {
+        let fence = context.syncobj(handle).ok_or(Errno::EINVAL)?;
+        if fence == crate::rendering::UNSIGNALLED {
+            return match flags & syncobj_flag::WAIT_FOR_SUBMIT {
+                0 => Err(Errno::EINVAL),
+                _ => Err(Errno::ETIME),
+            };
+        }
+        fences.push(fence);
+    }
+    let passed = |fence: u64| crate::rendering::wait_fence::<P>(fence, true).is_ok();
+    let first = match all {
+        true => {
+            for &fence in &fences {
+                if !passed(fence) {
+                    if nowait {
+                        return Err(Errno::ETIME);
+                    }
+                    crate::rendering::wait_fence::<P>(fence, false).map_err(|_| Errno::ETIME)?;
+                }
+            }
+            0
+        }
+        false => match fences.iter().position(|&fence| passed(fence)) {
+            Some(index) => index,
+            None if nowait => return Err(Errno::ETIME),
+            None => {
+                let oldest = fences
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, fence)| **fence)
+                    .map_or(0, |(index, _)| index);
+                crate::rendering::wait_fence::<P>(fences[oldest], false)
+                    .map_err(|_| Errno::ETIME)?;
+                oldest
+            }
+        },
+    };
+    argument.set_u32(24, first as u32);
     argument.write_back(process, address)
 }
 
@@ -523,7 +735,11 @@ fn context_init<P: Platform>(
             context_parameter::CAPSET_ID => {
                 capset = u32::try_from(value).map_err(|_| Errno::EINVAL)?;
             }
-            context_parameter::NUM_RINGS | context_parameter::POLL_RINGS_MASK => {}
+            context_parameter::NUM_RINGS => {
+                let rings = u32::try_from(value).map_err(|_| Errno::EINVAL)?;
+                context.set_rings(rings).map_err(errno)?;
+            }
+            context_parameter::POLL_RINGS_MASK => {}
             context_parameter::DEBUG_NAME => {
                 name_length = read_name(process, value, &mut name)?;
             }

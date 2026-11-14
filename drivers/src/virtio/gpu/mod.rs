@@ -82,6 +82,11 @@ pub const THREE_D_BYTES: usize = STREAM_HEADERS + STREAM_SLOTS * STREAM_HEADER;
 /// The most bytes of capability set one answer carries.
 pub const CAPSET_ROOM: usize = THREE_D_STREAM - THREE_D_ANSWER - three_d::HEADER_BYTES;
 const FLAG_FENCE: u32 = 1;
+const FLAG_INFO_RING_IDX: u32 = 2;
+const RING_INDEX_OFFSET: usize = 20;
+const CURSOR_SLOT_BYTES: usize = 64;
+const CURSOR_SLOTS: usize = 2;
+const FLIGHTS: usize = 2;
 
 const HEADER_BYTES: usize = 24;
 const DISPLAY_INFO_BYTES: usize = HEADER_BYTES + 16 * 24;
@@ -159,12 +164,14 @@ pub struct VirtioGpu<T: Transport, M: DmaMemory> {
     control: M,
     queue: SplitQueue,
     cursor_queue: Option<SplitQueue>,
+    cursor_posted: usize,
+    cursor_next_slot: usize,
     display: Mode,
     scanout: Option<Scanout<M>>,
     cursor: Option<Cursor<M>>,
     fence_id: u64,
     unanswered: bool,
-    started: Option<StartedFlush>,
+    started: [Option<StartedFlush>; FLIGHTS],
     features: u64,
     three_d: Option<M>,
     posted_three_d: Option<PostedThreeD>,
@@ -196,6 +203,7 @@ struct StartedFlush {
     commands: usize,
     answered: usize,
     rects: usize,
+    heads: [u16; MAX_BATCH / FLIGHTS],
 }
 
 impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
@@ -258,12 +266,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             control,
             queue,
             cursor_queue,
+            cursor_posted: 0,
+            cursor_next_slot: 0,
             display: FALLBACK_MODE,
             scanout: None,
             cursor: None,
             fence_id: 0,
             unanswered: false,
-            started: None,
+            started: [None; FLIGHTS],
             features,
             three_d: None,
             posted_three_d: None,
@@ -464,7 +474,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         }
         self.header(0, command::GET_DISPLAY_INFO);
         self.put32(DISPLAY_INFO, 0);
-        self.post(REQUESTS, HEADER_BYTES, DISPLAY_INFO, DISPLAY_INFO_BYTES)?;
+        self.post(REQUESTS, HEADER_BYTES, DISPLAY_INFO, DISPLAY_INFO_BYTES).map(|_| ())?;
         self.wait(1, keep_waiting)?;
         let mut modes = [None; MAX_SCANOUTS];
         if self.get32(DISPLAY_INFO) != response::OK_DISPLAY_INFO {
@@ -671,13 +681,88 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         at: (u32, u32),
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), Error> {
-        self.send_cursor(
-            command::MOVE_CURSOR,
-            CURSOR_RESOURCE_ID,
-            (0, 0),
-            at,
-            keep_waiting,
-        )
+        self.post_cursor_move(at, keep_waiting)
+    }
+
+    /// Posts a `MOVE_CURSOR` without waiting for its answer (D586): moves alternate between
+    /// two request slots, so the device may still read one while the next is written; only
+    /// when both are in flight does a move wait for the older, polling while `keep_waiting`
+    /// says to, or for the cursor queue's interrupt through [`Self::collect_cursor`].
+    pub fn post_cursor_move(
+        &mut self,
+        at: (u32, u32),
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        if self.unanswered {
+            return Err(Error::TimedOut);
+        }
+        if self.cursor.as_ref().is_none_or(|cursor| !cursor.attached) {
+            return Err(Error::NoCursor);
+        }
+        self.collect_cursor();
+        while self.cursor_posted >= CURSOR_SLOTS {
+            if !keep_waiting() {
+                self.unanswered = true;
+                return Err(Error::TimedOut);
+            }
+            self.collect_cursor();
+        }
+        let slot = self.cursor_next_slot;
+        self.cursor_next_slot = (slot + 1) % CURSOR_SLOTS;
+        let request = CURSOR_REQUEST + slot * CURSOR_SLOT_BYTES;
+        let fields = [
+            (0, command::MOVE_CURSOR),
+            (4, 0),
+            (16, 0),
+            (20, 0),
+            (24, SCANOUT_ID),
+            (28, at.0),
+            (32, at.1),
+            (36, 0),
+            (40, CURSOR_RESOURCE_ID),
+            (44, 0),
+            (48, 0),
+            (52, 0),
+        ];
+        for (offset, value) in fields {
+            self.put32(request + offset, value);
+        }
+        self.put64(request + 8, 0);
+        let addr = self
+            .control
+            .dma_addr()
+            .checked_add(request as u64)
+            .ok_or(Error::MemoryTooSmall)?;
+        let queue = self.cursor_queue.as_mut().ok_or(Error::NoCursor)?;
+        queue.submit(&[Buffer {
+            addr,
+            len: UPDATE_CURSOR_BYTES as u32,
+            device_writes: false,
+        }])?;
+        if queue.should_notify() {
+            self.transport.notify(CURSOR_QUEUE);
+        }
+        self.cursor_posted += 1;
+        Ok(())
+    }
+
+    /// Takes the cursor queue's answers that came: how many cursor commands are still in
+    /// flight.
+    pub fn collect_cursor(&mut self) -> usize {
+        if let Some(queue) = self.cursor_queue.as_mut() {
+            while queue.pop_used().is_some() {
+                self.cursor_posted = self.cursor_posted.saturating_sub(1);
+            }
+        }
+        self.cursor_posted
+    }
+
+    /// Has the device interrupt when it answers a cursor command, once the kernel connected
+    /// its interrupt (D586).
+    pub fn interrupt_on_cursor_answers(&mut self) {
+        if let Some(queue) = self.cursor_queue.as_mut() {
+            queue.enable_used_notifications();
+        }
     }
 
     /// Hides the cursor: an `UPDATE_CURSOR` with no resource.
@@ -704,6 +789,12 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         }
         if self.cursor.as_ref().is_none_or(|cursor| !cursor.attached) {
             return Err(Error::NoCursor);
+        }
+        while self.collect_cursor() > 0 {
+            if !keep_waiting() {
+                self.unanswered = true;
+                return Err(Error::TimedOut);
+            }
         }
         let fields = [
             (0, command),
@@ -813,13 +904,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     /// bounding box; [`Self::finish_flush`] collects the answers, so the caller may sleep on the
     /// device's interrupt in between. Returns how many rectangles it posted (0 when none shows).
     pub fn start_flush(&mut self, rects: &[Rect]) -> Result<usize, Error> {
-        if self.started.is_some() {
-            return Err(Error::TimedOut);
-        }
+        let Some(flight) = self.started.iter().position(Option::is_none) else {
+            return Err(Error::QueueFull);
+        };
         let mode = self.mode().ok_or(Error::NoScanout)?;
         let resource = self.shown().map_or(RESOURCE_ID, |scanout| scanout.resource);
-        let room = (MAX_BATCH / 2)
-            .min(usize::from(self.queue.size() / 4))
+        let per_flight = MAX_BATCH / FLIGHTS;
+        let room = (per_flight / 2)
+            .min(usize::from(self.queue.size() / (2 * FLIGHTS as u16)))
             .max(1);
         let mut chunk = [Rect::default(); MAX_BATCH];
         let mut count = 0;
@@ -839,8 +931,9 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         if count == 0 {
             return Ok(0);
         }
+        let first_slot = flight * per_flight;
         for (index, rect) in chunk[..count].iter().enumerate() {
-            let request = self.header(index, command::TRANSFER_TO_HOST_2D);
+            let request = self.header(first_slot + index, command::TRANSFER_TO_HOST_2D);
             self.put_rect(request + 24, *rect);
             let offset = rect.y as u64 * mode.stride() as u64
                 + u64::from(rect.x) * u64::from(BYTES_PER_PIXEL);
@@ -849,56 +942,62 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             self.put32(request + 52, 0);
         }
         for (index, rect) in chunk[..count].iter().enumerate() {
-            let request = self.header(count + index, command::RESOURCE_FLUSH);
+            let request = self.header(first_slot + count + index, command::RESOURCE_FLUSH);
             self.put_rect(request + 24, *rect);
             self.put32(request + 40, resource);
             self.put32(request + 44, 0);
         }
+        let mut started = StartedFlush {
+            commands: 2 * count,
+            answered: 0,
+            rects: count,
+            heads: [u16::MAX; MAX_BATCH / FLIGHTS],
+        };
         for index in 0..2 * count {
-            let response = RESPONSES + index * RESPONSE_SLOT;
+            let slot = first_slot + index;
+            let response = RESPONSES + slot * RESPONSE_SLOT;
             self.put32(response, 0);
             let bytes = match index < count {
                 true => TRANSFER_TO_HOST_2D_BYTES,
                 false => RESOURCE_FLUSH_BYTES,
             };
-            let posted = self.post(
-                REQUESTS + index * REQUEST_SLOT,
-                bytes,
-                response,
-                HEADER_BYTES,
-            );
-            if let Err(error) = posted {
-                self.unanswered |= index > 0;
-                return Err(error);
+            let posted = self.post(REQUESTS + slot * REQUEST_SLOT, bytes, response, HEADER_BYTES);
+            match posted {
+                Ok(head) => started.heads[index] = head,
+                Err(error) => {
+                    self.unanswered |= index > 0;
+                    return Err(error);
+                }
             }
         }
         if self.queue.should_notify() {
             self.transport.notify(CONTROL_QUEUE);
         }
-        self.started = Some(StartedFlush {
-            commands: 2 * count,
-            answered: 0,
-            rects: count,
-        });
+        self.started[flight] = Some(started);
         Ok(count)
     }
 
-    /// Collects the answers of the flush [`Self::start_flush`] posted: `Some` with its count of
-    /// rectangles once every command is answered, `None` while some are not.
+    /// Collects the answers of the flushes [`Self::start_flush`] posted (D586: up to two in
+    /// flight): `Some` with the rectangles of the oldest finished one once every command of
+    /// one is answered, `None` while none is finished.
     pub fn finish_flush(&mut self) -> Result<Option<usize>, Error> {
-        if self.started.is_none() {
+        if self.started.iter().all(Option::is_none) {
             return Ok(Some(0));
         }
         self.collect();
-        let Some(started) = self.started else {
-            return Ok(Some(0));
-        };
-        if started.answered < started.commands {
+        let per_flight = MAX_BATCH / FLIGHTS;
+        let finished = self
+            .started
+            .iter()
+            .position(|flight| flight.is_some_and(|started| started.answered >= started.commands));
+        let Some(flight) = finished else {
             return Ok(None);
-        }
-        self.started = None;
+        };
+        let Some(started) = self.started[flight].take() else {
+            return Ok(None);
+        };
         for index in 0..started.commands {
-            let answer = self.get32(RESPONSES + index * RESPONSE_SLOT);
+            let answer = self.get32(RESPONSES + (flight * per_flight + index) * RESPONSE_SLOT);
             if answer != response::OK_NODATA {
                 return Err(Error::CommandFailed(answer));
             }
@@ -906,11 +1005,14 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         Ok(Some(started.rects))
     }
 
-    /// Gives up on a started flush that was never answered: the device is treated as wedged,
-    /// as when a wait times out.
+    /// Gives up on the started flushes that were never answered: the device is treated as
+    /// wedged, as when a wait times out.
     pub fn abandon_flush(&mut self) {
-        if self.started.take().is_some() {
+        if self.started.iter_mut().any(|flight| flight.take().is_some()) {
             self.unanswered = true;
+        }
+        for flight in &mut self.started {
+            *flight = None;
         }
     }
 
@@ -922,7 +1024,12 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
 
     /// Whether a flush is posted and not yet collected.
     pub fn flush_started(&self) -> bool {
-        self.started.is_some()
+        self.started.iter().any(Option::is_some)
+    }
+
+    /// Whether another flush may be posted: fewer than two are in flight (D586).
+    pub fn can_start_flush(&self) -> bool {
+        self.started.iter().any(Option::is_none)
     }
 
     /// Whether the device takes 3D commands (`VIRTIO_GPU_F_VIRGL`).
@@ -998,7 +1105,13 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     /// command stream without waiting, and returns its fence: the device answers it once it
     /// finished it, in any order with the other streams ([`Self::oldest_stream`]). Refused
     /// while the slot is in flight and while the device is treated as wedged.
-    pub fn start_stream(&mut self, slot: usize, context: u32, length: u32) -> Result<u64, Error> {
+    pub fn start_stream(
+        &mut self,
+        slot: usize,
+        context: u32,
+        length: u32,
+        ring: Option<u8>,
+    ) -> Result<u64, Error> {
         if self.unanswered {
             return Err(Error::TimedOut);
         }
@@ -1022,6 +1135,12 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
             fence,
             &mut request,
         );
+        if let Some(ring) = ring {
+            let flags = u32::from_le_bytes([request[4], request[5], request[6], request[7]])
+                | FLAG_INFO_RING_IDX;
+            request[4..8].copy_from_slice(&flags.to_le_bytes());
+            request[RING_INDEX_OFFSET] = ring;
+        }
         let header = STREAM_HEADERS + slot * STREAM_HEADER;
         // SAFETY: the slot's header lies inside the memory, which holds at least
         // `THREE_D_BYTES`, owned by this driver; the device does not own it now, as no stream
@@ -1113,12 +1232,19 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 }
                 continue;
             }
-            match (self.posted_three_d.as_mut(), self.started.as_mut()) {
-                (Some(posted), _) if posted.head == used.head && !posted.answered => {
-                    posted.answered = true;
-                }
-                (_, Some(started)) => started.answered += 1,
-                _ => others += 1,
+            if let Some(posted) = self.posted_three_d.as_mut()
+                && posted.head == used.head
+                && !posted.answered
+            {
+                posted.answered = true;
+                continue;
+            }
+            let flight = self.started.iter_mut().flatten().find(|started| {
+                started.heads[..started.commands].contains(&used.head)
+            });
+            match flight {
+                Some(started) => started.answered += 1,
+                None => others += 1,
             }
         }
         others
@@ -1132,7 +1258,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         if self.unanswered {
             return Err(Error::TimedOut);
         }
-        if self.started.is_some() || self.posted_three_d.is_some() {
+        if self.flush_started() || self.posted_three_d.is_some() {
             return Err(Error::QueueFull);
         }
         let (pointer, base) = match self.three_d.as_ref() {
@@ -1313,7 +1439,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
     fn query_display(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<Mode, Error> {
         self.header(0, command::GET_DISPLAY_INFO);
         self.put32(DISPLAY_INFO, 0);
-        self.post(REQUESTS, HEADER_BYTES, DISPLAY_INFO, DISPLAY_INFO_BYTES)?;
+        self.post(REQUESTS, HEADER_BYTES, DISPLAY_INFO, DISPLAY_INFO_BYTES).map(|_| ())?;
         self.wait(1, keep_waiting)?;
         if self.get32(DISPLAY_INFO) != response::OK_DISPLAY_INFO {
             return Ok(FALLBACK_MODE);
@@ -1364,7 +1490,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
         request_bytes: usize,
         response: usize,
         response_bytes: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<u16, Error> {
         if self.unanswered {
             return Err(Error::TimedOut);
         }
@@ -1389,7 +1515,7 @@ impl<T: Transport, M: DmaMemory> VirtioGpu<T, M> {
                 device_writes: true,
             },
         ];
-        self.queue.submit(&chain).map(|_| ())
+        self.queue.submit(&chain)
     }
 
     fn wait(&mut self, count: usize, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {

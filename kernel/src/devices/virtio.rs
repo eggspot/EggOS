@@ -575,9 +575,10 @@ mod gpu {
             slot: usize,
             context: u32,
             length: u32,
+            ring: Option<u8>,
         ) -> Result<u64, &'static str> {
             self.gpu
-                .start_stream(slot, context, length)
+                .start_stream(slot, context, length, ring)
                 .map_err(virtio::Error::description)
         }
 
@@ -788,6 +789,7 @@ mod gpu {
             .filter(|connected| *connected)
             .map(|_| {
                 gpu.interrupt_on_answers();
+                gpu.interrupt_on_cursor_answers();
                 &GPU_EVENTS
             });
         let installed = |gpu, mode| GpuScanout {

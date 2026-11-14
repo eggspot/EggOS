@@ -56,8 +56,13 @@ pub trait Renderer {
     fn stream(&mut self, slot: usize) -> &mut [u8];
     /// Posts the first `length` bytes of `slot`'s stream as `context`'s command stream without
     /// waiting, and returns its fence.
-    fn start_stream(&mut self, slot: usize, context: u32, length: u32)
-    -> Result<u64, &'static str>;
+    fn start_stream(
+        &mut self,
+        slot: usize,
+        context: u32,
+        length: u32,
+        ring: Option<u8>,
+    ) -> Result<u64, &'static str>;
     /// Collects the answers that came: the fence of the oldest stream still in flight.
     fn oldest_stream(&mut self) -> Option<u64>;
     /// Gives up on the streams the device never answered.
@@ -492,7 +497,16 @@ struct ContextState {
     created: bool,
     buffers: BTreeMap<u32, Arc<Buffer>>,
     next_handle: u32,
+    rings: u32,
+    syncobjs: BTreeMap<u32, u64>,
+    next_syncobj: u32,
 }
+
+/// A sync object's fence before anything was submitted for it: not signalled (D586).
+pub const UNSIGNALLED: u64 = u64::MAX;
+
+/// The most rings a context may ask for.
+pub const MOST_RINGS: u32 = 64;
 
 /// One opener's rendering context: its device context, made on first use or by
 /// [`Context::initialize`], and its buffers by handle.
@@ -544,6 +558,51 @@ impl Context {
             }),
             end: end_context::<P>,
         }))
+    }
+
+    /// Sets how many rings (per-context timelines) the context's streams may name (D586).
+    pub fn set_rings(&self, rings: u32) -> Result<(), RenderError> {
+        if rings > MOST_RINGS {
+            return Err(RenderError::Invalid);
+        }
+        self.state.lock().rings = rings;
+        Ok(())
+    }
+
+    /// How many rings the context has.
+    pub fn rings(&self) -> u32 {
+        self.state.lock().rings
+    }
+
+    /// A new sync object (D586), signalled when `signalled`, else waiting for a fence: its
+    /// handle.
+    pub fn create_syncobj(&self, signalled: bool) -> Result<u32, RenderError> {
+        let mut state = self.state.lock();
+        let handle = state.next_syncobj.max(1);
+        state.next_syncobj = handle.checked_add(1).ok_or(RenderError::NoMemory)?;
+        state.syncobjs.insert(handle, if signalled { 0 } else { UNSIGNALLED });
+        Ok(handle)
+    }
+
+    /// Lets go of sync object `handle`; `false` for a handle it does not have.
+    pub fn destroy_syncobj(&self, handle: u32) -> bool {
+        self.state.lock().syncobjs.remove(&handle).is_some()
+    }
+
+    /// Sync object `handle`'s fence ([`UNSIGNALLED`] before one was set).
+    pub fn syncobj(&self, handle: u32) -> Option<u64> {
+        self.state.lock().syncobjs.get(&handle).copied()
+    }
+
+    /// Sets sync object `handle`'s fence: 0 signals it, [`UNSIGNALLED`] resets it.
+    pub fn set_syncobj(&self, handle: u32, fence: u64) -> bool {
+        match self.state.lock().syncobjs.get_mut(&handle) {
+            Some(held) => {
+                *held = fence;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Makes the device context for capability set `capset` (0 for the device's default),
@@ -680,7 +739,7 @@ impl Context {
             .checked_next_multiple_of(FRAME_SIZE)
             .ok_or(RenderError::NoMemory)?;
         if !stream.is_empty() {
-            let fence = self.submit::<P>(stream, &[])?;
+            let fence = self.submit::<P>(stream, &[], None)?;
             wait_fence::<P>(fence, false)?;
         }
         let resource = NEXT_RESOURCE.fetch_add(1, Ordering::Relaxed);
@@ -786,6 +845,7 @@ impl Context {
         &self,
         stream: &[u8],
         buffers: &[Arc<Buffer>],
+        ring: Option<u8>,
     ) -> Result<u64, RenderError> {
         self.ensure_created::<P>()?;
         let length = u32::try_from(stream.len()).map_err(|_| RenderError::Invalid)?;
@@ -803,7 +863,7 @@ impl Context {
                 };
                 target.copy_from_slice(stream);
                 Ok(renderer
-                    .start_stream(slot, context, length)
+                    .start_stream(slot, context, length, ring)
                     .inspect(|&fence| {
                         OLDEST_IN_FLIGHT.fetch_min(fence, Ordering::SeqCst);
                     }))

@@ -487,6 +487,8 @@ impl Errno {
     pub const ENOSYS: Self = Self(38);
     /// Timed out: a wait's deadline came first (`futex`).
     pub const ETIMEDOUT: Self = Self(110);
+    /// The time ran out: a DRM sync object's wait (D586).
+    pub const ETIME: Self = Self(62);
     /// Not supported: here, an unknown flag with `MAP_SHARED_VALIDATE` (`mmap`), or a clock
     /// `clock_nanosleep` cannot sleep on, or out-of-band data or another option level on a
     /// socket (D138).
