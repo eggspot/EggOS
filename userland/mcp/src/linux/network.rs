@@ -9,6 +9,7 @@
 //! with no bound but the person's grants. The process changes no grant: it reads the store
 //! before every request, and only counts tries in, or removes, the pairing file.
 
+mod advertise;
 mod relay;
 
 use super::{
@@ -1163,7 +1164,8 @@ pub fn run() -> i32 {
         private_key: &key,
         protocol: b"http/1.1",
     };
-    let listener = match listen(port()) {
+    let port_number = port();
+    let listener = match listen(port_number) {
         Ok(listener) => listener,
         Err(error) => {
             say(&[
@@ -1228,29 +1230,44 @@ pub fn run() -> i32 {
         },
     };
     let mut connections: [Option<Connection>; MAX_CONNECTIONS] = [None; MAX_CONNECTIONS];
+    let mut advertiser = advertise::Advertiser::start(port_number, identity.certificate);
     loop {
         let mut watched = [PollDescriptor {
             descriptor: -1,
             events: POLLIN,
             returned_events: 0,
-        }; 1 + MAX_CONNECTIONS];
+        }; 2 + MAX_CONNECTIONS];
         if connections.iter().flatten().count() < MAX_CONNECTIONS {
             watched[0].descriptor = listener as i32;
         }
+        if let Some(advertiser) = &mut advertiser {
+            advertiser.tick();
+            watched[1].descriptor = advertiser.socket() as i32;
+        }
         for (index, connection) in connections.iter().enumerate() {
             if let Some(connection) = connection {
-                watched[1 + index].descriptor = connection.control as i32;
+                watched[2 + index].descriptor = connection.control as i32;
             }
         }
+        let wait = advertiser.as_ref().map(|advertiser| {
+            let left = advertiser.timeout_ms();
+            [(left / 1000) as i64, (left % 1000 * 1_000_000) as i64]
+        });
+        let wait_pointer = wait.as_ref().map_or(0, |wait| wait.as_ptr() as usize);
         match call(
             number::PPOLL,
-            [watched.as_mut_ptr() as usize, watched.len(), 0, 0, 8, 0],
+            [watched.as_mut_ptr() as usize, watched.len(), wait_pointer, 0, 8, 0],
         ) {
             Ok(_) => {}
             Err(_) => continue,
         }
+        if watched[1].returned_events & POLLIN != 0
+            && let Some(advertiser) = &mut advertiser
+        {
+            advertiser.readable();
+        }
         for index in 0..MAX_CONNECTIONS {
-            if watched[1 + index].returned_events & (POLLIN | POLLHUP | POLLERR) != 0 {
+            if watched[2 + index].returned_events & (POLLIN | POLLHUP | POLLERR) != 0 {
                 answer_connection(&mut connections, index, &mut exchange, &mut input[..]);
             }
         }

@@ -26,6 +26,7 @@ pub mod interface;
 pub mod ip;
 pub mod ipv4;
 pub mod ipv6;
+pub mod mdns;
 pub mod ndp;
 pub mod sntp;
 pub mod status;

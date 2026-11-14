@@ -71,6 +71,12 @@ impl Ipv4Address {
         self.0[0] & 0xf0 == 0xe0
     }
 
+    /// The Ethernet address frames to this multicast address go to: `01:00:5e` and its low 23
+    /// bits (RFC 1112).
+    pub fn multicast_mac(self) -> crate::ethernet::MacAddress {
+        crate::ethernet::MacAddress([0x01, 0x00, 0x5e, self.0[1] & 0x7f, self.0[2], self.0[3]])
+    }
+
     /// Parses four decimal numbers from 0 to 255 separated by dots, with no sign and no more
     /// than three digits each.
     pub fn parse(text: &[u8]) -> Option<Self> {

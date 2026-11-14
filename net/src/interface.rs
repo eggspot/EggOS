@@ -106,8 +106,14 @@ pub enum SendError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NextHop {
     Broadcast,
+    Multicast(Ipv4Address),
     Via(Ipv4Address),
 }
+
+/// The most IPv4 multicast groups an interface joins besides all-hosts.
+pub const MAX_IPV4_GROUPS: usize = 8;
+/// The all-hosts group every IPv4 interface is in, `224.0.0.1`.
+pub const ALL_HOSTS: Ipv4Address = Ipv4Address::new(224, 0, 0, 1);
 
 #[derive(Debug, Clone, Copy)]
 struct Pending {
@@ -134,6 +140,7 @@ pub struct Interface {
     frame: [u8; ethernet::MAX_FRAME_BYTES],
     ipv6: ndp::Addresses,
     neighbours6: ndp::Cache,
+    groups4: [Option<Ipv4Address>; MAX_IPV4_GROUPS],
 }
 
 impl Interface {
@@ -154,6 +161,34 @@ impl Interface {
             frame: [0; ethernet::MAX_FRAME_BYTES],
             ipv6: ndp::Addresses::new(mac),
             neighbours6: ndp::Cache::default(),
+            groups4: [None; MAX_IPV4_GROUPS],
+        }
+    }
+
+    /// Joins the IPv4 multicast `group`, so datagrams sent to it are delivered; `false` when it
+    /// is no multicast address or no room is left.
+    pub fn join_group(&mut self, group: Ipv4Address) -> bool {
+        if !group.is_multicast() {
+            return false;
+        }
+        if group == ALL_HOSTS || self.groups4.contains(&Some(group)) {
+            return true;
+        }
+        match self.groups4.iter_mut().find(|slot| slot.is_none()) {
+            Some(slot) => {
+                *slot = Some(group);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Leaves the IPv4 multicast `group`.
+    pub fn leave_group(&mut self, group: Ipv4Address) {
+        for slot in &mut self.groups4 {
+            if *slot == Some(group) {
+                *slot = None;
+            }
         }
     }
 
@@ -323,6 +358,8 @@ impl Interface {
 
     fn is_for_us(&self, destination: Ipv4Address) -> bool {
         destination.is_broadcast()
+            || destination == ALL_HOSTS
+            || self.groups4.contains(&Some(destination))
             || self.subnet().is_some_and(|subnet| {
                 destination == subnet.address || destination == subnet.broadcast()
             })
@@ -344,7 +381,11 @@ impl Interface {
             return Event::Nothing;
         };
         let ipv6_multicast = header.destination.0[..2] == [0x33, 0x33];
-        if header.destination != self.mac && !header.destination.is_broadcast() && !ipv6_multicast
+        let ipv4_multicast = header.destination.0[..3] == [0x01, 0x00, 0x5e];
+        if header.destination != self.mac
+            && !header.destination.is_broadcast()
+            && !ipv6_multicast
+            && !ipv4_multicast
         {
             self.counters.received_dropped += 1;
             return Event::Nothing;
@@ -776,7 +817,7 @@ impl Interface {
     ) -> Result<(), SendError> {
         let source = self.address().ok_or(SendError::NoAddress)?;
         let next_hop = match self.route(destination, segment.len())? {
-            NextHop::Broadcast => return Err(SendError::NoRoute),
+            NextHop::Broadcast | NextHop::Multicast(_) => return Err(SendError::NoRoute),
             hop => hop,
         };
         let carried = &mut self.frame[PAYLOAD_AT..PAYLOAD_AT + segment.len()];
@@ -814,7 +855,10 @@ impl Interface {
         if destination == lease.subnet.broadcast() {
             return Ok(NextHop::Broadcast);
         }
-        if destination.is_multicast() || destination.is_unspecified() {
+        if destination.is_multicast() {
+            return Ok(NextHop::Multicast(destination));
+        }
+        if destination.is_unspecified() {
             return Err(SendError::NoRoute);
         }
         if lease.subnet.contains(destination) {
@@ -843,11 +887,12 @@ impl Interface {
         let length = IP_AT + header_bytes + payload_bytes;
         let destination = match next_hop {
             NextHop::Broadcast => Some(MacAddress::BROADCAST),
+            NextHop::Multicast(group) => Some(group.multicast_mac()),
             NextHop::Via(hop) => self.arp.lookup(hop, now_ms),
         };
         let next_hop = match next_hop {
             NextHop::Via(hop) => Some(IpAddress::V4(hop)),
-            NextHop::Broadcast => None,
+            NextHop::Broadcast | NextHop::Multicast(_) => None,
         };
         let header = ethernet::Header {
             destination: destination.unwrap_or(MacAddress::ZERO),

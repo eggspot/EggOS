@@ -111,6 +111,12 @@ pub const SOCKADDR_IN_SIZE: usize = 16;
 const AF_UNSPEC: u16 = 0;
 const SOL_IP: u32 = 0;
 const IP_TTL: u32 = 2;
+const IP_MULTICAST_IF: u32 = 32;
+const IP_MULTICAST_TTL: u32 = 33;
+const IP_MULTICAST_LOOP: u32 = 34;
+const IP_ADD_MEMBERSHIP: u32 = 35;
+const IP_DROP_MEMBERSHIP: u32 = 36;
+const MEMBERSHIP_REQUEST_SIZE: usize = 8;
 const SO_BROADCAST: u32 = 6;
 const SO_REUSEPORT: u32 = 15;
 const MSG_TRUNC: u32 = 0x20;
@@ -667,6 +673,24 @@ pub(super) fn setsockopt<P: Platform>(
             }
             Ok(0)
         }
+        (SOL_IP, IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP) => {
+            if socket.family != Family::V4 || length < MEMBERSHIP_REQUEST_SIZE {
+                return Err(Errno::EINVAL);
+            }
+            let mut request = [0u8; MEMBERSHIP_REQUEST_SIZE];
+            process
+                .read_user_memory(value, &mut request)
+                .map_err(|_| Errno::EFAULT)?;
+            let group = Ipv4Address::new(request[0], request[1], request[2], request[3]);
+            if !group.is_multicast() {
+                return Err(Errno::EINVAL);
+            }
+            match crate::net::set_group(group, name as u32 == IP_ADD_MEMBERSHIP) {
+                true => Ok(0),
+                false => Err(Errno::ENOBUFS),
+            }
+        }
+        (SOL_IP, IP_MULTICAST_IF | IP_MULTICAST_TTL | IP_MULTICAST_LOOP) => Ok(0),
         _ => Err(Errno::ENOPROTOOPT),
     }
 }

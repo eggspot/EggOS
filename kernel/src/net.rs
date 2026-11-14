@@ -596,6 +596,20 @@ pub fn is_local(address: impl Into<IpAddress>) -> bool {
     }
 }
 
+/// Joins (`join`) or leaves the IPv4 multicast `group` on every adapter (D577); `false` when
+/// an adapter has no room for another group.
+pub fn set_group(group: Ipv4Address, join: bool) -> bool {
+    let mut adapters = ADAPTERS.lock();
+    let mut joined = true;
+    for adapter in adapters.iter_mut() {
+        match join {
+            true => joined &= adapter.interface.join_group(group),
+            false => adapter.interface.leave_group(group),
+        }
+    }
+    joined
+}
+
 /// The default adapter's address, if it has one.
 pub fn local_address() -> Option<Ipv4Address> {
     default_adapter(&ADAPTERS.lock()).and_then(|adapter| adapter.interface.address())
