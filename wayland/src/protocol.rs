@@ -63,6 +63,7 @@ pub enum Interface {
     ToplevelIcon,
     WmDialog,
     Dialog,
+    LinuxDmabufFeedback,
 }
 
 impl Interface {
@@ -120,6 +121,7 @@ impl Interface {
             Self::ToplevelIcon => "xdg_toplevel_icon_v1",
             Self::WmDialog => "xdg_wm_dialog_v1",
             Self::Dialog => "xdg_dialog_v1",
+            Self::LinuxDmabufFeedback => "zwp_linux_dmabuf_feedback_v1",
         }
     }
 }
@@ -368,7 +370,10 @@ const FRACTIONAL_SCALE: &[Request] = &[destructor("destroy", 1)];
 const LINUX_DMABUF: &[Request] = &[
     destructor("destroy", 1),
     request("create_params", 1, &[NewId]),
+    request("get_default_feedback", 4, &[NewId]),
+    request("get_surface_feedback", 4, &[NewId, Object]),
 ];
+const LINUX_DMABUF_FEEDBACK: &[Request] = &[destructor("destroy", 1)];
 const LINUX_BUFFER_PARAMS: &[Request] = &[
     destructor("destroy", 1),
     request("add", 1, &[Fd, Uint, Uint, Uint, Uint, Uint]),
@@ -454,6 +459,7 @@ pub const fn requests(interface: Interface) -> &'static [Request] {
         Interface::ToplevelIcon => TOPLEVEL_ICON,
         Interface::WmDialog => WM_DIALOG,
         Interface::Dialog => DIALOG,
+        Interface::LinuxDmabufFeedback => LINUX_DMABUF_FEEDBACK,
     }
 }
 
@@ -552,7 +558,7 @@ pub const GLOBALS: [Global; 19] = [
     Global {
         name: 16,
         interface: Interface::LinuxDmabuf,
-        version: 3,
+        version: 4,
     },
     Global {
         name: 17,
@@ -977,6 +983,18 @@ pub mod linux_dmabuf {
     pub const INCOMPLETE: u32 = 3;
     pub const INVALID_FORMAT: u32 = 4;
     pub const INVALID_DIMENSIONS: u32 = 5;
+}
+
+/// `zwp_linux_dmabuf_feedback_v1`'s events (D587).
+pub mod dmabuf_feedback {
+    use super::{Event, event};
+    pub const DONE: Event = event(0, 1);
+    pub const FORMAT_TABLE: Event = event(1, 1);
+    pub const MAIN_DEVICE: Event = event(2, 1);
+    pub const TRANCHE_DONE: Event = event(3, 1);
+    pub const TRANCHE_TARGET_DEVICE: Event = event(4, 1);
+    pub const TRANCHE_FORMATS: Event = event(5, 1);
+    pub const TRANCHE_FLAGS: Event = event(6, 1);
 }
 
 /// The signatures of the events the test client decodes, by the interface and opcode.

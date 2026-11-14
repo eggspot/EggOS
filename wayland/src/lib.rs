@@ -14,6 +14,7 @@ pub mod keymap;
 pub mod positioner;
 pub mod protocol;
 pub mod wire;
+pub mod yuv;
 
 #[cfg(test)]
 mod tests;

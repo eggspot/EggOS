@@ -2609,3 +2609,53 @@ fn a_dialog_is_taken_for_a_toplevel_and_the_icon_manager_says_its_sizes() {
     assert_eq!(sizes, 2);
     assert!(session.alive(), "{:?}", session.error());
 }
+
+#[test]
+fn version_four_sends_feedback_with_a_format_table_and_takes_nv12_buffers() {
+    use eggos_wayland::protocol::dmabuf_feedback;
+    const DMABUF: u32 = 46;
+    const FEEDBACK: u32 = 47;
+    const PARAMS: u32 = 48;
+    const NV12_BUFFER: u32 = 49;
+    let mut session = Session::new();
+    session.globals();
+    session.bind(16, "zwp_linux_dmabuf_v1", 4, DMABUF);
+    session.send(DMABUF, 2, &[Value::NewId(FEEDBACK)]);
+    let events = session.pump();
+    assert!(events.iter().all(|event| event.object != DMABUF), "no format events in version 4");
+    let feedback: Vec<u16> = events
+        .iter()
+        .filter(|event| event.object == FEEDBACK)
+        .map(|event| event.opcode)
+        .collect();
+    assert_eq!(feedback.first(), Some(&dmabuf_feedback::FORMAT_TABLE.opcode));
+    assert_eq!(feedback.last(), Some(&dmabuf_feedback::DONE.opcode));
+    session.send(DMABUF, 1, &[Value::NewId(PARAMS)]);
+    let luma = session.fake.memory_file(vec![0; 32]);
+    let chroma = session.fake.memory_file(vec![0; 16]);
+    session.send_with(
+        PARAMS,
+        1,
+        &[Value::Fd, Value::Uint(0), Value::Uint(0), Value::Uint(16), Value::Uint(0), Value::Uint(0)],
+        vec![luma],
+    );
+    session.send_with(
+        PARAMS,
+        1,
+        &[Value::Fd, Value::Uint(1), Value::Uint(0), Value::Uint(16), Value::Uint(0), Value::Uint(0)],
+        vec![chroma],
+    );
+    session.send(
+        PARAMS,
+        3,
+        &[
+            Value::NewId(NV12_BUFFER),
+            Value::Int(16),
+            Value::Int(8),
+            Value::Uint(eggos_wayland::yuv::NV12),
+            Value::Uint(0),
+        ],
+    );
+    session.pump();
+    assert!(session.alive(), "{:?}", session.error());
+}

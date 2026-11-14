@@ -250,6 +250,7 @@ fn every_request_table_is_ordered_and_bounded() {
         Interface::ToplevelIcon,
         Interface::WmDialog,
         Interface::Dialog,
+        Interface::LinuxDmabufFeedback,
     ] {
         for request in protocol::requests(interface) {
             assert!(request.signature.len() <= MAX_ARGUMENTS, "{}", request.name);
@@ -288,7 +289,7 @@ fn every_request_table_is_ordered_and_bounded() {
             ("zwp_text_input_manager_v3", 1),
             ("org_kde_kwin_server_decoration_manager", 1),
             ("wp_fractional_scale_manager_v1", 1),
-            ("zwp_linux_dmabuf_v1", 3),
+            ("zwp_linux_dmabuf_v1", 4),
             ("zxdg_output_manager_v1", 3),
             ("xdg_toplevel_icon_manager_v1", 1),
             ("xdg_wm_dialog_v1", 1)

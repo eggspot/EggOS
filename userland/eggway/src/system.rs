@@ -57,6 +57,17 @@ pub struct GpuPicture {
     pub offset: u32,
 }
 
+/// A YUV buffer's planes as mapped (D587): its DRM format, the planes' pixels, how many there
+/// are, and the picture's size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YuvSource {
+    pub format: u32,
+    pub planes: [PoolPixels; 3],
+    pub count: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// The most screens the compositor offers as outputs.
 pub const MAX_SCREENS: usize = 8;
 
@@ -114,6 +125,14 @@ pub trait System {
     /// A new memory file holding the keyboard map and its NUL, sealed against changes of size:
     /// its descriptor and size.
     fn keymap(&mut self) -> Result<(Fd, u32), Errno>;
+    /// A new memory file holding `bytes`, sealed against changes (a `linux-dmabuf` format
+    /// table, D587): its descriptor and size.
+    fn sealed_file(&mut self, bytes: &[u8]) -> Result<(Fd, u32), Errno>;
+    /// `bytes` of new memory the compositor writes pixels into (a YUV buffer's converted
+    /// picture, D587): its address.
+    fn allocate_pixels(&mut self, bytes: usize) -> Result<usize, Errno>;
+    /// Converts the YUV picture in `source`'s planes into `into`'s pixels (D587).
+    fn convert_yuv(&mut self, source: &YuvSource, into: PoolPixels);
     /// Connects to the window server.
     fn open_window_device(&mut self) -> Result<Fd, Errno>;
     /// A new normal window of `width` by `height` (clamped by the server) with `flags`, its

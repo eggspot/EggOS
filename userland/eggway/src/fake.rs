@@ -109,6 +109,8 @@ pub struct Fake {
     pub random_unavailable: bool,
     /// The screens the window server lists; one the work area's size when `None` (D584).
     pub screens: Option<Vec<crate::system::Screen>>,
+    /// YUV pictures converted (D587).
+    pub yuv_conversions: usize,
 }
 
 std::thread_local! {
@@ -139,6 +141,7 @@ impl Default for Fake {
             focused: Vec::new(),
             random_unavailable: false,
             screens: None,
+            yuv_conversions: 0,
         }
     }
 }
@@ -369,6 +372,20 @@ impl System for Fake {
         self.keymaps += 1;
         let size = eggos_wayland::keymap::US_KEYMAP.len() as u32 + 1;
         Ok((self.descriptor(), size))
+    }
+
+    fn sealed_file(&mut self, bytes: &[u8]) -> Result<(Fd, u32), Errno> {
+        Ok((self.descriptor(), bytes.len() as u32))
+    }
+
+    fn allocate_pixels(&mut self, bytes: usize) -> Result<usize, Errno> {
+        let address = self.next_address;
+        self.next_address += bytes.next_multiple_of(4096);
+        Ok(address)
+    }
+
+    fn convert_yuv(&mut self, _source: &crate::system::YuvSource, _into: PoolPixels) {
+        self.yuv_conversions += 1;
     }
 
     fn open_window_device(&mut self) -> Result<Fd, Errno> {

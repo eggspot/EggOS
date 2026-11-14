@@ -26,6 +26,7 @@ use eggos_wayland::keymap;
 use eggos_wayland::positioner::{Area, Positioner};
 use eggos_wayland::protocol::{
     self, Interface, SERVER_ID_START, buffer, callback, cursor_shape, decoration, display,
+    dmabuf_feedback,
     fractional_scale, keyboard, linux_dmabuf, output, pointer, registry, seat, server_decoration,
     shm, subsurface, surface, toplevel_icon_manager, viewport, xdg_output, xdg_popup,
     xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
@@ -779,7 +780,7 @@ fn handle<S: System>(
         Interface::ServerDecoration => server_decoration_request(client, message),
         Interface::FractionalScaleManager => fractional_scale_manager_request(client, message),
         Interface::FractionalScale => fractional_scale_request(client, message),
-        Interface::LinuxDmabuf => dmabuf_request(client, message),
+        Interface::LinuxDmabuf => dmabuf_request(client, system, message),
         Interface::LinuxBufferParams => dmabuf_params_request(client, shared, system, message),
         Interface::XdgOutputManager => xdg_output_manager_request(client, shared, message),
         Interface::ToplevelIconManager => toplevel_icon_manager_request(client, message),
@@ -791,7 +792,8 @@ fn handle<S: System>(
         | Interface::Touch
         | Interface::Output
         | Interface::XdgOutput
-        | Interface::ToplevelIcon => {}
+        | Interface::ToplevelIcon
+        | Interface::LinuxDmabufFeedback => {}
     }
 }
 
@@ -977,7 +979,7 @@ fn bind<S: System>(client: &mut ClientSlot, shared: &Shared, system: &mut S, mes
                 client.post(id, version, shm::FORMAT, &[Value::Uint(format)]);
             }
         }
-        Interface::LinuxDmabuf => {
+        Interface::LinuxDmabuf if version < 4 => {
             for format in [linux_dmabuf::ARGB8888, linux_dmabuf::XRGB8888] {
                 client.post(id, version, linux_dmabuf::FORMAT, &[Value::Uint(format)]);
                 if version >= 3 {
@@ -1082,9 +1084,63 @@ fn compositor_request(client: &mut ClientSlot, message: &Message) {
     }
 }
 
-fn dmabuf_request(client: &mut ClientSlot, message: &Message) {
-    if message.opcode != 1 {
+const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+const RENDER_NODE_DEVICE: u64 = (226 << 8) | 128;
+const TABLE_FORMATS: [u32; 4] = [
+    linux_dmabuf::XRGB8888,
+    linux_dmabuf::ARGB8888,
+    eggos_wayland::yuv::NV12,
+    eggos_wayland::yuv::YUV420,
+];
+
+fn send_feedback<S: System>(client: &mut ClientSlot, system: &mut S, id: u32, version: u32) {
+    let mut table = [0u8; TABLE_FORMATS.len() * 16];
+    for (index, format) in TABLE_FORMATS.iter().enumerate() {
+        table[index * 16..index * 16 + 4].copy_from_slice(&format.to_ne_bytes());
+        table[index * 16 + 8..index * 16 + 16].copy_from_slice(&DRM_FORMAT_MOD_LINEAR.to_ne_bytes());
+    }
+    if client.descriptors_out_count == MAX_OUT_DESCRIPTORS {
+        flush(client, system);
+    }
+    let Ok((descriptor, size)) = system.sealed_file(&table) else {
+        client.protocol_error(id, display::NO_MEMORY, b"no format table");
         return;
+    };
+    if client.descriptors_out_count == MAX_OUT_DESCRIPTORS {
+        system.close(descriptor);
+        client.protocol_error(id, display::NO_MEMORY, b"descriptors not read");
+        return;
+    }
+    client.descriptors_out[client.descriptors_out_count] = descriptor;
+    client.descriptors_out_count += 1;
+    client.post(id, version, dmabuf_feedback::FORMAT_TABLE, &[Value::Fd, Value::Uint(size)]);
+    let device = RENDER_NODE_DEVICE.to_ne_bytes();
+    client.post(id, version, dmabuf_feedback::MAIN_DEVICE, &[Value::Array(&device)]);
+    client.post(id, version, dmabuf_feedback::TRANCHE_TARGET_DEVICE, &[Value::Array(&device)]);
+    let mut indices = [0u8; TABLE_FORMATS.len() * 2];
+    for index in 0..TABLE_FORMATS.len() {
+        indices[index * 2..index * 2 + 2].copy_from_slice(&(index as u16).to_ne_bytes());
+    }
+    client.post(id, version, dmabuf_feedback::TRANCHE_FORMATS, &[Value::Array(&indices)]);
+    client.post(id, version, dmabuf_feedback::TRANCHE_FLAGS, &[Value::Uint(0)]);
+    client.post(id, version, dmabuf_feedback::TRANCHE_DONE, &[]);
+    client.post(id, version, dmabuf_feedback::DONE, &[]);
+}
+
+fn dmabuf_request<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
+    match message.opcode {
+        2 | 3 => {
+            let id = message.uint(0);
+            if message.opcode == 3 && object_index(client, message.uint(1), Interface::Surface).is_none() {
+                return;
+            }
+            if new_object(client, id, Interface::LinuxDmabufFeedback, message.version, 0) {
+                send_feedback(client, system, id, message.version);
+            }
+            return;
+        }
+        1 => {}
+        _ => return,
     }
     let id = message.uint(0);
     let Some(free) = client.dmabuf_params.iter().position(Option::is_none) else {
@@ -1114,25 +1170,26 @@ fn dmabuf_params_request<S: System>(
     };
     match message.opcode {
         0 => {
-            if let Some((descriptor, _, _)) = params.plane {
-                system.close(descriptor);
+            for (descriptor, _, _) in params.planes.iter().flatten() {
+                system.close(*descriptor);
             }
             client.dmabuf_params[index] = None;
         }
         1 => {
             let descriptor = message.descriptors[0];
             let (plane, offset, stride) = (message.uint(1), message.uint(2), message.uint(3));
-            if plane != 0 || params.plane.is_some() || message.uint(4) != 0 || message.uint(5) != 0
-            {
+            let linear = message.uint(4) == 0 && message.uint(5) == 0;
+            let slot = params.planes.get(plane as usize).copied();
+            if slot.is_none_or(|held| held.is_some()) || !linear {
                 system.close(descriptor);
                 client.protocol_error(
                     message.object,
                     linux_dmabuf::PLANE_IDX,
-                    b"one linear plane only",
+                    b"a linear plane from 0 to 3, once",
                 );
                 return;
             }
-            params.plane = Some((descriptor, offset, stride));
+            params.planes[plane as usize] = Some((descriptor, offset, stride));
             client.dmabuf_params[index] = Some(params);
         }
         2 => client.post(message.object, message.version, linux_dmabuf::FAILED, &[]),
@@ -1148,12 +1205,19 @@ fn dmabuf_params_request<S: System>(
                 return;
             }
             params.used = true;
+            let planes = core::mem::take(&mut params.planes);
             client.dmabuf_params[index] = Some(params);
-            let Some((descriptor, offset, stride)) = params.plane.take() else {
+            if let Some(count) = eggos_wayland::yuv::planes_of(format) {
+                create_yuv_buffer(client, shared, system, message, planes, count);
+                return;
+            }
+            for (descriptor, _, _) in planes.iter().skip(1).flatten() {
+                system.close(*descriptor);
+            }
+            let Some((descriptor, offset, stride)) = planes[0] else {
                 client.protocol_error(message.object, linux_dmabuf::INCOMPLETE, b"no plane");
                 return;
             };
-            client.dmabuf_params[index] = Some(params);
             if format != linux_dmabuf::XRGB8888 && format != linux_dmabuf::ARGB8888 {
                 system.close(descriptor);
                 client.protocol_error(message.object, linux_dmabuf::INVALID_FORMAT, b"format");
@@ -1209,6 +1273,113 @@ fn dmabuf_params_request<S: System>(
             }
         }
         _ => {}
+    }
+}
+
+fn create_yuv_buffer<S: System>(
+    client: &mut ClientSlot,
+    shared: &mut Shared,
+    system: &mut S,
+    message: &Message,
+    planes: [Option<(Fd, u32, u32)>; 4],
+    count: usize,
+) {
+    let (id, width, height, format) = (message.uint(0), message.int(1), message.int(2), message.uint(3));
+    let close_all = |system: &mut S| {
+        for (descriptor, _, _) in planes.iter().flatten() {
+            system.close(*descriptor);
+        }
+    };
+    let complete = planes[..count].iter().all(Option::is_some) && planes[count..].iter().all(Option::is_none);
+    if !complete {
+        close_all(system);
+        client.protocol_error(message.object, linux_dmabuf::INCOMPLETE, b"planes");
+        return;
+    }
+    if width <= 0 || height <= 0 {
+        close_all(system);
+        client.protocol_error(message.object, linux_dmabuf::INVALID_DIMENSIONS, b"size");
+        return;
+    }
+    let (width, height) = (width as u32, height as u32);
+    let mut mapped = [PoolPixels {
+        address: 0,
+        length: 0,
+        offset: 0,
+        stride: 0,
+    }; 3];
+    let mut failed = false;
+    for (plane, held) in planes[..count].iter().enumerate() {
+        let Some((descriptor, offset, stride)) = *held else {
+            failed = true;
+            break;
+        };
+        let length = offset as usize
+            + eggos_wayland::yuv::plane_bytes(format, plane, stride as usize, height as usize);
+        if length > MAX_POOL_BYTES || (stride as usize) < (width as usize).div_ceil(1 + usize::from(plane > 0 && format == eggos_wayland::yuv::YUV420)) {
+            failed = true;
+            break;
+        }
+        match system.map_pool(descriptor, length) {
+            Ok(address) => {
+                mapped[plane] = PoolPixels {
+                    address,
+                    length,
+                    offset: offset as usize,
+                    stride: stride as usize,
+                }
+            }
+            Err(_) => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    let converted_bytes = width as usize * height as usize * 4;
+    let pool = client.pools.iter().position(Option::is_none);
+    let buffer = client.buffers.iter().position(Option::is_none);
+    let converted = (!failed && converted_bytes <= MAX_POOL_BYTES)
+        .then(|| system.allocate_pixels(converted_bytes).ok())
+        .flatten();
+    let (Some(pool), Some(buffer), Some(converted)) = (pool, buffer, converted) else {
+        for plane in mapped.iter().filter(|plane| plane.address != 0) {
+            system.unmap_pool(plane.address, plane.length);
+        }
+        close_all(system);
+        client.protocol_error(id, display::NO_MEMORY, b"cannot take the planes");
+        return;
+    };
+    for (descriptor, _, _) in planes[1..count].iter().flatten() {
+        system.close(*descriptor);
+    }
+    let first = planes[0].map_or(-1, |(descriptor, _, _)| descriptor);
+    client.pools[pool] = Some(Pool {
+        descriptor: first,
+        address: converted,
+        length: converted_bytes,
+        buffers: 1,
+        destroyed: true,
+        gpu: false,
+    });
+    client.pool_bytes += converted_bytes;
+    shared.pool_bytes += converted_bytes;
+    if new_object(client, id, Interface::Buffer, message.version, buffer as u16) {
+        client.buffers[buffer] = Some(Buffer {
+            id,
+            pool: pool as u8,
+            offset: 0,
+            width,
+            height,
+            stride: width as usize * 4,
+            alpha: false,
+        });
+        client.yuv[buffer] = Some(crate::system::YuvSource {
+            format,
+            planes: mapped,
+            count,
+            width,
+            height,
+        });
     }
 }
 
@@ -1410,6 +1581,11 @@ fn destroy_buffer<S: System>(
     let Some(buffer) = client.buffers[usize::from(index)].take() else {
         return;
     };
+    if let Some(yuv) = client.yuv[usize::from(index)].take() {
+        for plane in &yuv.planes[..yuv.count] {
+            system.unmap_pool(plane.address, plane.length);
+        }
+    }
     for surface in client.surfaces.iter_mut().flatten() {
         if surface.attach == Attach::Buffer(index) {
             surface.attach = Attach::Unchanged;
@@ -1742,6 +1918,15 @@ fn present<S: System>(
     let Some(pool) = client.pools[usize::from(attached.pool)] else {
         return;
     };
+    if let Some(yuv) = client.yuv[usize::from(buffer)] {
+        let into = PoolPixels {
+            address: pool.address,
+            length: pool.length,
+            offset: 0,
+            stride: attached.stride,
+        };
+        system.convert_yuv(&yuv, into);
+    }
     let device = match client.device {
         Some(device) => device,
         None => match system.open_window_device() {

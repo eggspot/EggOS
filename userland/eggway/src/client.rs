@@ -36,7 +36,8 @@ pub const MAX_DMABUF_PARAMS: usize = 4;
 /// and how far apart its rows are; `None` until `add`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DmabufParams {
-    pub plane: Option<(Fd, u32, u32)>,
+    /// Each plane's descriptor, offset and stride (D587: up to four).
+    pub planes: [Option<(Fd, u32, u32)>; 4],
     pub used: bool,
 }
 /// Frame callbacks waiting per surface.
@@ -310,6 +311,8 @@ pub struct ClientSlot {
     pub pools: [Option<Pool>; MAX_POOLS],
     pub dmabuf_params: [Option<DmabufParams>; MAX_DMABUF_PARAMS],
     pub buffers: [Option<Buffer>; MAX_BUFFERS],
+    /// A YUV buffer's planes, by the buffer's index (D587).
+    pub yuv: [Option<crate::system::YuvSource>; MAX_BUFFERS],
     pub surfaces: [Option<Surface>; MAX_SURFACES],
     pub positioners: [Option<Positioner>; MAX_POSITIONERS],
     /// Its clipboard and primary selection sources.
@@ -371,6 +374,7 @@ impl ClientSlot {
             pools: [None; MAX_POOLS],
             dmabuf_params: [None; MAX_DMABUF_PARAMS],
             buffers: [None; MAX_BUFFERS],
+            yuv: [None; MAX_BUFFERS],
             surfaces: [None; MAX_SURFACES],
             positioners: [None; MAX_POSITIONERS],
             sources: [None; MAX_SOURCES],

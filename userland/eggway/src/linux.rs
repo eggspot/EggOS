@@ -84,6 +84,7 @@ const FOCUS_ACTION: u32 = 0;
 
 const WINDOW_DEVICE: &CStr = c"/dev/window";
 const KEYMAP_NAME: &CStr = c"eggway-keymap";
+const FORMAT_TABLE_NAME: &CStr = c"eggway-dmabuf-formats";
 const TITLE_BYTES: usize = 64;
 const MAX_COMMIT_RECTS: usize = 8;
 const NO_GPU_BUFFER: u32 = u32::MAX;
@@ -723,6 +724,60 @@ impl System for Linux {
             return Err(Errno::ENOMEM);
         }
         Ok((descriptor as Fd, (text.len() + 1) as u32))
+    }
+
+    fn sealed_file(&mut self, bytes: &[u8]) -> Result<(Fd, u32), Errno> {
+        let descriptor = call(
+            number::MEMFD_CREATE,
+            [
+                FORMAT_TABLE_NAME.as_ptr() as usize,
+                MFD_CLOEXEC | MFD_ALLOW_SEALING,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )?;
+        let written = syscall::write_all(descriptor, bytes);
+        let sealed = call(number::FCNTL, [descriptor, F_ADD_SEALS, SEALS, 0, 0, 0]);
+        if !written || sealed.is_err() {
+            close(descriptor as Fd);
+            return Err(Errno::ENOMEM);
+        }
+        Ok((descriptor as Fd, bytes.len() as u32))
+    }
+
+    fn allocate_pixels(&mut self, bytes: usize) -> Result<usize, Errno> {
+        map(bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, usize::MAX, 0)
+    }
+
+    fn convert_yuv(&mut self, source: &crate::system::YuvSource, into: PoolPixels) {
+        let plane = |pixels: &PoolPixels| {
+            let length = pixels.length.saturating_sub(pixels.offset);
+            // SAFETY: the plane's mapping holds `length` bytes from `address`, mapped read-only
+            // by `map_pool` for as long as the buffer lives, which outlives this call; nothing
+            // writes it from this process.
+            eggos_wayland::yuv::Plane {
+                bytes: unsafe {
+                    core::slice::from_raw_parts((pixels.address + pixels.offset) as *const u8, length)
+                },
+                stride: pixels.stride,
+            }
+        };
+        let planes = [plane(&source.planes[0]), plane(&source.planes[1]), plane(&source.planes[2])];
+        let pixels = into.length.saturating_sub(into.offset) / 4;
+        // SAFETY: `into` is memory `allocate_pixels` mapped readable and writable for the
+        // buffer, `pixels` whole pixels long from `offset`, 4096-aligned, and only this call
+        // writes it while it runs.
+        let out = unsafe { core::slice::from_raw_parts_mut((into.address + into.offset) as *mut u32, pixels) };
+        eggos_wayland::yuv::convert(
+            source.format,
+            &planes[..source.count],
+            source.width as usize,
+            source.height as usize,
+            out,
+            into.stride / 4,
+        );
     }
 
     fn open_window_device(&mut self) -> Result<Fd, Errno> {
