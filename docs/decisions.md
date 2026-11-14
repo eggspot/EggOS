@@ -26751,3 +26751,28 @@ the license, by an explicit instruction recorded here.
   sets the role at `CREATE`.
 - **Not yet.** Building and running; icons from the client's buffers; turning a shown window
   into a dialog.
+
+## D586 virtio-gpu: cursor moves posted, two flushes in flight, a context's rings and DRM sync objects (M11; D414's and D460's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the virtio 1.2 GPU device and Linux's DRM uAPI headers for syncobjs and virtgpu)
+- **Cursor.** A move is posted on the cursor queue without waiting (`post_cursor_move`): two
+  request slots alternate, so the device may read one while the next is written, and a move
+  waits only when both are in flight; answers are taken as they come (`collect_cursor`), with
+  the cursor queue's interrupt on once the kernel connected the GPU's. Showing and hiding
+  still wait, after the moves in flight are answered.
+- **Flushes.** Two flushes may be in flight: each takes half of the request area, its
+  commands' descriptor heads are kept, and an answer counts for the flight its head belongs
+  to; `finish_flush` returns the first finished flight.
+- **Rings.** `VIRTGPU_CONTEXT_PARAM_NUM_RINGS` (at most 64) is kept per context, and
+  `VIRTGPU_EXECBUF_RING_IDX` sends the stream with `VIRTIO_GPU_FLAG_INFO_RING_IDX` and the
+  ring's index in its header, so the host keeps a timeline per ring.
+- **Sync objects.** `DRM_CAP_SYNCOBJ` is 1: `SYNCOBJ_CREATE` (signalled or not),
+  `DESTROY`, `RESET`, `SIGNAL`, `WAIT` (all or any, `WAIT_FOR_SUBMIT`, a zero timeout only
+  looks), and `HANDLE_TO_FD`/`FD_TO_HANDLE` as sync files; a sync object holds a fence.
+  `execbuffer`'s in-syncobjs are waited for before the stream is posted and its out-syncobjs
+  get the stream's fence.
+- **Decided by research.** Timeline sync objects (`DRM_CAP_SYNCOBJ_TIMELINE`) stay off: Mesa's
+  Venus and virgl drivers fall back to binary sync objects and sync files without them, and a
+  timeline needs a point per signal the device's fences do not give. An in-syncobj is waited
+  for by the CPU before posting rather than handed to the host: the host has no guest fence
+  wait, and a stream's fences pass in order on its ring anyway.
+- **Not yet.** Building and running; timeline sync objects; opaque sync object descriptors
+  shared between processes.
