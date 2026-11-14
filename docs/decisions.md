@@ -26954,3 +26954,28 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; children's system time in `getrusage` and `times` (they
   read as user time); threads of other processes by thread id.
 
+## D593 Per-CPU scheduler locks, and the invariant-TSC check (M4; D40-D45, D198 and D247's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, by research)
+- **Locks.** Each CPU's run queue (`CpuScheduler`: running, ready, sleeping and idle threads,
+  its timer and FP state) has a lock of its own; the scheduler's global lock now guards only
+  the wait queues and parkers. Yielding, a slice's end, sleeping and the idle loop take their
+  own CPU's lock alone; making a thread ready takes its CPU's lock; blocking takes the global
+  lock, then its own CPU's. Order: the global lock before any CPU's, and never two CPUs' locks
+  at once (a thread made ready elsewhere while holding one's own goes through the CPU's
+  `migrating` slot, made ready after the switch by the thread that runs next, holding none).
+  This is the per-CPU run-queue lock of Linux's scheduler; per-CPU wake lists (Linux's
+  `ttwu_queue`) were weighed and left out: with each run queue's lock taken only by its own CPU
+  and by wakers of its own threads, the extra queue would save a cache line only under heavy
+  cross-CPU waking, which no workload has shown yet.
+- **Switching.** A switch is made holding the CPU's lock and leaves it held for the thread it
+  resumes (`finish_switch` releases it): a thread woken from a wait is made ready on its own
+  CPU under that lock, so it cannot run elsewhere before its switch away saved it. A CPU's
+  `started` flag is an atomic, so placing a thread reads no other CPU's lock; idle CPUs are
+  found and stolen from with `try_lock`, a busy lock meaning a busy CPU.
+- **Invariant TSC.** At boot the x86_64 HAL reads CPUID 80000007h:EDX[8] (or a hypervisor's
+  presence) and runs its timer in TSC-deadline mode only with an invariant TSC; otherwise it
+  measures the TSC and the local APIC timer and runs the APIC one-shot. With `IA32_TSC_ADJUST`
+  (CPUID 7:EBX[1]) every secondary CPU takes the boot CPU's adjustment before it runs kernel
+  code, so all CPUs' TSCs read one clock, as Linux does at CPU bring-up. EggOS idles with `hlt`
+  (C1), where even a non-invariant TSC keeps counting.
+- **Not yet.** Building and running; the scheduler's lock-contention benchmark on 8 or more CPUs.
+
