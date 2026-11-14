@@ -9,6 +9,7 @@
 use super::{BOOT_DIRECT_MAP_END, DIRECT_MAP_OFFSET, acpi_table};
 use crate::DeviceLine;
 use crate::InterruptMessage;
+use crate::atomic::AtomicU64;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use eggos_drivers::io::{Mmio, RegisterIo};
 
@@ -27,6 +28,10 @@ static TABLE: AtomicUsize = AtomicUsize::new(0);
 static UNITS: [AtomicUsize; MAX_UNITS] = [const { AtomicUsize::new(0) }; MAX_UNITS];
 static QUEUES: [AtomicUsize; MAX_UNITS] = [const { AtomicUsize::new(0) }; MAX_UNITS];
 static AMD_DEVICES: [AtomicUsize; MAX_UNITS] = [const { AtomicUsize::new(0) }; MAX_UNITS];
+static TABLE_PHYSICAL: AtomicU64 = AtomicU64::new(0);
+static UNIT_BASES: [AtomicU64; MAX_UNITS] = [const { AtomicU64::new(0) }; MAX_UNITS];
+static QUEUE_PHYSICAL: [AtomicU64; MAX_UNITS] = [const { AtomicU64::new(0) }; MAX_UNITS];
+static DEVICES_PHYSICAL: [AtomicU64; MAX_UNITS] = [const { AtomicU64::new(0) }; MAX_UNITS];
 
 /// Memory the kernel gives: a zeroed, page-aligned block of at least the bytes asked, as its
 /// physical address and its address in the direct map.
@@ -224,6 +229,7 @@ fn enable_intel(dmar: &[u8], memory: Memory<'_>) -> Result<(), &'static str> {
     }
     let (table_physical, table) = memory(PAGE).ok_or("no memory for the remapping table")?;
     TABLE.store(table, Ordering::Release);
+    TABLE_PHYSICAL.store(table_physical, Ordering::Release);
     for (slot, &base) in bases[..count].iter().enumerate() {
         let unit = registers(base, VTD_REGISTER_BYTES).ok_or("a remapping unit is out of reach")?;
         let capabilities = unit.read64(VTD_EXTENDED_CAPABILITY);
@@ -233,8 +239,25 @@ fn enable_intel(dmar: &[u8], memory: Memory<'_>) -> Result<(), &'static str> {
         }
         let (queue_physical, queue) = memory(PAGE).ok_or("no memory for an invalidation queue")?;
         QUEUES[slot].store(queue, Ordering::Release);
+        QUEUE_PHYSICAL[slot].store(queue_physical, Ordering::Release);
+        UNIT_BASES[slot].store(base, Ordering::Release);
+    }
+    program_intel_units()?;
+    KIND.store(INTEL, Ordering::Release);
+    intel_invalidate(None);
+    turn_intel_units_on()
+}
+
+fn program_intel_units() -> Result<(), &'static str> {
+    let table_physical = TABLE_PHYSICAL.load(Ordering::Acquire);
+    for slot in 0..MAX_UNITS {
+        let base = UNIT_BASES[slot].load(Ordering::Acquire);
+        if base == 0 {
+            continue;
+        }
+        let unit = registers(base, VTD_REGISTER_BYTES).ok_or("a remapping unit is out of reach")?;
         unit.write64(VTD_QUEUE_TAIL, 0);
-        unit.write64(VTD_QUEUE_ADDRESS, queue_physical);
+        unit.write64(VTD_QUEUE_ADDRESS, QUEUE_PHYSICAL[slot].load(Ordering::Acquire));
         if !vtd_command(&unit, VTD_QUEUE_ENABLE) {
             return Err("a remapping unit did not start its invalidation queue");
         }
@@ -247,15 +270,39 @@ fn enable_intel(dmar: &[u8], memory: Memory<'_>) -> Result<(), &'static str> {
         }
         UNITS[slot].store(DIRECT_MAP_OFFSET + base as usize, Ordering::Release);
     }
-    KIND.store(INTEL, Ordering::Release);
-    intel_invalidate(None);
-    for &base in &bases[..count] {
+    Ok(())
+}
+
+fn turn_intel_units_on() -> Result<(), &'static str> {
+    for slot in 0..MAX_UNITS {
+        let base = UNIT_BASES[slot].load(Ordering::Acquire);
+        if base == 0 {
+            continue;
+        }
         let unit = registers(base, VTD_REGISTER_BYTES).ok_or("a remapping unit is out of reach")?;
         if !vtd_command(&unit, VTD_REMAPPING_ENABLE) {
             return Err("a remapping unit did not turn remapping on");
         }
     }
     Ok(())
+}
+
+/// Programs the remapping units again after the machine slept (D597): they lost their
+/// registers, the table and queues in RAM did not.
+pub(super) fn restore() {
+    match KIND.load(Ordering::Acquire) {
+        INTEL => {
+            if program_intel_units().is_ok() {
+                intel_invalidate(None);
+                let _ = turn_intel_units_on();
+            }
+        }
+        AMD => {
+            program_amd_units();
+            amd_invalidate();
+        }
+        _ => {}
+    }
 }
 
 /// Has every unit drop what it cached of entry `index`, or of every entry, and waits until it
@@ -380,11 +427,33 @@ fn enable_amd(ivrs: &[u8], memory: Memory<'_>) -> Result<(), &'static str> {
             unsafe { place.add(2).write_volatile(entry) };
         }
         AMD_DEVICES[slot].store(devices, Ordering::Release);
+        DEVICES_PHYSICAL[slot].store(devices_physical, Ordering::Release);
         let (commands_physical, commands) =
             memory(PAGE).ok_or("no memory for an IOMMU's command buffer")?;
         QUEUES[slot].store(commands, Ordering::Release);
-        unit.write64(AMD_DEVICE_TABLE, devices_physical | (AMD_DEVICE_TABLE_PAGES - 1));
-        unit.write64(AMD_COMMAND_BUFFER, commands_physical | AMD_COMMAND_LENGTH_256);
+        QUEUE_PHYSICAL[slot].store(commands_physical, Ordering::Release);
+        UNIT_BASES[slot].store(base, Ordering::Release);
+    }
+    program_amd_units();
+    KIND.store(AMD, Ordering::Release);
+    amd_invalidate();
+    Ok(())
+}
+
+fn program_amd_units() {
+    for slot in 0..MAX_UNITS {
+        let base = UNIT_BASES[slot].load(Ordering::Acquire);
+        let Some(unit) = (base != 0).then(|| registers(base, AMD_REGISTER_BYTES)).flatten() else {
+            continue;
+        };
+        unit.write64(
+            AMD_DEVICE_TABLE,
+            DEVICES_PHYSICAL[slot].load(Ordering::Acquire) | (AMD_DEVICE_TABLE_PAGES - 1),
+        );
+        unit.write64(
+            AMD_COMMAND_BUFFER,
+            QUEUE_PHYSICAL[slot].load(Ordering::Acquire) | AMD_COMMAND_LENGTH_256,
+        );
         unit.write64(AMD_COMMAND_HEAD, 0);
         unit.write64(AMD_COMMAND_TAIL, 0);
         let control = unit.read64(AMD_CONTROL);
@@ -399,9 +468,6 @@ fn enable_amd(ivrs: &[u8], memory: Memory<'_>) -> Result<(), &'static str> {
         );
         UNITS[slot].store(DIRECT_MAP_OFFSET + base as usize, Ordering::Release);
     }
-    KIND.store(AMD, Ordering::Release);
-    amd_invalidate();
-    Ok(())
 }
 
 /// Has every IOMMU drop everything it cached, the interrupt tables included, and waits until

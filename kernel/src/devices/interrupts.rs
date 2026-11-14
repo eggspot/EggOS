@@ -139,6 +139,14 @@ fn connected_lines() -> impl Iterator<Item = DeviceLine> {
     })
 }
 
+/// Sends every connected line to the CPU it was on again, after the machine slept and its
+/// interrupt controllers and devices' message tables lost what they held (D597).
+pub fn route_again<P: Platform>() {
+    for line in connected_lines() {
+        steer::<P>(line, line_cpu(line));
+    }
+}
+
 /// Moves every line on the CPU with hardware id `cpu`, which is leaving service, to the CPUs
 /// that stay, in turn (D596).
 pub fn move_off<P: Platform>(cpu: u64) {

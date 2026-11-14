@@ -777,6 +777,103 @@ pub fn prepare_to_power_off() {
     }
 }
 
+/// Runs `\_PTS(state)` before the machine sleeps in `state`, 3 for suspend to RAM, after
+/// arming the wake events (D597): every device whose `_PRW` says it can wake the machine from
+/// `state` or deeper gets its general-purpose event turned on, every other event off, and its
+/// `_DSW(1, state, 0)` (or the older `_PSW(1)`) run.
+pub fn prepare_to_sleep<P: Platform>(state: u64) {
+    let mut namespace = NAMESPACE.lock();
+    let Some(loaded) = namespace.as_mut() else {
+        return;
+    };
+    let wakers = wake_events(&mut loaded.interpreter, state);
+    if let Some(events) = loaded.events.as_ref() {
+        let general = Path::root().child(NameSeg::new(b"_GPE"));
+        for (block, scope) in &events.blocks {
+            for index in 0..block.events() {
+                let number = block.base + index;
+                let wakes = *scope == general && wakers.iter().any(|(_, event)| *event == number);
+                set_event_enabled::<P>(block, index, wakes);
+            }
+        }
+    }
+    for (device, _) in &wakers {
+        let arguments = [
+            Object::Integer(1),
+            Object::Integer(state),
+            Object::Integer(0),
+        ];
+        if loaded
+            .interpreter
+            .evaluate_child(device, b"_DSW", &arguments)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            let _ = loaded
+                .interpreter
+                .evaluate_child(device, b"_PSW", &[Object::Integer(1)]);
+        }
+    }
+    let _ = loaded
+        .interpreter
+        .evaluate_child(&Path::root(), b"_PTS", &[Object::Integer(state)]);
+}
+
+/// The devices that can wake the machine from sleep state `state` and their general-purpose
+/// event, from `_PRW`'s first two elements (the event, or a package naming a GPE block device
+/// and its event, which is left out, and the deepest state it wakes from).
+fn wake_events(interpreter: &mut Interpreter<KernelHost>, state: u64) -> Vec<(Path, u16)> {
+    let devices: Vec<Path> = interpreter
+        .namespace()
+        .iter()
+        .filter(|(_, node)| matches!(interpreter.namespace().get(*node), Some(Object::Device)))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let mut wakers = Vec::new();
+    for device in devices {
+        let Ok(Some(Object::Package(elements))) = interpreter.evaluate_child(&device, b"_PRW", &[])
+        else {
+            continue;
+        };
+        let (Some(Object::Integer(event)), Some(Object::Integer(deepest))) =
+            (elements.first(), elements.get(1))
+        else {
+            continue;
+        };
+        if *deepest >= state
+            && let Ok(event) = u16::try_from(*event)
+        {
+            wakers.push((device, event));
+        }
+    }
+    wakers
+}
+
+/// Runs `\_WAK(state)` once the machine woke from `state` (D597), then reads the power devices
+/// again, as a lid or adapter may have changed while it slept.
+pub fn woke_from<P: Platform>(state: u64) {
+    if let Some(loaded) = NAMESPACE.lock().as_mut() {
+        let _ = loaded
+            .interpreter
+            .evaluate_child(&Path::root(), b"_WAK", &[Object::Integer(state)]);
+        if let Some(events) = loaded.events.as_ref() {
+            let general = Path::root().child(NameSeg::new(b"_GPE"));
+            let controller_event = events.controller.as_ref().and_then(|(_, event)| *event);
+            for (block, scope) in &events.blocks {
+                for index in 0..block.events() {
+                    let number = block.base + index;
+                    let handled = (*scope == general && controller_event == Some(number))
+                        || event_method(&mut loaded.interpreter, scope, number).is_some();
+                    set_event_enabled::<P>(block, index, handled);
+                }
+            }
+        }
+        let state = read_power(&mut loaded.interpreter);
+        *POWER.lock() = Some(state);
+    }
+}
+
 /// The last notifications AML sent (`Notify`), oldest first: the object's path and the value.
 pub fn notifications() -> Vec<(Path, u64)> {
     match NAMESPACE.lock().as_mut() {

@@ -48,6 +48,13 @@ pub(super) fn enable() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Routes the system control interrupt again after the machine slept (D597).
+pub(super) fn restore() {
+    if SYSTEM_CONTROL_INPUT.swap(NO_SYSTEM_CONTROL, Ordering::AcqRel) != NO_SYSTEM_CONTROL {
+        let _ = enable_events();
+    }
+}
+
 /// Switches the machine to ACPI mode if it is not and routes the system control interrupt to
 /// the boot CPU as [`timer::POWER_BUTTON_VECTOR`], once.
 pub(super) fn enable_events() -> Result<(), &'static str> {

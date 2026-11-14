@@ -19,6 +19,7 @@ mod port;
 mod power_button;
 mod random;
 mod remapping;
+mod sleep;
 mod thread;
 mod timer;
 
@@ -269,7 +270,13 @@ trampoline32:
     ljmpl   $0x18, ${trampoline} + (trampoline64 - eggos_trampoline_start)
     .code64
 trampoline64:
-    movabsq $secondary_start64, %rax
+    movq    {trampoline} + (eggos_trampoline_resume - eggos_trampoline_start), %rbx
+    testq   %rbx, %rbx
+    jz      1f
+    movl    $1, {trampoline} + (eggos_trampoline_taken - eggos_trampoline_start)
+    movabsq $eggos_resume_cpu, %rax
+    jmpq    *%rax
+1:  movabsq $secondary_start64, %rax
     jmpq    *%rax
     .balign 8
 trampoline_gdt:
@@ -291,6 +298,10 @@ eggos_trampoline_page_table_root:
     .global eggos_trampoline_taken
 eggos_trampoline_taken:
     .long 0
+    .balign 8
+    .global eggos_trampoline_resume
+eggos_trampoline_resume:
+    .quad 0
     .balign 8
     .global eggos_trampoline_end
 eggos_trampoline_end:
@@ -412,6 +423,7 @@ unsafe extern "C" {
     static eggos_trampoline_start_slot: u8;
     static eggos_trampoline_page_table_root: u8;
     static eggos_trampoline_taken: u8;
+    static eggos_trampoline_resume: u8;
     static eggos_trampoline_end: u8;
 }
 
@@ -434,6 +446,37 @@ unsafe fn trampoline_word<T>(symbol: *const u8) -> &'static T {
     // never hands out; the caller guarantees the word is a `T` there. `T` is an atomic, so
     // the starting CPU's plain accesses to it are its only other use.
     unsafe { &*(address as *const T) }
+}
+
+fn prepare_resume_trampoline() -> Result<(), &'static str> {
+    prepare_trampoline().map_err(|_| "the start-up trampoline's page is not free")
+}
+
+/// What the trampoline's 64-bit code resumes: a saved CPU's context, or 0 to start a CPU
+/// (D597).
+fn set_resume_slot(saved: u64) {
+    // SAFETY: the slot is the trampoline's u64, in place once `prepare_trampoline` ran; only a
+    // waking or starting CPU reads it, after this store.
+    let slot = unsafe { trampoline_word::<AtomicU64>(&raw const eggos_trampoline_resume) };
+    slot.store(saved, Ordering::Release);
+    core::sync::atomic::fence(Ordering::SeqCst);
+}
+
+/// Starts the held CPU with APIC ID `cpu` from `saved` through the trampoline (D597).
+fn resume_through_trampoline(cpu: u64, saved: u64) -> Result<(), &'static str> {
+    let apic_id = u8::try_from(cpu).map_err(|_| "no such CPU")?;
+    // SAFETY: the taken flag is the trampoline's u32, in place since the boot CPU woke.
+    let taken = unsafe { trampoline_word::<AtomicU32>(&raw const eggos_trampoline_taken) };
+    taken.store(0, Ordering::Release);
+    set_resume_slot(saved);
+    let page = (TRAMPOLINE >> 12) as u8;
+    timer::send_startup(apic_id, page);
+    let resumed = wait_until_taken(STARTUP_RETRY_US) || {
+        timer::send_startup(apic_id, page);
+        wait_until_taken(STARTUP_TIMEOUT_US)
+    };
+    set_resume_slot(0);
+    resumed.then_some(()).ok_or("the CPU did not wake")
 }
 
 fn trampoline_page_is_free() -> bool {
@@ -620,6 +663,22 @@ impl Platform for X86_64 {
         memory: &mut dyn FnMut(usize) -> Option<(u64, usize)>,
     ) -> Result<(), &'static str> {
         remapping::enable(memory)
+    }
+
+    fn suspend_to_ram() -> Result<(), &'static str> {
+        sleep::suspend()
+    }
+
+    fn hold_cpu_for_suspend() {
+        sleep::hold();
+    }
+
+    fn is_cpu_held(cpu: u64) -> bool {
+        sleep::is_held(cpu)
+    }
+
+    fn wake_held_cpu(cpu: u64) -> Result<(), &'static str> {
+        sleep::wake_held(cpu)
     }
 
     fn exit(_status: ExitStatus) -> ! {
@@ -1492,7 +1551,12 @@ unsafe fn physical_slice(address: usize, length: usize) -> &'static [u8] {
 }
 
 fn enter_s5(target: S5Target) {
-    let fadt = target.fadt;
+    enter_sleep_state(target.fadt, target.sleep_type);
+}
+
+/// Writes the sleep sequence for `sleep_type` to PM1 control (ACPI 6.5, 7.4.2.1): S5's, or
+/// S3's (D597).
+fn enter_sleep_state(fadt: acpi::Fadt, sleep_type: acpi::S5SleepType) {
     let (Ok(pm1a), Ok(pm1b), Ok(smi_command)) = (
         u16::try_from(fadt.pm1a_control_port),
         u16::try_from(fadt.pm1b_control_port),
@@ -1523,9 +1587,9 @@ fn enter_s5(target: S5Target) {
             core::hint::spin_loop();
         }
     }
-    let pm1a_value = acpi::pm1_control_sleep(read16(pm1a), target.sleep_type.a);
+    let pm1a_value = acpi::pm1_control_sleep(read16(pm1a), sleep_type.a);
     let pm1b_value =
-        (pm1b != 0).then(|| acpi::pm1_control_sleep(read16(pm1b), target.sleep_type.b));
+        (pm1b != 0).then(|| acpi::pm1_control_sleep(read16(pm1b), sleep_type.b));
     write16(pm1a, pm1a_value & !acpi::PM1_CONTROL_SLP_EN);
     if let Some(pm1b_value) = pm1b_value {
         write16(pm1b, pm1b_value & !acpi::PM1_CONTROL_SLP_EN);

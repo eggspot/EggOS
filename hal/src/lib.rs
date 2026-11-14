@@ -176,6 +176,29 @@ pub trait Platform: 'static {
         Err("this machine has no interrupt remapping")
     }
 
+    /// Puts the machine in suspend to RAM (ACPI S3) from the boot CPU, with every other CPU held
+    /// ([`Self::hold_cpu_for_suspend`]), and returns once it has woken, the HAL's interrupt
+    /// routes set up again (D597). Fails where the machine cannot (the default), or when it did
+    /// not sleep.
+    fn suspend_to_ram() -> Result<(), &'static str> {
+        Err("this machine cannot suspend to RAM")
+    }
+
+    /// On a CPU other than the boot CPU, before [`Self::suspend_to_ram`]: saves its context and
+    /// halts; returns once [`Self::wake_held_cpu`] started it again (D597). Returns at once
+    /// where the machine cannot suspend (the default).
+    fn hold_cpu_for_suspend() {}
+
+    /// Whether the CPU with hardware id `cpu` is held ([`Self::hold_cpu_for_suspend`]).
+    fn is_cpu_held(_cpu: u64) -> bool {
+        false
+    }
+
+    /// Starts a held CPU again after the machine woke (D597).
+    fn wake_held_cpu(_cpu: u64) -> Result<(), &'static str> {
+        Err("this machine cannot suspend to RAM")
+    }
+
     /// Powers the machine off, reporting `status` to the host when the machine supports it.
     fn exit(status: ExitStatus) -> !;
 

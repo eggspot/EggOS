@@ -391,9 +391,14 @@ const AML_BYTE_PREFIX: u8 = 0x0a;
 /// `NameOp NameString`, and the name may carry a root prefix `\`; a mention of `_S5_` that is
 /// not a definition is skipped.
 pub fn find_s5_sleep_type(aml: &[u8]) -> Option<S5SleepType> {
+    find_sleep_type(aml, b"_S5_")
+}
+
+/// [`find_s5_sleep_type`] for any sleep state's package, `_S3_` among them (D597).
+pub fn find_sleep_type(aml: &[u8], name: &[u8; 4]) -> Option<S5SleepType> {
     aml.windows(4)
         .enumerate()
-        .filter(|(_, name)| *name == b"_S5_")
+        .filter(|(_, found)| *found == name)
         .find_map(|(at, _)| {
             let named = match at.checked_sub(1).map(|i| aml[i]) {
                 Some(AML_NAME_OP) => true,

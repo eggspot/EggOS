@@ -7,7 +7,8 @@
 //! its `dev`, `uevent`, `subsystem` and `device`, the virtio device above it and its PCI
 //! function's (or platform device's) identity. Read-only; each file's text is made when it is
 //! opened. `devices/system/cpu/cpu<n>/online` takes CPU `n` out of service with `0` and puts it
-//! back with `1` (D596).
+//! back with `1` (D596). `power/state` lists `mem` when the machine can suspend to RAM and
+//! takes it to suspend (D597).
 
 use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Usage};
 use crate::sync::LeafSpinLock;
@@ -25,9 +26,11 @@ const MM: u64 = 9;
 const TRANSPARENT_HUGEPAGE: u64 = 10;
 const ENABLED: u64 = 11;
 const DEFRAG: u64 = 12;
+const POWER: u64 = 13;
+const POWER_STATE: u64 = 14;
 
 /// Each node with its name and its parent.
-const NODES: [(u64, &[u8], u64); 11] = [
+const NODES: [(u64, &[u8], u64); 13] = [
     (DEVICES, b"devices", ROOT),
     (SYSTEM, b"system", DEVICES),
     (CPU, b"cpu", SYSTEM),
@@ -39,7 +42,18 @@ const NODES: [(u64, &[u8], u64); 11] = [
     (TRANSPARENT_HUGEPAGE, b"transparent_hugepage", MM),
     (ENABLED, b"enabled", TRANSPARENT_HUGEPAGE),
     (DEFRAG, b"defrag", TRANSPARENT_HUGEPAGE),
+    (POWER, b"power", ROOT),
+    (POWER_STATE, b"state", POWER),
 ];
+
+/// Suspend to RAM, and whether the machine offers it, for `power/state` (D597).
+static SUSPEND: LeafSpinLock<Option<(fn() -> Result<(), &'static str>, fn() -> bool)>> =
+    LeafSpinLock::new_leaf(None);
+
+/// Lets `power/state` take `mem` through `suspend`, when `offered` says the machine has it.
+pub fn set_suspend(suspend: fn() -> Result<(), &'static str>, offered: fn() -> bool) {
+    *SUSPEND.lock() = Some((suspend, offered));
+}
 
 const DEV: u64 = 20;
 const CHAR: u64 = 21;
@@ -239,7 +253,7 @@ const DEVICE: (u32, u32) = (0, 21);
 pub struct SystemFiles;
 
 fn is_directory(node: u64) -> bool {
-    matches!(node, ROOT | DEVICES | SYSTEM | CPU | KERNEL | MM | TRANSPARENT_HUGEPAGE)
+    matches!(node, ROOT | DEVICES | SYSTEM | CPU | KERNEL | MM | TRANSPARENT_HUGEPAGE | POWER)
         || cpu_node(node).is_some_and(|(_, file)| !file)
 }
 
@@ -329,7 +343,7 @@ impl FileSystem for SystemFiles {
 
     fn attributes(&self, node: u64) -> Attributes {
         let kind = self.kind(node);
-        let writable = cpu_node(node).is_some_and(|(_, file)| file);
+        let writable = cpu_node(node).is_some_and(|(_, file)| file) || node == POWER_STATE;
         Attributes {
             kind,
             permissions: match kind {
@@ -420,6 +434,10 @@ impl FileSystem for SystemFiles {
             POSSIBLE | PRESENT => cpu_range(cpus.len()),
             ENABLED => b"always madvise [never]\n".to_vec(),
             DEFRAG => b"always defer defer+madvise madvise [never]\n".to_vec(),
+            POWER_STATE => match *SUSPEND.lock() {
+                Some((_, offered)) if offered() => b"mem\n".to_vec(),
+                _ => b"\n".to_vec(),
+            },
             node => match (cpu_node(node), drm_text(node)) {
                 (Some((index, true)), _) => {
                     match cpus.get(index).is_some_and(|cpu| cpu.is_online()) {
@@ -434,7 +452,7 @@ impl FileSystem for SystemFiles {
     }
 
     fn is_node_writable(&self, node: u64) -> bool {
-        cpu_node(node).is_some_and(|(_, file)| file)
+        cpu_node(node).is_some_and(|(_, file)| file) || node == POWER_STATE
     }
 
     fn write(
@@ -444,6 +462,17 @@ impl FileSystem for SystemFiles {
         bytes: &[u8],
         _now: u64,
     ) -> Result<(usize, u64), super::Refused> {
+        if node == POWER_STATE {
+            if bytes.trim_ascii() != b"mem" {
+                return Err(super::Refused::InvalidArgument);
+            }
+            let (suspend, offered) = (*SUSPEND.lock()).ok_or(super::Refused::InvalidArgument)?;
+            if !offered() {
+                return Err(super::Refused::InvalidArgument);
+            }
+            suspend().map_err(|_| super::Refused::InvalidArgument)?;
+            return Ok((bytes.len(), bytes.len() as u64));
+        }
         let Some((index, true)) = cpu_node(node) else {
             return Err(super::Refused::ReadOnly);
         };

@@ -832,6 +832,8 @@ pub(crate) struct CpuScheduler {
     locked: AtomicBool,
     started: AtomicBool,
     leaving: AtomicBool,
+    parked: AtomicBool,
+    hold_requested: AtomicBool,
 }
 
 // SAFETY: the state is only reached through a `Local`, which only `lock`, `try_lock` and
@@ -846,6 +848,8 @@ impl CpuScheduler {
             locked: AtomicBool::new(false),
             started: AtomicBool::new(false),
             leaving: AtomicBool::new(false),
+            parked: AtomicBool::new(false),
+            hold_requested: AtomicBool::new(false),
         }
     }
 
@@ -1855,10 +1859,26 @@ fn drain_and_park<P: Platform>(here: &'static Cpu) {
             }
         }
     }
+    here.scheduler.parked.store(true, Ordering::Release);
     while here.scheduler.is_leaving() {
+        if here.scheduler.hold_requested.swap(false, Ordering::AcqRel) {
+            P::hold_cpu_for_suspend();
+        }
         P::wait_for_interrupt();
         cpu::serve_shootdowns::<P>();
     }
+    here.scheduler.parked.store(false, Ordering::Release);
+}
+
+/// Whether `cpu`, out of service, has handed its threads over and waits (D597).
+pub fn is_cpu_parked(cpu: &Cpu) -> bool {
+    cpu.scheduler.parked.load(Ordering::Acquire)
+}
+
+/// Asks the parked `cpu` to save its context and halt for suspend to RAM (D597).
+pub fn hold_parked_cpu<P: Platform>(cpu: &'static Cpu) {
+    cpu.scheduler.hold_requested.store(true, Ordering::Release);
+    cpu::wake::<P>(cpu);
 }
 
 /// The running thread's id, as a number (D595).

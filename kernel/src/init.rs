@@ -59,6 +59,10 @@ pub fn run<P: Platform, W: Write>(
     if online > 1 {
         crate::devices::interrupts::start_balancing::<P>();
     }
+    crate::vfs::sysfs::set_suspend(
+        crate::suspend::suspend_to_ram::<P>,
+        crate::suspend::offered::<P>,
+    );
     crate::vfs::sysfs::set_cpu_service(|index, online| {
         let cpu = *crate::cpu::CPUS.all().get(index).ok_or("no such CPU")?;
         match online {

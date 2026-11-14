@@ -41,6 +41,7 @@ pub mod regions;
 pub mod rendering;
 pub mod selftest;
 pub mod shared_frames;
+pub mod suspend;
 pub mod sync;
 pub mod terminal;
 pub mod thread;

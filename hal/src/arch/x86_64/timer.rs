@@ -655,6 +655,11 @@ fn measure_against_pm_timer(apic: &LocalApic<ApicRegisters>) -> Option<(u64, u64
     }
 }
 
+/// This CPU's local APIC ID (D597).
+pub(super) fn local_apic_id() -> u8 {
+    local_apic().id()
+}
+
 /// Enables this CPU's local APIC and sets its timer up, stopped, as [`init`] does for the boot
 /// CPU (D41). Called by each secondary CPU before it runs the kernel's code.
 pub(super) fn init_this_cpu() {

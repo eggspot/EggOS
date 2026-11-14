@@ -25,6 +25,10 @@ const NO_PIN: u32 = u32::MAX;
 
 static TAKEN: AtomicU32 = AtomicU32::new(0);
 static PINS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(NO_PIN) }; DeviceLine::COUNT];
+static PIN_SIGNALS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(0) }; DeviceLine::COUNT];
+static PIN_CPUS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(0) }; DeviceLine::COUNT];
+const SIGNAL_ACTIVE_LOW: u32 = 1;
+const SIGNAL_LEVEL: u32 = 2;
 
 fn take_line() -> Result<DeviceLine, &'static str> {
     let taken = TAKEN
@@ -94,6 +98,7 @@ pub(super) fn steer(line: DeviceLine, cpu: u64) -> Result<(), &'static str> {
         return Err("the line is message-signalled: its device takes a new message");
     }
     let apic_id = apic_id_of(cpu)?;
+    PIN_CPUS[line.index()].store(apic_id, Ordering::Release);
     with_input(global, |input, controller| {
         route_input(controller, input, line, apic_id)
     })
@@ -129,7 +134,38 @@ pub(super) fn take_pin(global: u32, signal: LineSignal) -> Result<DeviceLine, &'
         return Err("no I/O APIC receives that interrupt");
     }
     PINS[line.index()].store(global, Ordering::Release);
+    let signal_bits = u32::from(signal.active_low) * SIGNAL_ACTIVE_LOW
+        | u32::from(signal.level_triggered) * SIGNAL_LEVEL;
+    PIN_SIGNALS[line.index()].store(signal_bits, Ordering::Release);
+    PIN_CPUS[line.index()].store(u32::from(timer::boot_apic_id()), Ordering::Release);
     Ok(line)
+}
+
+/// Routes every taken I/O APIC input again, after the machine slept and the I/O APICs lost
+/// their entries (D597): each with its signal, vector and CPU, masked as a level-triggered line
+/// is until its driver waits again.
+pub(super) fn restore_pins() {
+    for (index, pin) in PINS.iter().enumerate() {
+        let global = pin.load(Ordering::Acquire);
+        let Some(line) = DeviceLine::from_index(index) else {
+            continue;
+        };
+        if global == NO_PIN {
+            continue;
+        }
+        let bits = PIN_SIGNALS[index].load(Ordering::Acquire);
+        let signal = LineSignal {
+            active_low: bits & SIGNAL_ACTIVE_LOW != 0,
+            level_triggered: bits & SIGNAL_LEVEL != 0,
+        };
+        let apic_id = PIN_CPUS[index].load(Ordering::Acquire);
+        with_input(global, |input, controller| {
+            controller.route(input, signal, vector_of(line), apic_id as u8);
+            if remapping::is_on() {
+                route_input(controller, input, line, apic_id);
+            }
+        });
+    }
 }
 
 /// Gives `line` back: an I/O APIC input is masked first, so the line raises nothing more.
