@@ -612,6 +612,10 @@ mod gpu {
     static GPU_EVENTS: DeviceEvents = DeviceEvents::new();
 
     impl Scanout for GpuScanout {
+        fn shown_scanouts(&self) -> u16 {
+            1 | self.gpu.mirrored_scanouts()
+        }
+
         fn mode(&self) -> Mode {
             self.mode
         }

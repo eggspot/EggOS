@@ -106,6 +106,7 @@ pub fn ioctl<P: Platform>(
     let mut bytes = [0u8; size::LARGEST];
     let bytes = &mut bytes[..length];
     if number != request::GET_WORK_AREA
+        && number != request::GET_SCREENS
         && number != request::GET_PROFILE
         && number != request::GET_PALETTE
         && number != request::GET_REDUCE_MOTION
@@ -281,6 +282,38 @@ pub fn ioctl<P: Platform>(
             {
                 put_word(bytes, index * 4, value);
             }
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::GetScreens => {
+            let mut area = None;
+            on_windows::<P, _>(|desktop, _, _, _| {
+                area = Some(desktop.work_area());
+                Ok(())
+            })?;
+            let area = area.ok_or(Errno::ENXIO)?;
+            let shown = crate::display::shown_scanouts();
+            let mut count = 0;
+            for scanout in 0..16u32 {
+                if shown & (1 << scanout) == 0 || count == eggos_drivers::desktop::protocol::MAX_SCREENS {
+                    continue;
+                }
+                let at = eggos_drivers::desktop::protocol::screens_reply::FIRST
+                    + count * eggos_drivers::desktop::protocol::screens_reply::ENTRY;
+                for (index, value) in [scanout, area.x, area.y, area.width, area.height, SCALE]
+                    .into_iter()
+                    .enumerate()
+                {
+                    put_word(bytes, at + index * 4, value);
+                }
+                count += 1;
+            }
+            put_word(
+                bytes,
+                eggos_drivers::desktop::protocol::screens_reply::COUNT,
+                count as u32,
+            );
             process
                 .write_user_memory(argument, bytes)
                 .map_err(|_| Errno::EFAULT)?;

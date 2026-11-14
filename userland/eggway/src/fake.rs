@@ -107,6 +107,8 @@ pub struct Fake {
     pub focused: Vec<u32>,
     /// The kernel's random source cannot give bytes.
     pub random_unavailable: bool,
+    /// The screens the window server lists; one the work area's size when `None` (D584).
+    pub screens: Option<Vec<crate::system::Screen>>,
 }
 
 std::thread_local! {
@@ -136,6 +138,7 @@ impl Default for Fake {
             answers: Vec::new(),
             focused: Vec::new(),
             random_unavailable: false,
+            screens: None,
         }
     }
 }
@@ -510,6 +513,25 @@ impl System for Fake {
 
     fn work_area(&mut self) -> (u32, u32) {
         self.work_area
+    }
+
+    fn screens(
+        &mut self,
+        out: &mut [crate::system::Screen; crate::system::MAX_SCREENS],
+    ) -> usize {
+        let Some(screens) = &self.screens else {
+            out[0] = crate::system::Screen {
+                id: 0,
+                x: 0,
+                y: 0,
+                width: self.work_area.0,
+                height: self.work_area.1,
+            };
+            return 1;
+        };
+        let count = screens.len().min(crate::system::MAX_SCREENS);
+        out[..count].copy_from_slice(&screens[..count]);
+        count
     }
 
     fn random(&mut self) -> Option<u64> {

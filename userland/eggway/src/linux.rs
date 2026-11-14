@@ -75,7 +75,10 @@ mod request {
     pub const START_MOVE_OR_RESIZE: usize = 0x400c_7712;
     pub const MANAGE_WINDOW: usize = 0x4010_770c;
     pub const SHOW_GPU_BUFFER: usize = 0x4018_773a;
+    pub const GET_SCREENS: usize = 0x80c4_773b;
 }
+
+const SCREENS_REPLY_BYTES: usize = 4 + crate::system::MAX_SCREENS * 24;
 
 const FOCUS_ACTION: u32 = 0;
 
@@ -888,6 +891,38 @@ impl System for Linux {
         };
         close(device);
         size
+    }
+
+    fn screens(&mut self, out: &mut [crate::system::Screen; crate::system::MAX_SCREENS]) -> usize {
+        let Ok(device) = self.open_window_device() else {
+            return 0;
+        };
+        let mut reply = [0u8; SCREENS_REPLY_BYTES];
+        let answered = ioctl(device, request::GET_SCREENS, &mut reply);
+        close(device);
+        if answered.is_err() {
+            let (width, height) = self.work_area();
+            out[0] = crate::system::Screen {
+                id: 0,
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            return 1;
+        }
+        let count = (word(&reply, 0) as usize).min(crate::system::MAX_SCREENS);
+        for (index, slot) in out.iter_mut().enumerate().take(count) {
+            let at = 4 + index * 24;
+            *slot = crate::system::Screen {
+                id: word(&reply, at),
+                x: word(&reply, at + 4) as i32,
+                y: word(&reply, at + 8) as i32,
+                width: word(&reply, at + 12),
+                height: word(&reply, at + 16),
+            };
+        }
+        count
     }
 
     fn random(&mut self) -> Option<u64> {

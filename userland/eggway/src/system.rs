@@ -57,6 +57,20 @@ pub struct GpuPicture {
     pub offset: u32,
 }
 
+/// The most screens the compositor offers as outputs.
+pub const MAX_SCREENS: usize = 8;
+
+/// One screen the desktop is shown on (D584): its id, its place in the desktop's coordinates
+/// and its size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Screen {
+    pub id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// The machine, as the compositor uses it.
 pub trait System {
     /// The monotonic clock, in milliseconds.
@@ -172,6 +186,19 @@ pub trait System {
     ) -> Result<(), Errno>;
     /// The work area's width and height.
     fn work_area(&mut self) -> (u32, u32);
+    /// The screens the desktop is shown on, written into `out`; how many. One the work area's
+    /// size by default, for a window server that cannot tell.
+    fn screens(&mut self, out: &mut [Screen; MAX_SCREENS]) -> usize {
+        let (width, height) = self.work_area();
+        out[0] = Screen {
+            id: 0,
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        1
+    }
     /// Reads event records from `device` without waiting; how many bytes.
     fn read_events(&mut self, device: Fd, records: &mut [u8]) -> Result<usize, Errno>;
     /// Eight bytes from the kernel's random source; `None` when it cannot give all eight.

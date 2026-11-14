@@ -2527,3 +2527,43 @@ fn kde_server_decorations_are_always_the_server_s() {
         Some((DECORATION_KDE, display::INVALID_METHOD))
     );
 }
+
+#[test]
+fn a_second_screen_is_a_second_output_and_its_going_is_a_global_remove() {
+    use crate::system::Screen;
+    use eggos_wayland::protocol::{output_global, registry};
+    let first = Screen {
+        id: 0,
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 720,
+    };
+    let second = Screen {
+        id: 1,
+        x: 1280,
+        y: 0,
+        width: 1920,
+        height: 1080,
+    };
+    let mut session = Session::new();
+    session.fake.screens = Some(vec![first, second]);
+    session.pump();
+    session.send(1, 1, &[Value::NewId(REGISTRY)]);
+    let events = session.pump();
+    let announced: Vec<u32> = events
+        .iter()
+        .filter(|event| event.object == REGISTRY && event.opcode == registry::GLOBAL.opcode)
+        .map(|event| event.word(0))
+        .collect();
+    assert!(announced.contains(&4));
+    assert!(announced.contains(&output_global(1)));
+    session.fake.screens = Some(vec![first]);
+    session.fake.now += crate::compositor::SCREEN_CHECK_MS;
+    let events = session.pump();
+    assert!(events.iter().any(|event| {
+        event.object == REGISTRY
+            && event.opcode == registry::GLOBAL_REMOVE.opcode
+            && event.word(0) == output_global(1)
+    }));
+}

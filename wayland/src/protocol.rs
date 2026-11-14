@@ -548,7 +548,17 @@ pub mod display {
 pub mod registry {
     use super::{Event, event};
     pub const GLOBAL: Event = event(0, 1);
+    pub const GLOBAL_REMOVE: Event = event(1, 1);
 }
+
+/// The name of the `wl_output` global of screen `id` besides the first (D584): the first
+/// screen keeps the static global 4.
+pub const fn output_global(id: u32) -> u32 {
+    OUTPUT_GLOBAL_BASE + id
+}
+
+/// Where the names of the extra screens' `wl_output` globals start.
+pub const OUTPUT_GLOBAL_BASE: u32 = 64;
 
 /// `wl_callback`'s events.
 pub mod callback {

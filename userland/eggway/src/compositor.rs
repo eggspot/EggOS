@@ -14,7 +14,7 @@ use crate::client::{
     Pool, Role, Surface, TITLE_CAPACITY, ViewportState,
 };
 use crate::selection::{self, Delivery, Selections};
-use crate::system::{Fd, GpuPicture, PoolPixels, Received, System, WindowBuffer};
+use crate::system::{Fd, GpuPicture, MAX_SCREENS, PoolPixels, Received, Screen, System, WindowBuffer};
 use crate::text_input;
 use eggos_element_tree::{
     Bounds, Element, HEADER_BYTES, Outcome, Query, Role as ElementRole, TreeWriter,
@@ -136,6 +136,28 @@ pub(crate) struct Shared {
     pub(crate) activation: activation::Activation,
     /// The index of the client whose window has the keyboard focus.
     pub(crate) keyboard_client: Option<u8>,
+    /// The screens offered as outputs, the first as the static `wl_output` global (D584).
+    pub(crate) screens: [Option<Screen>; MAX_SCREENS],
+    next_screen_check_ms: u64,
+}
+
+/// How often the screens are asked for again, in milliseconds.
+pub const SCREEN_CHECK_MS: u64 = 2000;
+
+impl Shared {
+    fn screen_of_global(&self, name: u32) -> Option<Screen> {
+        match name {
+            4 => self.screens[0],
+            name if name >= protocol::OUTPUT_GLOBAL_BASE => self
+                .screens
+                .iter()
+                .skip(1)
+                .flatten()
+                .find(|screen| protocol::output_global(screen.id) == name)
+                .copied(),
+            _ => None,
+        }
+    }
 }
 
 impl Shared {
@@ -324,6 +346,10 @@ impl Compositor {
     /// that failed or hung up go.
     pub fn tick<S: System>(&mut self, system: &mut S) {
         let now = system.now_ms();
+        if now >= self.shared.next_screen_check_ms {
+            self.shared.next_screen_check_ms = now + SCREEN_CHECK_MS;
+            self.check_screens(system);
+        }
         for client in self.clients.iter_mut().flatten() {
             for index in 0..MAX_SURFACES {
                 let Some(surface) = client.surfaces[index] else {
@@ -339,6 +365,58 @@ impl Compositor {
         }
         for index in 0..MAX_CLIENTS {
             self.flush_client(system, index);
+        }
+    }
+
+    /// Asks for the screens again and tells every registry of the outputs that came and went
+    /// (D584): `wl_registry.global` for a new screen, `global_remove` for one gone. The first
+    /// screen stays the static global, so a client always has an output.
+    pub fn check_screens<S: System>(&mut self, system: &mut S) {
+        let mut found = [Screen {
+            id: 0,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        }; MAX_SCREENS];
+        let count = system.screens(&mut found).min(MAX_SCREENS);
+        if count == 0 {
+            return;
+        }
+        let mut now: [Option<Screen>; MAX_SCREENS] = [None; MAX_SCREENS];
+        for (slot, screen) in now.iter_mut().zip(&found[..count]) {
+            *slot = Some(*screen);
+        }
+        let before = self.shared.screens;
+        self.shared.screens = now;
+        let extra = |screens: &[Option<Screen>; MAX_SCREENS], id: u32| {
+            screens.iter().skip(1).flatten().any(|screen| screen.id == id)
+        };
+        for client in self.clients.iter_mut().flatten() {
+            let ids: [u32; 8] = {
+                let mut ids = [0u32; 8];
+                for (slot, id) in ids.iter_mut().zip(registries(client)) {
+                    *slot = id;
+                }
+                ids
+            };
+            for &registry in ids.iter().filter(|&&id| id != 0) {
+                for screen in before.iter().skip(1).flatten() {
+                    if !extra(&now, screen.id) {
+                        client.post(
+                            registry,
+                            1,
+                            registry::GLOBAL_REMOVE,
+                            &[Value::Uint(protocol::output_global(screen.id))],
+                        );
+                    }
+                }
+                for screen in now.iter().skip(1).flatten() {
+                    if !extra(&before, screen.id) {
+                        announce_output(client, registry, protocol::output_global(screen.id));
+                    }
+                }
+            }
         }
     }
 
@@ -660,7 +738,7 @@ fn handle<S: System>(
 ) {
     match message.interface {
         Interface::Display => display_request(client, shared, message),
-        Interface::Registry => bind(client, system, message),
+        Interface::Registry => bind(client, shared, system, message),
         Interface::Compositor => compositor_request(client, message),
         Interface::Shm => shm_request(client, shared, system, message),
         Interface::ShmPool => pool_request(client, shared, system, message),
@@ -735,12 +813,39 @@ fn display_request(client: &mut ClientSlot, shared: &mut Shared, message: &Messa
                         ],
                     );
                 }
+                for screen in shared.screens.iter().skip(1).flatten() {
+                    announce_output(client, id, protocol::output_global(screen.id));
+                }
             }
         }
     }
 }
 
-fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
+fn announce_output(client: &mut ClientSlot, registry: u32, name: u32) {
+    client.post(
+        registry,
+        1,
+        registry::GLOBAL,
+        &[
+            Value::Uint(name),
+            Value::String(Interface::Output.name().as_bytes()),
+            Value::Uint(OUTPUT_VERSION),
+        ],
+    );
+}
+
+const OUTPUT_VERSION: u32 = 4;
+
+fn registries(client: &ClientSlot) -> impl Iterator<Item = u32> + '_ {
+    client
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.interface == Some(Interface::Registry))
+        .map(|(id, _)| id as u32)
+}
+
+fn bind<S: System>(client: &mut ClientSlot, shared: &Shared, system: &mut S, message: &Message) {
     let Value::UntypedNewId {
         interface,
         version,
@@ -749,7 +854,14 @@ fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
     else {
         return;
     };
-    let global = protocol::global(message.uint(0)).filter(|global| {
+    let name = message.uint(0);
+    let screen = shared.screen_of_global(name);
+    let extra_output = (name >= protocol::OUTPUT_GLOBAL_BASE && screen.is_some()).then_some(protocol::Global {
+        name,
+        interface: Interface::Output,
+        version: OUTPUT_VERSION,
+    });
+    let global = protocol::global(name).or(extra_output).filter(|global| {
         global.interface.name().as_bytes() == interface && (1..=global.version).contains(&version)
     });
     let Some(global) = global else {
@@ -791,7 +903,10 @@ fn bind<S: System>(client: &mut ClientSlot, system: &mut S, message: &Message) {
             &[Value::Uint(server_decoration::SERVER)],
         ),
         Interface::Output => {
-            let (width, height) = system.work_area();
+            let (width, height) = match screen {
+                Some(screen) => (screen.width, screen.height),
+                None => system.work_area(),
+            };
             send_output(client, id, version, width, height);
             for index in 0..MAX_SURFACES {
                 if let Some(surface) =

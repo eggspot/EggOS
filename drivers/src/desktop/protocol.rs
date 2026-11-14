@@ -45,6 +45,16 @@ const fn encode(direction: u32, number: u32, size: usize) -> u32 {
     direction << 30 | (size as u32) << 16 | (IOCTL_TYPE as u32) << 8 | number
 }
 
+/// The most screens `GET_SCREENS` lists.
+pub const MAX_SCREENS: usize = 8;
+
+/// `GET_SCREENS`'s reply: the count, then the entries.
+pub mod screens_reply {
+    pub const COUNT: usize = 0;
+    pub const FIRST: usize = 4;
+    pub const ENTRY: usize = 24;
+}
+
 /// The argument sizes of the requests, in bytes.
 pub mod size {
     pub const CREATE: usize = 32;
@@ -57,6 +67,7 @@ pub mod size {
     pub const COMMIT: usize = 136;
     pub const DESTROY: usize = 4;
     pub const GET_WORK_AREA: usize = 20;
+    pub const GET_SCREENS: usize = 4 + super::MAX_SCREENS * super::screens_reply::ENTRY;
     pub const LIST_WINDOW: usize = 96;
     pub const MANAGE_WINDOW: usize = 16;
     pub const GET_PROFILE: usize = 4;
@@ -173,6 +184,7 @@ pub mod request {
     pub const GET_DRAG: u32 = encode(READ | WRITE, 56, size::GET_DRAG);
     pub const REGISTER_HOT_KEY: u32 = encode(WRITE, 57, size::REGISTER_HOT_KEY);
     pub const SHOW_GPU_BUFFER: u32 = encode(WRITE, 58, size::SHOW_GPU_BUFFER);
+    pub const GET_SCREENS: u32 = encode(READ, 59, size::GET_SCREENS);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -630,6 +642,9 @@ pub enum Request {
         window: u32,
     },
     GetWorkArea,
+    /// The screens the desktop is shown on (D584): a count and up to [`MAX_SCREENS`] entries
+    /// of id, x, y, width, height and scale.
+    GetScreens,
     ListWindow {
         index: u32,
     },
@@ -914,6 +929,7 @@ impl Request {
             request::COMMIT => size::COMMIT,
             request::DESTROY => size::DESTROY,
             request::GET_WORK_AREA => size::GET_WORK_AREA,
+            request::GET_SCREENS => size::GET_SCREENS,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1234,6 +1250,7 @@ impl Request {
                 length: double_word(bytes, 8),
                 offset: double_word(bytes, 16),
             },
+            request::GET_SCREENS => Self::GetScreens,
             _ => Self::GetWorkArea,
         })
     }

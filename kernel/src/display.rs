@@ -111,6 +111,11 @@ pub trait Scanout: Send {
     }
     /// The events the device's interrupt raises, when it has one connected (D414); a display
     /// without them flushes by polling.
+    /// The device's scanouts showing the picture, a bit each (D584): the first only by
+    /// default; a device that mirrors it on others says so.
+    fn shown_scanouts(&self) -> u16 {
+        1
+    }
     fn flush_events(&self) -> Option<&'static DeviceEvents> {
         None
     }
@@ -742,6 +747,14 @@ pub fn set_rotation(rotation: Rotation) -> Result<Option<Mode>, &'static str> {
     }
     ROTATION.store(rotation as u8, core::sync::atomic::Ordering::Relaxed);
     Ok(Some(display.mode()))
+}
+
+/// The scanouts showing the desktop, a bit each (D584); none without a display.
+pub fn shown_scanouts() -> u16 {
+    DISPLAY
+        .lock()
+        .as_ref()
+        .map_or(0, |display| display.scanout.shown_scanouts())
 }
 
 /// Makes the display show at `scale` ([`Display::set_scale`]); whether it could.
