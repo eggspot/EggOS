@@ -123,7 +123,7 @@ and is not listed per item.
 
 - [x] Display buffers larger than 4 MiB from several DMA regions mapped virtually contiguous (D112, D127) — code written, unbuilt, D580
 - [x] virtio-gpu 3D (virgl, then Venus) (D112) — code written, unbuilt, D415–D461 and D581
-- [ ] Terminal: 2x scale, the kernel's panic message on screen, rendering from a snapshot so a writer never waits for a render, a sleeping display lock (D112, D114)
+- [x] Terminal: 2x scale, the kernel's panic message on screen, rendering from a snapshot so a writer never waits for a render, a sleeping display lock (D112, D114) — code written, unbuilt, D583
 - [ ] eggway: several outputs, with `wl_registry.global_remove` when a screen goes away (D140)
 - [ ] eggway: `zxdg_output_manager_v1`, `xdg_toplevel_icon_v1` and `xdg_wm_dialog_v1` (D179)
 - [ ] virtio-gpu: the cursor queue on interrupts; several flushes in flight; per-context timelines (`ring_idx`) and sync objects (D414, D460)

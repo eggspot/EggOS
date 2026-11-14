@@ -26650,3 +26650,24 @@ the license, by an explicit instruction recorded here.
   specification and keeps host blobs off.
 - **Not yet.** Building and running; real fences on host blobs (the per-context timelines
   item).
+
+## D583 The kernel terminal renders from a snapshot, a kernel panic shows on the screen; 2x scale and the display lock settled (M11; D114's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Snapshot.** `Terminal::take_snapshot` copies what changed since the last render (the
+  cells of each changed span, the cursor and its look, the selection's columns, a pending
+  scroll, the scrolled-back mark) into a `Snapshot` that keeps its buffers between frames,
+  and `Snapshot::render` draws it. The drawing thread holds the terminal's lock only for the
+  copy and draws after letting it go, so a console write waits for a copy of a few rows at
+  most, never for glyphs being drawn. `Terminal::render` is the two in a row, as before.
+- **A panic on the screen.** The panic handler formats its message into a fixed 1 KiB buffer
+  (`panic_text`, no allocation) and `display::show_panic` draws it white on red across the
+  top of the screen, as many lines as fit in a quarter of it, then flushes by polling. It takes
+  the display's lock only if it is free, since the panic may have struck while it was held;
+  the serial console gets the message first either way.
+- **Decided by research.** 2x scale is the display's own (`display::set_scale`, set from the
+  `display.scale` setting before the desktop starts): the terminal draws at 1x into a display
+  shown at 2x, so it needs nothing of its own. The display lock stays a spinning lock: since
+  D414 the flush lets it go while the device works (`flush_sleeping`) and with the snapshot
+  the terminal no longer draws under it, so it is held only for short copies and composition,
+  where a sleeping lock's context switch would cost more than the wait.
+- **Not yet.** Building and running; the panic band on a display whose framebuffer is not
+  the kernel's (a GPU showing a client's buffer).
