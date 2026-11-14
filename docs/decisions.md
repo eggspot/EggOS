@@ -27008,3 +27008,31 @@ the license, by an explicit instruction recorded here.
   (pre-Zen IOMMUs, which then keep destinations below 256); the HPET timer for CPUs other than
   the boot CPU.
 
+## D595 AML threads that really wait, and GPIO and serial-bus connection fields (M5; D537's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the ACPI 6.5 specification, 5.5.2.4.5 and 19.6.2)
+- **The machine is lent while a thread waits.** What the loaded tables built (the namespace,
+  the tables' code, the integer width and the connections) is now a `Machine` the interpreter
+  owns. An `Acquire` of a mutex another AML thread holds, or a `Wait` on an event not yet
+  signalled, moves the machine out to the host (`Host::wait_for`), which lends it to the other
+  AML threads and gives it back once the condition holds or the timeout passes. Ownership moves
+  with the machine, so no two threads ever reach the namespace at once and no lock or `unsafe`
+  is needed: this is ACPICA's "release the interpreter lock while blocked" rule expressed as a
+  move. Mutexes record their owner (`Host::thread_id`), so the owner acquires again without
+  waiting, as 19.6.2 asks.
+- **The kernel.** A waiting thread puts its machine in `LENT` and sleeps a millisecond at a
+  time, taking it back to test its condition. The ACPI event thread, finding the namespace's
+  lock held, runs the pending GPE and embedded-controller query methods on the lent machine
+  with a host copied from the loaded one, and puts it back. This is the case firmware needs:
+  a method waiting for its embedded controller's mutex or event while the controller's query
+  must run. Notifications from either path go through `act_on_notifications`.
+- **Connection fields.** A field list's `Connection` (a named buffer or an inline resource
+  template) is kept in the machine's connections, and every field after it names it; the
+  `AccessAs` attribute and byte count are kept too. A field in a `GeneralPurposeIo` region
+  reads and writes its pins (`Host::gpio_read`, `gpio_write`: the field's bit offset is the
+  pin index in the descriptor, its length the pin count); one in a `GenericSerialBus` region
+  makes one transfer (`Host::serial_bus`: the field's byte offset in the region is the
+  command, the attribute the protocol), returning the status, length and data buffer.
+- **Not yet.** Building and running; the kernel's GPIO and serial-bus host methods, which wait
+  for the GPIO controllers (M13) and an I2C host driver; writing a serial-bus field's answer
+  back into the stored buffer; and AML threads other than the event thread lending each other
+  their machine.
+
