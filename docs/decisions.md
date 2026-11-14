@@ -26588,3 +26588,30 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; `subscriptions/listen` on the local channel; resources
   other than `eggos://grants` to subscribe to; `input_required` for questions other than a
   yes (forms with fields).
+
+## D579 Time zones' past rules from TZif files, and the Windows C runtime's `localtime` and `_tzset` (M10; D194's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from RFC 8536 and Microsoft's C runtime reference)
+- **The past.** `eggos_calendar::zone::History` reads a TZif file (versions 1 to 4, the
+  64-bit data of version 2 on, at most 512 transitions with the latest kept, 32 local time
+  types, the footer's POSIX rule) and gives the local time at any instant: type 0 before the
+  first transition, the transition's type after it, the footer rule after the last one.
+  `zone::Zone` is a zone's rule with its history when read; its `to_utc` picks the earlier of
+  two instants a repeated local time names, as `Rule::to_utc` does. `zone::tzif_path` maps an
+  IANA name to `/usr/share/zoneinfo/<name>`; a POSIX rule has no file.
+- **Who reads it.** `date` and `ls` (coreutils) and the Windows layer (`GetLocalTime`,
+  `FileTimeToLocalFileTime`, `LocalFileTimeToFileTime`, `GetTimeZoneInformation`) read the
+  zone's file when it is there and fall back to the current rule when not; the Windows layer
+  keeps the zone it read until `_tzset`.
+- **The Windows C runtime.** `_tzset`, `_get_timezone`, `_get_daylight`, `_get_dstbias`,
+  `_get_tzname`, the UCRT's `__timezone`, `__daylight`, `__dstbias` and `__tzname`,
+  `_localtime64`/`32` and their `_s` forms, `_gmtime64`/`32` and theirs, `_mktime64`/`32`
+  (fields out of range normalised, the zone's earlier instant for a repeated hour) and
+  `_mkgmtime64`/`32`; msvcrt's `localtime`, `gmtime` and `mktime` are the 64-bit forms.
+- **Decided by research.** Where the TZif files come from: they are what `zic` makes from the
+  IANA tz database, which is in the public domain, so the component store mirrors the IANA
+  release's compiled files as an optional `zoneinfo` component downloaded on request, as
+  firmware is (the owner's earlier decision for firmware); without it every zone keeps its
+  current rule, as before (D18). One `struct tm` for the process in the non-`_s` functions,
+  where Microsoft keeps one per thread: programs that call them from several threads at once
+  already race on Microsoft's own globals (`_timezone`, `_tzname`).
+- **Not yet.** Building and running; the `zoneinfo` component's catalog entry and the
+  mirror; the macOS layer reading the past; `strftime`'s `%Z` from the Windows C runtime.
