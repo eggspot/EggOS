@@ -26814,3 +26814,22 @@ the license, by an explicit instruction recorded here.
   where the GPU is (`sysfs::register_gpu`).
 - **Not yet.** Building and running; the card node (`card0`) and the primary minor, which
   EggOS does not offer (no KMS to programs); other GPUs than virtio-gpu.
+
+## D589 Pointer acceleration, sub-pixel moves carried, and each pointing device's own preferences (M11; D195's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; the Mouse pane's part designed by Claude Fable, `docs/ux/mouse-devices-v0.1.md`)
+- **Acceleration.** A relative mouse's move is scaled by the speed (as before, 5 as
+  reported) and, when acceleration is on, by a gain that grows with the report's largest
+  axis count past 4 counts, 1/8 more per count, at most 4 times (`input::moved_by`). What is
+  left below a pixel is carried, per device, to the next report, so slow moves at speeds under
+  5 add up instead of being lost. On by default; `mouse.acceleration` (`on`/`off`) in
+  settings, the CLI and `settings_set`.
+- **Per device.** The kernel keeps up to 16 devices' own speed, acceleration, left-handed
+  buttons and natural scrolling, each following the global one unless set
+  (`input::set_device_preferences`), by the device's place among the input sources; the window
+  server takes them with `SET_DEVICE_INPUT_PREFERENCES` (request 60), which with the device
+  `EVERY_DEVICE` sets the global acceleration.
+- **Decided by research.** A simple velocity-proportional gain rather than a table of
+  curves: it is what Windows' "Enhance pointer precision" and libinput's adaptive profile
+  both reduce to at a mouse's report rates, and it costs a multiply per report. Devices are
+  told apart by their place because the input layer has no device names yet.
+- **Not yet.** Building and running; the Mouse pane's acceleration switch and device picker,
+  and the per-device settings keys (D590, after Fable's design).
