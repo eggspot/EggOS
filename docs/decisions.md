@@ -26832,4 +26832,46 @@ the license, by an explicit instruction recorded here.
   both reduce to at a mouse's report rates, and it costs a multiply per report. Devices are
   told apart by their place because the input layer has no device names yet.
 - **Not yet.** Building and running; the Mouse pane's acceleration switch and device picker,
-  and the per-device settings keys (D590, after Fable's design).
+  and the per-device settings keys (a later decision, after Fable's design).
+
+## D590 Screenshots: the keys, the region picker, `CAPTURE_SCREEN`, `SHOW_NOTICE`, `screenshot` and MCP `screen_capture` (M11; D204's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; designed by Claude Fable, `docs/ux/desktops-overview-screenshots-v0.3.md` sections 6 and 7)
+- **Keys.** Print Screen alone, Super+Print Screen (Windows) and Shift+Print Screen (Linux)
+  and Super+Shift+3 capture the screen; Alt+Print Screen the focused window (the screen when
+  none); Super+Shift+S, Super+Shift+4 and Super+Shift+5 open the region picker. The server
+  runs `/bin/screenshot --notify` with `--window <id>` or `--region x,y,w,h` as it runs the
+  task manager; a missing program shows `Screenshots are not installed.`
+- **Picker.** A server mode (`drivers/src/desktop/screenshots.rs`, `Picker`): the new 19x19
+  `Crosshair` pointer, the hint pill, a drag drawn as an accent outline with an icon-dark
+  outline inside and a `W x H` size pill; Space switches to window mode (the window under the
+  pointer outlined 2 px in accent; a click captures it), Esc cancels, a release under 8x8 is a
+  slip. Pointer, button and key events go to the picker while it is open.
+- **Protocol.** `CAPTURE_SCREEN` (request 61, 48 bytes: x, y, width, height, window, first
+  row, row count, buffer, length) copies the asked rows of the whole screen (window 0 and a
+  zero size), of a region that must lie inside the screen (`EINVAL` otherwise), or of a
+  window's outside rect clipped to the screen (`ENOENT` for no such window), band by band,
+  replying with `CAPTURE_WINDOW`'s width, height and rows; it needs the same right as
+  `CAPTURE_WINDOW`. `SHOW_NOTICE` (62: length, duration clamped to 0.5 to 10 s, 64 bytes of
+  text) shows the desktop's notice with the caller's text (`Desktop::show_text_notice`);
+  `PICK_REGION` (63) opens the picker. Both need the right to open apps.
+- **`screenshot`** (a core utility, `/bin/screenshot`; `window_capture.rs`'s encoder loop is
+  now shared as `encode_to` over a `Source` of a window's content or the screen's rows):
+  `~/Pictures/Screenshots/Screenshot YYYY-MM-DD HH.MM.SS.png` in local time, ` 2` ... ` 99`
+  for more in one second, `Screenshot.png` while the clock reads before 2020; `-o -` writes
+  the PNG to standard output (no shrinking retries there). `--notify` asks for `Saved to
+  Pictures/Screenshots` (or `Screenshot saved` for an `-o` file), `Could not save the
+  screenshot (EROFS)` or `Could not capture the screen (EINVAL)` for 3 s, and prints nothing.
+- **MCP `screen_capture`** (grant `view`, read-only): twin `screenshot -o
+  /run/eggmcpd-capture.png --max-bytes 716800 --json --max-width <n> [--window <w> |
+  --region x,y,w,h]`; the answer is `wm_capture`'s (text, image, `structuredContent` with
+  `x`, `y` or `window`), its sizes read from the JSON record. `region` is one string
+  `"x,y,width,height"`, not four numbers as the design's table suggests: one argument keeps
+  "all four or none" in the schema (a pattern) instead of a rule the schema cannot state.
+- **Differences from the design, by research.** The capture reads the composed framebuffer
+  rather than composing the asked rows again from the windows' state: the framebuffer already
+  holds that composition, so no second compositor path is needed, but a window's capture shows
+  whatever covers it, and a pointer the display draws in software (no hardware cursor plane)
+  is in the image. Composing a lone window over the wallpaper, and leaving out a software
+  pointer, need the compositor to render into a caller's band: a later decision. `screenshot`
+  ships with the core utilities (a hard link to `/bin/coreutils`, a few hundred bytes), not
+  with the desktop component; without a display it fails with `no_window_server`.
+- **Not yet.** Building and running; the wallpaper menu's "Take a screenshot" entry.
