@@ -139,11 +139,13 @@ fn probe_mmio(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     let regs = unsafe { Mmio::new(base, size) };
     match MmioTransport::new(regs) {
         Ok(transport) => {
-            if transport.device_type() == virtio::device_type::GPU
-                && let Some((base, length)) = transport
-                    .shared_memory(eggos_drivers::virtio::gpu::three_d::SHM_HOST_VISIBLE)
-            {
-                crate::rendering::set_host_window(base, length);
+            if transport.device_type() == virtio::device_type::GPU {
+                crate::vfs::sysfs::register_gpu(crate::vfs::sysfs::GpuLocation::Platform { slot: 0 });
+                if let Some((base, length)) =
+                    transport.shared_memory(eggos_drivers::virtio::gpu::three_d::SHM_HOST_VISIBLE)
+                {
+                    crate::rendering::set_host_window(base, length);
+                }
             }
             add_device(probe, id, &node, AnyTransport::Mmio(transport))
         }
@@ -214,6 +216,19 @@ fn probe_pci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     );
     if let Some(config) = probe.pci_config() {
         if device_type == virtio::device_type::GPU {
+            let address = function.address;
+            let class_word = config.read32(address, 8);
+            crate::vfs::sysfs::register_gpu(crate::vfs::sysfs::GpuLocation::Pci {
+                bus: address.bus,
+                device: address.device,
+                function: address.function,
+                vendor: config.read16(address, 0),
+                device_id: config.read16(address, 2),
+                subsystem_vendor: config.read16(address, 0x2c),
+                subsystem_device: config.read16(address, 0x2e),
+                revision: class_word as u8,
+                class: class_word >> 8,
+            });
             let window = virtio_pci::shared_memory_regions(config, function.address)
                 .find(|region| region.id == eggos_drivers::virtio::gpu::three_d::SHM_HOST_VISIBLE);
             if let Some(window) = window {
