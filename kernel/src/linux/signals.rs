@@ -238,6 +238,7 @@ struct ActionsAndQueue {
 struct OtherThread {
     id: u32,
     wait_slot: Arc<WaitSlot>,
+    shared: Arc<crate::thread::ThreadShared>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -762,6 +763,7 @@ impl Signals {
         block.threads.push(OtherThread {
             id: thread.id(),
             wait_slot: Arc::clone(thread.wait_slot()),
+            shared: Arc::clone(thread.shared()),
         });
         if caller.id() == first && block.first_thread_wait_slot.is_none() {
             block.first_thread_wait_slot = Some(Arc::clone(caller.wait_slot()));
@@ -781,6 +783,17 @@ impl Signals {
                 signals - signals_among(&block.sent_to_threads),
             );
         }
+    }
+
+    /// What other threads read of thread `id`, not the process's first, and ask of it, while
+    /// it has not exited (D592).
+    pub fn thread_shared(&self, id: u32) -> Option<Arc<crate::thread::ThreadShared>> {
+        let [block] = self.actions_and_queue.as_deref()?;
+        block
+            .threads
+            .iter()
+            .find(|thread| thread.id == id)
+            .map(|thread| Arc::clone(&thread.shared))
     }
 
     /// Whether `id` is one of the process's threads other than its first that has not exited.

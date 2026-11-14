@@ -1429,6 +1429,7 @@ fn start<P: Platform>(
     }
     thread::with_running_fp::<P, _>(|state| *state = FpState::new());
     image.account_running_thread();
+    image.set_first_thread(Arc::clone(thread.shared()));
     image.add_thread();
     super::wait::record_running(&image, thread, |table, id| {
         table.mark_executed(id);

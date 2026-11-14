@@ -31,7 +31,11 @@ pub fn handle<P: Platform>(interrupt: Interrupt) {
         devices::interrupts::handle::<P>(line);
         return;
     }
-    cpu::current::<P>().count(interrupt);
+    let here = cpu::current::<P>();
+    if interrupt == Interrupt::Timer {
+        here.note_timer_tick(P::clock_ticks());
+    }
+    here.count(interrupt);
     if interrupt == Interrupt::Wakeup {
         cpu::serve_shootdowns::<P>();
     }

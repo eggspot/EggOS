@@ -322,6 +322,10 @@ struct Memory<P: Platform> {
     records: AtomicU8,
     image: ImageLayout,
     cpu_ticks: Arc<AtomicU64>,
+    /// The part of [`Self::cpu_ticks`] sampled as user time (D592).
+    user_ticks: AtomicU64,
+    /// What other threads read of the process's first thread, and ask of it (D592).
+    first_thread: LeafSpinLock<Option<Arc<thread::ThreadShared>>>,
     /// How far below the usual top this program's `mmap` area starts, chosen at random by
     /// `execve` (D558); 0 for the fixed layout.
     mmap_slide: AtomicU64,
@@ -429,6 +433,8 @@ impl<P: Platform> Memory<P> {
             mmap_slide: AtomicU64::new(0),
             grows_down: SpinLock::new(Vec::new()),
             cpu_ticks: Arc::new(AtomicU64::new(0)),
+            user_ticks: AtomicU64::new(0),
+            first_thread: LeafSpinLock::new_leaf(None),
             records: AtomicU8::new(0),
             image: ImageLayout::default(),
         }
@@ -518,6 +524,8 @@ impl<P: Platform> Memory<P> {
             records: AtomicU8::new(records),
             image: self.image.clone(),
             cpu_ticks: Arc::new(AtomicU64::new(0)),
+            user_ticks: AtomicU64::new(0),
+            first_thread: LeafSpinLock::new_leaf(None),
         })
     }
 
@@ -2601,6 +2609,33 @@ impl<P: Platform> Process<P> {
             .wrapping_add(running)
     }
 
+    /// The part of [`Self::cpu_ticks`] sampled as user time (D592): the span before each timer
+    /// interrupt that stopped one of its programs' threads in user mode.
+    pub fn user_cpu_ticks(&self) -> u64 {
+        self.memory.user_ticks.load(Ordering::Relaxed)
+    }
+
+    /// Records `shared` as its first thread's (D592).
+    pub fn set_first_thread(&self, shared: Arc<thread::ThreadShared>) {
+        *self.memory.first_thread.lock() = Some(shared);
+    }
+
+    /// What other threads read of its thread `id`, and ask of it (D592): its first thread's for
+    /// the process's id, another's while it has not exited.
+    pub fn thread_shared(&self, id: u32) -> Option<Arc<thread::ThreadShared>> {
+        if id == self.id().get() {
+            return self.memory.first_thread.lock().clone();
+        }
+        self.signals.lock().thread_shared(id)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn note_user_tick(&self, before: u64) {
+        let span = cpu::current::<P>().claim_user_tick(before);
+        self.memory.user_ticks.fetch_add(span, Ordering::Relaxed);
+    }
+
     /// Has the running thread, which runs this process's program from now on (`execve`),
     /// charge the time it runs to this process (D198).
     pub fn account_running_thread(&self) {
@@ -2813,7 +2848,11 @@ where
         // change marks this CPU stale or, for a process with threads on several CPUs, shoots
         // its translations down before any frame is reused (D94). Nothing switches this CPU's
         // threads or address space before `run_user` returns.
+        let ticks = cpu::current::<P>().tick_count();
         let exit = unsafe { P::run_user(context) };
+        if exit == UserExit::Interrupt && cpu::current::<P>().tick_count() != ticks {
+            process.note_user_tick(ticks);
+        }
         ended = handler(&process, context, exit).is_break();
     }
     leave_program(process, context)

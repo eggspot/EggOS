@@ -592,8 +592,15 @@ pub(crate) fn spawn_thread<P: Platform>(
     }
     let mut thread = Box::new(thread);
     process.add_thread();
+    if thread.id() == process.id().get() {
+        process.set_first_thread(Arc::clone(thread.shared()));
+    }
+    let mut unclaimed = Some(Arc::clone(thread.shared()));
     let counted = Arc::clone(&process);
     let handler = move |process: &Arc<Process<P>>, context: &mut UserContext, exit| {
+        if let Some(shared) = unclaimed.take() {
+            crate::thread::set_running_shared::<P>(shared);
+        }
         handle(process, &mut thread, context, exit)
     };
     process::spawn::<P, _>(process, context, handler).inspect_err(|_| {

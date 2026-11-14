@@ -234,27 +234,61 @@ fn cpu_clock<P: Platform>(process: &Process<P>, caller: u32, clock_id: u64) -> O
 }
 
 /// Linux's CPU clock ids for a named process or thread (`clock_getcpuclockid`,
-/// `pthread_getcpuclockid`): the id is `~pid << 3`, bit 2 set for a thread, bits 1:0 the kind
-/// (2, `CPUCLOCK_SCHED`, is what both functions make; profiling and virtual time read the same
-/// here, as EggOS keeps no separate system time). The calling thread, the calling process and
-/// other processes by id (D553); another thread of the process is `EINVAL`, as its time is kept
-/// only by the scheduler that runs it.
+/// `pthread_getcpuclockid`): the id is `~pid << 3`, bit 2 set for a thread, bits 1:0 the kind:
+/// `CPUCLOCK_PROF` (0) and `CPUCLOCK_SCHED` (2) read all its time, `CPUCLOCK_VIRT` (1) its
+/// user time (D592). The calling thread, another thread of the process (its time up to its
+/// last switch), the calling process and other processes by id (D553).
 fn named_cpu_clock<P: Platform>(process: &Process<P>, caller: u32, id: i32) -> Option<u64> {
     const PER_THREAD: i32 = 4;
     const KIND: i32 = 3;
     const KINDS: i32 = 3;
+    const VIRTUAL: i32 = 1;
     if id & KIND >= KINDS {
         return None;
     }
+    let user = id & KIND == VIRTUAL;
     let named = !(id >> 3) as u32;
     if id & PER_THREAD != 0 {
-        return (named == 0 || named == caller)
-            .then(crate::thread::running_thread_ticks::<P>);
+        if named == 0 || named == caller {
+            return Some(match user {
+                true => crate::thread::running_thread_user_ticks::<P>(),
+                false => crate::thread::running_thread_ticks::<P>(),
+            });
+        }
+        let shared = process.thread_shared(named)?;
+        return Some(match user {
+            true => shared.user_ticks(),
+            false => shared.ticks(),
+        });
     }
     if named == 0 || named == process.id().get() {
-        return Some(process.cpu_ticks(true));
+        return Some(match user {
+            true => process.user_cpu_ticks(),
+            false => process.cpu_ticks(true),
+        });
     }
-    super::proc::running_process::<P>(named).map(|other| other.cpu_ticks(false))
+    super::proc::running_process::<P>(named).map(|other| match user {
+        true => other.user_cpu_ticks(),
+        false => other.cpu_ticks(false),
+    })
+}
+
+/// The calling process's (`thread` false) or thread's CPU time, as user and system
+/// nanoseconds (D592): system time is what was not sampled as user time.
+fn split_cpu_time<P: Platform>(process: &Process<P>, thread: bool) -> (u64, u64) {
+    let (total, user) = match thread {
+        true => (
+            crate::thread::running_thread_ticks::<P>(),
+            crate::thread::running_thread_user_ticks::<P>(),
+        ),
+        false => (process.cpu_ticks(true), process.user_cpu_ticks()),
+    };
+    let user = user.min(total);
+    let per_tick = nanoseconds_per_tick::<P>();
+    (
+        nanoseconds_at(user, per_tick),
+        nanoseconds_at(total - user, per_tick),
+    )
 }
 
 const RUSAGE_SELF: i64 = 0;
@@ -266,25 +300,30 @@ pub const RUSAGE_SIZE: usize = 18 * W;
 const TMS_SIZE: usize = 4 * W;
 const USER_HZ: u64 = 100;
 
-/// `getrusage(who, usage)` (D198): the calling process's (`RUSAGE_SELF`) or thread's
-/// (`RUSAGE_THREAD`) CPU time as user time in the `struct rusage` at `usage`, every other field
-/// 0; `RUSAGE_CHILDREN` reads all 0, as the time of waited-for children is not kept yet.
-/// `EINVAL` for another `who`, `EFAULT` for `usage` not the program's writable memory.
+/// `getrusage(who, usage)` (D198, D592): the calling process's (`RUSAGE_SELF`) or thread's
+/// (`RUSAGE_THREAD`) CPU time as user and system time in the `struct rusage` at `usage`, every
+/// other field 0; `RUSAGE_CHILDREN` the reaped children's, as user time. `EINVAL` for another
+/// `who`, `EFAULT` for `usage` not the program's writable memory.
 pub fn getrusage<P: Platform>(process: &Process<P>, who: u64, usage: u64) -> Result<u64, Errno> {
-    let nanoseconds = match who as i64 as i32 as i64 {
-        RUSAGE_SELF => cpu_clock(process, 0, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0),
-        RUSAGE_THREAD => cpu_clock(process, 0, clock::THREAD_CPUTIME_ID as u64).unwrap_or(0),
-        RUSAGE_CHILDREN => children_nanoseconds(process),
+    let (user, system) = match who as i64 as i32 as i64 {
+        RUSAGE_SELF => split_cpu_time(process, false),
+        RUSAGE_THREAD => split_cpu_time(process, true),
+        RUSAGE_CHILDREN => (children_nanoseconds(process), 0),
         _ => return Err(Errno::EINVAL),
     };
-    write(process, usage, &rusage_bytes(nanoseconds))?;
+    write(process, usage, &rusage_bytes(user, system))?;
     Ok(0)
 }
 
-fn rusage_bytes(nanoseconds: u64) -> [u8; RUSAGE_SIZE] {
+fn rusage_bytes(user: u64, system: u64) -> [u8; RUSAGE_SIZE] {
     let mut bytes = [0u8; RUSAGE_SIZE];
-    super::abi::put_word(&mut bytes, nanoseconds / NANOSECONDS_PER_SECOND);
-    super::abi::put_word(&mut bytes[W..], nanoseconds % NANOSECONDS_PER_SECOND / 1000);
+    for (at, nanoseconds) in [(0, user), (2 * W, system)] {
+        super::abi::put_word(&mut bytes[at..], nanoseconds / NANOSECONDS_PER_SECOND);
+        super::abi::put_word(
+            &mut bytes[at + W..],
+            nanoseconds % NANOSECONDS_PER_SECOND / 1000,
+        );
+    }
     bytes
 }
 
@@ -303,19 +342,21 @@ pub fn write_rusage<P: Platform>(process: &Process<P>, address: u64, ticks: u64)
         return Ok(());
     }
     let nanoseconds = nanoseconds_at(ticks, nanoseconds_per_tick::<P>());
-    write(process, address, &rusage_bytes(nanoseconds))
+    write(process, address, &rusage_bytes(nanoseconds, 0))
 }
 
-/// `times(buf)` (D198): writes the calling process's CPU time as user time in the `struct tms`
-/// at `buf` (unless null), in `USER_HZ` (100) ticks, its system time and its children's 0;
-/// returns the ticks since boot.
+/// `times(buf)` (D198, D592): writes the calling process's user and system time and its
+/// reaped children's (as user time) in the `struct tms` at `buf` (unless null), in `USER_HZ`
+/// (100) ticks; returns the ticks since boot.
 pub fn times<P: Platform>(process: &Process<P>, buf: u64) -> Result<u64, Errno> {
     if buf != 0 {
-        let spent = cpu_clock(process, 0, clock::PROCESS_CPUTIME_ID as u64).unwrap_or(0);
+        let (user, system) = split_cpu_time(process, false);
         let children = children_nanoseconds(process);
         let mut bytes = [0u8; TMS_SIZE];
-        super::abi::put_word(&mut bytes, spent / (NANOSECONDS_PER_SECOND / USER_HZ));
-        super::abi::put_word(&mut bytes[2 * W..], children / (NANOSECONDS_PER_SECOND / USER_HZ));
+        let hz = NANOSECONDS_PER_SECOND / USER_HZ;
+        super::abi::put_word(&mut bytes, user / hz);
+        super::abi::put_word(&mut bytes[W..], system / hz);
+        super::abi::put_word(&mut bytes[2 * W..], children / hz);
         write(process, buf, &bytes)?;
     }
     Ok(monotonic_nanoseconds::<P>() / (NANOSECONDS_PER_SECOND / USER_HZ))

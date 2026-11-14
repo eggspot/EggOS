@@ -49,6 +49,13 @@ pub struct Cpu {
     timer_interrupts_seen: AtomicU64,
     /// Wake-up interrupts this CPU has taken ([`wake`]). Changed only by the CPU itself.
     wakeups: AtomicU64,
+    /// The clock at the last timer interrupt or thread switch on this CPU (D592), the span from
+    /// there to the latest timer interrupt, how many timer interrupts have stamped it, and the
+    /// ticks of the running thread's turn sampled as user time. Changed only by the CPU itself.
+    ticked_at: AtomicU64,
+    tick_span: AtomicU64,
+    ticks: AtomicU64,
+    turn_user_ticks: AtomicU64,
     index: usize,
     /// Set before the block is used, never changed after.
     hardware_id: AtomicU64,
@@ -115,6 +122,10 @@ impl Cpu {
             unseen_by_scheduler: AtomicU64::new(0),
             timer_interrupts_seen: AtomicU64::new(0),
             wakeups: AtomicU64::new(0),
+            ticked_at: AtomicU64::new(0),
+            tick_span: AtomicU64::new(0),
+            ticks: AtomicU64::new(0),
+            turn_user_ticks: AtomicU64::new(0),
             index,
             hardware_id: AtomicU64::new(0),
             online: AtomicBool::new(false),
@@ -147,6 +158,43 @@ impl Cpu {
     /// the local APIC id on x86.
     pub fn hardware_id(&self) -> u64 {
         self.hardware_id.load(Ordering::Relaxed)
+    }
+
+    /// A timer interrupt at clock `now` (D592): the span since the last one or the last switch
+    /// is what it samples.
+    pub(crate) fn note_timer_tick(&self, now: u64) {
+        let span = now.wrapping_sub(self.ticked_at.swap(now, Ordering::Relaxed));
+        self.tick_span.store(span, Ordering::Relaxed);
+        self.ticks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many timer interrupts [`Self::note_timer_tick`] has stamped.
+    pub(crate) fn tick_count(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
+    }
+
+    /// A program ran in user mode from when the count was `before` until a timer interrupt
+    /// stopped it: the span that interrupt sampled counts as the running thread's user time.
+    /// The span, or 0 when no timer interrupt came since.
+    pub(crate) fn claim_user_tick(&self, before: u64) -> u64 {
+        if self.ticks.load(Ordering::Relaxed) == before {
+            return 0;
+        }
+        let span = self.tick_span.load(Ordering::Relaxed);
+        self.turn_user_ticks.fetch_add(span, Ordering::Relaxed);
+        span
+    }
+
+    /// A switch at clock `now`: sampling starts again for the next thread. Returns the user
+    /// ticks sampled in the turn that ends.
+    pub(crate) fn restart_turn(&self, now: u64) -> u64 {
+        self.ticked_at.store(now, Ordering::Relaxed);
+        self.turn_user_ticks.swap(0, Ordering::Relaxed)
+    }
+
+    /// The user ticks sampled in the running thread's turn so far.
+    pub(crate) fn turn_user_ticks(&self) -> u64 {
+        self.turn_user_ticks.load(Ordering::Relaxed)
     }
 
     /// Whether the CPU runs the kernel's code: true for the boot CPU, and for a secondary CPU

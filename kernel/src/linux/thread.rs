@@ -149,6 +149,7 @@ pub struct LinuxThread {
     signals: ThreadSignals,
     signals_seen: u16,
     wait_slot: Arc<WaitSlot>,
+    shared: Arc<crate::thread::ThreadShared>,
     files: Descriptors,
     working_directory: WorkingDirectory,
     inherited_fp: Option<Box<FpState>>,
@@ -167,6 +168,7 @@ impl LinuxThread {
             signals: ThreadSignals::new(),
             signals_seen: process.signals_sent(),
             wait_slot: Arc::new(WaitSlot::new()),
+            shared: Arc::new(crate::thread::ThreadShared::new(u64::MAX)),
             files: Descriptors::with_console_streams(),
             working_directory: WorkingDirectory::at_root(),
             inherited_fp: None,
@@ -192,10 +194,16 @@ impl LinuxThread {
             signals: self.signals.for_new_thread(),
             signals_seen: self.signals_seen,
             wait_slot: Arc::new(WaitSlot::new()),
+            shared: Arc::new(crate::thread::ThreadShared::new(self.shared.affinity())),
             files,
             working_directory,
             inherited_fp: None,
         }
+    }
+
+    /// What other threads read of it and ask of it (D592).
+    pub fn shared(&self) -> &Arc<crate::thread::ThreadShared> {
+        &self.shared
     }
 
     /// The first thread of a child process this thread starts (`fork`, `vfork`, `clone`

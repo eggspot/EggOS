@@ -192,11 +192,65 @@ struct Thread {
     fp: OnceCell<FpRegisters>,
     ran: Cell<u64>,
     since: Cell<u64>,
+    user_ran: Cell<u64>,
     account: CpuAccount,
+    shared: SharedSlot,
     allowed: Cell<u64>,
 }
 
 struct CpuAccount(Cell<Option<Arc<AtomicU64>>>);
+
+struct SharedSlot(Cell<Option<Arc<ThreadShared>>>);
+
+impl fmt::Debug for SharedSlot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("SharedSlot").finish_non_exhaustive()
+    }
+}
+
+/// What other threads may read of a thread, or ask of it (D592): the clock ticks it has run,
+/// those sampled as user time, its CPU set, and a CPU set another thread asked it to take,
+/// which it takes at its scheduler's next look.
+#[derive(Debug)]
+pub struct ThreadShared {
+    ticks: AtomicU64,
+    user_ticks: AtomicU64,
+    affinity: AtomicU64,
+    requested_affinity: AtomicU64,
+}
+
+impl ThreadShared {
+    /// A thread's, before it has run, allowed on the CPUs of `affinity`.
+    pub fn new(affinity: u64) -> Self {
+        Self {
+            ticks: AtomicU64::new(0),
+            user_ticks: AtomicU64::new(0),
+            affinity: AtomicU64::new(affinity),
+            requested_affinity: AtomicU64::new(0),
+        }
+    }
+
+    /// The clock ticks it has run, up to its last switch.
+    pub fn ticks(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
+    }
+
+    /// Those sampled as user time.
+    pub fn user_ticks(&self) -> u64 {
+        self.user_ticks.load(Ordering::Relaxed).min(self.ticks())
+    }
+
+    /// The CPUs it may run on, a bit per CPU index.
+    pub fn affinity(&self) -> u64 {
+        self.affinity.load(Ordering::Relaxed)
+    }
+
+    /// Asks it to run only on the CPUs of `allowed` (not 0) from its scheduler's next look.
+    pub fn request_affinity(&self, allowed: u64) {
+        self.affinity.store(allowed, Ordering::Relaxed);
+        self.requested_affinity.store(allowed, Ordering::Release);
+    }
+}
 
 impl fmt::Debug for CpuAccount {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -248,9 +302,25 @@ impl Thread {
             fp: OnceCell::new(),
             ran: Cell::new(0),
             since: Cell::new(0),
+            user_ran: Cell::new(0),
             account: CpuAccount(Cell::new(account)),
+            shared: SharedSlot(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         })
+    }
+
+    fn shared(&self) -> Option<&ThreadShared> {
+        // SAFETY: only `set_running_shared` replaces it, for the running thread with the
+        // scheduler's lock held, and every reader holds that lock: nothing replaces it while
+        // this shared reference lives.
+        unsafe { &*self.shared.0.as_ptr() }.as_deref()
+    }
+
+    fn add_user_ticks(&self, ticks: u64) {
+        self.user_ran.set(self.user_ran.get().wrapping_add(ticks));
+        if let Some(shared) = self.shared() {
+            shared.user_ticks.fetch_add(ticks, Ordering::Relaxed);
+        }
     }
 
     fn may_run_on(&self, cpu: &Cpu) -> bool {
@@ -266,6 +336,9 @@ impl Thread {
         // this shared reference lives.
         if let Some(account) = unsafe { &*self.account.0.as_ptr() } {
             account.fetch_add(spent, Ordering::Relaxed);
+        }
+        if let Some(shared) = self.shared() {
+            shared.ticks.fetch_add(spent, Ordering::Relaxed);
         }
     }
 
@@ -1513,6 +1586,9 @@ pub fn set_running_affinity<P: Platform>(allowed: u64) -> bool {
         return false;
     };
     running.get().allowed.set(allowed);
+    if let Some(shared) = running.get().shared() {
+        shared.affinity.store(allowed, Ordering::Relaxed);
+    }
     if running.get().may_run_on(here) {
         return true;
     }
@@ -1561,6 +1637,34 @@ pub fn set_running_account<P: Platform>(account: Arc<AtomicU64>) {
             .and_then(|thread| thread.get().move_account(now, account))
     };
     drop(previous);
+}
+
+/// Gives the running thread `shared` as what other threads read of it and ask of it (D592):
+/// its ticks from now on, and its CPU set.
+pub fn set_running_shared<P: Platform>(shared: Arc<ThreadShared>) {
+    let previous = {
+        let mut schedulers = SCHEDULER.lock();
+        let here = cpu::current::<P>();
+        schedulers.of(here).current.as_ref().and_then(|thread| {
+            let thread = thread.get();
+            shared.affinity.store(thread.allowed.get(), Ordering::Relaxed);
+            thread.shared.0.replace(Some(shared))
+        })
+    };
+    drop(previous);
+}
+
+/// The clock ticks the running thread has run sampled as user time, this turn included (D592).
+pub fn running_thread_user_ticks<P: Platform>() -> u64 {
+    let mut schedulers = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    schedulers.of(here).current.as_ref().map_or(0, |thread| {
+        thread
+            .get()
+            .user_ran
+            .get()
+            .wrapping_add(here.turn_user_ticks())
+    })
 }
 
 /// The ticks the running thread has run this turn, not yet added to its process's account.
@@ -1685,6 +1789,17 @@ pub fn preemption_point_before_user_mode<P: Platform>() -> bool {
 #[inline(never)]
 fn preemption_point_timer_fired<P: Platform>() {
     let mut schedulers = SCHEDULER.lock();
+    let requested = schedulers
+        .of(cpu::current::<P>())
+        .current
+        .as_ref()
+        .and_then(|thread| thread.get().shared())
+        .map_or(0, |shared| shared.requested_affinity.swap(0, Ordering::Acquire));
+    if requested != 0 {
+        drop(schedulers);
+        set_running_affinity::<P>(requested);
+        schedulers = SCHEDULER.lock();
+    }
     if !timer_events::<P>(&mut schedulers) {
         return;
     }
@@ -1783,6 +1898,7 @@ fn switch_now<P: Platform>(
     let previous = schedulers.of(here).replace_current(next);
     if let Some(now) = now {
         previous.get().charge(now);
+        previous.get().add_user_ticks(here.restart_turn(now));
     }
     let save = previous.context();
     park(&mut schedulers, here, previous);
@@ -2561,6 +2677,8 @@ mod tests {
             ran: Cell::new(0),
             since: Cell::new(0),
             account: CpuAccount(Cell::new(None)),
+            user_ran: Cell::new(0),
+            shared: SharedSlot(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         };
         let layout = Layout::new::<FpState>();
@@ -2626,6 +2744,8 @@ mod tests {
             ran: Cell::new(0),
             since: Cell::new(100),
             account: CpuAccount(Cell::new(Some(Arc::clone(&old)))),
+            user_ran: Cell::new(0),
+            shared: SharedSlot(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         };
         let replaced = thread.move_account(130, Arc::clone(&new));
@@ -2653,6 +2773,8 @@ mod tests {
             ran: Cell::new(0),
             since: Cell::new(0),
             account: CpuAccount(Cell::new(account)),
+            user_ran: Cell::new(0),
+            shared: SharedSlot(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         }
     }
@@ -2704,6 +2826,8 @@ mod tests {
             ran: Cell::new(0),
             since: Cell::new(0),
             account: CpuAccount(Cell::new(None)),
+            user_ran: Cell::new(0),
+            shared: SharedSlot(Cell::new(None)),
             allowed: Cell::new(u64::MAX),
         });
         thread.check_stack();

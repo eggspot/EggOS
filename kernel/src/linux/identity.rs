@@ -105,9 +105,9 @@ pub fn getcpu<P: Platform>(process: &Process<P>, cpu: u64, node: u64) -> Result<
 /// ones its affinity allows ([`sched_setaffinity`], D198), to `mask`, a bit per CPU in 64-bit words, and returns
 /// the bytes written: the kernel's mask, a bit for each of the machine's CPUs rounded up to a
 /// word, as Linux's raw call does (C libraries count the bits; Rust's
-/// `std::thread::available_parallelism` sizes thread pools by them). `pid` 0, the caller's
-/// thread or its process name the caller; another id is `ESRCH`, as for
-/// [`get_robust_list`]. `EINVAL` if `size` is smaller than the kernel's mask or not a whole
+/// `std::thread::available_parallelism` sizes thread pools by them). `pid` 0 or the caller's
+/// thread id names the caller; another thread of its process, or another process by its id,
+/// that one (D592); anything else is `ESRCH`. `EINVAL` if `size` is smaller than the kernel's mask or not a whole
 /// number of words; `EFAULT` if `mask` is not the program's writable memory.
 pub fn sched_getaffinity<P: Platform>(
     process: &Process<P>,
@@ -122,16 +122,16 @@ pub fn sched_getaffinity<P: Platform>(
     if size < bytes || !size.is_multiple_of(AFFINITY_WORD_BYTES as u64) {
         return Err(Errno::EINVAL);
     }
-    let pid = pid as u32;
-    if pid != 0 && pid != thread.id() && pid != process.id().get() {
-        return Err(Errno::ESRCH);
-    }
+    let first_word = match affinity_target(process, thread, pid, false)? {
+        AffinityTarget::Caller => crate::thread::running_affinity::<P>(),
+        AffinityTarget::Other(shared) => shared.affinity(),
+    };
     for word in 0..words {
         let address = mask
             .checked_add((word * AFFINITY_WORD_BYTES) as u64)
             .ok_or(Errno::EFAULT)?;
         let allowed = match word {
-            0 => crate::thread::running_affinity::<P>(),
+            0 => first_word,
             _ => u64::MAX,
         };
         process
@@ -141,11 +141,11 @@ pub fn sched_getaffinity<P: Platform>(
     Ok(bytes)
 }
 
-/// `sched_setaffinity(pid, size, mask)` (D198): lets the calling thread run only on the online
-/// CPUs set in the `size` bytes at `mask` (CPUs past the first 64 are always allowed), moving
-/// it to one of them at once; its later threads inherit the set. `pid` names the caller as for
-/// [`sched_getaffinity`] (another id is `ESRCH`); `EINVAL` when no online CPU is set, `EFAULT`
-/// when `mask` is not the program's memory.
+/// `sched_setaffinity(pid, size, mask)` (D198, D592): lets the named thread run only on the
+/// online CPUs set in the `size` bytes at `mask` (CPUs past the first 64 are always allowed):
+/// the caller moves to one of them at once, another thread at its scheduler's next look; later
+/// threads inherit the set. `pid` as for [`sched_getaffinity`]; `EINVAL` when no online CPU is
+/// set, `EFAULT` when `mask` is not the program's memory.
 pub fn sched_setaffinity<P: Platform>(
     process: &Process<P>,
     thread: &LinuxThread,
@@ -153,10 +153,7 @@ pub fn sched_setaffinity<P: Platform>(
     size: u64,
     mask: u64,
 ) -> Result<u64, Errno> {
-    let pid = pid as u32;
-    if pid != 0 && pid != thread.id() && pid != process.id().get() {
-        return Err(Errno::ESRCH);
-    }
+    let target = affinity_target(process, thread, pid, true)?;
     let mut first = [0u8; AFFINITY_WORD_BYTES];
     let length = usize::try_from(size)
         .unwrap_or(usize::MAX)
@@ -165,10 +162,52 @@ pub fn sched_setaffinity<P: Platform>(
         .read_user_memory(mask, &mut first[..length])
         .map_err(|_| Errno::EFAULT)?;
     let wanted = u64::from_ne_bytes(first) & online_cpus(cpu::CPUS.all(), 0);
-    if wanted == 0 || !crate::thread::set_running_affinity::<P>(wanted) {
-        return Err(Errno::EINVAL);
+    match target {
+        AffinityTarget::Other(shared) if wanted != 0 => shared.request_affinity(wanted),
+        AffinityTarget::Caller if wanted != 0 && crate::thread::set_running_affinity::<P>(wanted) => {}
+        _ => return Err(Errno::EINVAL),
     }
     Ok(0)
+}
+
+enum AffinityTarget {
+    Caller,
+    Other(alloc::sync::Arc<crate::thread::ThreadShared>),
+}
+
+/// Whose CPU set `pid` names (D592): the caller for 0 or its own id, another thread of its
+/// process, or another process's first thread (its process id), which only a privileged caller
+/// or one whose user id matches the target's may change (`EPERM`); `ESRCH` for anything else.
+fn affinity_target<P: Platform>(
+    process: &Process<P>,
+    thread: &LinuxThread,
+    pid: u64,
+    changes: bool,
+) -> Result<AffinityTarget, Errno> {
+    use super::credentials::Kind;
+    let pid = pid as u32;
+    if pid == 0 || pid == thread.id() {
+        return Ok(AffinityTarget::Caller);
+    }
+    if let Some(shared) = process.thread_shared(pid) {
+        return Ok(AffinityTarget::Other(shared));
+    }
+    let other = super::proc::running_process::<P>(pid).ok_or(Errno::ESRCH)?;
+    if changes {
+        let caller = process.credentials_and_limits().lock().credentials.ids(Kind::User);
+        let privileged = process.credentials_and_limits().lock().credentials.is_privileged();
+        let target = other.credentials_and_limits().lock().credentials.ids(Kind::User);
+        let same = caller.effective == target.real
+            || caller.effective == target.effective
+            || caller.real == target.real;
+        if !privileged && !same {
+            return Err(Errno::EPERM);
+        }
+    }
+    other
+        .thread_shared(pid)
+        .map(AffinityTarget::Other)
+        .ok_or(Errno::ESRCH)
 }
 
 /// `sched_getscheduler(pid)`: `SCHED_OTHER` (0), the only scheduling policy threads have
