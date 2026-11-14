@@ -24,7 +24,7 @@ and is not listed per item.
 - [x] Signals interrupt only the target thread's CPU (threads record their CPU) and `send_to_process` interrupts after dropping the lock (D95, D97) — code written, unbuilt, D295 and D553
 - [x] `execve` and `fork` record the new first thread's wait slot in the signal block (D97) — already done (`wait::record_running` in fork and exec, D105)
 - [x] Per-thread CPU clock ids for the calling thread and other processes, children's times in `getrusage`, `times` and `wait4` (D198) — code written, unbuilt, D553
-- [ ] System time apart from user time; another thread's CPU clock; another thread's or process's affinity (D198)
+- [x] System time apart from user time; another thread's CPU clock; another thread's or process's affinity (D198) — code written, unbuilt, D592
 - [ ] Per-CPU run-queue locks (a lock-free local run queue with per-CPU wake lists) and the invariant-TSC check (D40-D45, D198)
 - [x] RISC-V Svinval for ranged TLB invalidation where harts have it (D94, D261) — code written, unbuilt, D552
 - [x] Random seeds from the CPU: RNDR on AArch64 and the Zkr `seed` CSR on RISC-V, reseeding on the virtio-rng schedule, and vmgenid reseeding (D56, D282) — code written, unbuilt, D553

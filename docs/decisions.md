@@ -26913,3 +26913,44 @@ the license, by an explicit instruction recorded here.
   notice, the window menu's desktop items, the wallpaper's context menu, cycling an app's
   windows (Alt+\`), and the phone, tablet and TV forms' overview (section 8).
 
+## D592 System time apart from user time, other threads' CPU clocks, and other threads' and processes' CPU sets (M4; D198's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, by research)
+- **User and system time, sampled at the timer.** Each CPU stamps the clock at every timer
+  interrupt and every switch (`Cpu::note_timer_tick`, `Cpu::restart_turn`); the span from the
+  last stamp to a timer interrupt that stops a program in user mode (the user loop sees the
+  CPU's tick count move across `run_user`) counts as user time, for the process
+  (`Process::user_cpu_ticks`) and, at the next switch, for the thread. System time is the
+  rest of the precisely counted run time (D198). This is Linux's default tick-based
+  accounting, chosen over stamping every kernel entry and exit (`VIRT_CPU_ACCOUNTING_GEN`):
+  that costs two clock reads per system call, a large share of EggOS's null-call round trip,
+  while this costs one relaxed load per user entry and one clock read per timer interrupt.
+  Like Linux's, it is statistical: a thread whose turns end between ticks counts as system
+  time until a tick lands in its user code.
+- **Another thread's CPU clock.** Each Linux thread has a `ThreadShared` (its ticks up to its
+  last switch, its user ticks, its CPU set, and a CPU set asked of it), charged by the
+  scheduler at every switch (one more relaxed atomic add) and listed with the process's
+  threads (`Process::thread_shared`), so `pthread_getcpuclockid` clocks of other threads read
+  it; `CPUCLOCK_VIRT` ids read user time, `PROF` and `SCHED` all of it. The running thread
+  claims its `ThreadShared` at its first exit from user mode, so its first turn is not on it.
+- **Another thread's or process's CPU set.** `sched_getaffinity` reads the named thread's set;
+  `sched_setaffinity` stores the set for it to take at its scheduler's next look (the timer's
+  slice end or a reschedule request), when it moves itself as the caller does. Another
+  process's first thread, by the process id, needs a privileged caller or a matching user id
+  (`EPERM`), as Linux's `CAP_SYS_NICE` rule; threads of other processes by thread id are not
+  reached yet (`ESRCH`).
+- **The scheduler's reasons** (moved from `kernel/src/thread.rs`'s comments, removed in this
+  change): a list's next link is written after the list is read so the compiler need not
+  reload it; a ready thread is never dropped (its stack may still be in use and joiners would
+  wait forever); a CPU's idle thread sits in its slot only while another thread runs and looks
+  at its ready threads once it runs on; the timer fires once per arming and is always armed
+  again for the sleepers and the tick; due sleepers run before a yielding thread's next turn;
+  the scheduler's lock is held across a switch for the resumed thread to release; the exited
+  slot is checked before it is taken, one load through the per-CPU register; a process that
+  ended while its address space stayed loaded is freed at the next look, which answers every
+  wake-up sent so far; a fresh slice starts after the idle thread's; the deadline armed is
+  exactly what is needed so a CPU is not woken early; a thread becomes ready on a CPU only
+  through an interrupt (the timer or a wake-up), one already pending taken at once; the idle
+  thread's stack is taken once, when the scheduler starts; and the host tests' clock moves
+  one tick per preemption point (a 10 ms slice is 10 000 of them at 1 MHz).
+- **Not yet.** Building and running; children's system time in `getrusage` and `times` (they
+  read as user time); threads of other processes by thread id.
+
