@@ -15,6 +15,7 @@
 //! at a page fault) once free frames would drop below it, so the kernel's own allocations,
 //! which cannot fail, always find memory.
 
+use crate::high_memory::HighFrames;
 use crate::paging::PageTables;
 use crate::sync::LeafSpinLock;
 use eggos_hal::memory::{FRAME_SIZE, MAX_RANGES};
@@ -142,7 +143,7 @@ impl FrameCache {
     /// Refills it from `allocator` with frames programs may take (above the reserve).
     fn refill(&mut self, allocator: &mut FrameAllocator) {
         for _ in 0..FRAME_CACHE_BATCH {
-            let Some(frame) = allocator.allocate_for_user() else {
+            let Some(frame) = allocator.allocate_user_page() else {
                 break;
             };
             if !self.push(frame) {
@@ -168,7 +169,9 @@ impl Default for FrameCache {
     }
 }
 
-/// A frame for a program's page, from this CPU's [`FrameCache`] when it has one, else from the
+/// A frame for a program's anonymous page, high memory first where the machine has it (D600:
+/// reach it through [`crate::high_memory::with_frame`]), from this CPU's [`FrameCache`] when it
+/// has one, else from the
 /// frame allocator (taking a batch for the cache under one lock); `None` once free frames are
 /// down to the reserve, after every CPU's cache was given back.
 pub fn allocate_user_frame<P: Platform>() -> Option<u64> {
@@ -186,11 +189,11 @@ pub fn allocate_user_frame<P: Platform>() -> Option<u64> {
         }
     }
     drain_frame_caches();
-    if let Some(frame) = FRAMES.lock().as_mut()?.allocate_for_user() {
+    if let Some(frame) = FRAMES.lock().as_mut()?.allocate_user_page() {
         return Some(frame);
     }
     if cfg!(eggos_kernel) && crate::HEAP.release_empty_slabs() > 0 {
-        return FRAMES.lock().as_mut()?.allocate_for_user();
+        return FRAMES.lock().as_mut()?.allocate_user_page();
     }
     None
 }
@@ -252,6 +255,8 @@ pub struct FrameAllocator {
     stack_high_watermark: u64,
     /// Free blocks of contiguous frames (D31).
     buddy: Buddy,
+    /// RAM beyond the direct map's reach, for programs' pages only (D600).
+    high: Option<HighFrames>,
 }
 
 impl FrameAllocator {
@@ -275,6 +280,7 @@ impl FrameAllocator {
             stacked_frames: 0,
             stack_high_watermark: (map.total() / FRAME_SIZE / STACK_SHARE).max(MIN_STACK_HIGH_WATERMARK),
             buddy: Buddy::none(),
+            high: None,
         };
         if !map.ranges().is_empty() {
             let bytes = Buddy::bitmap_bytes(map);
@@ -350,7 +356,48 @@ impl FrameAllocator {
     /// Whether `frames` more frames can go to a program: the free frames stay at or above the
     /// reserve after it.
     pub fn user_may_take(&self, frames: u64) -> bool {
-        self.free_frames >= self.user_reserve.saturating_add(frames)
+        self.free_frames + self.free_high_frames() >= self.user_reserve.saturating_add(frames)
+    }
+
+    /// Free frames of high memory (D600); 0 without it.
+    pub fn free_high_frames(&self) -> u64 {
+        self.high.as_ref().map_or(0, HighFrames::free_frames)
+    }
+
+    /// Takes `map`, RAM beyond the direct map's reach, as high memory (D600): its bitmap from
+    /// this allocator's frames, every frame of it free. Returns the frames it adds; 0 when it
+    /// has high memory already, `map` is empty or there is no room for the bitmap.
+    pub fn add_high_memory(&mut self, map: &MemoryMap) -> u64 {
+        let words = HighFrames::bitmap_words(map);
+        if self.high.is_some() || words == 0 {
+            return 0;
+        }
+        let bytes = (words * 8) as u64;
+        let order = bytes.div_ceil(FRAME_SIZE).next_power_of_two().trailing_zeros();
+        let Some(bitmap) = self.allocate_contiguous(order) else {
+            return 0;
+        };
+        let bitmap = (bitmap as usize).wrapping_add(self.physical_memory_offset);
+        // SAFETY: the block was just allocated, holds the bitmap's words, is reached through
+        // the direct map and is never given back.
+        let high = unsafe { HighFrames::new(map, bitmap) };
+        let added = high.total_frames();
+        if let Some(first) = map.ranges().first() {
+            crate::high_memory::publish_start(first.start);
+        }
+        self.high = Some(high);
+        added
+    }
+
+    /// A frame for a program's anonymous page: high memory first where the machine has it
+    /// (D600; the kernel reaches it through [`crate::high_memory::with_frame`] only), else as
+    /// [`Self::allocate_for_user`].
+    #[inline]
+    pub fn allocate_user_page(&mut self) -> Option<u64> {
+        if let Some(frame) = self.high.as_mut().and_then(HighFrames::allocate) {
+            return Some(frame);
+        }
+        self.allocate_for_user()
     }
 
     /// As [`Self::allocate`], for memory a program drives: `None` too when the free frames are
@@ -581,6 +628,12 @@ impl FrameAllocator {
             frame.is_multiple_of(FRAME_SIZE),
             "freeing an unaligned frame"
         );
+        if let Some(high) = self.high.as_mut().filter(|high| high.contains(frame)) {
+            // SAFETY: the caller's promise; the frame is high memory, which only `high` hands
+            // out.
+            unsafe { high.free(frame) };
+            return;
+        }
         if cfg!(debug_assertions) {
             self.check_not_stacked(frame);
         }

@@ -635,6 +635,35 @@ impl<F: Format> PageTables<F> {
         Ok(())
     }
 
+    /// The physical address of the last-level table for `virt` in `window`, a kernel area,
+    /// linked in empty where missing (D600: the temporary window for high memory, whose entries
+    /// the kernel then writes itself). Called at boot, before any user address space copies the
+    /// kernel half's root entries.
+    pub fn window_leaf_table(
+        &mut self,
+        window: &core::ops::Range<u64>,
+        virt: u64,
+        frames: &mut FrameAllocator,
+    ) -> Result<u64, MapError> {
+        if self.user_half_only || F::LEVELS < 2 {
+            return Err(MapError::OutsideDeviceWindow);
+        }
+        if virt < window.start || virt >= window.end {
+            return Err(MapError::OutsideDeviceWindow);
+        }
+        let entry = self.leaf_table_entry(virt, 1, false, frames)?;
+        match F::decode(entry.read(), 1) {
+            Entry::Table(table) => Ok(table),
+            Entry::Empty => {
+                let table = new_table::<F>(frames, 0)?;
+                fence(Ordering::Release);
+                entry.write(F::table(table, 1, false));
+                Ok(table)
+            }
+            Entry::Leaf(..) | Entry::Kept(_) => Err(MapError::AlreadyMapped),
+        }
+    }
+
     /// The physical address `virt` translates to and the mapping's attributes, or `None`.
     pub fn translate(&self, virt: u64) -> Option<(u64, Attributes)> {
         let mut table = self.roots[F::root(virt)?];
@@ -1033,10 +1062,35 @@ pub fn enable<P: Platform>(free_memory: &MemoryMap) -> Result<Memory<P>, &'stati
     unsafe { P::activate_page_tables(page_tables.roots()) };
     page_tables.mark_active();
     let mut frames = with_memory_beyond(frames, &beyond, P::physical_memory_offset());
-    memory::record_total_frames(frames.free_frames());
+    let high = P::high_memory();
+    if !high.ranges().is_empty() {
+        add_high_memory::<P>(&mut page_tables, &mut frames, &high);
+    }
+    memory::record_total_frames(frames.free_frames() + frames.free_high_frames());
     frames.set_user_reserve(memory::user_reserve_for(frames.free_frames()));
     *memory::FRAMES.lock() = Some(frames);
     Ok(Memory { page_tables })
+}
+
+fn add_high_memory<P: Platform>(
+    page_tables: &mut PageTables<P::PageTableFormat>,
+    frames: &mut FrameAllocator,
+    high: &MemoryMap,
+) {
+    let bytes = crate::high_memory::window_bytes::<P>();
+    let below = device_window::<P>().start;
+    let start = (below & !(bytes - 1)).wrapping_sub(bytes);
+    let area = start..start + bytes;
+    let direct_map_end = P::physical_memory()
+        .ranges()
+        .last()
+        .map_or(0, |range| range.end.wrapping_add(P::direct_map_offset() as u64));
+    if start < direct_map_end || start > below {
+        return;
+    }
+    if crate::high_memory::set_up_window::<P>(page_tables, &area, start, frames).is_ok() {
+        frames.add_high_memory(high);
+    }
 }
 
 fn split_at(memory: &MemoryMap, end: u64) -> (MemoryMap, MemoryMap) {

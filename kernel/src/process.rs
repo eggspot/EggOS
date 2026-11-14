@@ -37,6 +37,7 @@ use crate::linux::credentials::Credentials;
 use crate::linux::limits::ResourceLimits;
 use crate::linux::process_table;
 use crate::linux::signals::Signals;
+use crate::high_memory;
 use crate::memory::{self, FramesToFree};
 use crate::paging::{MapError, PageChange, PageTables};
 use crate::regions::{
@@ -493,13 +494,16 @@ impl<P: Platform> Memory<P> {
         let shared = self
             .space
             .share_pages_into(&mut space, kind, |frame, new, attributes| {
-                // SAFETY: both frames are reached through the frame allocator's offset: `frame`
-                // is mapped in this memory, whose regions' lock is held, so it stays the
-                // process's, and `new` was just allocated for the copy, so they are distinct and
-                // nothing else uses `new`. Another thread of the process may write `frame`
-                // meanwhile; the copy goes through raw pointers only, as kernel copies of user
-                // memory do (D94).
-                unsafe { ptr::copy_nonoverlapping(at(frame), at(new), FRAME_SIZE as usize) };
+                high_memory::with_frame::<P, ()>(frame, frame_offset, |old| {
+                    // SAFETY: `frame` is reached through the direct map or this CPU's temporary
+                    // page and `new`, in low memory, through the frame allocator's offset:
+                    // `frame` is mapped in this memory, whose regions' lock is held, so it stays
+                    // the process's, and `new` was just allocated for the copy, so they are
+                    // distinct and nothing else uses `new`. Another thread of the process may
+                    // write `frame` meanwhile; the copy goes through raw pointers only, as kernel
+                    // copies of user memory do (D94).
+                    unsafe { ptr::copy_nonoverlapping(old, at(new), FRAME_SIZE as usize) };
+                });
                 if attributes.is_some_and(|attributes| attributes.executable) {
                     P::make_instructions_visible(at(new) as usize, FRAME_SIZE as usize);
                 }
@@ -1381,9 +1385,14 @@ impl<P: Platform> Process<P> {
     #[inline(always)]
     fn free_pages(memory: &Memory<P>, start: u64, end: u64) -> Result<(), MapError> {
         let mut unmapped = FramesToFree::new();
+        let mut high = alloc::vec::Vec::new();
         let frame_offset = memory.frame_offset;
         let result = memory.space.unmap_pages(start, end - start, |frame| {
             if !shared_frames::release(frame) {
+                return;
+            }
+            if high_memory::is_high(frame) {
+                high.push(frame);
                 return;
             }
             // SAFETY: the address space owns its frames (`Process::new`), so this one came from
@@ -1404,6 +1413,17 @@ impl<P: Platform> Process<P> {
             // and nothing refers to them any more: their entries are cleared and no CPU uses
             // translations of them.
             unsafe { frames.free_chain(chain) };
+        }
+        if !high.is_empty() {
+            let mut frames = memory::FRAMES.lock();
+            let frames = frames
+                .as_mut()
+                .expect("the frames came from the frame allocator");
+            for frame in high {
+                // SAFETY: as for the chain: high frames the allocator handed out, which nothing
+                // refers to any more.
+                unsafe { frames.free(frame) };
+            }
         }
         result
     }
@@ -1773,8 +1793,9 @@ impl<P: Platform> Process<P> {
                         None => PageChange::Inaccessible,
                         Some(new) => {
                             if new.executable && !old.is_some_and(|old| old.executable) {
-                                let page = (frame as usize).wrapping_add(frame_offset);
-                                P::make_instructions_visible(page, FRAME_SIZE as usize);
+                                high_memory::with_frame::<P, ()>(frame, frame_offset, |page| {
+                                    P::make_instructions_visible(page as usize, FRAME_SIZE as usize)
+                                });
                             }
                             match new.writable && shared_frames::is_shared(frame) {
                                 true => PageChange::Map(Attributes {
@@ -1799,21 +1820,22 @@ impl<P: Platform> Process<P> {
         contents: &[u8],
     ) -> Result<u64, MapError> {
         let frame = memory::allocate_user_frame::<P>().ok_or(MapError::OutOfMemory)?;
-        let page = (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
-        // SAFETY: the frame was just allocated, so this code owns it, and the allocator reaches
-        // it through its offset, the process's `frame_offset`. `contents` fit in the frame (the
-        // callers' duty) and are not in it, so the two do not overlap.
-        unsafe { core::ptr::copy_nonoverlapping(contents.as_ptr(), page, contents.len()) };
-        // SAFETY: as above: the rest of the frame, after the contents.
-        unsafe {
-            eggos_hal::memory::zero(
-                page.wrapping_add(contents.len()),
-                FRAME_SIZE as usize - contents.len(),
-            )
-        };
-        if attributes.executable {
-            P::make_instructions_visible(page as usize, FRAME_SIZE as usize);
-        }
+        high_memory::with_frame::<P, ()>(frame, memory.frame_offset, |page| {
+            // SAFETY: the frame was just allocated, so this code owns it, reached through the
+            // direct map or this CPU's temporary page. `contents` fit in the frame (the
+            // callers' duty) and are not in it, so the two do not overlap.
+            unsafe { core::ptr::copy_nonoverlapping(contents.as_ptr(), page, contents.len()) };
+            // SAFETY: as above: the rest of the frame, after the contents.
+            unsafe {
+                eggos_hal::memory::zero(
+                    page.wrapping_add(contents.len()),
+                    FRAME_SIZE as usize - contents.len(),
+                )
+            };
+            if attributes.executable {
+                P::make_instructions_visible(page as usize, FRAME_SIZE as usize);
+            }
+        });
         match memory.space.map(virt, frame, FRAME_SIZE, attributes) {
             Ok(()) => Ok(frame),
             Err(error) => {
@@ -1924,14 +1946,15 @@ impl<P: Platform> Process<P> {
             }
         };
         let at = |frame: u64| (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
-        // SAFETY: both old frames are mapped by this address space, which the regions' lock
-        // keeps mapped, and the block was just allocated, so nothing else uses it; all three
-        // are reached through the frame allocator's offset.
-        unsafe { ptr::copy_nonoverlapping(at(first), at(block), FRAME_SIZE as usize) };
-        // SAFETY: as above, for the second frame and the block's second half.
-        unsafe {
-            ptr::copy_nonoverlapping(at(second), at(block + FRAME_SIZE), FRAME_SIZE as usize)
-        };
+        for (old, half) in [(first, block), (second, block + FRAME_SIZE)] {
+            high_memory::with_frame::<P, ()>(old, memory.frame_offset, |old| {
+                // SAFETY: the old frame is mapped by this address space, which the regions'
+                // lock keeps mapped, reached through the direct map or this CPU's temporary
+                // page; the block was just allocated, in low memory, so nothing else uses it
+                // and the allocator's offset reaches it.
+                unsafe { ptr::copy_nonoverlapping(old, at(half), FRAME_SIZE as usize) }
+            });
+        }
         if attributes.executable {
             P::make_instructions_visible(at(block) as usize, PAIR_BYTES as usize);
         }
@@ -2074,15 +2097,16 @@ impl<P: Platform> Process<P> {
             return Ok((frame, attributes));
         }
         let new = memory::allocate_user_frame::<P>().ok_or(UnresolvedFault::OutOfMemory)?;
-        let at = |frame: u64| (frame as usize).wrapping_add(memory.frame_offset) as *mut u8;
-        // SAFETY: both frames are reached through the frame allocator's offset: `frame` is
-        // mapped read-only by this address space and every other that shares it, so nothing
-        // writes it, and the regions' lock keeps it mapped here; `new` was just allocated, so
-        // they are distinct and nothing else uses `new`.
-        unsafe { ptr::copy_nonoverlapping(at(frame), at(new), FRAME_SIZE as usize) };
-        if attributes.executable {
-            P::make_instructions_visible(at(new) as usize, FRAME_SIZE as usize);
-        }
+        high_memory::with_frames::<P, ()>(frame, new, memory.frame_offset, |old, copy| {
+            // SAFETY: both frames are reached through the direct map or this CPU's temporary
+            // pages: `frame` is mapped read-only by this address space and every other that
+            // shares it, so nothing writes it, and the regions' lock keeps it mapped here; `new`
+            // was just allocated, so they are distinct and nothing else uses `new`.
+            unsafe { ptr::copy_nonoverlapping(old, copy, FRAME_SIZE as usize) };
+            if attributes.executable {
+                P::make_instructions_visible(copy as usize, FRAME_SIZE as usize);
+            }
+        });
         let unmapped =
             memory
                 .space
@@ -2374,33 +2398,38 @@ impl<P: Platform> Process<P> {
             return Err(InvalidUserAddress);
         }
         let mut reads = FilePageReads::default();
-        let (_held_regions, kernel) = loop {
+        let (_held_regions, phys) = loop {
             let regions = memory.regions.lock();
-            if let Ok(kernel) = Self::in_direct_map(memory, &regions, address, write, &mut reads) {
-                break (regions, kernel);
+            if let Ok(phys) = Self::user_physical(memory, &regions, address, write, &mut reads) {
+                break (regions, phys);
             }
             drop(regions);
             if !reads.read_wanted(memory.frame_offset) {
                 return Err(InvalidUserAddress);
             }
         };
-        // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
-        // through the direct map (`in_direct_map`' promise), mapped with the same memory type
-        // as the program's mapping; the regions' lock, held until `access` returns, keeps the
-        // frame the process's. The program's own accesses to the word are its own business;
-        // the kernel's other accesses to it hold the regions' lock too, so none races this.
-        let word = unsafe { AtomicU32::from_ptr(kernel.cast()) };
-        Ok(access(word))
+        let frame = phys & !(FRAME_SIZE - 1);
+        Ok(high_memory::with_frame::<P, R>(frame, memory.frame_offset, |page| {
+            let kernel = page.wrapping_add((phys - frame) as usize);
+            // SAFETY: `kernel` reaches the word, 4-byte aligned, in one of the process's frames
+            // through the direct map or this CPU's temporary page (`user_physical`'s promise,
+            // `with_frame`), mapped with the same memory type as the program's mapping; the
+            // regions' lock, held until `access` returns, keeps the frame the process's. The
+            // program's own accesses to the word are its own business; the kernel's other
+            // accesses to it hold the regions' lock too, so none races this.
+            let word = unsafe { AtomicU32::from_ptr(kernel.cast()) };
+            access(word)
+        }))
     }
 
     #[inline]
-    fn in_direct_map(
+    fn user_physical(
         memory: &Memory<P>,
         regions: &Regions,
         virt: u64,
         write: bool,
         reads: &mut FilePageReads,
-    ) -> Result<*mut u8, InvalidUserAddress> {
+    ) -> Result<u64, InvalidUserAddress> {
         let page = virt & !(FRAME_SIZE - 1);
         let (frame, attributes) = match memory.space.translate(page) {
             Some(mapped) if !write || mapped.1.writable => mapped,
@@ -2416,8 +2445,7 @@ impl<P: Platform> Process<P> {
         {
             return Err(InvalidUserAddress);
         }
-        let phys = frame + virt % FRAME_SIZE;
-        Ok((phys as usize).wrapping_add(memory.frame_offset) as *mut u8)
+        Ok(frame + virt % FRAME_SIZE)
     }
 
     fn copy_user_pages(
@@ -2441,7 +2469,7 @@ impl<P: Platform> Process<P> {
         let mut regions = memory.regions.lock();
         while done < length {
             let virt = address + done as u64;
-            let Ok(kernel) = Self::in_direct_map(memory, &regions, virt, write, &mut reads) else {
+            let Ok(phys) = Self::user_physical(memory, &regions, virt, write, &mut reads) else {
                 drop(regions);
                 if !reads.read_wanted(memory.frame_offset) {
                     return Err(InvalidUserAddress);
@@ -2450,7 +2478,10 @@ impl<P: Platform> Process<P> {
                 continue;
             };
             let in_page = (FRAME_SIZE - virt % FRAME_SIZE).min((length - done) as u64) as usize;
-            copy(kernel, done, in_page);
+            let frame = phys & !(FRAME_SIZE - 1);
+            high_memory::with_frame::<P, ()>(frame, memory.frame_offset, |page| {
+                copy(page.wrapping_add((phys - frame) as usize), done, in_page)
+            });
             done += in_page;
         }
         Ok(())

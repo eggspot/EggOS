@@ -207,6 +207,7 @@ const SBI_ERR_ALREADY_AVAILABLE: isize = -6;
 static BOOT_CPU_LOCAL_SET: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 const DEVICE_WINDOW: core::ops::Range<u64> = 0xff80_0000..0xffc0_0000;
+const SV32_PHYSICAL_END: u64 = 1 << 34;
 
 /// Handles interrupt `cause` (`scause`), from the kernel or from user mode: the timer's is
 /// disarmed and handed to the kernel, as is a wake-up from another hart.
@@ -622,6 +623,25 @@ impl Platform for Riscv32 {
 
     fn kernel_image() -> KernelImage {
         boot_memory::kernel_image_parts()
+    }
+
+    fn high_memory() -> MemoryMap {
+        // SAFETY: as in `memory_map`.
+        let mut map = unsafe { boot_memory::device_tree_memory_map(device_tree_address()) };
+        map.retain_within(PhysicalRange {
+            start: BOOT_DIRECT_MAP_END,
+            end: SV32_PHYSICAL_END,
+        });
+        map
+    }
+
+    fn drop_kernel_translations(start: u64, length: u64) {
+        for page in 0..length / crate::memory::FRAME_SIZE {
+            let address = (start + page * crate::memory::FRAME_SIZE) as usize;
+            // SAFETY: drops one page's cached translations in every address space, global ones
+            // included; no memory changes.
+            unsafe { core::arch::asm!("sfence.vma {}, zero", in(reg) address) };
+        }
     }
 
     fn physical_memory() -> MemoryMap {

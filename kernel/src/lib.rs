@@ -27,6 +27,7 @@ pub mod drag_payload;
 pub mod elf;
 pub mod exception;
 pub mod heap;
+pub mod high_memory;
 pub mod init;
 pub mod input;
 pub mod interrupt;

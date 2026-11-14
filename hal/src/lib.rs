@@ -258,6 +258,14 @@ pub trait Platform: 'static {
     /// call; the kernel calls it once at boot.
     fn memory_map() -> MemoryMap;
 
+    /// Free RAM beyond what the direct map can ever reach (high memory, D600): on 32-bit
+    /// machines, whose address space has no room to map all of it. The kernel gives it to
+    /// programs' pages only and reaches a frame of it through a temporary mapping. Empty by
+    /// default: the direct map covers all RAM.
+    fn high_memory() -> MemoryMap {
+        MemoryMap::new()
+    }
+
     /// Where the boot direct map ends: the kernel builds its page tables only with memory
     /// below this physical address, and hands out the rest of [`Self::memory_map`] once its own
     /// tables, whose direct map covers all of it, are active (D171). No limit by default.

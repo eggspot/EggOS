@@ -1253,7 +1253,10 @@ impl<P: Platform> FileSystem for Proc<P> {
         let generated = match node {
             MEMINFO => {
                 let (free, reserve) = memory::FRAMES.lock().as_ref().map_or((0, 0), |frames| {
-                    (frames.free_frames(), frames.user_reserve())
+                    (
+                        frames.free_frames() + frames.free_high_frames(),
+                        frames.user_reserve(),
+                    )
                 });
                 meminfo(memory::total_frames(), free, reserve)
             }

@@ -230,6 +230,7 @@ const TIMER_ENABLE: u32 = 1;
 const TIMER_MASKED: u32 = 1 << 1;
 const UART_BYTES: u64 = 0x1000;
 const BOOT_DIRECT_MAP_END: u64 = RAM_START as u64 + (768 << 20);
+const LPAE_PHYSICAL_END: u64 = 1 << 40;
 const DEVICE_WINDOW: core::ops::Range<u64> = 0xffc0_0000..0xffe0_0000;
 const PSCI_CPU_ON: u32 = 0x8400_0003;
 const PSCI_INVALID_PARAMETERS: i32 = -2;
@@ -580,6 +581,28 @@ impl crate::Platform for Arm {
 
     fn kernel_image() -> crate::paging::KernelImage {
         crate::arch::boot_memory::kernel_image_parts()
+    }
+
+    fn high_memory() -> crate::MemoryMap {
+        // SAFETY: as in `memory_map`.
+        let mut map =
+            unsafe { crate::arch::boot_memory::device_tree_memory_map(RAM_START as usize) };
+        map.retain_within(crate::memory::PhysicalRange {
+            start: BOOT_DIRECT_MAP_END,
+            end: LPAE_PHYSICAL_END,
+        });
+        map
+    }
+
+    fn drop_kernel_translations(start: u64, length: u64) {
+        for page in 0..length / crate::memory::FRAME_SIZE {
+            let address = (start + page * crate::memory::FRAME_SIZE) as u32;
+            // SAFETY: invalidates this CPU's translations of one page for every address space
+            // (`TLBIMVAA`) after the entry's store, then waits for it; no memory changes.
+            unsafe {
+                core::arch::asm!("dsb", "mcr p15, 0, {}, c8, c7, 3", "dsb", "isb", in(reg) address)
+            };
+        }
     }
 
     fn physical_memory() -> crate::MemoryMap {
