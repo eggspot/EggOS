@@ -47,7 +47,7 @@ use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use eggos_drivers::input::button;
 use eggos_drivers::input::keymap::{self, CursorKeys, Modifiers};
 use eggos_drivers::terminal::{
-    CursorLook, REPLY_CAPACITY, TERM_BACKGROUND, Terminal, TextArea, WHEEL_LINES,
+    CursorLook, REPLY_CAPACITY, Snapshot, TERM_BACKGROUND, Terminal, TextArea, WHEEL_LINES,
 };
 use eggos_hal::Platform;
 use eggos_hal::atomic::AtomicU64;
@@ -89,6 +89,7 @@ struct Screen {
     clients: Clients,
     boot_screen_until: Option<u64>,
     active_at: u64,
+    snapshot: Snapshot,
 }
 
 impl Screen {
@@ -647,6 +648,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         clients: Clients::new(),
         boot_screen_until,
         active_at: now,
+        snapshot: Snapshot::default(),
     });
     if drawer().is_none() {
         DRAWER.store(Box::into_raw(Box::new(WaitQueue::new())), Ordering::Release);
@@ -1125,8 +1127,8 @@ fn ticks_after_ms<P: Platform>(milliseconds: u32) -> u64 {
 }
 
 fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Damage) -> u64 {
-    let mut terminal = TERMINAL.lock();
-    let Some(terminal) = terminal.as_mut() else {
+    let mut locked = TERMINAL.lock();
+    let Some(terminal) = locked.as_mut() else {
         return NO_LOOK;
     };
     if terminal.needs_render() || TYPED.swap(false, Ordering::Relaxed) {
@@ -1139,8 +1141,15 @@ fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Dama
     let (look, next) = cursor_look_at(focused, blinks, screen.active_at, now, half);
     terminal.set_cursor_look(look);
     let stride = screen.grid_stride();
+    if !terminal.fits(screen.terminal_pixels.len(), stride, 0, 0) {
+        return next.unwrap_or(NO_LOOK);
+    }
+    terminal.take_snapshot(&mut screen.snapshot);
+    drop(locked);
     let mut drawn = Damage::new();
-    terminal.render(&mut screen.terminal_pixels, stride, 0, 0, &mut drawn);
+    screen
+        .snapshot
+        .render(&mut screen.terminal_pixels, stride, 0, 0, &mut drawn);
     let shown = screen.desktop.as_ref().is_none_or(Desktop::terminal_shown);
     if shown {
         let area = screen.text_area();

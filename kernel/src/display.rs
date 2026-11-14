@@ -876,6 +876,25 @@ pub fn load_firmware(bytes: &[u8]) -> Result<(), &'static str> {
     display.scanout.load_firmware(bytes)
 }
 
+/// The panic band's colours.
+const PANIC_BACKGROUND: u32 = 0x00a0_1818;
+const PANIC_FOREGROUND: u32 = 0x00ff_ffff;
+
+/// Shows a kernel panic's `text` on the display at once (D583), from the panicking CPU: the
+/// display's lock is taken only if it is free (the panic may have struck while it was held),
+/// and the flush polls the device. Nothing without a display or with its lock held.
+pub fn show_panic<P: Platform>(text: &str) {
+    let Some(mut display) = DISPLAY.try_lock() else {
+        return;
+    };
+    let Some(display) = display.as_mut() else {
+        return;
+    };
+    display.draw(|framebuffer| framebuffer.show_panic(text));
+    let mut deadline = Deadline::after::<P>(FLUSH_TIMEOUT_MS);
+    let _ = display.flush(&mut deadline);
+}
+
 /// Shows what was drawn on the display since the last flush ([`Display::flush`]); 0 without a
 /// display.
 pub fn flush<P: Platform>() -> Result<usize, &'static str> {
@@ -1011,6 +1030,36 @@ impl Framebuffer<'_> {
 
     /// Makes the boot screen of the framebuffer's size, its first stage lit, what it shows, and
     /// draws it all; fills it with [`FIRST_FRAME_COLOUR`] when it is too small for one.
+    /// Draws a kernel panic's `text` on a band across the top of the screen (D583): white on
+    /// red in the Egg Mono font, a line per `\n`, cut at the screen's width, as many lines as
+    /// fit in a quarter of its height.
+    pub fn show_panic(&mut self, text: &str) {
+        use eggos_drivers::font::{GLYPH_HEIGHT, GLYPH_WIDTH, draw_glyph, glyph_id};
+        let width = self.mode.width as usize;
+        let columns = (width / GLYPH_WIDTH).saturating_sub(2);
+        let most_lines = (self.mode.height as usize / 4 / GLYPH_HEIGHT).max(1);
+        let lines = text.split('\n').take(most_lines);
+        let shown = text.split('\n').take(most_lines).count();
+        let band = Rect::new(0, 0, self.mode.width, ((shown + 1) * GLYPH_HEIGHT) as u32);
+        self.fill(band, PANIC_BACKGROUND);
+        for (row, line) in lines.enumerate() {
+            let top = GLYPH_HEIGHT / 2 + row * GLYPH_HEIGHT;
+            for (column, character) in line.chars().take(columns).enumerate() {
+                let at = top * width + (column + 1) * GLYPH_WIDTH;
+                draw_glyph(
+                    self.pixels,
+                    width,
+                    at,
+                    glyph_id(character as u32),
+                    PANIC_FOREGROUND,
+                    PANIC_BACKGROUND,
+                    false,
+                );
+            }
+        }
+        self.damage(band);
+    }
+
     pub fn show_boot_screen(&mut self) {
         *self.boot = BootScreen::new(self.mode.width, self.mode.height);
         self.redraw_boot_screen(self.mode.rect());

@@ -1270,6 +1270,19 @@ impl Terminal {
         (self.modes.cursor_visible && self.view_back == 0).then_some((self.row, self.column))
     }
 
+    /// Whether the grid, its top-left pixel at (`x`, `y`), fits in `pixels`, rows `stride`
+    /// pixels apart.
+    pub fn fits(&self, pixels: usize, stride: usize, x: u32, y: u32) -> bool {
+        let area = TextArea {
+            x,
+            y,
+            columns: self.columns,
+            rows: self.rows,
+        }
+        .rect();
+        area.right() as usize <= stride && (area.bottom() as usize).saturating_mul(stride) <= pixels
+    }
+
     /// Draws what changed since the last render into `pixels`, rows `stride` pixels apart, with
     /// the grid's top-left pixel at (`x`, `y`), and adds the rectangles it changed to `damage`.
     /// Draws nothing when the grid does not fit in `pixels`.
@@ -1281,6 +1294,120 @@ impl Terminal {
         y: u32,
         damage: &mut Damage,
     ) {
+        if !self.fits(pixels.len(), stride, x, y) {
+            return;
+        }
+        let mut snapshot = Snapshot::default();
+        self.take_snapshot(&mut snapshot);
+        snapshot.render(pixels, stride, x, y, damage);
+    }
+
+    /// Copies what changed since the last snapshot into `snapshot` and counts it as drawn
+    /// (D583): the cells of the changed spans, the cursor, the selection and a pending scroll,
+    /// so the caller lets go of the terminal's lock and draws them with
+    /// [`Snapshot::render`] after, and a writer never waits for the drawing.
+    pub fn take_snapshot(&mut self, snapshot: &mut Snapshot) {
+        snapshot.columns = self.columns;
+        snapshot.rows = self.rows;
+        snapshot.shift = self.shift.take();
+        snapshot.spans.clear();
+        snapshot.cells.clear();
+        if self.view_back > 0 && self.needs_render() {
+            self.invalidate();
+        }
+        if let Some((row, column)) = self.drawn_cursor.take() {
+            self.touch(row, column, column + 1);
+        }
+        let cursor = self.shown_cursor();
+        if let Some((row, column)) = cursor {
+            self.touch(row, column, column + 1);
+        }
+        snapshot.cursor_look = self.cursor_look;
+        snapshot.scrolled_back = self.view_back > 0;
+        for row in 0..self.rows {
+            let span = core::mem::replace(&mut self.dirty[usize::from(row)], Span::CLEAN);
+            if span.is_clean() {
+                continue;
+            }
+            let end = span.end.min(self.columns);
+            let cursor_column = match cursor {
+                Some((cursor_row, column))
+                    if cursor_row == row && span.start <= column && column < end =>
+                {
+                    Some(column)
+                }
+                _ => None,
+            };
+            let selected = match self.highlight {
+                Some(highlight) => {
+                    highlight.columns_of(self.line_number_of_view_row(row), self.columns)
+                }
+                None => 0..0,
+            };
+            let line = self.visible_line(row);
+            let first_cell = snapshot.cells.len();
+            snapshot
+                .cells
+                .extend_from_slice(&line[usize::from(span.start)..usize::from(end)]);
+            snapshot.spans.push(SnapshotSpan {
+                row,
+                start: span.start,
+                end,
+                cursor: cursor_column,
+                selected,
+                first_cell,
+            });
+        }
+        self.drawn_cursor = cursor;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotSpan {
+    row: u16,
+    start: u16,
+    end: u16,
+    cursor: Option<u16>,
+    selected: core::ops::Range<u16>,
+    first_cell: usize,
+}
+
+/// What [`Terminal::take_snapshot`] copied for one render (D583); kept between renders so its
+/// buffers are reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    columns: u16,
+    rows: u16,
+    shift: Option<Shift>,
+    spans: alloc::vec::Vec<SnapshotSpan>,
+    cells: alloc::vec::Vec<Cell>,
+    cursor_look: CursorLook,
+    scrolled_back: bool,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            columns: 0,
+            rows: 0,
+            shift: None,
+            spans: alloc::vec::Vec::new(),
+            cells: alloc::vec::Vec::new(),
+            cursor_look: CursorLook::Block,
+            scrolled_back: false,
+        }
+    }
+}
+
+impl Snapshot {
+    /// Whether it holds nothing to draw.
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty() && self.shift.is_none() && !self.scrolled_back
+    }
+
+    /// Draws what was copied into `pixels`, as [`Terminal::render`] does, and adds the
+    /// rectangles it changed to `damage`. Draws nothing when the grid does not fit.
+    pub fn render(&self, pixels: &mut [u32], stride: usize, x: u32, y: u32, damage: &mut Damage) {
         let area = TextArea {
             x,
             y,
@@ -1293,8 +1420,8 @@ impl Terminal {
         if !fits {
             return;
         }
-        if let Some(shift) = self.shift.take() {
-            self.shift_pixels(pixels, stride, area, shift);
+        if let Some(shift) = self.shift {
+            shift_grid_pixels(pixels, stride, area, shift);
             damage.add(Rect::new(
                 area.x,
                 area.y + u32::from(shift.top) * GLYPH_HEIGHT as u32,
@@ -1302,50 +1429,25 @@ impl Terminal {
                 u32::from(shift.bottom - shift.top + 1) * GLYPH_HEIGHT as u32,
             ));
         }
-        if self.view_back > 0 && self.needs_render() {
-            self.invalidate();
-        }
-        if let Some((row, column)) = self.drawn_cursor.take() {
-            self.touch(row, column, column + 1);
-        }
-        let cursor = self.shown_cursor();
-        if let Some((row, column)) = cursor {
-            self.touch(row, column, column + 1);
-        }
         let mut band = Rect::default();
-        for row in 0..self.rows {
-            let span = core::mem::replace(&mut self.dirty[usize::from(row)], Span::CLEAN);
-            if span.is_clean() {
+        let mut previous_row = None;
+        for span in &self.spans {
+            if previous_row.is_some_and(|row: u16| row + 1 != span.row) {
                 damage.add(core::mem::take(&mut band));
-                continue;
             }
-            let top = area.y as usize + usize::from(row) * GLYPH_HEIGHT;
-            let end = span.end.min(self.columns);
-            let cursor_column = match cursor {
-                Some((cursor_row, column))
-                    if cursor_row == row && span.start <= column && column < end =>
-                {
-                    Some(column)
-                }
-                _ => None,
-            };
-            let cursor_look = self.cursor_look;
-            let selected = match self.highlight {
-                Some(highlight) => {
-                    highlight.columns_of(self.line_number_of_view_row(row), self.columns)
-                }
-                None => 0..0,
-            };
-            let line = self.visible_line(row);
+            previous_row = Some(span.row);
+            let top = area.y as usize + usize::from(span.row) * GLYPH_HEIGHT;
             let cell_at =
                 |column: u16| top * stride + area.x as usize + usize::from(column) * GLYPH_WIDTH;
-            let before_cursor = span.start..cursor_column.unwrap_or(end);
-            let after_cursor = cursor_column.map_or(end, |column| column + 1)..end;
+            let cells = &self.cells[span.first_cell..span.first_cell + usize::from(span.end - span.start)];
+            let cell_of = |column: u16| cells[usize::from(column - span.start)];
+            let before_cursor = span.start..span.cursor.unwrap_or(span.end);
+            let after_cursor = span.cursor.map_or(span.end, |column| column + 1)..span.end;
             for columns in [before_cursor, after_cursor] {
                 for column in columns {
-                    let cell = line[usize::from(column)];
+                    let cell = cell_of(column);
                     let (foreground, background) =
-                        cell.colours_selected(selected.contains(&column));
+                        cell.colours_selected(span.selected.contains(&column));
                     let underline = cell.flags & cell_flags::UNDERLINE != 0;
                     font::draw_glyph(
                         pixels,
@@ -1358,25 +1460,25 @@ impl Terminal {
                     );
                 }
             }
-            if let Some(column) = cursor_column {
+            if let Some(column) = span.cursor {
                 draw_cursor_cell(
                     pixels,
                     stride,
                     cell_at(column),
-                    line[usize::from(column)],
-                    cursor_look,
-                    selected.contains(&column),
+                    cell_of(column),
+                    self.cursor_look,
+                    span.selected.contains(&column),
                 );
             }
             band = band.union(Rect::new(
                 area.x + u32::from(span.start) * GLYPH_WIDTH as u32,
                 top as u32,
-                u32::from(end - span.start) * GLYPH_WIDTH as u32,
+                u32::from(span.end - span.start) * GLYPH_WIDTH as u32,
                 GLYPH_HEIGHT as u32,
             ));
         }
         damage.add(band);
-        if self.view_back > 0 {
+        if self.scrolled_back {
             let column = self.columns - 1;
             let at = area.y as usize * stride + area.x as usize + usize::from(column) * GLYPH_WIDTH;
             font::draw_glyph(
@@ -1389,22 +1491,21 @@ impl Terminal {
                 false,
             );
         }
-        self.drawn_cursor = cursor;
     }
+}
 
-    fn shift_pixels(&self, pixels: &mut [u32], stride: usize, area: Rect, shift: Shift) {
-        let height = usize::from(shift.bottom - shift.top + 1);
-        let lines = usize::from(shift.lines);
-        if lines >= height {
-            return;
-        }
-        let width = area.width as usize;
-        let first = area.y as usize + usize::from(shift.top) * GLYPH_HEIGHT;
-        let distance = lines * GLYPH_HEIGHT * stride;
-        for pixel_row in first..first + (height - lines) * GLYPH_HEIGHT {
-            let to = pixel_row * stride + area.x as usize;
-            pixels.copy_within(to + distance..to + distance + width, to);
-        }
+fn shift_grid_pixels(pixels: &mut [u32], stride: usize, area: Rect, shift: Shift) {
+    let height = usize::from(shift.bottom - shift.top + 1);
+    let lines = usize::from(shift.lines);
+    if lines >= height {
+        return;
+    }
+    let width = area.width as usize;
+    let first = area.y as usize + usize::from(shift.top) * GLYPH_HEIGHT;
+    let distance = lines * GLYPH_HEIGHT * stride;
+    for pixel_row in first..first + (height - lines) * GLYPH_HEIGHT {
+        let to = pixel_row * stride + area.x as usize;
+        pixels.copy_within(to + distance..to + distance + width, to);
     }
 }
 

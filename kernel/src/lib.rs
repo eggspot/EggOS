@@ -22,6 +22,7 @@ pub mod console;
 pub mod cpu;
 pub mod devices;
 pub mod display;
+pub mod panic_text;
 pub mod drag_payload;
 pub mod elf;
 pub mod exception;

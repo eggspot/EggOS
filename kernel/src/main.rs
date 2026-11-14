@@ -96,6 +96,9 @@ mod bare_metal {
         // Nothing useful can be done if the console itself fails while panicking.
         let _ = writeln!(console, "\nkernel panic: {info}");
         let _ = writeln!(console, "{}", eggos_kernel::selftest::FAIL_MARKER);
+        let mut text = eggos_kernel::panic_text::PanicText::new();
+        let _ = write!(text, "EggOS stopped: kernel panic\n{info}");
+        eggos_kernel::display::show_panic::<CurrentPlatform>(text.as_str());
         finish(ExitStatus::Failure)
     }
 }
