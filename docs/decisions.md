@@ -27086,3 +27086,45 @@ the license, by an explicit instruction recorded here.
   restores work after wake); S3 on other architectures (PSCI `SYSTEM_SUSPEND` on Arm, SBI's
   system suspend on RISC-V); CPUs with APIC IDs of 64 or more; S1, S2 and S4.
 
+## D598 `ptrace`'s system-call stops, events, steps, hardware breakpoints and the `/proc` read check (M6; D561's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from ptrace(2), Intel's SDM, the Arm ARM and the RISC-V ISA)
+- **System-call stops.** `PTRACE_SYSCALL` stops the tracee at each system call's entry and
+  exit with `SIGTRAP` (`| 0x80` with `PTRACE_O_TRACESYSGOOD`); the tracer may change the
+  registers, so the call's number and arguments are read again after the entry stop. The
+  system-call path pays one relaxed load (`ptrace::needs_attention`, a count of traced
+  processes wanting stops or events); the traced path is out of line.
+- **Events.** `PTRACE_O_TRACEFORK`, `TRACEVFORK` and `TRACECLONE`: the new child is traced by
+  the same tracer with the same options and starts stopped (`SIGSTOP`), and the parent stops at
+  the call's end with `SIGTRAP | event << 8`, `GETEVENTMSG` giving the child's id.
+  `TRACEEXEC`: the stop at `execve`'s end is an exec event (message: the former thread id)
+  instead of a plain `SIGTRAP`. `TRACEEXIT`: `exit_group` stops before the exit, the message
+  the wait status. `EXITKILL`: a tracer's end kills its tracees. A tracee's stop is reported
+  to `waitpid` as `JobChange::Traced(status)` and with `SIGCHLD` `CLD_TRAPPED`.
+- **Single-step.** AArch64: `MDSCR_EL1.SS` and `MDE` are set on every CPU (OS lock open, `KDE`
+  off, so the kernel never steps), and a step sets `SPSR.SS` (bit 21); the software-step,
+  breakpoint and watchpoint exceptions from EL0 (EC 0x32, 0x30, 0x34) are
+  `ExceptionKind::Debug`, `SIGTRAP`. RISC-V has no user-mode step, so a step is made in
+  software as debuggers do: the stopped instruction is decoded (JAL, JALR, branches, C.J,
+  C.JR/C.JALR, C.BEQZ/C.BNEZ) and a `c.ebreak` written at each instruction it may go to; at
+  the `SIGTRAP` the replaced bytes are put back.
+- **Hardware breakpoints and watchpoints.** x86_64: `PTRACE_PEEKUSER`/`POKEUSER` at
+  `struct user`'s `u_debugreg` (offset 848): `DR0`-`DR3` (user addresses only) and `DR7`
+  (local enables, conditions and lengths kept). AArch64: `NT_ARM_HW_BREAK` and
+  `NT_ARM_HW_WATCH` register sets with two slots each, controls forced to match at EL0. They
+  are kept per process and loaded before its program runs (`Platform::set_user_debug_registers`),
+  and cleared on a CPU that last ran one when another program runs there (one load per user
+  entry: the process's flag or the CPU's).
+- **`/proc` read check.** Opening `/proc/<pid>/maps`, `stat`, `task/<tid>/stat`, `fd` or its
+  entries, or reading `exe`, needs `PTRACE_MODE_READ`: the process itself, root, or the same
+  real user with the target's effective user (`FileSystem::guarded_by_process`), else `EACCES`.
+- **The AArch64 exception file's comments** (removed in this change): the EL0 entry saves the
+  registers straight into the running program's `UserContext` (`SP_EL1` points past it) and
+  returns from `aarch64_enter_user` on the kernel stack it left; `aarch64_enter_user` keeps the
+  kernel's callee-saved registers on its stack and enters EL0 with `TPIDR_EL0`; no speculation
+  past `eret`; the user test programs use Linux's generic system-call numbers and each checks
+  its calls' results into x19 (their checks are those of D47, D73, D82 and D84); `ELR_EL1`
+  already points after `svc`; both trap paths inline the common part so the kernel's keeps its
+  length; a stale timer interrupt for a moved deadline is dropped, never early.
+- **Not yet.** Building and running; per-thread debug registers (they are per process);
+  `PTRACE_O_TRACEVFORKDONE`; `PTRACE_LISTEN`; hardware steps and breakpoints on the other
+  architectures.
+
