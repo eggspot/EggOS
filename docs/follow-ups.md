@@ -40,7 +40,7 @@ and is not listed per item.
 - [x] x86_64: interrupt remapping (VT-d / AMD-Vi) so x2APIC destinations above 255 work, and the HPET as a timer of its own (D531, D536) — code written, unbuilt, D594
 - [x] AML: loading tables from AML (`Load`, `LoadTable`), the global lock's hardware handshake, real waits on mutexes and events, GPIO and serial-bus connection fields (D537, D538) — code written, unbuilt, D556 (real waits and GPIO/serial fields stay open below)
 - [x] AML: real waits on mutexes and events with several AML threads; GPIO and serial-bus connection fields (D537) — code written, unbuilt, D595
-- [ ] Moving device lines off CPUs that go offline, and balancing lines by load (D536)
+- [x] Moving device lines off CPUs that go offline, and balancing lines by load (D536) — code written, unbuilt, D596
 - [ ] The power state's front-ends: `power` CLI, MCP `power_status`, a battery indicator on the bar; acting on the lid and critical temperatures (D556)
 - [x] ACPI: the ECDT, EC burst mode, GPE block devices (`ACPI0006`), acting on lid, battery, thermal and dock notifications (D539) — code written, unbuilt, D556
 - [ ] ACPI sleep states other than S5 (S3 suspend to RAM with wake events) (D538, D539)

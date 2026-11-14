@@ -27036,3 +27036,26 @@ the license, by an explicit instruction recorded here.
   back into the stored buffer; and AML threads other than the event thread lending each other
   their machine.
 
+## D596 CPUs taken out of service, their device lines moved off, and lines balanced by load (M5; D536's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, by research)
+- **Taking a CPU out.** Writing `0` to `/sys/devices/system/cpu/cpu<n>/online` (Linux's
+  interface; the boot CPU has none, as on x86 Linux) calls `thread::take_cpu_offline`: the CPU
+  is marked leaving and not online (`/sys/devices/system/cpu/online` lists what stays, as
+  `0-3,5`), its device lines move to the CPUs that stay (`interrupts::move_off`, by the CPU each
+  line was last moved to), and it is asked to look. Its running thread moves at its next
+  preemption point through the `migrating` slot (D593); its idle thread hands its ready and
+  sleeping threads to the CPUs that stay (sleepers keep their wake times, and the receiving CPU
+  is asked to look so it arms its timer), disarms its timer and waits for interrupts, serving
+  TLB shootdowns, until `1` is written back. A thread made ready on a leaving CPU goes to
+  another. A thread whose CPU set allows only leaving CPUs gets every CPU, as Linux does. The
+  boot CPU and the last CPU in service stay.
+- **Balancing by load.** Each line counts its interrupts (one relaxed add on the interrupt
+  path). Every 10 s, on machines with two or more CPUs, a kernel thread takes each line's
+  interrupts since its last look, gives the busiest lines first each to the CPU with the
+  least load given so far, and moves a line only when that is not where it is. A line with no
+  interrupts stays, so a quiet machine moves nothing.
+- **Not yet.** Building and running; permission checks on the `online` files (EggOS's `open`
+  checks no permission yet); powering a CPU down (PSCI `CPU_OFF`, SBI `hart_stop`) instead of
+  waiting for interrupts; timers of threads parked with a deadline on a leaving CPU (their
+  `Parker` still names that CPU, so an early unpark finds them through it, which still holds
+  them only until the drain; after it, the unpark finds nothing and the deadline wakes them).
+
