@@ -374,6 +374,11 @@ pub trait LentFrames: Send + Sync {
     fn frame_at(&self, offset: u64) -> u64;
     /// How many bytes, whole frames, may be mapped.
     fn length(&self) -> u64;
+    /// The memory type the frames must be mapped with, when not RAM's (D582): a GPU's host
+    /// blob mapped uncached or write-combining as the device asks.
+    fn memory_type(&self) -> Option<eggos_hal::paging::MemoryType> {
+        None
+    }
     /// Whether the program may make the mapping writable (`mprotect`): `false` for a private
     /// mapping of a memory file, which shares the file's frames read-only.
     fn writable(&self) -> bool {
@@ -1227,6 +1232,13 @@ impl<P: Platform> Process<P> {
         });
         memory.records.fetch_or(record::LENT, Ordering::Relaxed);
         drop(lent);
+        let attributes = match lender.memory_type() {
+            Some(memory_type) => Attributes {
+                memory_type,
+                ..attributes
+            },
+            None => attributes,
+        };
         for offset in (0..length).step_by(FRAME_SIZE as usize) {
             if memory
                 .space

@@ -138,7 +138,15 @@ fn probe_mmio(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     // this driver reaches them.
     let regs = unsafe { Mmio::new(base, size) };
     match MmioTransport::new(regs) {
-        Ok(transport) => add_device(probe, id, &node, AnyTransport::Mmio(transport)),
+        Ok(transport) => {
+            if transport.device_type() == virtio::device_type::GPU
+                && let Some((base, length)) = transport
+                    .shared_memory(eggos_drivers::virtio::gpu::three_d::SHM_HOST_VISIBLE)
+            {
+                crate::rendering::set_host_window(base, length);
+            }
+            add_device(probe, id, &node, AnyTransport::Mmio(transport))
+        }
         Err(virtio::Error::NoDevice) => Err(ProbeError::Absent),
         Err(error) => Err(ProbeError::Refused(error.description())),
     }

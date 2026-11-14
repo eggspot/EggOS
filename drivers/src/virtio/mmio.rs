@@ -33,6 +33,12 @@ const QUEUE_DRIVER_LOW: usize = 0x090;
 const QUEUE_DRIVER_HIGH: usize = 0x094;
 const QUEUE_DEVICE_LOW: usize = 0x0a0;
 const QUEUE_DEVICE_HIGH: usize = 0x0a4;
+const SHM_SEL: usize = 0x0ac;
+const SHM_LEN_LOW: usize = 0x0b0;
+const SHM_LEN_HIGH: usize = 0x0b4;
+const SHM_BASE_LOW: usize = 0x0b8;
+const SHM_BASE_HIGH: usize = 0x0bc;
+const NO_SHARED_MEMORY: u64 = u64::MAX;
 const CONFIG: usize = 0x100;
 
 /// `InterruptStatus` bit 0: the device used buffers in one of its queues.
@@ -88,6 +94,19 @@ impl<R: RegisterIo> MmioTransport<R> {
     /// The device's vendor id.
     pub fn vendor_id(&self) -> u32 {
         self.regs.read32(VENDOR_ID)
+    }
+
+    /// The shared memory region `id` (virtio 1.2, 4.2.2: `SHMSel`, `SHMLen`, `SHMBase`): its
+    /// physical address and length, or `None` when the device has no such region (D581).
+    pub fn shared_memory(&self, id: u8) -> Option<(u64, u64)> {
+        self.regs.write32(SHM_SEL, u32::from(id));
+        let length = self.read64(SHM_LEN_LOW, SHM_LEN_HIGH);
+        let base = self.read64(SHM_BASE_LOW, SHM_BASE_HIGH);
+        (length != NO_SHARED_MEMORY && length != 0 && base != NO_SHARED_MEMORY).then_some((base, length))
+    }
+
+    fn read64(&self, low: usize, high: usize) -> u64 {
+        u64::from(self.regs.read32(low)) | (u64::from(self.regs.read32(high)) << 32)
     }
 
     fn write64(&self, low: usize, high: usize, value: u64) {

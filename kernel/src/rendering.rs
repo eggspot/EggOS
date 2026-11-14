@@ -297,8 +297,27 @@ pub struct Buffer {
     backed: bool,
     memory: Option<ManuallyDrop<DmaRegion>>,
     window_offset: Option<u64>,
+    cache: Option<eggos_hal::paging::MemoryType>,
     last_fence: AtomicU64,
     release: fn(u32, bool, u64) -> bool,
+}
+
+/// `VIRTIO_GPU_MAP_CACHE_*`: how the device says a mapped host blob must be reached.
+mod map_cache {
+    pub const MASK: u32 = 0x0f;
+    pub const CACHED: u32 = 0x01;
+    pub const UNCACHED: u32 = 0x02;
+    pub const WRITE_COMBINE: u32 = 0x03;
+}
+
+fn memory_type_of(map_info: u32) -> Option<eggos_hal::paging::MemoryType> {
+    use eggos_hal::paging::MemoryType;
+    match map_info & map_cache::MASK {
+        map_cache::UNCACHED => Some(MemoryType::Device),
+        map_cache::WRITE_COMBINE => Some(MemoryType::WriteCombining),
+        map_cache::CACHED => None,
+        _ => None,
+    }
 }
 
 impl Buffer {
@@ -366,6 +385,10 @@ impl LentFrames for Buffer {
 
     fn length(&self) -> u64 {
         self.length
+    }
+
+    fn memory_type(&self) -> Option<eggos_hal::paging::MemoryType> {
+        self.cache
     }
 }
 
@@ -579,6 +602,7 @@ impl Context {
             backed: true,
             memory: Some(ManuallyDrop::new(memory)),
             window_offset: None,
+            cache: None,
             last_fence: AtomicU64::new(0),
             release: release_resource::<P>,
         });
@@ -626,6 +650,7 @@ impl Context {
             backed: false,
             memory: Some(ManuallyDrop::new(memory)),
             window_offset: None,
+            cache: None,
             last_fence: AtomicU64::new(0),
             release: release_resource::<P>,
         });
@@ -670,6 +695,26 @@ impl Context {
             send_quietly::<P>(&ThreeDCommand::Unref { resource });
             return Err(RenderError::NoMemory);
         };
+        let mut map_info = [0u8; 8];
+        let answered = run::<P>(
+            &ThreeDCommand::MapBlob {
+                context: self.id,
+                resource,
+                offset,
+            },
+            &mut map_info,
+        );
+        let cache = match answered {
+            Ok(length) if length >= 4 => memory_type_of(u32::from_le_bytes(
+                map_info[..4].try_into().unwrap_or([0; 4]),
+            )),
+            Ok(_) => None,
+            Err(error) => {
+                give_back_window(offset, size);
+                send_quietly::<P>(&ThreeDCommand::Unref { resource });
+                return Err(error);
+            }
+        };
         let buffer = Arc::new(Buffer {
             resource,
             physical,
@@ -677,14 +722,10 @@ impl Context {
             backed: false,
             memory: None,
             window_offset: Some(offset),
+            cache,
             last_fence: AtomicU64::new(0),
             release: release_host_blob::<P>,
         });
-        command::<P>(&ThreeDCommand::MapBlob {
-            context: self.id,
-            resource,
-            offset,
-        })?;
         let mut state = self.state.lock();
         let handle = state.next_handle;
         state.next_handle = handle.checked_add(1).ok_or(RenderError::NoMemory)?;
