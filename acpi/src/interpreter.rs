@@ -118,13 +118,47 @@ pub(crate) enum Flow {
     Return(Object),
 }
 
+/// What the loaded tables built (D595): the namespace, the tables' code and the integer
+/// width. One AML thread holds it at a time; a thread that waits lends it to the others
+/// ([`Host::wait_for`]).
+#[derive(Debug)]
+pub struct Machine {
+    pub(crate) namespace: Namespace,
+    pub(crate) tables: Vec<Arc<[u8]>>,
+    pub(crate) integer_mask: u64,
+    pub(crate) connections: Vec<Vec<u8>>,
+}
+
+impl Machine {
+    fn new() -> Self {
+        Self {
+            namespace: Namespace::new(),
+            tables: Vec::new(),
+            integer_mask: u64::MAX,
+            connections: Vec::new(),
+        }
+    }
+
+    fn lent() -> Self {
+        Self {
+            namespace: Namespace::empty(),
+            tables: Vec::new(),
+            integer_mask: u64::MAX,
+            connections: Vec::new(),
+        }
+    }
+
+    /// Its namespace.
+    pub fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+}
+
 /// The namespace the loaded tables built, and what runs their methods on `H`.
 #[derive(Debug)]
 pub struct Interpreter<H: Host> {
     pub(crate) host: H,
-    pub(crate) namespace: Namespace,
-    tables: Vec<Arc<[u8]>>,
-    pub(crate) integer_mask: u64,
+    pub(crate) machine: Machine,
     depth: u32,
 }
 
@@ -139,13 +173,34 @@ pub(crate) fn opcode(stream: &mut Stream<'_>) -> Result<u16, Error> {
 impl<H: Host> Interpreter<H> {
     /// An interpreter with the namespace's predefined objects and no table loaded.
     pub fn new(host: H) -> Self {
+        Self::with_machine(host, Machine::new())
+    }
+
+    /// An interpreter for another AML thread, running on `machine`, which a waiting thread
+    /// lent (D595).
+    pub fn with_machine(host: H, machine: Machine) -> Self {
         Self {
             host,
-            namespace: Namespace::new(),
-            tables: Vec::new(),
-            integer_mask: u64::MAX,
+            machine,
             depth: 0,
         }
+    }
+
+    /// Ends this thread's interpreter, giving the machine back.
+    pub fn into_machine(self) -> Machine {
+        self.machine
+    }
+
+    /// Lends the machine to the other AML threads until `until` holds of it or `timeout`
+    /// milliseconds pass (0xffff: for ever); whether `until` held (D595).
+    pub(crate) fn wait_until(&mut self, until: &dyn Fn(&Machine) -> bool, timeout: u64) -> bool {
+        if until(&self.machine) {
+            return true;
+        }
+        let machine = core::mem::replace(&mut self.machine, Machine::lent());
+        let (machine, held) = self.host.wait_for(machine, until, timeout);
+        self.machine = machine;
+        held
     }
 
     pub fn host(&mut self) -> &mut H {
@@ -153,12 +208,12 @@ impl<H: Host> Interpreter<H> {
     }
 
     pub fn namespace(&self) -> &Namespace {
-        &self.namespace
+        &self.machine.namespace
     }
 
     /// Whether integers are 32 bits wide: a DSDT of revision 0 or 1 says so for every table.
     pub fn has_32_bit_integers(&self) -> bool {
-        self.integer_mask == u64::from(u32::MAX)
+        self.machine.integer_mask == u64::from(u32::MAX)
     }
 
     /// Loads a definition block, the DSDT or an SSDT, header included: runs its terms in the
@@ -175,11 +230,11 @@ impl<H: Host> Interpreter<H> {
             return Err(Error::NotATable);
         }
         if &header[..4] == b"DSDT" && header[TABLE_REVISION_AT] < FIRST_64_BIT_REVISION {
-            self.integer_mask = u64::from(u32::MAX);
+            self.machine.integer_mask = u64::from(u32::MAX);
         }
         let code: Arc<[u8]> = Arc::from(&table[..length]);
-        let index = self.tables.len();
-        self.tables.push(Arc::clone(&code));
+        let index = self.machine.tables.len();
+        self.machine.tables.push(Arc::clone(&code));
         let mut frame = Frame::new(Path::root(), index, false);
         let mut stream = Stream::new(&code, TABLE_HEADER_BYTES);
         self.run_terms(&mut frame, &mut stream).map(|_| ())
@@ -188,7 +243,7 @@ impl<H: Host> Interpreter<H> {
     /// Evaluates the object at `path`: runs a method with `arguments`, reads a field, or gives
     /// any other object as it is.
     pub fn evaluate(&mut self, path: &Path, arguments: &[Object]) -> Result<Object, Error> {
-        let id = self.namespace.find(path).ok_or(Error::NameNotFound)?;
+        let id = self.machine.namespace.find(path).ok_or(Error::NameNotFound)?;
         self.evaluate_node(id, arguments.to_vec())
     }
 
@@ -199,7 +254,7 @@ impl<H: Host> Interpreter<H> {
         name: &[u8; 4],
         arguments: &[Object],
     ) -> Result<Option<Object>, Error> {
-        match self.namespace.find(&scope.child(NameSeg::new(name))) {
+        match self.machine.namespace.find(&scope.child(NameSeg::new(name))) {
             Some(id) => self.evaluate_node(id, arguments.to_vec()).map(Some),
             None => Ok(None),
         }
@@ -216,7 +271,7 @@ impl<H: Host> Interpreter<H> {
         id: NodeId,
         arguments: Vec<Object>,
     ) -> Result<Object, Error> {
-        match self.namespace.get(id).cloned().ok_or(Error::NameNotFound)? {
+        match self.machine.namespace.get(id).cloned().ok_or(Error::NameNotFound)? {
             Object::Method(method) => self.invoke(id, &method, arguments),
             Object::NativeMethod(native) => self.native(native, &arguments),
             Object::Field(_) | Object::BufferField(_) => {
@@ -241,14 +296,14 @@ impl<H: Host> Interpreter<H> {
     }
 
     fn initialize_below(&mut self, scope: &Path, found: &mut Vec<DeviceStatus>) {
-        for child in self.namespace.children(scope) {
-            let Some(path) = self.namespace.path_of(child).cloned() else {
+        for child in self.machine.namespace.children(scope) {
+            let Some(path) = self.machine.namespace.path_of(child).cloned() else {
                 continue;
             };
             if path.parent().as_ref() != Some(scope) {
                 continue;
             }
-            let descend = match self.namespace.get(child) {
+            let descend = match self.machine.namespace.get(child) {
                 Some(Object::Device | Object::Processor { .. } | Object::ThermalZone) => {
                     let status = self.device_status(&path);
                     let is_bus = path == Path::root().child(NameSeg::new(b"_SB_"));
@@ -289,11 +344,11 @@ impl<H: Host> Interpreter<H> {
     /// Every device whose `_HID` or one of whose `_CID`s is one of `ids`, in path order.
     pub fn devices_with_id(&mut self, ids: &[&[u8; 7]]) -> Vec<Path> {
         let devices: Vec<Path> = self
-            .namespace
+            .machine.namespace
             .iter()
             .filter(|(path, node)| {
-                matches!(self.namespace.get(*node), Some(Object::Device))
-                    && self.namespace.path_of(*node) == Some(*path)
+                matches!(self.machine.namespace.get(*node), Some(Object::Device))
+                    && self.machine.namespace.path_of(*node) == Some(*path)
             })
             .map(|(path, _)| path.clone())
             .collect();
@@ -328,11 +383,11 @@ impl<H: Host> Interpreter<H> {
     /// seven-character IDs.
     pub fn devices_with_string_id(&mut self, id: &[u8]) -> Vec<Path> {
         let devices: Vec<Path> = self
-            .namespace
+            .machine.namespace
             .iter()
             .filter(|(path, node)| {
-                matches!(self.namespace.get(*node), Some(Object::Device))
-                    && self.namespace.path_of(*node) == Some(*path)
+                matches!(self.machine.namespace.get(*node), Some(Object::Device))
+                    && self.machine.namespace.path_of(*node) == Some(*path)
             })
             .map(|(path, _)| path.clone())
             .collect();
@@ -363,12 +418,12 @@ impl<H: Host> Interpreter<H> {
             return Err(Error::TooDeep);
         }
         let scope = self
-            .namespace
+            .machine.namespace
             .path_of(id)
             .cloned()
             .ok_or(Error::NameNotFound)?;
         let code = self
-            .tables
+            .machine.tables
             .get(method.table)
             .cloned()
             .ok_or(Error::NotATable)?;
@@ -382,7 +437,7 @@ impl<H: Host> Interpreter<H> {
         let result = self.run_terms(&mut frame, &mut stream);
         self.depth -= 1;
         for created in frame.created.drain(..).rev() {
-            self.namespace.remove(created);
+            self.machine.namespace.remove(created);
         }
         match result? {
             Flow::Return(value) => Ok(value),
@@ -402,7 +457,7 @@ impl<H: Host> Interpreter<H> {
                     _ => return Err(Error::WrongType),
                 };
                 let answers = INTERFACES.contains(&asked);
-                Ok(Object::Integer(if answers { self.integer_mask } else { 0 }))
+                Ok(Object::Integer(if answers { self.machine.integer_mask } else { 0 }))
             }
         }
     }
@@ -438,18 +493,18 @@ impl<H: Host> Interpreter<H> {
                 let source = stream.name_string()?;
                 let alias = stream.name_string()?;
                 let target = self
-                    .namespace
+                    .machine.namespace
                     .search(&source, &frame.scope)
                     .ok_or(Error::NameNotFound)?;
                 let path = alias.resolve(&frame.scope).ok_or(Error::NameNotFound)?;
-                self.namespace.add_alias(path, target)?;
+                self.machine.namespace.add_alias(path, target)?;
             }
             SCOPE => {
                 let end = stream.package_end()?;
                 let name = stream.name_string()?;
                 let path = name.resolve(&frame.scope).ok_or(Error::NameNotFound)?;
-                if self.namespace.find(&path).is_none() {
-                    self.namespace.add(path.clone(), Object::Scope)?;
+                if self.machine.namespace.find(&path).is_none() {
+                    self.machine.namespace.add(path.clone(), Object::Scope)?;
                 }
                 self.run_scope(frame, stream, end, path)?;
             }
@@ -579,6 +634,7 @@ impl<H: Host> Interpreter<H> {
                     Object::Mutex {
                         sync_level,
                         held: 0,
+                        owner: 0,
                     },
                 )?;
             }
@@ -610,7 +666,7 @@ impl<H: Host> Interpreter<H> {
                     return Err(Error::WrongType);
                 };
                 let path = self
-                    .namespace
+                    .machine.namespace
                     .path_of(node)
                     .cloned()
                     .ok_or(Error::NameNotFound)?;
@@ -642,7 +698,7 @@ impl<H: Host> Interpreter<H> {
                 let source = self.super_name(frame, stream)?;
                 let target = self.super_name(frame, stream)?;
                 let handle = match self.table_bytes_of(frame, &source) {
-                    Ok(table) => self.load_table(&table).map_or(0, |()| self.tables.len() as u64),
+                    Ok(table) => self.load_table(&table).map_or(0, |()| self.machine.tables.len() as u64),
                     Err(_) => 0,
                 };
                 self.store(frame, &target, Object::Integer(handle))?;
@@ -727,7 +783,7 @@ impl<H: Host> Interpreter<H> {
         object: Object,
     ) -> Result<NodeId, Error> {
         let path = name.resolve(&frame.scope).ok_or(Error::NameNotFound)?;
-        let id = self.namespace.add(path, object)?;
+        let id = self.machine.namespace.add(path, object)?;
         if frame.in_method {
             frame.created.push(id);
         }
@@ -741,7 +797,7 @@ impl<H: Host> Interpreter<H> {
         object: Object,
     ) -> Result<Path, Error> {
         let id = self.create(frame, name, object)?;
-        self.namespace
+        self.machine.namespace
             .path_of(id)
             .cloned()
             .ok_or(Error::NameNotFound)
@@ -749,7 +805,7 @@ impl<H: Host> Interpreter<H> {
 
     fn find_name(&mut self, frame: &Frame, stream: &mut Stream<'_>) -> Result<NodeId, Error> {
         let name = stream.name_string()?;
-        self.namespace
+        self.machine.namespace
             .search(&name, &frame.scope)
             .ok_or(Error::NameNotFound)
     }
@@ -770,6 +826,9 @@ impl<H: Host> Interpreter<H> {
         let update = UpdateRule::from_flags(flags);
         let lock = flags & LOCK_RULE != 0;
         let mut bit_offset = 0u64;
+        let mut connection = None;
+        let mut attribute = 0u8;
+        let mut access_length = 0u8;
         while let Some(lead) = list.peek() {
             match lead {
                 RESERVED => {
@@ -779,23 +838,36 @@ impl<H: Host> Interpreter<H> {
                 ACCESS => {
                     list.byte()?;
                     access = Access::from_flags(list.byte()?);
-                    list.byte()?;
+                    attribute = list.byte()?;
+                    access_length = 0;
                 }
                 CONNECTION => {
                     list.byte()?;
-                    match list.at_name() {
+                    let template = match list.at_name() {
                         true => {
-                            list.name_string()?;
+                            let name = list.name_string()?;
+                            let node = self
+                                .machine
+                                .namespace
+                                .search(&name, &frame.scope)
+                                .ok_or(Error::NameNotFound)?;
+                            self.machine.namespace.get(node).cloned()
                         }
-                        false => {
-                            self.operand(frame, list)?;
+                        false => Some(self.operand(frame, list)?),
+                    };
+                    connection = match template {
+                        Some(Object::Buffer(bytes)) => {
+                            self.machine.connections.push(bytes);
+                            u32::try_from(self.machine.connections.len() - 1).ok()
                         }
-                    }
+                        _ => None,
+                    };
                 }
                 EXTENDED_ACCESS => {
                     list.byte()?;
                     access = Access::from_flags(list.byte()?);
-                    list.bytes(2)?;
+                    attribute = list.byte()?;
+                    access_length = list.byte()?;
                 }
                 _ => {
                     let segment = list.bytes(4)?;
@@ -808,6 +880,9 @@ impl<H: Host> Interpreter<H> {
                         access,
                         update,
                         lock,
+                        connection,
+                        attribute,
+                        access_length,
                     };
                     let name = NameString {
                         root: false,
@@ -853,7 +928,7 @@ impl<H: Host> Interpreter<H> {
             return Err(Error::WrongType);
         };
         let global = opcode == RELEASE && self.is_global_lock(*node);
-        match (self.namespace.get_mut(*node), opcode) {
+        match (self.machine.namespace.get_mut(*node), opcode) {
             (Some(Object::Event { signals }), SIGNAL) => *signals = signals.saturating_add(1),
             (Some(Object::Event { signals }), RESET) => *signals = 0,
             (Some(Object::Mutex { held, .. }), RELEASE) => {
@@ -869,7 +944,7 @@ impl<H: Host> Interpreter<H> {
 
     /// Whether `node` is `\_GL`, the mutex that stands for the firmware's global lock (D556).
     pub(crate) fn is_global_lock(&self, node: NodeId) -> bool {
-        self.namespace
+        self.machine.namespace
             .path_of(node)
             .is_some_and(|path| *path == Path::root().child(NameSeg::new(b"_GL_")))
     }
@@ -928,7 +1003,7 @@ impl<H: Host> Interpreter<H> {
     ) -> u64 {
         if let Some(bytes) = self.host.table_bytes(signature, oem_id, oem_table_id) {
             return match self.load_table(&bytes) {
-                Ok(()) => self.tables.len() as u64,
+                Ok(()) => self.machine.tables.len() as u64,
                 Err(_) => 0,
             };
         }
@@ -947,7 +1022,7 @@ impl<H: Host> Interpreter<H> {
             return 0;
         };
         match self.load_table(&bytes) {
-            Ok(()) => self.tables.len() as u64,
+            Ok(()) => self.machine.tables.len() as u64,
             Err(_) => 0,
         }
     }
@@ -962,8 +1037,8 @@ impl<H: Host> Interpreter<H> {
             return self.operand(frame, stream);
         }
         let name = stream.name_string()?;
-        let path = match self.namespace.search(&name, &frame.scope) {
-            Some(found) => self.namespace.path_of(found).cloned(),
+        let path = match self.machine.namespace.search(&name, &frame.scope) {
+            Some(found) => self.machine.namespace.path_of(found).cloned(),
             None => name.resolve(&frame.scope),
         };
         path.map(Object::NameReference).ok_or(Error::NameNotFound)
@@ -978,10 +1053,10 @@ impl<H: Host> Interpreter<H> {
         name: &NameString,
     ) -> Result<Object, Error> {
         let id = self
-            .namespace
+            .machine.namespace
             .search(name, &frame.scope)
             .ok_or(Error::NameNotFound)?;
-        let count = match self.namespace.get(id) {
+        let count = match self.machine.namespace.get(id) {
             Some(Object::Method(method)) => usize::from(method.arguments),
             Some(Object::NativeMethod(NativeMethod::OperatingSystemInterface)) => 1,
             Some(Object::Field(_) | Object::BufferField(_)) => {
@@ -1047,10 +1122,10 @@ impl<H: Host> Interpreter<H> {
     ) -> Result<Option<Target>, Error> {
         if stream.at_name() {
             let name = stream.name_string()?;
-            let Some(id) = self.namespace.search(&name, &frame.scope) else {
+            let Some(id) = self.machine.namespace.search(&name, &frame.scope) else {
                 return Ok(None);
             };
-            if matches!(self.namespace.get(id), Some(Object::Method(_))) {
+            if matches!(self.machine.namespace.get(id), Some(Object::Method(_))) {
                 let given = self.name_value_of(frame, stream, id)?;
                 return Ok(Some(Self::target_of(given)));
             }
@@ -1076,7 +1151,7 @@ impl<H: Host> Interpreter<H> {
         stream: &mut Stream<'_>,
         id: NodeId,
     ) -> Result<Object, Error> {
-        let count = match self.namespace.get(id) {
+        let count = match self.machine.namespace.get(id) {
             Some(Object::Method(method)) => usize::from(method.arguments),
             _ => 0,
         };

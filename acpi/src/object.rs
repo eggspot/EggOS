@@ -36,6 +36,9 @@ pub enum Object {
     Mutex {
         sync_level: u8,
         held: u32,
+        /// The AML thread holding it ([`crate::Host::thread_id`]), while `held` is not 0
+        /// (D595).
+        owner: u64,
     },
     Event {
         signals: u64,
@@ -268,6 +271,14 @@ pub struct Field {
     pub update: UpdateRule,
     /// The field list said `Lock`: every access holds the firmware's global lock (D556).
     pub lock: bool,
+    /// The `Connection` before it in its list, a resource template's index in the machine's
+    /// connections: the GPIO pins or serial-bus device a `GeneralPurposeIo` or
+    /// `GenericSerialBus` field reaches (D595).
+    pub connection: Option<u32>,
+    /// The `AccessAs` attribute before it (a serial-bus protocol), 0 when none.
+    pub attribute: u8,
+    /// `AccessAs`'s byte count, for the serial-bus protocols that take one; 0 when none.
+    pub access_length: u8,
 }
 
 /// Bits of a buffer named by `CreateField` and its kin.

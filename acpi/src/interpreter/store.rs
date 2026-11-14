@@ -24,7 +24,7 @@ impl<H: Host> Interpreter<H> {
             Target::Local(index) => Ok(frame.locals[usize::from(*index)].clone()),
             Target::Argument(index) => Ok(frame.arguments[usize::from(*index)].clone()),
             Target::Temporary(object) => Ok((**object).clone()),
-            Target::Node(node) => match self.namespace.get(*node).cloned() {
+            Target::Node(node) => match self.machine.namespace.get(*node).cloned() {
                 Some(Object::Field(field)) => self.read_field(&field),
                 Some(Object::BufferField(field)) => self.read_buffer_field(frame, &field),
                 Some(other) => Ok(other),
@@ -123,7 +123,7 @@ impl<H: Host> Interpreter<H> {
 
     fn store_node(&mut self, frame: &mut Frame, node: NodeId, value: Object) -> Result<(), Error> {
         let held = self
-            .namespace
+            .machine.namespace
             .get(node)
             .cloned()
             .ok_or(Error::NameNotFound)?;
@@ -153,7 +153,7 @@ impl<H: Host> Interpreter<H> {
             | Object::Scope => return Err(Error::WrongType),
             _ => value,
         };
-        let slot = self.namespace.get_mut(node).ok_or(Error::NameNotFound)?;
+        let slot = self.machine.namespace.get_mut(node).ok_or(Error::NameNotFound)?;
         *slot = stored;
         Ok(())
     }
@@ -167,7 +167,7 @@ impl<H: Host> Interpreter<H> {
     ) -> Result<(), Error> {
         match target {
             Target::Node(node) => {
-                let slot = self.namespace.get_mut(*node).ok_or(Error::NameNotFound)?;
+                let slot = self.machine.namespace.get_mut(*node).ok_or(Error::NameNotFound)?;
                 *slot = value;
                 Ok(())
             }
@@ -189,7 +189,7 @@ impl<H: Host> Interpreter<H> {
             return Err(Error::TooDeep);
         }
         let held: &Object = match target {
-            Target::Node(node) => self.namespace.get(*node).ok_or(Error::NameNotFound)?,
+            Target::Node(node) => self.machine.namespace.get(*node).ok_or(Error::NameNotFound)?,
             Target::Local(index) => &frame.locals[usize::from(*index)],
             Target::Argument(index) => &frame.arguments[usize::from(*index)],
             Target::Element(container, index) => {
@@ -210,7 +210,7 @@ impl<H: Host> Interpreter<H> {
             return self.location(frame, &next, depth + 1);
         }
         Ok(match target {
-            Target::Node(node) => self.namespace.get_mut(*node),
+            Target::Node(node) => self.machine.namespace.get_mut(*node),
             Target::Local(index) => Some(&mut frame.locals[usize::from(*index)]),
             Target::Argument(index) => Some(&mut frame.arguments[usize::from(*index)]),
             _ => None,

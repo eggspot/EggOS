@@ -39,7 +39,7 @@ impl<H: Host> Interpreter<H> {
             Object::Uninitialized => 0,
             _ => return Err(Error::WrongType),
         };
-        Ok(integer & self.integer_mask)
+        Ok(integer & self.machine.integer_mask)
     }
 
     /// A buffer: an integer's bytes, little-endian, a string's characters without its end.

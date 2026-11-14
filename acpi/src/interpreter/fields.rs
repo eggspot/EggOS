@@ -38,7 +38,83 @@ impl<H: Host> Interpreter<H> {
         self.read_field_unlocked(field)
     }
 
+    fn connected(&self, field: &Field) -> Option<(RegionSpace, u64, Vec<u8>)> {
+        let index = field.connection?;
+        let FieldKind::Region(region) = field.kind else {
+            return None;
+        };
+        let Some(Object::Region(held)) = self.machine.namespace.get(region) else {
+            return None;
+        };
+        let template = self.machine.connections.get(index as usize)?.clone();
+        matches!(
+            held.space,
+            RegionSpace::GeneralPurposeIo | RegionSpace::GenericSerialBus
+        )
+        .then_some((held.space, held.offset, template))
+    }
+
+    /// A `GeneralPurposeIo` field's pins or a `GenericSerialBus` field's transfer, through the
+    /// host with the field's connection (D595); `None` for any other field.
+    fn read_connected(&mut self, field: &Field) -> Result<Option<Object>, Error> {
+        let Some((space, region_offset, template)) = self.connected(field) else {
+            return Ok(None);
+        };
+        let read = match space {
+            RegionSpace::GeneralPurposeIo => self
+                .host
+                .gpio_read(&template, field.bit_offset as u32, field.bit_length as u32)
+                .map(Object::Integer),
+            _ => self
+                .host
+                .serial_bus(
+                    &template,
+                    region_offset + field.bit_offset / 8,
+                    field.attribute,
+                    field.access_length,
+                    None,
+                )
+                .map(Object::Buffer),
+        };
+        read.map(Some).map_err(Error::Host)
+    }
+
+    fn write_connected(&mut self, field: &Field, value: &Object) -> Result<bool, Error> {
+        let Some((space, region_offset, template)) = self.connected(field) else {
+            return Ok(false);
+        };
+        match space {
+            RegionSpace::GeneralPurposeIo => {
+                let value = self.to_integer(value)?;
+                self.host
+                    .gpio_write(
+                        &template,
+                        field.bit_offset as u32,
+                        field.bit_length as u32,
+                        value,
+                    )
+                    .map_err(Error::Host)?;
+            }
+            _ => {
+                let bytes = self.to_buffer(value)?;
+                self.host
+                    .serial_bus(
+                        &template,
+                        region_offset + field.bit_offset / 8,
+                        field.attribute,
+                        field.access_length,
+                        Some(&bytes),
+                    )
+                    .map_err(Error::Host)?;
+            }
+        }
+        Ok(true)
+    }
+
     fn read_field_unlocked(&mut self, field: &Field) -> Result<Object, Error> {
+        if let Some(object) = self.read_connected(field)? {
+            return Ok(object);
+        }
         let width = unit_bits(field);
         let end = field.bit_offset + field.bit_length;
         let mut out = vec![0u8; field.bit_length.div_ceil(8) as usize];
@@ -65,6 +141,9 @@ impl<H: Host> Interpreter<H> {
     }
 
     fn write_field_unlocked(&mut self, field: &Field, value: &Object) -> Result<(), Error> {
+        if self.write_connected(field, value)? {
+            return Ok(());
+        }
         let mut bytes = self.to_buffer(value)?;
         bytes.resize(field.bit_length.div_ceil(8) as usize, 0);
         let width = unit_bits(field);
@@ -90,7 +169,7 @@ impl<H: Host> Interpreter<H> {
     }
 
     fn field_of(&self, node: NodeId) -> Result<Field, Error> {
-        match self.namespace.get(node) {
+        match self.machine.namespace.get(node) {
             Some(Object::Field(field)) => Ok(*field),
             _ => Err(Error::WrongType),
         }
@@ -155,7 +234,7 @@ impl<H: Host> Interpreter<H> {
         width: u64,
         value: Option<u64>,
     ) -> Result<u64, Error> {
-        let Some(Object::Region(held)) = self.namespace.get(region).cloned() else {
+        let Some(Object::Region(held)) = self.machine.namespace.get(region).cloned() else {
             return Err(Error::WrongType);
         };
         if byte_offset + width / 8 > held.length {
@@ -187,13 +266,13 @@ impl<H: Host> Interpreter<H> {
     }
 
     fn pci_function(&mut self, region: NodeId) -> Result<PciFunction, Error> {
-        if let Some(Object::Region(held)) = self.namespace.get(region)
+        if let Some(Object::Region(held)) = self.machine.namespace.get(region)
             && let Some(function) = held.pci
         {
             return Ok(function);
         }
         let device = self
-            .namespace
+            .machine.namespace
             .path_of(region)
             .and_then(Path::parent)
             .ok_or(Error::NameNotFound)?;
@@ -213,14 +292,14 @@ impl<H: Host> Interpreter<H> {
             }
             at = path.parent();
         }
-        if let Some(Object::Region(held)) = self.namespace.get_mut(region) {
+        if let Some(Object::Region(held)) = self.machine.namespace.get_mut(region) {
             held.pci = Some(function);
         }
         Ok(function)
     }
 
     fn integer_child(&mut self, scope: &Path, name: &[u8; 4]) -> Result<u64, Error> {
-        match self.namespace.find(&scope.child(NameSeg::new(name))) {
+        match self.machine.namespace.find(&scope.child(NameSeg::new(name))) {
             Some(node) => {
                 let value = self.evaluate_node(node, Vec::new())?;
                 self.to_integer(&value)

@@ -2,7 +2,7 @@
 //! arithmetic and logic, conversions, references, and the synchronisation and time opcodes
 //! that give a value.
 
-use super::{Frame, INTERPRETER_REVISION, Interpreter};
+use super::{Frame, INTERPRETER_REVISION, Interpreter, Machine};
 use crate::Error;
 use crate::host::Host;
 use crate::name::{NameSeg, NameString, Path};
@@ -29,7 +29,7 @@ impl<H: Host> Interpreter<H> {
         stream: &mut Stream<'_>,
         opcode: u16,
     ) -> Result<Object, Error> {
-        let mask = self.integer_mask;
+        let mask = self.machine.integer_mask;
         match opcode {
             ZERO => Ok(Object::Integer(0)),
             ONE => Ok(Object::Integer(1)),
@@ -237,7 +237,7 @@ impl<H: Host> Interpreter<H> {
             OBJECT_TYPE => {
                 let target = self.super_name(frame, stream)?;
                 let kind = match &target {
-                    Target::Node(node) => self.namespace.get(*node).map_or(0, Object::object_type),
+                    Target::Node(node) => self.machine.namespace.get(*node).map_or(0, Object::object_type),
                     Target::Debug => crate::object::object_type::DEBUG,
                     other => self.dereferenced(frame, other)?.object_type(),
                 };
@@ -303,12 +303,26 @@ impl<H: Host> Interpreter<H> {
                     return Err(Error::WrongType);
                 };
                 let global = self.is_global_lock(node);
-                let first = matches!(self.namespace.get(node), Some(Object::Mutex { held: 0, .. }));
+                let me = self.host.thread_id();
+                let free = move |machine: &Machine| match machine.namespace.get(node) {
+                    Some(Object::Mutex { held, owner, .. }) => *held == 0 || *owner == me,
+                    _ => true,
+                };
+                if !matches!(self.machine.namespace.get(node), Some(Object::Mutex { .. })) {
+                    return Err(Error::WrongType);
+                }
+                if !self.wait_until(&free, timeout) {
+                    return Ok(self.truth(true));
+                }
+                let first = matches!(self.machine.namespace.get(node), Some(Object::Mutex { held: 0, .. }));
                 if global && first && !self.host.acquire_global_lock(timeout) {
                     return Ok(self.truth(true));
                 }
-                match self.namespace.get_mut(node) {
-                    Some(Object::Mutex { held, .. }) => *held = held.saturating_add(1),
+                match self.machine.namespace.get_mut(node) {
+                    Some(Object::Mutex { held, owner, .. }) => {
+                        *held = held.saturating_add(1);
+                        *owner = me;
+                    }
                     _ => return Err(Error::WrongType),
                 }
                 Ok(Object::Integer(0))
@@ -319,18 +333,19 @@ impl<H: Host> Interpreter<H> {
                 let Target::Node(node) = target else {
                     return Err(Error::WrongType);
                 };
-                let signalled = match self.namespace.get_mut(node) {
-                    Some(Object::Event { signals }) if *signals > 0 => {
-                        *signals -= 1;
-                        true
-                    }
-                    Some(Object::Event { .. }) => false,
-                    _ => return Err(Error::WrongType),
-                };
-                if !signalled && timeout < 0xffff {
-                    self.host.sleep(timeout);
+                if !matches!(self.machine.namespace.get(node), Some(Object::Event { .. })) {
+                    return Err(Error::WrongType);
                 }
-                Ok(self.truth(!signalled))
+                let signalled = move |machine: &Machine| {
+                    matches!(machine.namespace.get(node), Some(Object::Event { signals }) if *signals > 0)
+                };
+                if !self.wait_until(&signalled, timeout.min(0xffff)) {
+                    return Ok(self.truth(true));
+                }
+                if let Some(Object::Event { signals }) = self.machine.namespace.get_mut(node) {
+                    *signals = signals.saturating_sub(1);
+                }
+                Ok(self.truth(false))
             }
             TIMER => Ok(Object::Integer(self.host.timer() & mask)),
             FROM_BCD => {
@@ -366,7 +381,7 @@ impl<H: Host> Interpreter<H> {
                 if handle != 0
                     && !parameter_path.is_empty()
                     && let Some(path) = Path::parse(&parameter_path)
-                    && let Some(node) = self.namespace.find(&path)
+                    && let Some(node) = self.machine.namespace.find(&path)
                 {
                     self.store(frame, &Target::Node(node), parameter_data)?;
                 }
@@ -388,7 +403,7 @@ impl<H: Host> Interpreter<H> {
     }
 
     fn truth(&self, holds: bool) -> Object {
-        Object::Integer(if holds { self.integer_mask } else { 0 })
+        Object::Integer(if holds { self.machine.integer_mask } else { 0 })
     }
 
     fn compare(&self, left: &Object, right: &Object) -> Result<Ordering, Error> {
@@ -479,7 +494,7 @@ impl<H: Host> Interpreter<H> {
                 return Ok(Object::Integer(index as u64));
             }
         }
-        Ok(Object::Integer(self.integer_mask))
+        Ok(Object::Integer(self.machine.integer_mask))
     }
 
     fn matches(&self, element: &Object, test: u8, against: &Object) -> bool {
@@ -513,7 +528,7 @@ impl<H: Host> Interpreter<H> {
     ) -> Result<crate::namespace::NodeId, Error> {
         if text.starts_with(b"\\") {
             let path = Path::parse(text).ok_or(Error::MalformedName)?;
-            return self.namespace.find(&path).ok_or(Error::NameNotFound);
+            return self.machine.namespace.find(&path).ok_or(Error::NameNotFound);
         }
         let parents = text.iter().take_while(|&&byte| byte == b'^').count();
         let segments = text[parents..]
@@ -526,7 +541,7 @@ impl<H: Host> Interpreter<H> {
             parents: u8::try_from(parents).map_err(|_| Error::MalformedName)?,
             segments,
         };
-        self.namespace
+        self.machine.namespace
             .search(&name, scope)
             .ok_or(Error::NameNotFound)
     }

@@ -223,6 +223,9 @@ fn fields_write_their_bits_and_preserve_the_rest_of_the_unit() {
         access: Access::Byte,
         update: UpdateRule::Preserve,
         lock: false,
+        connection: None,
+        attribute: 0,
+        access_length: 0,
     };
     assert_eq!(interpreter.read_field(&outside), Err(Error::OutsideRegion));
 }

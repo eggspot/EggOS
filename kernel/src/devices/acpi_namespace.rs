@@ -24,7 +24,8 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 use eggos_acpi::{
-    Error, Host, HostError, Interpreter, NameSeg, Object, Path, PciFunction, RegionSpace,
+    Error, Host, HostError, Interpreter, Machine, NameSeg, Object, Path, PciFunction,
+    RegionSpace,
 };
 use eggos_drivers::embedded_controller::{EcPorts, EmbeddedController};
 use eggos_drivers::io::{Mmio, RegisterIo};
@@ -72,7 +73,22 @@ pub struct KernelHost {
     /// firmware the lock is free (D556).
     global_lock: Option<(usize, u16)>,
     tables: fn(&[u8; 4], &mut dyn FnMut(&'static [u8])),
+    thread: fn() -> u64,
+    pause: fn(u64),
 }
+
+/// The machine a waiting AML thread lends to the others (D595): there while it waits, taken by
+/// a thread that runs AML meanwhile and put back when that thread is done.
+static LENT: crate::sync::LeafSpinLock<Option<Box<Machine>>> =
+    crate::sync::LeafSpinLock::new_leaf(None);
+
+/// What another AML thread's host starts from: the loaded host's regions, ports and controller.
+static HOST_TEMPLATE: crate::sync::LeafSpinLock<Option<KernelHost>> =
+    crate::sync::LeafSpinLock::new_leaf(None);
+
+/// What the event thread needs when it runs AML on a lent machine (D595).
+static EVENT_SOURCES: crate::sync::LeafSpinLock<Option<Events>> =
+    crate::sync::LeafSpinLock::new_leaf(None);
 
 /// The global lock word's bits (ACPI 6.5, 5.2.10.1).
 const LOCK_PENDING: u32 = 1 << 0;
@@ -144,6 +160,30 @@ impl KernelHost {
             controller: None,
             global_lock: global_lock_place::<P>(),
             tables: P::acpi_tables,
+            thread: crate::thread::running_thread_id::<P>,
+            pause: |milliseconds| {
+                crate::thread::sleep::<P>(core::time::Duration::from_millis(milliseconds))
+            },
+        }
+    }
+
+    /// A host for another AML thread (D595): the same regions, ports and controller, no
+    /// notifications of its own yet.
+    fn for_another_thread(&self) -> Self {
+        Self {
+            regions: self.regions.clone(),
+            configuration: self.configuration.clone(),
+            clock: self.clock,
+            frequency: self.frequency,
+            read_port: self.read_port,
+            write_port: self.write_port,
+            notifications: VecDeque::new(),
+            pending: Vec::new(),
+            controller: self.controller,
+            global_lock: self.global_lock,
+            tables: self.tables,
+            thread: self.thread,
+            pause: self.pause,
         }
     }
 
@@ -409,6 +449,34 @@ impl Host for KernelHost {
         self.wait_ticks(self.ticks_for(milliseconds, 1000));
     }
 
+    fn thread_id(&mut self) -> u64 {
+        (self.thread)()
+    }
+
+    fn wait_for(
+        &mut self,
+        machine: Machine,
+        until: &dyn Fn(&Machine) -> bool,
+        timeout: u64,
+    ) -> (Machine, bool) {
+        let deadline = match timeout {
+            0xffff.. => u64::MAX,
+            _ => (self.clock)().saturating_add(self.ticks_for(timeout, 1000)),
+        };
+        *LENT.lock() = Some(Box::new(machine));
+        loop {
+            (self.pause)(1);
+            let Some(machine) = LENT.lock().take() else {
+                continue;
+            };
+            let held = until(&machine);
+            if held || (self.clock)() >= deadline {
+                return (*machine, held);
+            }
+            *LENT.lock() = Some(machine);
+        }
+    }
+
     fn stall(&mut self, microseconds: u64) {
         self.wait_ticks(self.ticks_for(microseconds, MICROSECONDS_PER_SECOND));
     }
@@ -435,6 +503,7 @@ struct Loaded {
     events: Option<Events>,
 }
 
+#[derive(Clone)]
 struct Events {
     /// Each GPE block with the scope its `_Lxx` and `_Exx` methods live in: `\_GPE` for the
     /// FADT's blocks, the device for a GPE block device (`ACPI0006`, D556).
@@ -642,6 +711,7 @@ pub fn start<P: Platform>(
         .filter(|status| !status.is_present())
         .map(|status| status.path)
         .collect();
+    *HOST_TEMPLATE.lock() = Some(interpreter.host().for_another_thread());
     *NAMESPACE.lock() = Some(Box::new(Loaded {
         interpreter,
         absent,
@@ -756,12 +826,15 @@ pub fn start_events<P: Platform>() -> Result<(), &'static str> {
         }
         let power_buttons = interpreter.devices_with_id(&[b"PNP0C0C"]);
         let generation_counter = generation_counter(interpreter);
-        loaded.events = Some(Events {
+        let events = Events {
             blocks,
             controller,
             power_buttons,
             generation_counter,
-        });
+        };
+        *EVENT_SOURCES.lock() = Some(events.clone());
+        *HOST_TEMPLATE.lock() = Some(interpreter.host().for_another_thread());
+        loaded.events = Some(events);
     }
     if let Some((_, address)) = NAMESPACE
         .lock()
@@ -891,64 +964,62 @@ fn set_event_enabled<P: Platform>(block: &GpeBlock, index: u16, enabled: bool) {
 }
 
 fn handle_events<P: Platform>() {
+    let Some(mut namespace) = NAMESPACE.try_lock() else {
+        handle_events_on_lent_machine::<P>();
+        return;
+    };
     let (notified, power_buttons, generation_counter) = {
-        let mut namespace = NAMESPACE.lock();
         let Some(loaded) = namespace.as_mut() else {
             return;
         };
         let Some(events) = loaded.events.take() else {
             return;
         };
-        let general = Path::root().child(NameSeg::new(b"_GPE"));
-        for (block, scope) in &events.blocks {
-            let half = u16::from(block.length / 2);
-            for byte in 0..half {
-                let status_port = block.port + byte;
-                let status = P::read_io_port(status_port, 8).unwrap_or(0);
-                let enabled = P::read_io_port(status_port + half, 8).unwrap_or(0);
-                for bit in 0..8u16 {
-                    if status & enabled & 1 << bit == 0 {
-                        continue;
-                    }
-                    let index = byte * 8 + bit;
-                    let number = block.base + index;
-                    let clear = || P::write_io_port(status_port, 8, 1 << bit);
-                    let interpreter = &mut loaded.interpreter;
-                    match &events.controller {
-                        Some((path, Some(event))) if *event == number && *scope == general => {
-                            clear();
-                            answer_queries(interpreter, path);
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    match event_method(interpreter, scope, number) {
-                        Some((method, true)) => {
-                            clear();
-                            let _ = interpreter.evaluate(&method, &[]);
-                        }
-                        Some((method, false)) => {
-                            let _ = interpreter.evaluate(&method, &[]);
-                            clear();
-                        }
-                        None => {
-                            set_event_enabled::<P>(block, index, false);
-                            clear();
-                        }
-                    }
-                }
-            }
-        }
+        dispatch_events::<P>(&mut loaded.interpreter, &events);
         let notified = core::mem::take(&mut loaded.interpreter.host().pending);
         let power_buttons = events.power_buttons.clone();
         let generation_counter = events.generation_counter.clone();
         loaded.events = Some(events);
         (notified, power_buttons, generation_counter)
     };
-    if notified
-        .iter()
-        .any(|(path, value)| matches!(*value, STATUS_CHANGED | INFORMATION_CHANGED | DOCK_CHECK) && !power_buttons.contains(path))
-        && let Some(loaded) = NAMESPACE.lock().as_mut()
+    drop(namespace);
+    act_on_notifications::<P>(notified, &power_buttons, &generation_counter);
+}
+
+/// Runs the pending events' methods while another AML thread waits and lends its machine
+/// (D595): an embedded controller's query or a GPE's method that the waiting method may be
+/// waiting for. Nothing when no machine is lent: the events stay pending for the next look.
+fn handle_events_on_lent_machine<P: Platform>() {
+    let Some(events) = EVENT_SOURCES.lock().clone() else {
+        return;
+    };
+    let Some(host) = HOST_TEMPLATE
+        .lock()
+        .as_ref()
+        .map(KernelHost::for_another_thread)
+    else {
+        return;
+    };
+    let Some(machine) = LENT.lock().take() else {
+        return;
+    };
+    let mut interpreter = Interpreter::with_machine(host, *machine);
+    dispatch_events::<P>(&mut interpreter, &events);
+    let notified = core::mem::take(&mut interpreter.host().pending);
+    *LENT.lock() = Some(Box::new(interpreter.into_machine()));
+    act_on_notifications::<P>(notified, &events.power_buttons, &events.generation_counter);
+}
+
+fn act_on_notifications<P: Platform>(
+    notified: Vec<(Path, u64)>,
+    power_buttons: &[Path],
+    generation_counter: &Option<(Path, u64)>,
+) {
+    if notified.iter().any(|(path, value)| {
+        matches!(*value, STATUS_CHANGED | INFORMATION_CHANGED | DOCK_CHECK)
+            && !power_buttons.contains(path)
+    }) && let Some(mut namespace) = NAMESPACE.try_lock()
+        && let Some(loaded) = namespace.as_mut()
     {
         let state = read_power(&mut loaded.interpreter);
         *POWER.lock() = Some(state);
@@ -957,11 +1028,53 @@ fn handle_events<P: Platform>() {
         if value == POWER_BUTTON_PRESSED && power_buttons.contains(&path) {
             crate::linux::reboot::power_button::<P>();
         }
-        if let Some((counter, address)) = &generation_counter
+        if let Some((counter, address)) = generation_counter
             && value == GENERATION_CHANGED
             && *counter == path
         {
             mix_generation_id::<P>(*address);
+        }
+    }
+}
+
+fn dispatch_events<P: Platform>(interpreter: &mut Interpreter<KernelHost>, events: &Events) {
+    let general = Path::root().child(NameSeg::new(b"_GPE"));
+    for (block, scope) in &events.blocks {
+        let half = u16::from(block.length / 2);
+        for byte in 0..half {
+            let status_port = block.port + byte;
+            let status = P::read_io_port(status_port, 8).unwrap_or(0);
+            let enabled = P::read_io_port(status_port + half, 8).unwrap_or(0);
+            for bit in 0..8u16 {
+                if status & enabled & 1 << bit == 0 {
+                    continue;
+                }
+                let index = byte * 8 + bit;
+                let number = block.base + index;
+                let clear = || P::write_io_port(status_port, 8, 1 << bit);
+                match &events.controller {
+                    Some((path, Some(event))) if *event == number && *scope == general => {
+                        clear();
+                        answer_queries(interpreter, path);
+                        continue;
+                    }
+                    _ => {}
+                }
+                match event_method(interpreter, scope, number) {
+                    Some((method, true)) => {
+                        clear();
+                        let _ = interpreter.evaluate(&method, &[]);
+                    }
+                    Some((method, false)) => {
+                        let _ = interpreter.evaluate(&method, &[]);
+                        clear();
+                    }
+                    None => {
+                        set_event_enabled::<P>(block, index, false);
+                        clear();
+                    }
+                }
+            }
         }
     }
 }

@@ -35,6 +35,15 @@ impl Default for Namespace {
 }
 
 impl Namespace {
+    /// A namespace with no node at all: what an interpreter holds while it has lent its
+    /// machine to another AML thread (D595).
+    pub fn empty() -> Self {
+        Self {
+            nodes: Vec::new(),
+            by_path: BTreeMap::new(),
+        }
+    }
+
     /// The namespace before any table loads: the root, its predefined scopes (`\_GPE`, `\_PR`,
     /// `\_SB`, `\_SI`, `\_TZ`) and objects (`\_OSI`, `\_OS`, `\_REV`, `\_GL`).
     pub fn new() -> Self {
@@ -60,6 +69,7 @@ impl Namespace {
                 Object::Mutex {
                     sync_level: 0,
                     held: 0,
+                    owner: 0,
                 },
             ),
         ];

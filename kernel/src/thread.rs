@@ -1735,6 +1735,16 @@ pub fn set_running_shared<P: Platform>(shared: Arc<ThreadShared>) {
     drop(previous);
 }
 
+/// The running thread's id, as a number (D595).
+pub fn running_thread_id<P: Platform>() -> u64 {
+    cpu::current::<P>()
+        .scheduler
+        .lock()
+        .current
+        .as_ref()
+        .map_or(0, |thread| thread.get().id.0)
+}
+
 /// The clock ticks the running thread has run sampled as user time, this turn included (D592).
 pub fn running_thread_user_ticks<P: Platform>() -> u64 {
     let here = cpu::current::<P>();
