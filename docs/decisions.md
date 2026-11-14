@@ -26671,3 +26671,9 @@ the license, by an explicit instruction recorded here.
   where a sleeping lock's context switch would cost more than the wait.
 - **Not yet.** Building and running; the panic band on a display whose framebuffer is not
   the kernel's (a GPU showing a client's buffer).
+- **Comments moved out of `kernel/src/main.rs`.** The fatal-exception test feature writes the
+  kernel's read-only data on purpose: the write must fault and the handler report that address
+  and fail the run, which the QEMU runner checks (D29). A second fatal exception while the
+  first is reported (a broken console) stops the CPU instead of recursing until the stack
+  overflows. Console write errors while reporting a fault or panic are ignored: nothing useful
+  can be done then.

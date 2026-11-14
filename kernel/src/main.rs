@@ -22,9 +22,6 @@ mod bare_metal {
         let mut console = PlatformConsole::<CurrentPlatform>::new();
         let status = eggos_kernel::boot::<CurrentPlatform, _>(&mut console);
         if cfg!(feature = "qemu-test-fatal-exception") && status == ExitStatus::Success {
-            // Tests the fatal path and write protection (D29): writing the kernel's read-only
-            // data must fault, and the handler must report the fault at that address and fail
-            // the run. The QEMU runner checks the address.
             let image = CurrentPlatform::kernel_image();
             let target = image.virtual_address(image.rodata_start);
             let _ = writeln!(
@@ -61,13 +58,10 @@ mod bare_metal {
     #[cold]
     #[inline(never)]
     fn fatal_exception(exception: &Exception) -> ! {
-        // A second fatal exception while reporting the first (say, a broken console) would
-        // otherwise recurse until the stack overflows; stop this CPU instead.
         if IN_FATAL_EXCEPTION.swap(true, Ordering::Relaxed) {
             CurrentPlatform::halt();
         }
         let mut console = PlatformConsole::<CurrentPlatform>::new();
-        // Nothing useful can be done if the console itself fails here.
         let _ = writeln!(console);
         let _ = exception::report(&mut console, exception);
         let _ = writeln!(console, "{}", eggos_kernel::selftest::FAIL_MARKER);
@@ -93,7 +87,6 @@ mod bare_metal {
     #[panic_handler]
     fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         let mut console = PlatformConsole::<CurrentPlatform>::new();
-        // Nothing useful can be done if the console itself fails while panicking.
         let _ = writeln!(console, "\nkernel panic: {info}");
         let _ = writeln!(console, "{}", eggos_kernel::selftest::FAIL_MARKER);
         let mut text = eggos_kernel::panic_text::PanicText::new();
