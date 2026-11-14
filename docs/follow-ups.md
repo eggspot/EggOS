@@ -115,7 +115,7 @@ and is not listed per item.
 - [x] `shutdown` with a delay and a message, and `wall` (D183) — code written, unbuilt, D572
 - [x] MCP over the network: `Mcp-Session-Id`, the `GET` event stream, more than one connection at a time, per-address limits (D193) — code written, unbuilt, D576
 - [x] MCP over the network: mDNS advertisement of the agent endpoint (`_mcp._tcp`) (D193) — code written, unbuilt, D577
-- [ ] MCP: `subscriptions/listen` and `input_required` with a signed `requestState` (D193)
+- [x] MCP: `subscriptions/listen` and `input_required` with a signed `requestState` (D193) — code written, unbuilt, D578
 - [ ] Time zones: past rules of a zone (transitions from TZif data) and `localtime`/`_tzset` in the Windows layer (D194)
 - [ ] Text Editor: a terminal editor (`edit` in a console without a window) (D149)
 

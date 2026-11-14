@@ -26557,3 +26557,34 @@ the license, by an explicit instruction recorded here.
   done: one service's answers are a few hundred bytes.
 - **Not yet.** Building and running; probing and conflict renaming; IPv6 (`ff02::fb`);
   goodbye packets when the server stops; multicast TTL and loopback options.
+
+## D578 MCP's stateless era: `input_required` with a signed `requestState`, and `subscriptions/listen` (M10; D193's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the 2026-07-28 protocol's multi-round-trip requests and subscriptions)
+- **`input_required`.** A stateless `tools/call` that needs the person's yes (an `ask` grant
+  or a destructive change), from a client whose `_meta` capabilities say it can ask its user
+  in a form, is answered with `resultType` `input_required`: `inputRequests.confirm`, an
+  `elicitation/create` with the same question and `confirm` schema D137's elicitation asks,
+  and a `requestState`. The client asks its user and sends the call again with
+  `inputResponses.confirm` (`action` `accept` and `content.confirm` true is a yes) and the
+  `requestState`; the call then runs as approved by the user, anything else refuses it.
+- **The `requestState`** (`eggos_mcp::request_state`) names the agent, the call (SHA-256 of
+  the tool's name and its arguments' JSON as sent), an end 5 minutes on and a number used
+  once, under an HMAC-SHA256 with a key each server process draws at start, written as
+  base64url. A state another key signed, one for another agent or other arguments, an
+  expired one, or one already used (the last 64 numbers are kept) refuses the call and says
+  why. The server keeps nothing else between the two requests, as the stateless era wants.
+- **`subscriptions/listen`** (stateless only; the older eras say `subscribe` false and get
+  method-not-found): `params.notifications.toolsListChanged` and
+  `params.notifications.resourcesUpdated` (`eggos://grants`) are what the client wants to
+  hear; the server acknowledges with `notifications/subscriptions/acknowledged` and
+  `Server::subscription_news` writes `notifications/tools/list_changed` when the tools the
+  agent may list change (installed app actions, files a tool needs, its grants) and
+  `notifications/resources/updated` when its grants do. Over HTTPS the request's answer is an
+  event stream that starts with the acknowledgement; the network server checks every 5 s.
+- **Decided by research.** A per-process key rather than a stored one: a restart forgets the
+  questions in flight, which only makes the client ask again, and no secret is written to
+  disk. Fingerprints (FNV-1a of the tools list and of the grants text) rather than change
+  events: nothing else in EggOS tells the server when an app is installed or a grant
+  changes, and a list is cheap to make every few seconds for the few agents that listen.
+- **Not yet.** Building and running; `subscriptions/listen` on the local channel; resources
+  other than `eggos://grants` to subscribe to; `input_required` for questions other than a
+  yes (forms with fields).
