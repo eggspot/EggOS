@@ -27055,7 +27055,6 @@ the license, by an explicit instruction recorded here.
   interrupts stays, so a quiet machine moves nothing.
 - **Not yet.** Building and running; permission checks on the `online` files (EggOS's `open`
   checks no permission yet); powering a CPU down (PSCI `CPU_OFF`, SBI `hart_stop`) instead of
-  waiting for interrupts; timers of threads parked with a deadline on a leaving CPU (their
-  `Parker` still names that CPU, so an early unpark finds them through it, which still holds
-  them only until the drain; after it, the unpark finds nothing and the deadline wakes them).
+  waiting for interrupts. A thread parked with a deadline on a leaving CPU keeps that CPU in its
+  `Parker`; an unpark that does not find it there looks through every CPU's sleepers.
 

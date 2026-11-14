@@ -787,7 +787,13 @@ impl Parker {
         let thread = match parked {
             Some(Parked::Untimed(thread)) => thread,
             Some(Parked::Sleeping(thread, cpu)) => {
-                let Some(thread) = cpu.scheduler.lock().sleeping.remove(thread) else {
+                let found = cpu.scheduler.lock().sleeping.remove(thread).or_else(|| {
+                    cpu::CPUS
+                        .all()
+                        .iter()
+                        .find_map(|other| other.scheduler.lock().sleeping.remove(thread))
+                });
+                let Some(thread) = found else {
                     return;
                 };
                 thread
