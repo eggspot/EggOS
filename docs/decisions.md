@@ -26615,3 +26615,24 @@ the license, by an explicit instruction recorded here.
   already race on Microsoft's own globals (`_timezone`, `_tzname`).
 - **Not yet.** Building and running; the `zoneinfo` component's catalog entry and the
   mirror; the macOS layer reading the past; `strftime`'s `%Z` from the Windows C runtime.
+
+## D580 Display buffers larger than 4 MiB: several DMA blocks mapped contiguously for the CPU (M11; D112's and D127's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the virtio 1.2 specification's GPU device)
+- **What.** A framebuffer larger than the buddy allocator's largest block (4 MiB; 1920x1080
+  needs 8 MiB, 3840x2160 32 MiB) is made of several blocks
+  (`DmaRegion::allocate_mapped`): each zeroed and handed to the IOMMU as any region, then
+  mapped one after another at new addresses of the kernel's device window as normal memory,
+  the direct map's attributes, so the CPU draws into one contiguous buffer
+  (`devices::window::map_ram`). `DmaMemory::each_piece` gives the device's view piece by
+  piece (one piece by default), and virtio-gpu's `RESOURCE_ATTACH_BACKING` carries one entry
+  per piece (up to 62 in the request area), so the device never needed contiguous memory.
+- **Where.** The probe allocates the first framebuffer through `Probe::allocate_framebuffer`,
+  which the boot probe backs with the mapping (it holds the kernel's page tables); other probes
+  keep one block. A mode change at run time keeps a large framebuffer it hands back as a spare
+  for the next large mode, since the kernel's tables are only changed while probing.
+- **Decided by research.** A large region is never given back to the allocator: its mapping
+  is the kernel's for good (the device window is not reused), and freeing frames that stay
+  mapped would leave an alias of memory others get. The cost is bounded by the largest mode a
+  display reports, kept while that display exists.
+- **Not yet.** Building and running; larger framebuffers for the other display drivers that
+  allocate one block (Apple, the SoC displays); a large mode first chosen after boot when no
+  spare is big enough.

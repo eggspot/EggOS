@@ -1,4 +1,4 @@
-//! What a terminal sends for a key (D580): UTF-8 text, control bytes, and the escape
+//! What a terminal sends for a key (D581): UTF-8 text, control bytes, and the escape
 //! sequences of xterm and the VT100/VT220 family (`CSI` and `SS3`, with xterm's modifier
 //! parameter), read from the start of a buffer.
 

@@ -121,7 +121,7 @@ and is not listed per item.
 
 ## M11 Graphics stack and compositor
 
-- [ ] Display buffers larger than 4 MiB from several DMA regions mapped virtually contiguous (D112, D127)
+- [x] Display buffers larger than 4 MiB from several DMA regions mapped virtually contiguous (D112, D127) — code written, unbuilt, D580
 - [ ] virtio-gpu 3D (virgl, then Venus) (D112)
 - [ ] Terminal: 2x scale, the kernel's panic message on screen, rendering from a snapshot so a writer never waits for a render, a sleeping display lock (D112, D114)
 - [ ] eggway: several outputs, with `wl_registry.global_remove` when a screen goes away (D140)
