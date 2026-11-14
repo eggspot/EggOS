@@ -26710,3 +26710,22 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the shared clipboard from a terminal on the desktop; the
   termios layouts of PowerPC, MIPS and SPARC (their flag bits differ, as in eggsh); the QEMU
   check on the serial console; word wrap.
+
+## D584 eggway: an output per screen, `wl_registry.global_remove` when a screen goes (M11; D140's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from `wayland.xml`)
+- **The window server.** `/dev/window` answers `GET_SCREENS` (request 59): a count and up to
+  8 screens, each an id, its place in the desktop and its size and scale. Today a screen is a
+  scanout showing the desktop: the first, and the ones virtio-gpu mirrors it on
+  (`Scanout::shown_scanouts`, D563's mirroring), each the work area's size at the same place.
+- **eggway.** The first screen stays the static `wl_output` global (name 4); every other
+  screen is a `wl_output` global of its own, named `64 + id`, announced to every registry when
+  it comes and withdrawn with `wl_registry.global_remove` when it goes, and bound like the
+  first, with its own size. eggway asks for the screens every 2 s when it wakes
+  (`Compositor::check_screens`, `System::screens`, one work-area-sized screen when the window
+  server cannot tell).
+- **Decided by research.** The check runs on eggway's wake-ups rather than on a timer of its
+  own: a desktop with clients wakes eggway many times a second (frames, input), and an idle one
+  has no client that would act on a new output before its next request. A mirrored screen is
+  an output at the same place, as Wayland compositors show mirrored monitors.
+- **Not yet.** Building and running; an extended desktop (screens side by side with windows
+  placed on each), which the window server's single work area does not have yet; the screens'
+  physical sizes and refresh rates from EDID.
