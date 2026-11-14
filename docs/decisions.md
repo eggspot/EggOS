@@ -26796,3 +26796,21 @@ the license, by an explicit instruction recorded here.
   write by default and what GStreamer and FFmpeg tag `NV12` with.
 - **Not yet.** Building and running; full-range and BT.709 colour; modifiers other than
   linear; scanout tranches.
+
+## D588 `/sys` enumerates the render node: `dev/char/226:128`, `class/drm/renderD128` and the GPU's device (M11; D415's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Linux's sysfs ABI documents and libdrm's device enumeration as documented in its man pages)
+- **What.** With a GPU that renders, `/sys` has `dev/char/226:128` and
+  `class/drm/renderD128` linking to `devices/<bus>/<function>/virtio0/drm/renderD128`, whose
+  `dev` is `226:128`, `uevent` names the minor (`DEVNAME=dri/renderD128`,
+  `DEVTYPE=drm_minor`), `subsystem` links to `class/drm` and `device` to `virtio0`. `virtio0`
+  links its `subsystem` to `bus/virtio` and says `DRIVER=virtio_gpu`. Above it, a PCI GPU's
+  function (`pci0000:<bus>/0000:<bus>:<dev>.<fn>`) has `vendor`, `device`,
+  `subsystem_vendor`, `subsystem_device`, `revision`, `class` and a `uevent` with
+  `PCI_SLOT_NAME`, `PCI_ID` and `PCI_SUBSYS_ID` from its configuration space, and links its
+  `subsystem` to `bus/pci`; a virtio-mmio GPU is `platform/virtio-mmio.0` with
+  `OF_COMPATIBLE_0=virtio,mmio`. `bus/pci`, `bus/virtio` and `bus/platform` exist.
+- **Why.** libdrm's `drmGetDevices2`, which Mesa's loader uses to pick a driver and match a
+  render node to its display, walks exactly these: it reads the minor's `device/subsystem`
+  link to know the bus, then the parent device's identity files. The virtio probe records
+  where the GPU is (`sysfs::register_gpu`).
+- **Not yet.** Building and running; the card node (`card0`) and the primary minor, which
+  EggOS does not offer (no KMS to programs); other GPUs than virtio-gpu.
