@@ -1,8 +1,9 @@
 //! Time: the tick counts and performance counter from the monotonic clock (the counter at
 //! 10 MHz, the frequency Windows reports), the system time as a `FILETIME` (100 ns intervals
 //! since 1601) from the real-time clock, its calendar form (`SYSTEMTIME`), local time in the
-//! zone `TZ` names or else the `time.zone` setting (`GetLocalTime`, `FileTimeToLocalFileTime`,
-//! `GetTimeZoneInformation`, D194), `Sleep`, and `SleepEx`, which runs the calls
+//! zone `TZ` names or else the `time.zone` setting, with its past from its TZif file when
+//! there (`GetLocalTime`, `FileTimeToLocalFileTime`, `GetTimeZoneInformation`, D194, D579),
+//! `Sleep`, and `SleepEx`, which runs the calls
 //! queued for the thread when alertable (D189). Waitable timers are not there yet:
 //! `CreateWaitableTimerExW` fails with `ERROR_NOT_SUPPORTED`, so Rust's `thread::sleep` uses
 //! `Sleep`.
@@ -11,7 +12,7 @@ use super::{Bool, FALSE, TRUE, error, fail};
 use crate::calendar::{self, SystemTime};
 use crate::library::Export;
 use crate::linux::{self, CLOCK_MONOTONIC, CLOCK_REALTIME};
-use eggos_calendar::zone::{self, MonthRule, Rule, UTC};
+use eggos_calendar::zone::{self, MonthRule, Rule, UTC, Zone};
 
 pub(super) const PERFORMANCE_FREQUENCY: i64 = 10_000_000;
 pub(super) const NANOSECONDS_PER_TICK: u64 = 100;
@@ -89,32 +90,66 @@ const TIME_ZONE_ID_UNKNOWN: u32 = 0;
 const TIME_ZONE_ID_STANDARD: u32 = 1;
 const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
 
-fn zone_named_by_settings() -> Option<Rule> {
-    let descriptor = linux::open(SETTINGS, 0).ok()?;
-    let mut file = [0u8; SETTINGS_BYTES];
+const TZIF_BYTES: usize = 16 * 1024;
+
+static LOCAL_ZONE: super::SpinLock<Option<Zone>> = super::SpinLock::new(None);
+
+fn read_all(path: &[u8], out: &mut [u8]) -> Option<usize> {
+    let descriptor = linux::open(path, 0).ok()?;
     let mut length = 0;
-    while let Some(free) = file.get_mut(length..).filter(|free| !free.is_empty()) {
+    while let Some(free) = out.get_mut(length..).filter(|free| !free.is_empty()) {
         match linux::read(descriptor, free) {
             Ok(0) | Err(_) => break,
             Ok(count) => length += count,
         }
     }
     let _ = linux::close(descriptor);
-    let name = eggos_settings_file::value(file.get(..length)?, eggos_settings_file::TIME_ZONE)?;
-    zone::zone(core::str::from_utf8(name).ok()?)
+    Some(length)
 }
 
-fn local_zone() -> Rule {
+fn zone_named(text: &str) -> Option<Zone> {
+    let rule = zone::zone(text)?;
+    let mut path = [0u8; 64];
+    let Some(path) = zone::tzif_path(text, &mut path) else {
+        return Some(Zone::of_rule(rule));
+    };
+    let mut file = [0u8; TZIF_BYTES];
+    match read_all(path, &mut file) {
+        Some(length) if length > 0 => Some(Zone::with_history(rule, &file[..length])),
+        _ => Some(Zone::of_rule(rule)),
+    }
+}
+
+fn zone_named_by_settings() -> Option<Zone> {
+    let mut file = [0u8; SETTINGS_BYTES];
+    let length = read_all(SETTINGS, &mut file)?;
+    let name = eggos_settings_file::value(file.get(..length)?, eggos_settings_file::TIME_ZONE)?;
+    zone_named(core::str::from_utf8(name).ok()?)
+}
+
+fn load_local_zone() -> Zone {
     let mut text = [0u8; 64];
     match super::environment::variable(b"TZ", &mut text) {
         Some(length) => text
             .get(..length)
             .and_then(|text| core::str::from_utf8(text).ok())
             .filter(|text| !text.is_empty())
-            .and_then(zone::zone)
-            .unwrap_or(UTC),
-        None => zone_named_by_settings().unwrap_or(UTC),
+            .and_then(zone_named)
+            .unwrap_or(Zone::of_rule(UTC)),
+        None => zone_named_by_settings().unwrap_or(Zone::of_rule(UTC)),
     }
+}
+
+/// Runs `work` with the process's local zone: `TZ`, else the `time.zone` setting, with the
+/// zone's past when its TZif file is there (D579), read once and again after `_tzset`.
+pub(super) fn with_local_zone<R>(work: impl FnOnce(&Zone) -> R) -> R {
+    LOCAL_ZONE.with(|zone| work(zone.get_or_insert_with(load_local_zone)))
+}
+
+/// Reads the local zone again (`_tzset`).
+pub(super) fn reload_local_zone() {
+    let zone = load_local_zone();
+    LOCAL_ZONE.with(|kept| *kept = Some(zone));
 }
 
 fn seconds_of(intervals: u64) -> i64 {
@@ -127,7 +162,7 @@ fn shifted(intervals: u64, seconds: i64) -> u64 {
 
 unsafe extern "efiapi" fn get_local_time(time: *mut u8) {
     let now = now();
-    let local = shifted(now, local_zone().at(seconds_of(now)).offset);
+    let local = shifted(now, with_local_zone(|zone| zone.at(seconds_of(now)).offset));
     let calendar = calendar::system_time(local).unwrap_or_default();
     // SAFETY: the caller passes a writable `SYSTEMTIME` (16 bytes).
     unsafe { time.copy_from_nonoverlapping(calendar.to_bytes().as_ptr(), 16) };
@@ -136,7 +171,7 @@ unsafe extern "efiapi" fn get_local_time(time: *mut u8) {
 unsafe extern "efiapi" fn file_time_to_local_file_time(from: *const u64, to: *mut u64) -> Bool {
     // SAFETY: the caller passes a readable `FILETIME`.
     let time = unsafe { from.read_unaligned() };
-    let local = shifted(time, local_zone().at(seconds_of(time)).offset);
+    let local = shifted(time, with_local_zone(|zone| zone.at(seconds_of(time)).offset));
     // SAFETY: and a writable one.
     unsafe { to.write_unaligned(local) };
     TRUE
@@ -146,7 +181,7 @@ unsafe extern "efiapi" fn local_file_time_to_file_time(from: *const u64, to: *mu
     // SAFETY: the caller passes a readable `FILETIME`.
     let time = unsafe { from.read_unaligned() };
     let local = seconds_of(time);
-    let utc = shifted(time, local_zone().to_utc(local) - local);
+    let utc = shifted(time, with_local_zone(|zone| zone.to_utc(local)) - local);
     // SAFETY: and a writable one.
     unsafe { to.write_unaligned(utc) };
     TRUE
@@ -203,7 +238,8 @@ pub fn time_zone_information(rule: &Rule, now: i64) -> ([u8; TIME_ZONE_INFORMATI
 }
 
 unsafe extern "efiapi" fn get_time_zone_information(information: *mut u8) -> u32 {
-    let (bytes, id) = time_zone_information(&local_zone(), seconds_of(now()));
+    let (bytes, id) =
+        with_local_zone(|zone| time_zone_information(zone.rule(), seconds_of(now())));
     // SAFETY: the caller passes a writable `TIME_ZONE_INFORMATION` (172 bytes).
     unsafe { information.copy_from_nonoverlapping(bytes.as_ptr(), TIME_ZONE_INFORMATION_BYTES) };
     id

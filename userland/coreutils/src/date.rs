@@ -5,7 +5,7 @@ use crate::output::{FAILURE, Output};
 use crate::system::{Duration, SymbolicLinks, System};
 use crate::zone::{local_seconds, local_zone};
 use core::ffi::CStr;
-use eggos_calendar::zone::{Rule, UTC};
+use eggos_calendar::zone::{UTC, Zone};
 use eggos_calendar::{DateTime, MONTHS, ParseError, WEEKDAYS, parse_setting};
 use eggos_commands::{commands, errors};
 use eggos_net::Ipv4Address;
@@ -126,9 +126,9 @@ pub fn date<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
 const DEFAULT_FORMAT: &[u8] = b"%a %b %e %H:%M:%S %Z %Y";
 const PROCESS_STATUS: &CStr = c"/proc/self/status";
 
-fn zone_of<S: System>(output: &mut Output<S>, universal: bool) -> Rule {
+fn zone_of<S: System>(output: &mut Output<S>, universal: bool) -> Zone {
     match universal {
-        true => UTC,
+        true => Zone::of_rule(UTC),
         false => local_zone(&mut output.system),
     }
 }
@@ -137,7 +137,7 @@ fn would_set_clock<S: System>(
     output: &mut Output<S>,
     seconds: i64,
     format: &[u8],
-    zone: &Rule,
+    zone: &Zone,
 ) -> i32 {
     let status = match read_text(&mut output.system, PROCESS_STATUS) {
         Ok(status) => status,
@@ -316,7 +316,7 @@ fn write_padded<S: System>(output: &mut Output<S>, value: i64, width: usize, pad
     output.write(text);
 }
 
-fn write_formatted<S: System>(output: &mut Output<S>, format: &[u8], seconds: i64, zone: &Rule) {
+fn write_formatted<S: System>(output: &mut Output<S>, format: &[u8], seconds: i64, zone: &Zone) {
     let local = zone.at(seconds);
     let moment = DateTime::from_unix(local_seconds(zone, seconds));
     let weekday = WEEKDAYS[moment.weekday()].as_bytes();

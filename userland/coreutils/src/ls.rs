@@ -41,7 +41,7 @@ struct Options {
     json: bool,
     layout: Layout,
     line_width: Option<usize>,
-    zone: Option<eggos_calendar::zone::Rule>,
+    zone: Option<eggos_calendar::zone::Zone>,
 }
 
 impl Options {
@@ -603,8 +603,8 @@ fn write_entry<S: System>(
         output.write(b" ");
         output.write_number(status.size, widths.size);
         output.write(b" ");
-        let shown = options.zone.map_or(status.modified, |zone| {
-            crate::zone::local_seconds(&zone, status.modified)
+        let shown = options.zone.as_ref().map_or(status.modified, |zone| {
+            crate::zone::local_seconds(zone, status.modified)
         });
         output.write(&time_string(shown));
         output.write(b" ");

@@ -14,6 +14,7 @@
 
 pub(super) use runtime::{end_abnormally, errno, set_errno};
 
+mod clock;
 mod heap;
 mod locale;
 mod low_level;
@@ -63,6 +64,7 @@ pub(super) const UCRT: &[&[Export]] = &[
     stdio::EXPORTS,
     low_level::EXPORTS,
     utility::EXPORTS,
+    clock::EXPORTS,
     math::EXPORTS,
     setjmp::EXPORTS,
     locale::EXPORTS,
@@ -76,6 +78,7 @@ pub(super) const UCRT: &[&[Export]] = &[
 pub(super) const MSVCRT: &[&[Export]] = &[
     msvcrt::EXPORTS,
     msvcrt::DATA,
+    clock::MSVCRT_EXPORTS,
     stdio::MSVCRT_EXPORTS,
     super::exception::MSVCRT_SIGNAL_EXPORTS,
     super::memory::NTDLL_EXPORTS,
@@ -85,6 +88,7 @@ pub(super) const MSVCRT: &[&[Export]] = &[
     stdio::EXPORTS,
     low_level::EXPORTS,
     utility::EXPORTS,
+    clock::EXPORTS,
     math::EXPORTS,
     setjmp::EXPORTS,
     locale::EXPORTS,

@@ -1,10 +1,13 @@
 //! Time zones (D194): POSIX TZ rules (POSIX.1-2017 section 8.3, with RFC 8536's extension of a
 //! transition's hour to -167..167) and the IANA zones' current rules ([`zones::ZONES`]). A zone
 //! is its current rule, so local times before its last change of rules are shown with today's
-//! rule. EggOS keeps the clock in UTC; a zone only changes how a time is shown and read.
+//! rule, unless the zone's TZif file was read ([`Zone`], D579). EggOS keeps the clock in UTC; a
+//! zone only changes how a time is shown and read.
 
+mod history;
 mod zones;
 
+pub use history::{History, MAX_TRANSITIONS, ZONEINFO_FOLDER, Zone, tzif_path};
 pub use zones::ZONES;
 
 use crate::{SECONDS_PER_DAY, civil_from_days, days_from_civil, is_leap_year};
