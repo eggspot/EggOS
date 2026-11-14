@@ -25,6 +25,9 @@ const GET_KEYBOARD_LAYOUT: usize = 0x8008_771d;
 const SET_KEYBOARD_LAYOUT: usize = 0x4004_771e;
 const SET_KEYBOARD_LAYOUTS: usize = 0x400c_7726;
 const SET_INPUT_PREFERENCES: usize = 0x4014_771f;
+const SET_DEVICE_INPUT_PREFERENCES: usize = 0x4014_773c;
+/// `SET_DEVICE_INPUT_PREFERENCES`' device for every mouse (D589).
+pub const EVERY_DEVICE: u32 = u32::MAX;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const SET_KEY_ACCESSIBILITY: usize = 0x400c_7724;
 const CHANGE_FLAGS: usize = 0x400c_7725;
@@ -410,6 +413,18 @@ impl WindowServer {
             *place = word.to_ne_bytes();
         }
         self.ioctl(SET_INPUT_PREFERENCES, &mut bytes)
+    }
+
+    /// Sets input device `device`'s own mouse preferences, or with [`EVERY_DEVICE`] whether
+    /// mice are accelerated
+    /// (`SET_DEVICE_INPUT_PREFERENCES`, D589): `[device, speed, acceleration, left-handed,
+    /// natural scrolling]`, each choice 0 to follow, 1 on, 2 off.
+    pub fn set_device_input_preferences(&self, words: [u32; 5]) -> Result<(), Errno> {
+        let mut bytes = [0u8; 20];
+        for (place, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *place = word.to_ne_bytes();
+        }
+        self.ioctl(SET_DEVICE_INPUT_PREFERENCES, &mut bytes)
     }
 
     /// The text of the action query `serial` (`READ_QUERY`, D161): `set-text`'s new text,

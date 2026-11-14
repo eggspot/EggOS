@@ -394,6 +394,10 @@ pub struct PendingReport {
     pending: bool,
     /// The accelerometer's last x and y, until its z completes a reading (D435).
     acceleration: (i32, i32),
+    /// The device's place among the sources, which its own preferences are kept by (D589).
+    device: u8,
+    /// What a move left over below a pixel, in 1/256 of a pixel, carried to the next (D589).
+    carry: (i32, i32),
 }
 
 struct Source {
@@ -710,6 +714,86 @@ pub fn handed(button: Button, left_handed: bool) -> Button {
 /// A relative move of `delta` at pointer speed `speed` (1 to 10, 5 as reported).
 pub fn sped(delta: i32, speed: u32) -> i32 {
     (i64::from(delta) * i64::from(speed.clamp(1, 10)) / 5) as i32
+}
+
+/// Below this many counts in one report a mouse's move is not accelerated (D589).
+pub const ACCELERATION_THRESHOLD: i32 = 4;
+/// The most a move is multiplied by on top of the speed, in 1/256.
+pub const MOST_ACCELERATION: i32 = 3 * 256;
+
+/// A relative move of `delta` counts on one axis, out of `velocity` counts in the whole report,
+/// at pointer speed `speed`, accelerated when `accelerate` (D589), with `carry`, the part of a
+/// pixel left over from the last move in 1/256, taken in and given back: slow moves add up
+/// rather than being lost at speeds under 5, and fast ones go further, as on other systems.
+pub fn moved_by(delta: i32, velocity: i32, speed: u32, accelerate: bool, carry: &mut i32) -> i32 {
+    let speed = i64::from(speed.clamp(1, 10));
+    let gain = match accelerate && velocity > ACCELERATION_THRESHOLD {
+        true => (256 + (velocity - ACCELERATION_THRESHOLD) * 32).min(256 + MOST_ACCELERATION),
+        false => 256,
+    };
+    let scaled = i64::from(delta) * speed * i64::from(gain) * 256 / (5 * 256) + i64::from(*carry);
+    let whole = scaled.div_euclid(256);
+    *carry = scaled.rem_euclid(256) as i32;
+    if delta == 0 {
+        *carry = 0;
+    }
+    whole as i32
+}
+
+/// One device's own mouse preferences (D589), each `None` to follow the global one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DevicePreferences {
+    pub pointer_speed: Option<u32>,
+    pub acceleration: Option<bool>,
+    pub left_handed: Option<bool>,
+    pub natural_scrolling: Option<bool>,
+}
+
+/// Devices whose preferences are kept, the most.
+pub const MOST_DEVICE_PREFERENCES: usize = 16;
+
+static DEVICE_PREFERENCES: crate::sync::LeafSpinLock<[DevicePreferences; MOST_DEVICE_PREFERENCES]> =
+    crate::sync::LeafSpinLock::new_leaf([DevicePreferences {
+        pointer_speed: None,
+        acceleration: None,
+        left_handed: None,
+        natural_scrolling: None,
+    }; MOST_DEVICE_PREFERENCES]);
+
+static POINTER_ACCELERATION: AtomicBool = AtomicBool::new(true);
+
+/// Turns pointer acceleration on or off for every mouse without a preference of its own.
+pub fn set_pointer_acceleration(on: bool) {
+    POINTER_ACCELERATION.store(on, Ordering::Relaxed);
+}
+
+/// Whether mice are accelerated.
+pub fn pointer_acceleration() -> bool {
+    POINTER_ACCELERATION.load(Ordering::Relaxed)
+}
+
+/// Sets device `device`'s own preferences (its place among the input devices); `false` for a
+/// place past [`MOST_DEVICE_PREFERENCES`] or a speed out of 1 to 10.
+pub fn set_device_preferences(device: usize, preferences: DevicePreferences) -> bool {
+    if preferences.pointer_speed.is_some_and(|speed| !(1..=10).contains(&speed)) {
+        return false;
+    }
+    match DEVICE_PREFERENCES.lock().get_mut(device) {
+        Some(slot) => {
+            *slot = preferences;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Device `device`'s own preferences.
+pub fn device_preferences(device: usize) -> DevicePreferences {
+    DEVICE_PREFERENCES
+        .lock()
+        .get(device)
+        .copied()
+        .unwrap_or_default()
 }
 
 /// Where translated input goes: bytes for the console, events for the queue, moves of the
@@ -1222,9 +1306,14 @@ impl InputState {
         sink: &mut dyn InputSink,
     ) {
         let touch_slot = report.touch_slot;
+        let device = report.device;
+        let mut carry = report.carry;
         let report_now = core::mem::take(report);
         report.touch_slot = touch_slot;
+        report.device = device;
+        let kept = report;
         let report = report_now;
+        let own = device_preferences(usize::from(device));
         if let Some((width, height)) = screen.filter(|&(width, height)| width > 0 && height > 0) {
             let rotation = crate::display::rotation();
             let (mut x, mut y) = (
@@ -1244,10 +1333,17 @@ impl InputState {
             }
             let moved =
                 |at: u32, delta: i32, size: u32| at.saturating_add_signed(delta).min(size - 1);
-            let speed = POINTER_SPEED.load(Ordering::Relaxed);
+            let speed = own
+                .pointer_speed
+                .unwrap_or_else(|| POINTER_SPEED.load(Ordering::Relaxed));
+            let accelerate = own.acceleration.unwrap_or_else(pointer_acceleration);
             let (dx, dy) = rotation.unturn_delta(report.dx, report.dy);
-            x = moved(x, sped(dx, speed), width);
-            y = moved(y, sped(dy, speed), height);
+            let velocity = dx.unsigned_abs().max(dy.unsigned_abs()) as i32;
+            let step_x = moved_by(dx, velocity, speed, accelerate, &mut carry.0);
+            let step_y = moved_by(dy, velocity, speed, accelerate, &mut carry.1);
+            kept.carry = carry;
+            x = moved(x, step_x, width);
+            y = moved(y, step_y, height);
             if (x, y) != self.pointer {
                 self.pointer = (x, y);
                 sink.event(InputEvent::PointerMove { x, y });
@@ -1258,7 +1354,9 @@ impl InputState {
             let latched = self.sticky.button_pressed(held);
             send_latched_modifiers(latched, true, held, sink);
         }
-        let left_handed = LEFT_HANDED.load(Ordering::Relaxed);
+        let left_handed = own
+            .left_handed
+            .unwrap_or_else(|| LEFT_HANDED.load(Ordering::Relaxed));
         for (index, (button, _)) in BUTTONS.iter().enumerate() {
             let bit = 1 << index;
             let button = handed(*button, left_handed);
@@ -1281,7 +1379,10 @@ impl InputState {
             let latched = self.sticky.buttons_released();
             send_latched_modifiers(latched, false, self.keyboard.modifiers(), sink);
         }
-        let (wheel, sideways) = match NATURAL_SCROLLING.load(Ordering::Relaxed) {
+        let natural = own
+            .natural_scrolling
+            .unwrap_or_else(|| NATURAL_SCROLLING.load(Ordering::Relaxed));
+        let (wheel, sideways) = match natural {
             true => (
                 report.wheel.saturating_neg(),
                 report.sideways.saturating_neg(),
@@ -1686,16 +1787,22 @@ fn install_source(
             drop(unsafe { Box::from_raw(queue) });
         }
     }
-    let Some(slot) = input
-        .as_mut()
-        .and_then(|input| input.sources.iter_mut().find(|slot| slot.is_none()))
-    else {
+    let Some((index, slot)) = input.as_mut().and_then(|input| {
+        input
+            .sources
+            .iter_mut()
+            .enumerate()
+            .find(|(_, slot)| slot.is_none())
+    }) else {
         return Err(device);
     };
     *slot = Some(Source {
         device,
         capabilities,
-        report: PendingReport::default(),
+        report: PendingReport {
+            device: index as u8,
+            ..PendingReport::default()
+        },
         interrupting,
     });
     Ok(())

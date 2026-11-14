@@ -3841,6 +3841,7 @@ const SETTINGS_LIST_TEXT: &str = concat!(
     "mouse.buttons=right\n",
     "mouse.scrolling=traditional\n",
     "mouse.speed=5\n",
+    "mouse.acceleration=on\n",
     "keyboard.repeat_delay_ms=400\n",
     "keyboard.repeat_rate=25\n",
     "accessibility.high_contrast=false\n",
@@ -3939,7 +3940,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
                   times in unless TZ says another; display.scale takes 1 or 2, which the \
                   display shows at from the next boot; mouse.buttons takes right or left (left \
                   swaps the buttons), mouse.scrolling traditional or natural, mouse.speed 1 to \
-                  10, keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60 \
+                  10, mouse.acceleration on or off, keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60 \
                   repeats a second, each used from the next event. The other keys report facts \
                   and cannot be set. --dry-run checks the key and the value \
                   and says what would change, and changes nothing.",

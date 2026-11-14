@@ -862,13 +862,26 @@ fn apply_input(preferences: InputPreferences, server: Option<&WindowServer>) -> 
         }
     };
     match server {
-        Some(server) => server.set_input_preferences([
-            u32::from(preferences.left_handed),
-            u32::from(preferences.natural_scrolling),
-            preferences.pointer_speed,
-            preferences.repeat_delay_ms,
-            preferences.repeat_rate,
-        ]),
+        Some(server) => {
+            server.set_input_preferences([
+                u32::from(preferences.left_handed),
+                u32::from(preferences.natural_scrolling),
+                preferences.pointer_speed,
+                preferences.repeat_delay_ms,
+                preferences.repeat_rate,
+            ])?;
+            let acceleration = match preferences.pointer_acceleration {
+                true => 1,
+                false => 2,
+            };
+            server.set_device_input_preferences([
+                eggos_toolkit::window::EVERY_DEVICE,
+                0,
+                acceleration,
+                0,
+                0,
+            ])
+        }
         None => Ok(()),
     }
 }

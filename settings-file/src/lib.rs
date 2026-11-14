@@ -170,6 +170,9 @@ pub const MOUSE_BUTTONS: &str = "mouse.buttons";
 pub const MOUSE_SCROLLING: &str = "mouse.scrolling";
 /// How far a mouse's move takes the pointer: 1 to 10, 5 the default (D195).
 pub const MOUSE_SPEED: &str = "mouse.speed";
+
+/// Whether mice go further the faster they move (D589): `on` (the default) or `off`.
+pub const MOUSE_ACCELERATION: &str = "mouse.acceleration";
 /// Milliseconds before a held key repeats: 150 to 2000, 400 the default (D195).
 pub const KEYBOARD_REPEAT_DELAY: &str = "keyboard.repeat_delay_ms";
 /// Repeats a second of a held key: 2 to 60, 25 the default (D195).
@@ -241,6 +244,8 @@ pub struct InputPreferences {
     pub natural_scrolling: bool,
     /// 1 to 10.
     pub pointer_speed: u32,
+    /// Mice are accelerated (D589).
+    pub pointer_acceleration: bool,
     /// 150 to 2000.
     pub repeat_delay_ms: u32,
     /// 2 to 60.
@@ -253,6 +258,7 @@ impl InputPreferences {
         left_handed: false,
         natural_scrolling: false,
         pointer_speed: 5,
+        pointer_acceleration: true,
         repeat_delay_ms: 400,
         repeat_rate: 25,
     };
@@ -276,6 +282,7 @@ pub fn input_preferences(file: &[u8]) -> InputPreferences {
         left_handed: value(file, MOUSE_BUTTONS) == Some(&b"left"[..]),
         natural_scrolling: value(file, MOUSE_SCROLLING) == Some(&b"natural"[..]),
         pointer_speed: number_in(file, MOUSE_SPEED, 1, 10).unwrap_or(default.pointer_speed),
+        pointer_acceleration: value(file, MOUSE_ACCELERATION) != Some(&b"off"[..]),
         repeat_delay_ms: number_in(file, KEYBOARD_REPEAT_DELAY, 150, 2000)
             .unwrap_or(default.repeat_delay_ms),
         repeat_rate: number_in(file, KEYBOARD_REPEAT_RATE, 2, 60).unwrap_or(default.repeat_rate),

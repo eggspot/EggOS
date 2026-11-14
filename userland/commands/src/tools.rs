@@ -2060,7 +2060,8 @@ const SETTINGS_SET_ARGUMENTS: [Argument; 3] = [
          for keyboard.switch_key; an IANA zone such as Europe/Paris, or UTC, for \
          time.zone; on or off for time.automatic (on sets the clock from the network at \
          once); 1 or 2 for display.scale; right or left for mouse.buttons; traditional or \
-         natural for mouse.scrolling; 1 to 10 for mouse.speed; 150 to 2000 for \
+         natural for mouse.scrolling; 1 to 10 for mouse.speed; on or off for \
+         mouse.acceleration; 150 to 2000 for \
          keyboard.repeat_delay_ms; 2 to 60 for keyboard.repeat_rate.",
     )),
     DRY_RUN,
@@ -2075,7 +2076,8 @@ pub const SETTINGS_LIST: ToolDefinition = reading(
      us-intl, us-mac, gb, us-dvorak, us-colemak, dk, fi, fr, be, ca, de, ch, it, no, br, pt, \
      es, latam or se), keyboard.layouts and keyboard.switch_key and time.zone \
      (an IANA zone such as Europe/Paris, or UTC) and display.scale (1 or 2) and the mouse and \
-     key preferences (mouse.buttons, mouse.scrolling, mouse.speed, keyboard.repeat_delay_ms, \
+     key preferences (mouse.buttons, mouse.scrolling, mouse.speed, mouse.acceleration, \
+     keyboard.repeat_delay_ms, \
      keyboard.repeat_rate) and accessibility.sticky_keys, accessibility.slow_keys and \
      accessibility.slow_keys_ms can be set with settings_set; the others report facts: the display's resolution and pointer, the \
      network's state (network.state: connected, getting-address, no-address, cable-unplugged \
@@ -2114,7 +2116,7 @@ pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
                   Europe/Paris, or UTC: the zone programs show times in. display.scale takes 1 \
                   or 2: the display shows at it from the next boot. mouse.buttons takes right or \
                   left, mouse.scrolling traditional or natural, mouse.speed 1 to 10, \
-                  keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60: the \
+                  mouse.acceleration on or off, keyboard.repeat_delay_ms 150 to 2000 and keyboard.repeat_rate 2 to 60: the \
                   mouse and keys behave so from the next event. accessibility.sticky_keys and \
                   accessibility.slow_keys take true or false, accessibility.slow_keys_ms 100 \
                   to 1000: a modifier pressed alone then stays down for the next key, or a key \

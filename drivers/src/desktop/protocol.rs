@@ -45,6 +45,9 @@ const fn encode(direction: u32, number: u32, size: usize) -> u32 {
     direction << 30 | (size as u32) << 16 | (IOCTL_TYPE as u32) << 8 | number
 }
 
+/// `SET_DEVICE_INPUT_PREFERENCES`' device for every mouse (D589).
+pub const EVERY_DEVICE: u32 = u32::MAX;
+
 /// The most screens `GET_SCREENS` lists.
 pub const MAX_SCREENS: usize = 8;
 
@@ -91,6 +94,7 @@ pub mod size {
     pub const GET_KEYBOARD_LAYOUT: usize = 8;
     pub const SET_KEYBOARD_LAYOUT: usize = 4;
     pub const SET_INPUT_PREFERENCES: usize = 20;
+    pub const SET_DEVICE_INPUT_PREFERENCES: usize = 20;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
@@ -185,6 +189,8 @@ pub mod request {
     pub const REGISTER_HOT_KEY: u32 = encode(WRITE, 57, size::REGISTER_HOT_KEY);
     pub const SHOW_GPU_BUFFER: u32 = encode(WRITE, 58, size::SHOW_GPU_BUFFER);
     pub const GET_SCREENS: u32 = encode(READ, 59, size::GET_SCREENS);
+    pub const SET_DEVICE_INPUT_PREFERENCES: u32 =
+        encode(WRITE, 60, size::SET_DEVICE_INPUT_PREFERENCES);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -645,6 +651,16 @@ pub enum Request {
     /// The screens the desktop is shown on (D584): a count and up to [`MAX_SCREENS`] entries
     /// of id, x, y, width, height and scale.
     GetScreens,
+    /// One input device's own mouse preferences (D589), or with [`EVERY_DEVICE`] whether mice
+    /// are accelerated; each choice 0 to follow the global one, 1 on, 2 off, and the speed 0
+    /// to follow or 1 to 10.
+    SetDeviceInputPreferences {
+        device: u32,
+        pointer_speed: u32,
+        acceleration: u32,
+        left_handed: u32,
+        natural_scrolling: u32,
+    },
     ListWindow {
         index: u32,
     },
@@ -930,6 +946,7 @@ impl Request {
             request::DESTROY => size::DESTROY,
             request::GET_WORK_AREA => size::GET_WORK_AREA,
             request::GET_SCREENS => size::GET_SCREENS,
+            request::SET_DEVICE_INPUT_PREFERENCES => size::SET_DEVICE_INPUT_PREFERENCES,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1251,6 +1268,13 @@ impl Request {
                 offset: double_word(bytes, 16),
             },
             request::GET_SCREENS => Self::GetScreens,
+            request::SET_DEVICE_INPUT_PREFERENCES => Self::SetDeviceInputPreferences {
+                device: at(0),
+                pointer_speed: at(4),
+                acceleration: at(8),
+                left_handed: at(12),
+                natural_scrolling: at(16),
+            },
             _ => Self::GetWorkArea,
         })
     }

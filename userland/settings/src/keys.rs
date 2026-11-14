@@ -45,6 +45,7 @@ pub enum Key {
     MouseButtons,
     MouseScrolling,
     MouseSpeed,
+    MouseAcceleration,
     KeyboardRepeatDelay,
     KeyboardRepeatRate,
     HighContrast,
@@ -269,6 +270,8 @@ pub enum InputChange {
     NaturalScrolling(bool),
     /// 1 to 10.
     PointerSpeed(u32),
+    /// Mice go further the faster they move (D589).
+    PointerAcceleration(bool),
     /// 150 to 2000 milliseconds.
     RepeatDelayMs(u32),
     /// 2 to 60 repeats a second.
@@ -283,6 +286,7 @@ impl InputChange {
             Self::LeftHanded(on) => changed.left_handed = on,
             Self::NaturalScrolling(on) => changed.natural_scrolling = on,
             Self::PointerSpeed(speed) => changed.pointer_speed = speed,
+            Self::PointerAcceleration(on) => changed.pointer_acceleration = on,
             Self::RepeatDelayMs(delay) => changed.repeat_delay_ms = delay,
             Self::RepeatRate(rate) => changed.repeat_rate = rate,
         }
@@ -304,6 +308,13 @@ impl InputChange {
             Self::PointerSpeed(speed) => {
                 let _ = write!(value, "{speed}");
                 eggos_settings_file::MOUSE_SPEED
+            }
+            Self::PointerAcceleration(on) => {
+                let _ = value.write_str(match on {
+                    true => "on",
+                    false => "off",
+                });
+                eggos_settings_file::MOUSE_ACCELERATION
             }
             Self::RepeatDelayMs(delay) => {
                 let _ = write!(value, "{delay}");
@@ -348,7 +359,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -370,6 +381,7 @@ impl Key {
         Self::MouseButtons,
         Self::MouseScrolling,
         Self::MouseSpeed,
+        Self::MouseAcceleration,
         Self::KeyboardRepeatDelay,
         Self::KeyboardRepeatRate,
         Self::HighContrast,
@@ -414,6 +426,7 @@ impl Key {
             Self::MouseButtons => eggos_settings_file::MOUSE_BUTTONS,
             Self::MouseScrolling => eggos_settings_file::MOUSE_SCROLLING,
             Self::MouseSpeed => eggos_settings_file::MOUSE_SPEED,
+            Self::MouseAcceleration => eggos_settings_file::MOUSE_ACCELERATION,
             Self::KeyboardRepeatDelay => eggos_settings_file::KEYBOARD_REPEAT_DELAY,
             Self::KeyboardRepeatRate => eggos_settings_file::KEYBOARD_REPEAT_RATE,
             Self::HighContrast => eggos_settings_file::HIGH_CONTRAST,
@@ -459,6 +472,7 @@ impl Key {
                 | Self::MouseButtons
                 | Self::MouseScrolling
                 | Self::MouseSpeed
+                | Self::MouseAcceleration
                 | Self::KeyboardRepeatDelay
                 | Self::KeyboardRepeatRate
                 | Self::HighContrast
@@ -511,6 +525,9 @@ impl Key {
             }
             Self::MouseSpeed => {
                 let _ = choices.write_str("1 to 10");
+            }
+            Self::MouseAcceleration => {
+                let _ = choices.write_str("on or off");
             }
             Self::KeyboardRepeatDelay => {
                 let _ = choices.write_str("150 to 2000");
@@ -604,6 +621,10 @@ impl Key {
             Self::MouseButtons => value.write_str(buttons_name(facts.input.left_handed)),
             Self::MouseScrolling => value.write_str(scrolling_name(facts.input.natural_scrolling)),
             Self::MouseSpeed => write!(value, "{}", facts.input.pointer_speed),
+            Self::MouseAcceleration => value.write_str(match facts.input.pointer_acceleration {
+                true => "on",
+                false => "off",
+            }),
             Self::KeyboardRepeatDelay => write!(value, "{}", facts.input.repeat_delay_ms),
             Self::KeyboardRepeatRate => write!(value, "{}", facts.input.repeat_rate),
             Self::HighContrast => value.write_str(boolean_name(facts.display.high_contrast)),
@@ -700,6 +721,11 @@ impl Key {
             },
             Self::MouseSpeed => number_within(value, 1, 10)
                 .map(|speed| Change::Input(InputChange::PointerSpeed(speed))),
+            Self::MouseAcceleration => match value {
+                "on" => Ok(Change::Input(InputChange::PointerAcceleration(true))),
+                "off" => Ok(Change::Input(InputChange::PointerAcceleration(false))),
+                _ => Err(Refusal::InvalidValue),
+            },
             Self::KeyboardRepeatDelay => number_within(value, 150, 2000)
                 .map(|delay| Change::Input(InputChange::RepeatDelayMs(delay))),
             Self::KeyboardRepeatRate => {
@@ -832,6 +858,7 @@ mod tests {
                 ("mouse.buttons", "right".to_owned()),
                 ("mouse.scrolling", "traditional".to_owned()),
                 ("mouse.speed", "5".to_owned()),
+                ("mouse.acceleration", "on".to_owned()),
                 ("keyboard.repeat_delay_ms", "400".to_owned()),
                 ("keyboard.repeat_rate", "25".to_owned()),
                 ("accessibility.high_contrast", "false".to_owned()),

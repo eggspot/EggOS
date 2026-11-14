@@ -138,6 +138,7 @@ pub fn ioctl<P: Platform>(
             | Request::SetKeyboardLayout { .. }
             | Request::SetKeyboardLayouts { .. }
             | Request::SetInputPreferences { .. }
+            | Request::SetDeviceInputPreferences { .. }
             | Request::SetKeyAccessibility { .. }
     );
     if changes_settings && !may_change_desktop_settings(process) {
@@ -775,6 +776,35 @@ pub fn ioctl<P: Platform>(
             };
             if !crate::input::set_preferences(preferences) {
                 return Err(Errno::EINVAL);
+            }
+        }
+        Request::SetDeviceInputPreferences {
+            device,
+            pointer_speed,
+            acceleration,
+            left_handed,
+            natural_scrolling,
+        } => {
+            let choice = |value: u32| match value {
+                0 => Ok(None),
+                1 => Ok(Some(true)),
+                2 => Ok(Some(false)),
+                _ => Err(Errno::EINVAL),
+            };
+            if device == eggos_drivers::desktop::protocol::EVERY_DEVICE {
+                if let Some(on) = choice(acceleration)? {
+                    crate::input::set_pointer_acceleration(on);
+                }
+            } else {
+                let preferences = crate::input::DevicePreferences {
+                    pointer_speed: (pointer_speed != 0).then_some(pointer_speed),
+                    acceleration: choice(acceleration)?,
+                    left_handed: choice(left_handed)?,
+                    natural_scrolling: choice(natural_scrolling)?,
+                };
+                if !crate::input::set_device_preferences(device as usize, preferences) {
+                    return Err(Errno::EINVAL);
+                }
             }
         }
         Request::SetClipboard { buffer, length } => {

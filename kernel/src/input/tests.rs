@@ -1299,3 +1299,37 @@ fn the_layout_in_force_shares_the_set_s_word_so_one_update_changes_both() {
     assert_eq!(in_force_of(switched), named(b"fr"));
     assert_eq!(unpacked_layout_set(switched), (set, SwitchKey::AltShift));
 }
+
+#[test]
+fn slow_moves_add_up_at_low_speeds_and_fast_ones_are_accelerated() {
+    let mut carry = 0;
+    let steps: i32 = (0..4).map(|_| moved_by(1, 1, 2, true, &mut carry)).sum();
+    assert_eq!(steps, 1, "four 1-count moves at speed 2 make 1.6 pixels");
+    let mut carry = 0;
+    assert_eq!(moved_by(3, 3, 5, true, &mut carry), 3);
+    let mut carry = 0;
+    let fast = moved_by(20, 20, 5, true, &mut carry);
+    assert!(fast > 20, "{fast}");
+    let mut carry = 0;
+    assert_eq!(moved_by(20, 20, 5, false, &mut carry), 20);
+}
+
+#[test]
+fn a_device_s_own_preferences_are_kept_by_its_place() {
+    let own = DevicePreferences {
+        pointer_speed: Some(8),
+        acceleration: Some(false),
+        ..DevicePreferences::default()
+    };
+    assert!(set_device_preferences(3, own));
+    assert_eq!(device_preferences(3), own);
+    assert!(!set_device_preferences(MOST_DEVICE_PREFERENCES, own));
+    assert!(!set_device_preferences(
+        2,
+        DevicePreferences {
+            pointer_speed: Some(11),
+            ..DevicePreferences::default()
+        }
+    ));
+    assert!(set_device_preferences(3, DevicePreferences::default()));
+}
