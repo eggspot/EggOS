@@ -37,7 +37,7 @@ and is not listed per item.
 - [x] Device-tree `dma-ranges` for devices whose DMA addresses differ from the CPU's (D269) — code written, unbuilt, D554
 - [x] Plain MSI (without MSI-X) steered to other CPUs; moving lines off CPUs that go offline; balancing by load (D536) — code written, unbuilt, D555 (plain MSI; offline CPUs and load balancing stay open below)
 - [x] RISC-V AIA: the APLIC's direct mode, PCI MSIs straight into the IMSIC, interrupts on harts other than the boot hart (D532) — code written, unbuilt, D555
-- [ ] x86_64: interrupt remapping (VT-d / AMD-Vi) so x2APIC destinations above 255 work, and the HPET as a timer of its own (D531, D536)
+- [x] x86_64: interrupt remapping (VT-d / AMD-Vi) so x2APIC destinations above 255 work, and the HPET as a timer of its own (D531, D536) — code written, unbuilt, D594
 - [x] AML: loading tables from AML (`Load`, `LoadTable`), the global lock's hardware handshake, real waits on mutexes and events, GPIO and serial-bus connection fields (D537, D538) — code written, unbuilt, D556 (real waits and GPIO/serial fields stay open below)
 - [ ] AML: real waits on mutexes and events with several AML threads; GPIO and serial-bus connection fields (D537)
 - [ ] Moving device lines off CPUs that go offline, and balancing lines by load (D536)

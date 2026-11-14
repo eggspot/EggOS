@@ -26979,3 +26979,32 @@ the license, by an explicit instruction recorded here.
   (C1), where even a non-invariant TSC keeps counting.
 - **Not yet.** Building and running; the scheduler's lock-contention benchmark on 8 or more CPUs.
 
+## D594 Interrupt remapping on x86_64 (VT-d and AMD-Vi), and the HPET as a timer of its own (M5; D531 and D536's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's VT-d and AMD's IOMMU specifications; sources in `hal/src/arch/x86_64/NOTICE.remapping`)
+- **When.** Right after the other CPUs start and before the lines are spread
+  (`interrupts::enable_remapping`), the kernel asks the HAL to turn remapping on through the
+  new `Platform::enable_interrupt_remapping`, giving it zeroed DMA blocks it keeps for good;
+  then it sends every connected line to the boot CPU again, now in remapped form, and
+  `spread` can hand lines to CPUs with x2APIC IDs of 256 and up.
+- **One table, one entry per line.** A page of 256 16-byte entries; device line `n` owns entry
+  `n`, the HPET timer entry 32. An MSI or MSI-X message and an I/O APIC entry name the entry;
+  the entry names the vector, the trigger and the 32-bit destination, so moving a line
+  rewrites one entry and invalidates it. No source validation (any requester may use any
+  entry), as the IDs of devices behind bridges are not tracked yet.
+- **VT-d** (`DMAR`): every remapping hardware unit gets an invalidation queue (a page), the
+  table in extended (x2APIC) mode, then remapping on; entries are invalidated one at a time
+  through the queue, waiting for the head to reach the tail.
+- **AMD-Vi** (`IVRS`): every IOMMU gets a 2 MiB device table whose 65 536 entries all name the
+  one interrupt table (remapping on, address translation left off) and a command buffer;
+  the 128-bit guest-virtual-APIC entry format with guest mode off carries the 32-bit
+  destination, so `GAEn` and `XTEn` are set; changes are made visible with
+  `INVALIDATE_IOMMU_ALL`. An I/O APIC entry's vector field is the table index, as AMD-Vi
+  indexes I/O APIC messages by it.
+- **HPET timer.** On a CPU whose local APIC timer may stop while idle (no CPUID 6:EAX[2],
+  "always running APIC timer"), the boot CPU's timer is the HPET's first comparator when it can
+  raise a message (front-side-bus delivery to the timer vector), and TSC-deadline mode is not
+  used; other CPUs keep their APIC timers, which EggOS's `hlt` idle does not stop. The driver is
+  `drivers::timer::Hpet`.
+- **Not yet.** Building and running; source-id validation; AMD-Vi without the 128-bit format
+  (pre-Zen IOMMUs, which then keep destinations below 256); the HPET timer for CPUs other than
+  the boot CPU.
+
