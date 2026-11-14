@@ -64,6 +64,43 @@ const CPUID_TSC_LEAF: u32 = 0x15;
 const CPUID_FREQUENCY_LEAF: u32 = 0x16;
 const HYPERVISOR_BASE_LEAF: u32 = 0x4000_0000;
 const HYPERVISOR_TIMING_LEAF: u32 = 0x4000_0010;
+const CPUID_EXTENDED_BASE_LEAF: u32 = 0x8000_0000;
+const CPUID_POWER_LEAF: u32 = 0x8000_0007;
+const CPUID_INVARIANT_TSC: u32 = 1 << 8;
+const CPUID_FEATURES_LEAF: u32 = 7;
+const CPUID_TSC_ADJUST: u32 = 1 << 1;
+const IA32_TSC_ADJUST: u32 = 0x3b;
+const NO_TSC_ADJUST: u64 = u64::MAX;
+
+static BOOT_TSC_ADJUST: AtomicU64 = AtomicU64::new(NO_TSC_ADJUST);
+
+/// Whether the TSC runs at one rate in every power state (D593): CPUID 80000007h:EDX[8], or a
+/// hypervisor, which keeps its guests' TSC steady.
+fn tsc_is_invariant() -> bool {
+    let stated = cpuid(CPUID_EXTENDED_BASE_LEAF, 0)[0] >= CPUID_POWER_LEAF
+        && cpuid(CPUID_POWER_LEAF, 0)[3] & CPUID_INVARIANT_TSC != 0;
+    stated || cpuid(1, 0)[2] & CPUID_HYPERVISOR != 0
+}
+
+fn has_tsc_adjust() -> bool {
+    cpuid(0, 0)[0] >= CPUID_FEATURES_LEAF
+        && cpuid(CPUID_FEATURES_LEAF, 0)[1] & CPUID_TSC_ADJUST != 0
+}
+
+/// Gives this CPU's TSC the boot CPU's offset (`IA32_TSC_ADJUST`), which firmware may have set
+/// apart, so every CPU's TSC reads the same clock and a thread moved between CPUs sees time go
+/// on (D593).
+fn align_tsc_with_boot_cpu() {
+    let boot = BOOT_TSC_ADJUST.load(Ordering::Relaxed);
+    if boot == NO_TSC_ADJUST || super::read_msr(IA32_TSC_ADJUST) == boot {
+        return;
+    }
+    // SAFETY: `IA32_TSC_ADJUST` exists, as CPUID said on the boot CPU (`BOOT_TSC_ADJUST` is
+    // set only then, and every CPU of one machine has the same features); writing it moves this
+    // CPU's TSC by the difference, before anything here has read it for the kernel.
+    unsafe { super::write_msr(IA32_TSC_ADJUST, boot) };
+}
+
 
 static TSC_DEADLINE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -338,7 +375,11 @@ pub(super) extern "C" fn init() {
     apic.enable(APIC_SPURIOUS_VECTOR);
     BOOT_APIC_ID.store(apic.id(), Ordering::Relaxed);
 
-    let deadline_mode = cpuid(1, 0)[2] & CPUID_TSC_DEADLINE != 0;
+    let invariant = tsc_is_invariant();
+    if has_tsc_adjust() {
+        BOOT_TSC_ADJUST.store(super::read_msr(IA32_TSC_ADJUST), Ordering::Relaxed);
+    }
+    let deadline_mode = invariant && cpuid(1, 0)[2] & CPUID_TSC_DEADLINE != 0;
     if deadline_mode && let Some(tsc_frequency) = stated_tsc_frequency() {
         TSC_FREQUENCY.store(tsc_frequency, Ordering::Relaxed);
         TSC_DEADLINE.store(true, Ordering::Relaxed);
@@ -533,6 +574,7 @@ fn measure_against_pm_timer(apic: &LocalApic<ApicRegisters>) -> Option<(u64, u64
 /// Enables this CPU's local APIC and sets its timer up, stopped, as [`init`] does for the boot
 /// CPU (D41). Called by each secondary CPU before it runs the kernel's code.
 pub(super) fn init_this_cpu() {
+    align_tsc_with_boot_cpu();
     enter_x2apic_mode();
     let apic = local_apic();
     apic.enable(APIC_SPURIOUS_VECTOR);

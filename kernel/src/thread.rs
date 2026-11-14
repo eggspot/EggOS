@@ -60,7 +60,7 @@
 
 use crate::cpu::{self, Cpu};
 use crate::heap::{FrameSource, GlobalFrames};
-use crate::sync::{LeafSpinLock, LeafSpinLockGuard, SpinLockGuard};
+use crate::sync::{LeafSpinLock, LeafSpinLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::alloc::Layout;
@@ -68,7 +68,7 @@ use core::cell::{Cell, OnceCell, UnsafeCell};
 use core::fmt;
 use core::num::NonZeroUsize;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use eggos_hal::Platform;
 use eggos_hal::atomic::AtomicU64;
@@ -310,9 +310,9 @@ impl Thread {
     }
 
     fn shared(&self) -> Option<&ThreadShared> {
-        // SAFETY: only `set_running_shared` replaces it, for the running thread with the
-        // scheduler's lock held, and every reader holds that lock: nothing replaces it while
-        // this shared reference lives.
+        // SAFETY: only `set_running_shared` replaces it, for the running thread with its CPU's
+        // scheduler lock held, and every reader holds the lock of the CPU the thread is on:
+        // nothing replaces it while this shared reference lives.
         unsafe { &*self.shared.0.as_ptr() }.as_deref()
     }
 
@@ -331,9 +331,9 @@ impl Thread {
     fn charge(&self, now: u64) {
         let spent = now.wrapping_sub(self.since.get());
         self.ran.set(self.ran.get().wrapping_add(spent));
-        // SAFETY: only `move_account` replaces the account, for the running thread with the
-        // scheduler's lock held, after its own `charge` has returned: nothing replaces it while
-        // this shared reference lives.
+        // SAFETY: only `move_account` replaces the account, for the running thread with its
+        // CPU's scheduler lock held, after its own `charge` has returned: nothing replaces it
+        // while this shared reference lives.
         if let Some(account) = unsafe { &*self.account.0.as_ptr() } {
             account.fetch_add(spent, Ordering::Relaxed);
         }
@@ -615,9 +615,12 @@ impl WaitQueue {
             if condition() {
                 return;
             }
-            start_here_or_panic::<P>(&mut schedulers);
-            block::<P>(schedulers, |schedulers, _, thread| {
-                self.waiters(schedulers).push_back(thread);
+            let here = cpu::current::<P>();
+            let mut local = here.scheduler.lock();
+            start_here_or_panic::<P>(&mut local, here);
+            block::<P>(local, here, move |_, _, thread| {
+                self.waiters(&mut schedulers).push_back(thread);
+                drop(schedulers);
             });
         }
     }
@@ -634,9 +637,8 @@ impl WaitQueue {
         let Some(thread) = self.waiters(&mut schedulers).pop_front() else {
             return false;
         };
-        let wake = make_ready::<P>(&mut schedulers, thread);
         drop(schedulers);
-        if let Some(cpu) = wake {
+        if let Some(cpu) = make_ready::<P>(thread) {
             cpu::wake::<P>(cpu);
         }
         true
@@ -649,7 +651,7 @@ impl WaitQueue {
         let mut schedulers = SCHEDULER.lock();
         let mut woken = 0;
         while let Some(thread) = self.waiters(&mut schedulers).pop_front() {
-            if let Some(cpu) = make_ready::<P>(&mut schedulers, thread) {
+            if let Some(cpu) = make_ready::<P>(thread) {
                 cpu::wake::<P>(cpu);
             }
             woken += 1;
@@ -730,13 +732,16 @@ impl Parker {
             if deadline != u64::MAX && P::clock_ticks() >= deadline {
                 return ParkEnd::DeadlineReached;
             }
-            start_here_or_panic::<P>(&mut schedulers);
+            let here = cpu::current::<P>();
+            let mut local = here.scheduler.lock();
+            start_here_or_panic::<P>(&mut local, here);
             if deadline == u64::MAX {
-                block::<P>(schedulers, |schedulers, _, thread| {
-                    *self.parked(schedulers) = Some(Parked::Untimed(thread));
+                block::<P>(local, here, move |_, _, thread| {
+                    *self.parked(&mut schedulers) = Some(Parked::Untimed(thread));
+                    drop(schedulers);
                 });
             } else {
-                self.park_sleeping::<P>(schedulers, deadline);
+                self.park_sleeping::<P>(schedulers, local, here, deadline);
             }
             if self.unparked.load(Ordering::Acquire) {
                 return ParkEnd::Unparked;
@@ -747,12 +752,14 @@ impl Parker {
     #[inline(never)]
     fn park_sleeping<P: Platform>(
         &self,
-        schedulers: LeafSpinLockGuard<'_, Schedulers>,
+        mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
+        local: Local<'static>,
+        here: &'static Cpu,
         deadline: u64,
     ) {
-        block::<P>(schedulers, |schedulers, here, thread| {
-            *self.parked(schedulers) = Some(Parked::Sleeping(thread.0, here));
-            let scheduler = schedulers.of(here);
+        block::<P>(local, here, move |scheduler, here, thread| {
+            *self.parked(&mut schedulers) = Some(Parked::Sleeping(thread.0, here));
+            drop(schedulers);
             scheduler.sleeping.insert_by_wake_at(thread, deadline);
             scheduler.update_timer::<P>();
         });
@@ -767,7 +774,7 @@ impl Parker {
     ///
     /// `parker` points to a `Parker` that stays in place until it is marked unparked.
     pub unsafe fn unpark<P: Platform>(parker: *const Self) {
-        let mut schedulers = SCHEDULER.lock();
+        let schedulers = SCHEDULER.lock();
         // SAFETY: the `Parker` is in place until the store below, as the caller promises;
         // only the address of its `parked` is taken.
         let parked = unsafe { &raw const (*parker).parked };
@@ -779,16 +786,15 @@ impl Parker {
         let thread = match parked {
             Some(Parked::Untimed(thread)) => thread,
             Some(Parked::Sleeping(thread, cpu)) => {
-                let Some(thread) = schedulers.of(cpu).sleeping.remove(thread) else {
+                let Some(thread) = cpu.scheduler.lock().sleeping.remove(thread) else {
                     return;
                 };
                 thread
             }
             None => return,
         };
-        let wake = make_ready::<P>(&mut schedulers, thread);
         drop(schedulers);
-        if let Some(cpu) = wake {
+        if let Some(cpu) = make_ready::<P>(thread) {
             cpu::wake::<P>(cpu);
         }
     }
@@ -808,19 +814,99 @@ enum Notice {
     Wake,
 }
 
-/// One CPU's scheduler state, in its per-CPU block ([`Cpu::scheduler`]), reached only with the
-/// scheduler's lock held ([`Schedulers::of`]). Not `Debug`: reading it needs the lock.
-#[repr(transparent)]
-pub(crate) struct CpuScheduler(UnsafeCell<Scheduler>);
+/// One CPU's scheduler state, in its per-CPU block ([`Cpu::scheduler`]), behind a lock of its
+/// own (D593): its own CPU takes it for its run queue, another CPU to make a thread ready
+/// there, take one of its ready threads or read whether it is idle, never while holding
+/// another CPU's. A switch is made holding it and leaves it held for the thread it resumes.
+/// Not `Debug`: reading it needs the lock.
+#[repr(C)]
+pub(crate) struct CpuScheduler {
+    state: UnsafeCell<Scheduler>,
+    locked: AtomicBool,
+    started: AtomicBool,
+}
 
-// SAFETY: the state is only reached through `Schedulers::of`, which takes the one `Schedulers`
-// behind the scheduler's lock by `&mut`, so every use is serialised by that lock; everything in
-// it is `Send`.
+// SAFETY: the state is only reached through a `Local`, which only `lock`, `try_lock` and
+// `assume_locked` make, each with `locked` set by this holder alone, so every use is
+// serialised; everything in it is `Send`.
 unsafe impl Sync for CpuScheduler {}
 
 impl CpuScheduler {
     pub(crate) const fn new() -> Self {
-        Self(UnsafeCell::new(Scheduler::new()))
+        Self {
+            state: UnsafeCell::new(Scheduler::new()),
+            locked: AtomicBool::new(false),
+            started: AtomicBool::new(false),
+        }
+    }
+
+    /// Takes the lock, spinning while another CPU holds it. Call it with interrupts masked.
+    fn lock(&self) -> Local<'_> {
+        loop {
+            if let Some(local) = self.try_lock() {
+                return local;
+            }
+            while self.locked.load(Ordering::Relaxed) {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Takes the lock if nobody holds it.
+    fn try_lock(&self) -> Option<Local<'_>> {
+        self.locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Local { cpu: self })
+    }
+
+    /// The lock a switch to this thread left held for it.
+    ///
+    /// # Safety
+    ///
+    /// The lock is held, by a switch to the running thread, and nothing else uses that hold.
+    unsafe fn assume_locked(&self) -> Local<'_> {
+        Local { cpu: self }
+    }
+
+    /// Whether this CPU's scheduler has started: read without the lock.
+    fn has_started(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+    }
+}
+
+/// A held [`CpuScheduler`] lock, released when dropped.
+struct Local<'a> {
+    cpu: &'a CpuScheduler,
+}
+
+impl Local<'_> {
+    /// Keeps the lock held past this guard: for a switch, which hands it to the thread it
+    /// resumes.
+    fn leak(local: Self) {
+        core::mem::forget(local);
+    }
+}
+
+impl core::ops::Deref for Local<'_> {
+    type Target = Scheduler;
+
+    fn deref(&self) -> &Scheduler {
+        // SAFETY: this guard holds the lock, so no other reference to the state exists.
+        unsafe { &*self.cpu.state.get() }
+    }
+}
+
+impl core::ops::DerefMut for Local<'_> {
+    fn deref_mut(&mut self) -> &mut Scheduler {
+        // SAFETY: as for `deref`, and this guard is borrowed mutably.
+        unsafe { &mut *self.cpu.state.get() }
+    }
+}
+
+impl Drop for Local<'_> {
+    fn drop(&mut self) {
+        self.cpu.locked.store(false, Ordering::Release);
     }
 }
 
@@ -830,145 +916,149 @@ impl fmt::Debug for CpuScheduler {
     }
 }
 
-/// What the scheduler's lock guards beyond the wait queues: every CPU's [`Scheduler`], reached
-/// one at a time through [`Self::of`], and what they share.
+/// What the scheduler's lock guards: the wait queues and parkers, reached through it
+/// (D593). Each CPU's run queue has a lock of its own ([`CpuScheduler`]), taken after this one
+/// when both are needed.
 #[derive(Debug)]
-struct Schedulers {
-    /// The time slice in clock ticks while preemption is on, 0 while it is off. Each CPU's
-    /// scheduler keeps a copy, so a CPU that starts later takes it from here.
-    slice_ticks: u64,
-    /// Where [`Self::place`] looks first when no CPU is idle: an index into the CPU table.
-    next_placement: usize,
+struct Schedulers;
+
+static SCHEDULER: LeafSpinLock<Schedulers> = LeafSpinLock::new_leaf(Schedulers);
+
+/// The time slice in clock ticks while preemption is on, 0 while it is off. Each CPU's
+/// scheduler keeps a copy, so a CPU that starts later takes it from here.
+static SLICE_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Where [`place`] looks first when no CPU is idle: an index into the CPU table.
+static NEXT_PLACEMENT: AtomicUsize = AtomicUsize::new(0);
+
+/// The CPU a new thread runs on, from `here`, the CPU spawning it: an idle CPU if there is
+/// one, the lowest-numbered, so new threads spread over the idle CPUs first; otherwise the
+/// next CPU in turn whose scheduler has started. O(CPUs); spawning is not a hot path. Call it
+/// holding no CPU's lock.
+fn place(here: &'static Cpu) -> &'static Cpu {
+    place_among(cpu::CPUS.all(), here, &NEXT_PLACEMENT)
 }
 
-static SCHEDULER: LeafSpinLock<Schedulers> = LeafSpinLock::new_leaf(Schedulers {
-    slice_ticks: 0,
-    next_placement: 0,
-});
-
-impl Schedulers {
-    /// `cpu`'s scheduler state. Borrowing `self` (whose one instance is behind the scheduler's
-    /// lock) for as long as the state proves the lock is held and no other reference to any
-    /// CPU's state exists.
-    #[inline]
-    fn of<'a>(&'a mut self, cpu: &'a Cpu) -> &'a mut Scheduler {
-        // SAFETY: see above: every reference to a CPU's state is made here, each borrowing the
-        // one `Schedulers` mutably for its whole life, so they never overlap. (Host tests build
-        // `Schedulers` of their own only over CPU blocks of their own, which `SCHEDULER` never
-        // reaches.)
-        unsafe { &mut *cpu.scheduler.0.get() }
-    }
-
-    /// The CPU a new thread runs on, from `here`, the CPU spawning it: an idle CPU if there is
-    /// one, the lowest-numbered, so new threads spread over the idle CPUs first; otherwise the
-    /// next CPU in turn whose scheduler has started. O(CPUs); spawning is not a hot path.
-    fn place(&mut self, here: &'static Cpu) -> &'static Cpu {
-        self.place_among(cpu::CPUS.all(), here)
-    }
-
-    fn first_allowed(&mut self, allowed: u64) -> Option<&'static Cpu> {
-        cpu::CPUS.all().iter().copied().find(|&cpu| {
-            (cpu.index() >= 64 || allowed & 1 << cpu.index() != 0) && self.of(cpu).has_started()
-        })
-    }
-
-    /// [`Self::place`] among `cpus`; `here` if there is no other.
-    fn place_among(&mut self, cpus: &[&'static Cpu], here: &'static Cpu) -> &'static Cpu {
-        if cpus.len() <= 1 {
-            return here;
-        }
-        if let Some(&idle) = cpus.iter().find(|&&cpu| self.of(cpu).is_idle()) {
-            return idle;
-        }
-        for _ in 0..cpus.len() {
-            let index = self.next_placement % cpus.len();
-            self.next_placement = (index + 1) % cpus.len();
-            let cpu = cpus[index];
-            if self.of(cpu).has_started() {
-                return cpu;
-            }
-        }
-        here
-    }
-
-    /// A thread for `here`'s idle thread to run when none is ready there (D44): the first ready
-    /// thread of the next busy CPU after `here`, moved to `here`. A busy CPU runs a thread other
-    /// than its idle thread, so its ready threads wait; one whose idle thread runs is left alone,
-    /// since it runs its ready threads itself, having been told of them. The boot thread is never
-    /// moved: it runs the boot CPU's setup and the self-tests, which expect to run there; a CPU
-    /// whose first ready thread is the boot thread is passed over. O(CPUs), on the idle path.
-    fn steal(&mut self, here: &'static Cpu) -> Option<ThreadBox> {
-        self.steal_among(cpu::CPUS.all(), here)
-    }
-
-    /// [`Self::steal`] among `cpus`.
-    fn steal_among(&mut self, cpus: &[&'static Cpu], here: &'static Cpu) -> Option<ThreadBox> {
-        let first = here.index() + 1;
-        for offset in 0..cpus.len() {
-            let cpu = cpus[(first + offset) % cpus.len()];
-            if ptr::eq(cpu, here) {
-                continue;
-            }
-            let scheduler = self.of(cpu);
-            let busy = scheduler.idle.is_some();
-            let movable = scheduler
-                .ready
-                .front()
-                .is_some_and(|thread| thread.id != ThreadId::BOOT && thread.may_run_on(here));
-            if busy && movable {
-                let mut thread = scheduler.ready.pop_front().expect("a thread is ready");
-                thread.move_to(here);
-                return Some(thread);
-            }
-        }
-        None
-    }
-
-    /// The idle CPU to send the wake-up interrupt to when `here`'s slice ends with threads ready
-    /// (D44), so that it takes one ([`Self::steal`]): the lowest-numbered idle CPU not yet sent
-    /// one since it last looked, marked as sent. O(CPUs), once per slice that ends.
-    fn idle_cpu_to_wake(&mut self, here: &'static Cpu) -> Option<&'static Cpu> {
-        self.idle_cpu_to_wake_among(cpu::CPUS.all(), here)
-    }
-
-    /// [`Self::idle_cpu_to_wake`] among `cpus`.
-    fn idle_cpu_to_wake_among(
-        &mut self,
-        cpus: &[&'static Cpu],
-        here: &'static Cpu,
-    ) -> Option<&'static Cpu> {
-        for &cpu in cpus {
-            let scheduler = self.of(cpu);
-            if !ptr::eq(cpu, here) && scheduler.is_idle() && !scheduler.wakeup_sent {
-                scheduler.wakeup_sent = true;
-                return Some(cpu);
-            }
-        }
-        None
-    }
-
-    /// Sets the time slice to `slice_ticks` (0 for none) on every CPU. Turning preemption on
-    /// asks every other CPU to look, so those with ready threads arm their ticks.
-    fn set_slice_ticks(&mut self, here: &'static Cpu, slice_ticks: u64) {
-        self.slice_ticks = slice_ticks;
-        for &cpu in cpu::CPUS.all() {
-            self.of(cpu).slice_ticks = slice_ticks;
-            if slice_ticks != 0 && !ptr::eq(cpu, here) {
-                cpu.request_reschedule();
-            }
-        }
-        self.of(here).slice_ticks = slice_ticks;
-    }
+fn first_allowed(allowed: u64) -> Option<&'static Cpu> {
+    cpu::CPUS.all().iter().copied().find(|&cpu| {
+        (cpu.index() >= 64 || allowed & 1 << cpu.index() != 0) && cpu.scheduler.has_started()
+    })
 }
 
-/// Makes `thread`, woken or new, ready on its CPU. Returns that CPU if it needs the wake-up
-/// interrupt, to send once the scheduler's lock is released.
+/// [`place`] among `cpus`, turning `next`; `here` if there is no other. A CPU whose lock is
+/// held at the moment is busy, so it is not taken for idle.
+fn place_among(
+    cpus: &[&'static Cpu],
+    here: &'static Cpu,
+    next: &AtomicUsize,
+) -> &'static Cpu {
+    if cpus.len() <= 1 {
+        return here;
+    }
+    let idle = cpus.iter().find(|&&cpu| {
+        cpu.scheduler
+            .try_lock()
+            .is_some_and(|scheduler| scheduler.is_idle())
+    });
+    if let Some(&idle) = idle {
+        return idle;
+    }
+    for _ in 0..cpus.len() {
+        let index = next.fetch_add(1, Ordering::Relaxed) % cpus.len();
+        let cpu = cpus[index];
+        if cpu.scheduler.has_started() {
+            return cpu;
+        }
+    }
+    here
+}
+
+/// A thread for `here`'s idle thread to run when none is ready there (D44): the first ready
+/// thread of the next busy CPU after `here`, moved to `here`. A busy CPU runs a thread other
+/// than its idle thread, so its ready threads wait; one whose idle thread runs is left alone,
+/// since it runs its ready threads itself, having been told of them. The boot thread is never
+/// moved: it runs the boot CPU's setup and the self-tests, which expect to run there; a CPU
+/// whose first ready thread is the boot thread is passed over. O(CPUs), on the idle path; call
+/// it holding no CPU's lock, as it takes each in turn.
+fn steal(here: &'static Cpu) -> Option<ThreadBox> {
+    steal_among(cpu::CPUS.all(), here)
+}
+
+/// [`steal`] among `cpus`.
+fn steal_among(cpus: &[&'static Cpu], here: &'static Cpu) -> Option<ThreadBox> {
+    let first = here.index() + 1;
+    for offset in 0..cpus.len() {
+        let cpu = cpus[(first + offset) % cpus.len()];
+        if ptr::eq(cpu, here) {
+            continue;
+        }
+        let Some(mut scheduler) = cpu.scheduler.try_lock() else {
+            continue;
+        };
+        let busy = scheduler.idle.is_some();
+        let movable = scheduler
+            .ready
+            .front()
+            .is_some_and(|thread| thread.id != ThreadId::BOOT && thread.may_run_on(here));
+        if busy && movable {
+            let mut thread = scheduler.ready.pop_front().expect("a thread is ready");
+            drop(scheduler);
+            thread.move_to(here);
+            return Some(thread);
+        }
+    }
+    None
+}
+
+/// The idle CPU to send the wake-up interrupt to when `here`'s slice ends with threads ready
+/// (D44), so that it takes one ([`steal`]): the lowest-numbered idle CPU not yet sent one since
+/// it last looked, marked as sent. O(CPUs), once per slice that ends; called holding `here`'s
+/// lock, so the others are only tried.
+fn idle_cpu_to_wake(here: &'static Cpu) -> Option<&'static Cpu> {
+    idle_cpu_to_wake_among(cpu::CPUS.all(), here)
+}
+
+/// [`idle_cpu_to_wake`] among `cpus`.
+fn idle_cpu_to_wake_among(cpus: &[&'static Cpu], here: &'static Cpu) -> Option<&'static Cpu> {
+    for &cpu in cpus {
+        if ptr::eq(cpu, here) {
+            continue;
+        }
+        let Some(mut scheduler) = cpu.scheduler.try_lock() else {
+            continue;
+        };
+        if scheduler.is_idle() && !scheduler.wakeup_sent {
+            scheduler.wakeup_sent = true;
+            return Some(cpu);
+        }
+    }
+    None
+}
+
+/// Sets the time slice to `slice_ticks` (0 for none) on every CPU, taking each CPU's lock in
+/// turn: call it holding none. Turning preemption on asks every other CPU to look, so those
+/// with ready threads arm their ticks.
+fn set_slice_ticks(here: &'static Cpu, slice_ticks: u64) {
+    SLICE_TICKS.store(slice_ticks, Ordering::Relaxed);
+    for &cpu in cpu::CPUS.all() {
+        cpu.scheduler.lock().slice_ticks = slice_ticks;
+        if slice_ticks != 0 && !ptr::eq(cpu, here) {
+            cpu.request_reschedule();
+        }
+    }
+    here.scheduler.lock().slice_ticks = slice_ticks;
+}
+
+/// Makes `thread`, woken or new, ready on its CPU, taking that CPU's lock: call it holding no
+/// CPU's lock (the scheduler's may be held). Returns that CPU if it needs the wake-up
+/// interrupt.
 #[inline]
-fn make_ready<P: Platform>(schedulers: &mut Schedulers, thread: ThreadBox) -> Option<&'static Cpu> {
+fn make_ready<P: Platform>(thread: ThreadBox) -> Option<&'static Cpu> {
     let target = thread.get().cpu;
-    match schedulers.of(target).push_ready(thread) {
+    let mut scheduler = target.scheduler.lock();
+    match scheduler.push_ready(thread) {
         Notice::Nothing => None,
-        Notice::Reschedule => schedulers.of(target).request_reschedule::<P>(target),
+        Notice::Reschedule => scheduler.request_reschedule::<P>(target),
         Notice::Wake => (!ptr::eq(target, cpu::current::<P>())).then_some(target),
     }
 }
@@ -987,8 +1077,11 @@ struct Scheduler {
     /// A thread that has exited, until the next thread to run frees it (no thread can free the
     /// stack it is running on).
     exited: Option<ThreadBox>,
+    /// A thread that left this CPU for another its CPU set allows, until the next thread to
+    /// run here makes it ready there, holding no CPU's lock (D593).
+    migrating: Option<ThreadBox>,
     /// The time slice in clock ticks while preemption is on ([`enable_preemption`]); 0 while
-    /// it is off. A copy of [`Schedulers::slice_ticks`].
+    /// it is off. A copy of [`SLICE_TICKS`].
     slice_ticks: u64,
     /// While preemption is on: the clock tick at which the running thread's slice ends.
     slice_end: u64,
@@ -1109,6 +1202,7 @@ impl Scheduler {
             sleeping: ThreadList::new(),
             idle: None,
             exited: None,
+            migrating: None,
             slice_ticks: 0,
             slice_end: 0,
             armed: u64::MAX,
@@ -1137,6 +1231,7 @@ impl Scheduler {
             None,
         ));
         self.current = Some(boot);
+        here.scheduler.started.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -1285,21 +1380,21 @@ impl Scheduler {
 /// when neither happened. The slow path finds its CPU itself, so no caller keeps one in a
 /// register across the call.
 #[inline]
-fn timer_events<P: Platform>(schedulers: &mut Schedulers) -> bool {
+fn timer_events<P: Platform>(local: &mut Scheduler) -> bool {
     if cpu::local_unseen_by_scheduler::<P>() == 0 {
         return false;
     }
-    timer_fired::<P>(schedulers)
+    timer_fired::<P>(local)
 }
 
 /// [`timer_events`]' slow path. A slice that ends with threads ready wakes an idle CPU, if
 /// there is one, to take one of them (D44).
 #[cold]
 #[inline(never)]
-fn timer_fired<P: Platform>(schedulers: &mut Schedulers) -> bool {
-    let slice_over = schedulers.of(cpu::current::<P>()).timer_fired::<P>();
+fn timer_fired<P: Platform>(local: &mut Scheduler) -> bool {
+    let slice_over = local.timer_fired::<P>();
     if slice_over {
-        wake_idle_cpu::<P>(schedulers);
+        wake_idle_cpu::<P>();
     }
     slice_over
 }
@@ -1308,23 +1403,22 @@ fn timer_fired<P: Platform>(schedulers: &mut Schedulers) -> bool {
 /// scheduler's lock held, so that it takes a ready thread once the lock is released.
 #[cold]
 #[inline(never)]
-fn wake_idle_cpu<P: Platform>(schedulers: &mut Schedulers) {
-    if let Some(cpu) = schedulers.idle_cpu_to_wake(cpu::current::<P>()) {
+fn wake_idle_cpu<P: Platform>() {
+    if let Some(cpu) = idle_cpu_to_wake(cpu::current::<P>()) {
         cpu::wake::<P>(cpu);
     }
 }
 
 /// Starts the scheduler on this CPU if it has not started ([`Scheduler::start`]), finding the
 /// CPU itself, as [`timer_fired`] does.
-fn start_here<P: Platform>(schedulers: &mut Schedulers) -> Result<(), SpawnError> {
-    let here = cpu::current::<P>();
-    schedulers.of(here).start::<P>(here)
+fn start_here<P: Platform>(local: &mut Scheduler, here: &'static Cpu) -> Result<(), SpawnError> {
+    local.start::<P>(here)
 }
 
 /// [`start_here`] for the blocking calls, which cannot fail: without the memory for the idle
 /// thread's stack, nothing more can run anyway.
-fn start_here_or_panic<P: Platform>(schedulers: &mut Schedulers) {
-    if start_here::<P>(schedulers).is_err() {
+fn start_here_or_panic<P: Platform>(local: &mut Scheduler, here: &'static Cpu) {
+    if start_here::<P>(local, here).is_err() {
         panic!("no memory for the idle thread's stack");
     }
 }
@@ -1350,9 +1444,9 @@ impl JoinHandle {
     /// as [`yield_now`] is called: with interrupts masked and no lock held.
     pub fn join<P: Platform>(self) {
         debug_assert!(
-            SCHEDULER
+            cpu::current::<P>()
+                .scheduler
                 .lock()
-                .of(cpu::current::<P>())
                 .current
                 .as_ref()
                 .is_none_or(|thread| thread.get().id != self.id),
@@ -1366,7 +1460,8 @@ impl JoinHandle {
 /// and the idle thread gets its stack. [`spawn`] does this the first time; call it first to
 /// count a thread's frames alone.
 pub fn start<P: Platform>() -> Result<(), SpawnError> {
-    start_here::<P>(&mut SCHEDULER.lock())
+    let here = cpu::current::<P>();
+    start_here::<P>(&mut here.scheduler.lock(), here)
 }
 
 /// Starts this secondary CPU's scheduler (D43): the code running now, on the stack the CPU
@@ -1374,15 +1469,14 @@ pub fn start<P: Platform>() -> Result<(), SpawnError> {
 /// [`run_idle`]. Its idle thread has no stack canary: the start stack has none.
 pub(crate) fn start_secondary<P: Platform>() {
     let here = cpu::current::<P>();
-    let mut schedulers = SCHEDULER.lock();
-    let slice_ticks = schedulers.slice_ticks;
-    let scheduler = schedulers.of(here);
+    let mut scheduler = here.scheduler.lock();
     debug_assert!(
         !scheduler.has_started(),
         "a CPU started its scheduler twice"
     );
-    scheduler.slice_ticks = slice_ticks;
+    scheduler.slice_ticks = SLICE_TICKS.load(Ordering::Relaxed);
     scheduler.current = Some(Thread::boxed(ThreadId::next(), 0, None, here, false, None));
+    here.scheduler.started.store(true, Ordering::Release);
 }
 
 /// Runs this CPU's idle thread, which [`start_secondary`] made of the code running now.
@@ -1419,24 +1513,24 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
     // SAFETY: the stack's frames are allocated, writable through the direct map and used by
     // nothing else; they stay allocated until the thread has exited (`finish_switch`).
     let context = unsafe { P::prepare_thread(stack.top(), thread_start::<P>, start as usize) };
-    let mut schedulers = SCHEDULER.lock();
-    if let Err(error) = start_here::<P>(&mut schedulers) {
-        drop(schedulers);
+    let here = cpu::current::<P>();
+    let mut local = here.scheduler.lock();
+    if let Err(error) = start_here::<P>(&mut local, here) {
+        drop(local);
         // SAFETY: from `Box::into_raw` above; the thread that would have owned it never
         // existed. (The stack is freed on return.)
         drop(unsafe { Box::from_raw(start) });
         return Err(error);
     }
-    let here = cpu::current::<P>();
-    let inherited = schedulers
-        .of(here)
+    let inherited = local
         .current
         .as_ref()
         .map_or(u64::MAX, |spawning| spawning.get().allowed.get());
-    let placed = schedulers.place(here);
+    drop(local);
+    let placed = place(here);
     let cpu = match inherited {
         u64::MAX => placed,
-        _ => schedulers.first_allowed(inherited).unwrap_or(placed),
+        _ => first_allowed(inherited).unwrap_or(placed),
     };
     let thread = Thread::boxed(ThreadId::next(), context, Some(stack), cpu, user, account);
     thread.get().allowed.set(inherited);
@@ -1444,9 +1538,7 @@ fn spawn_thread<P: Platform, F: FnOnce() + Send + 'static>(
         id: thread.get().id,
         joined: thread.get().joined.clone(),
     };
-    let wake = make_ready::<P>(&mut schedulers, thread);
-    drop(schedulers);
-    if let Some(cpu) = wake {
+    if let Some(cpu) = make_ready::<P>(thread) {
         cpu::wake::<P>(cpu);
     }
     Ok(handle)
@@ -1497,8 +1589,8 @@ fn start_fp_with<P: Platform>(state: NonNull<FpState>) -> FpStart {
         cpu: Cell::new(ptr::null()),
     };
     let here = cpu::current::<P>();
-    let mut schedulers = SCHEDULER.lock();
-    let scheduler = schedulers.of(here);
+    let mut local = here.scheduler.lock();
+    let scheduler = &mut *local;
     let running = scheduler
         .current
         .as_ref()
@@ -1512,7 +1604,7 @@ fn start_fp_with<P: Platform>(state: NonNull<FpState>) -> FpStart {
         None
     };
     if let Some(refused) = refused {
-        drop(schedulers);
+        drop(local);
         drop(registers);
         return refused;
     }
@@ -1529,8 +1621,8 @@ fn start_fp_with<P: Platform>(state: NonNull<FpState>) -> FpStart {
 #[inline(never)]
 pub(crate) fn with_running_fp<P: Platform, R>(f: impl FnOnce(&mut FpState) -> R) -> Option<R> {
     let here = cpu::current::<P>();
-    let mut schedulers = SCHEDULER.lock();
-    let scheduler = schedulers.of(here);
+    let mut local = here.scheduler.lock();
+    let scheduler = &mut *local;
     if !scheduler.fp.running_has_fp {
         return None;
     }
@@ -1552,10 +1644,9 @@ pub(crate) fn with_running_fp<P: Platform, R>(f: impl FnOnce(&mut FpState) -> R)
 
 /// The CPUs the running thread may run on, a bit per CPU index (D198).
 pub fn running_affinity<P: Platform>() -> u64 {
-    let mut schedulers = SCHEDULER.lock();
-    let here = cpu::current::<P>();
-    schedulers
-        .of(here)
+    cpu::current::<P>()
+        .scheduler
+        .lock()
         .current
         .as_ref()
         .map_or(u64::MAX, |thread| thread.get().allowed.get())
@@ -1565,12 +1656,12 @@ pub fn running_affinity<P: Platform>() -> u64 {
 /// moves it to the first of them that runs threads when it is not on one; its later threads
 /// inherit the set. `false`, changing nothing, when none of them runs threads.
 pub fn set_running_affinity<P: Platform>(allowed: u64) -> bool {
-    let mut schedulers = SCHEDULER.lock();
     let here = cpu::current::<P>();
-    let Some(target) = schedulers.first_allowed(allowed) else {
+    let Some(target) = first_allowed(allowed) else {
         return cpu::CPUS.all().is_empty() && allowed & 1 != 0;
     };
-    let scheduler = schedulers.of(here);
+    let mut local = here.scheduler.lock();
+    let scheduler = &mut *local;
     let Some(running) = scheduler.current.as_ref() else {
         return false;
     };
@@ -1588,11 +1679,13 @@ pub fn set_running_affinity<P: Platform>(allowed: u64) -> bool {
             .take()
             .expect("a thread runs, so the idle thread does not"),
     };
-    switch_to::<P>(schedulers, here, next, |schedulers, _, mut previous| {
+    switch_to::<P>(local, here, next, move |scheduler, _, mut previous| {
         previous.move_to(target);
-        if let Some(cpu) = make_ready::<P>(schedulers, previous) {
-            cpu::wake::<P>(cpu);
-        }
+        debug_assert!(
+            scheduler.migrating.is_none(),
+            "every switch places the migrating thread"
+        );
+        scheduler.migrating = Some(previous);
     });
     true
 }
@@ -1600,10 +1693,10 @@ pub fn set_running_affinity<P: Platform>(allowed: u64) -> bool {
 /// The clock ticks the running thread has run, this turn included (D198), when it runs a program:
 /// a kernel thread's time is not counted (D216).
 pub fn running_thread_ticks<P: Platform>() -> u64 {
-    let mut schedulers = SCHEDULER.lock();
     let here = cpu::current::<P>();
+    let local = here.scheduler.lock();
     let now = P::clock_ticks();
-    schedulers.of(here).current.as_ref().map_or(0, |thread| {
+    local.current.as_ref().map_or(0, |thread| {
         let thread = thread.get();
         thread
             .ran
@@ -1616,11 +1709,10 @@ pub fn running_thread_ticks<P: Platform>() -> u64 {
 /// going to the account it had: for a process whose memory `execve` replaced (D198).
 pub fn set_running_account<P: Platform>(account: Arc<AtomicU64>) {
     let previous = {
-        let mut schedulers = SCHEDULER.lock();
         let here = cpu::current::<P>();
+        let local = here.scheduler.lock();
         let now = P::clock_ticks();
-        schedulers
-            .of(here)
+        local
             .current
             .as_ref()
             .and_then(|thread| thread.get().move_account(now, account))
@@ -1632,9 +1724,9 @@ pub fn set_running_account<P: Platform>(account: Arc<AtomicU64>) {
 /// its ticks from now on, and its CPU set.
 pub fn set_running_shared<P: Platform>(shared: Arc<ThreadShared>) {
     let previous = {
-        let mut schedulers = SCHEDULER.lock();
         let here = cpu::current::<P>();
-        schedulers.of(here).current.as_ref().and_then(|thread| {
+        let local = here.scheduler.lock();
+        local.current.as_ref().and_then(|thread| {
             let thread = thread.get();
             shared.affinity.store(thread.allowed.get(), Ordering::Relaxed);
             thread.shared.0.replace(Some(shared))
@@ -1645,9 +1737,9 @@ pub fn set_running_shared<P: Platform>(shared: Arc<ThreadShared>) {
 
 /// The clock ticks the running thread has run sampled as user time, this turn included (D592).
 pub fn running_thread_user_ticks<P: Platform>() -> u64 {
-    let mut schedulers = SCHEDULER.lock();
     let here = cpu::current::<P>();
-    schedulers.of(here).current.as_ref().map_or(0, |thread| {
+    let local = here.scheduler.lock();
+    local.current.as_ref().map_or(0, |thread| {
         thread
             .get()
             .user_ran
@@ -1658,11 +1750,10 @@ pub fn running_thread_user_ticks<P: Platform>() -> u64 {
 
 /// The ticks the running thread has run this turn, not yet added to its process's account.
 pub fn running_turn_ticks<P: Platform>() -> u64 {
-    let mut schedulers = SCHEDULER.lock();
     let here = cpu::current::<P>();
+    let local = here.scheduler.lock();
     let now = P::clock_ticks();
-    schedulers
-        .of(here)
+    local
         .current
         .as_ref()
         .map_or(0, |thread| now.wrapping_sub(thread.get().since.get()))
@@ -1671,14 +1762,14 @@ pub fn running_turn_ticks<P: Platform>() -> u64 {
 /// Lets the next ready thread run, if there is one; returns when this thread's turn comes
 /// again.
 pub fn yield_now<P: Platform>() {
-    let mut schedulers = SCHEDULER.lock();
-    timer_events::<P>(&mut schedulers);
     let here = cpu::current::<P>();
-    let Some(next) = schedulers.of(here).ready.pop_front() else {
+    let mut local = here.scheduler.lock();
+    timer_events::<P>(&mut local);
+    let Some(next) = local.ready.pop_front() else {
         return;
     };
-    switch_to::<P>(schedulers, here, next, |schedulers, here, previous| {
-        schedulers.of(here).ready.push_back(previous);
+    switch_to::<P>(local, here, next, |scheduler, _, previous| {
+        scheduler.ready.push_back(previous);
     });
 }
 
@@ -1689,13 +1780,13 @@ pub fn yield_now<P: Platform>() {
 /// called: with interrupts masked and no lock held. Starts the scheduler if it has not started
 /// (see [`WaitQueue::wait_until`]).
 pub fn sleep_until<P: Platform>(deadline: u64) {
-    let mut schedulers = SCHEDULER.lock();
+    let here = cpu::current::<P>();
+    let mut local = here.scheduler.lock();
     if P::clock_ticks() >= deadline {
         return;
     }
-    start_here_or_panic::<P>(&mut schedulers);
-    block::<P>(schedulers, |schedulers, here, thread| {
-        let scheduler = schedulers.of(here);
+    start_here_or_panic::<P>(&mut local, here);
+    block::<P>(local, here, move |scheduler, _, thread| {
         scheduler.sleeping.insert_by_wake_at(thread, deadline);
         scheduler.update_timer::<P>();
     });
@@ -1716,9 +1807,8 @@ pub fn sleep<P: Platform>(duration: Duration) {
 /// preemption point, yield or block.
 pub fn enable_preemption<P: Platform>() {
     let here = cpu::current::<P>();
-    let mut schedulers = SCHEDULER.lock();
-    schedulers.set_slice_ticks(here, (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1));
-    schedulers.of(here).start_slice_now::<P>();
+    set_slice_ticks(here, (P::clock_frequency() * TIME_SLICE_MS / 1000).max(1));
+    here.scheduler.lock().start_slice_now::<P>();
 }
 
 /// Turns preemption off, on every CPU; threads run until they yield or block. Call it with
@@ -1727,12 +1817,11 @@ pub fn enable_preemption<P: Platform>() {
 /// which ends no slice.
 pub fn disable_preemption<P: Platform>() {
     let here = cpu::current::<P>();
-    let mut schedulers = SCHEDULER.lock();
-    schedulers.set_slice_ticks(here, 0);
-    let scheduler = schedulers.of(here);
-    let deadline = scheduler.timer_needed();
+    set_slice_ticks(here, 0);
+    let mut local = here.scheduler.lock();
+    let deadline = local.timer_needed();
     P::set_timer_deadline(deadline);
-    scheduler.armed = deadline;
+    local.armed = deadline;
 }
 
 /// Where the running thread lets the next one run if its time slice is over (D37), and where
@@ -1776,29 +1865,27 @@ pub fn preemption_point_before_user_mode<P: Platform>() -> bool {
 #[cold]
 #[inline(never)]
 fn preemption_point_timer_fired<P: Platform>() {
-    let mut schedulers = SCHEDULER.lock();
-    let requested = schedulers
-        .of(cpu::current::<P>())
+    let here = cpu::current::<P>();
+    let mut local = here.scheduler.lock();
+    let requested = local
         .current
         .as_ref()
         .and_then(|thread| thread.get().shared())
         .map_or(0, |shared| shared.requested_affinity.swap(0, Ordering::Acquire));
     if requested != 0 {
-        drop(schedulers);
+        drop(local);
         set_running_affinity::<P>(requested);
-        schedulers = SCHEDULER.lock();
+        local = here.scheduler.lock();
     }
-    if !timer_events::<P>(&mut schedulers) {
+    if !timer_events::<P>(&mut local) {
         return;
     }
-    let here = cpu::current::<P>();
-    let next = schedulers
-        .of(here)
+    let next = local
         .ready
         .pop_front()
         .expect("a slice ends only while another thread is ready");
-    switch_to::<P>(schedulers, here, next, |schedulers, here, previous| {
-        schedulers.of(here).ready.push_back(previous);
+    switch_to::<P>(local, here, next, |scheduler, _, previous| {
+        scheduler.ready.push_back(previous);
     });
 }
 
@@ -1806,20 +1893,19 @@ fn preemption_point_timer_fired<P: Platform>() {
 /// waits (a wait queue, the sleepers). The next ready thread on this CPU runs, or its idle
 /// thread if none is. The scheduler must have started on this CPU.
 fn block<P: Platform>(
-    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
-    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
+    mut local: Local<'static>,
+    here: &'static Cpu,
+    park: impl FnOnce(&mut Scheduler, &'static Cpu, ThreadBox),
 ) {
-    timer_events::<P>(&mut schedulers);
-    let here = cpu::current::<P>();
-    let scheduler = schedulers.of(here);
-    let next = match scheduler.ready.pop_front() {
+    timer_events::<P>(&mut local);
+    let next = match local.ready.pop_front() {
         Some(next) => next,
-        None => scheduler
+        None => local
             .idle
             .take()
             .expect("the scheduler started, so the idle thread is not running"),
     };
-    switch_to::<P>(schedulers, here, next, park);
+    switch_to::<P>(local, here, next, park);
 }
 
 /// Switches from the running thread on `here`, this CPU, to `next`, after `park` has put the
@@ -1827,36 +1913,36 @@ fn block<P: Platform>(
 /// or the idle slot for the idle thread), given `here` too. Returns when the running thread is
 /// resumed.
 fn switch_to<P: Platform>(
-    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
+    local: Local<'static>,
     here: &'static Cpu,
     next: ThreadBox,
-    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
+    park: impl FnOnce(&mut Scheduler, &'static Cpu, ThreadBox),
 ) {
-    let fp = &schedulers.of(here).fp;
+    let fp = &local.fp;
     let next_thread = next.get();
     if fp.running_has_fp || next_thread.user && (fp.user_on || next_thread.fp.get().is_some()) {
-        return switch_to_with_fp::<P>(schedulers, here, next, park);
+        return switch_to_with_fp::<P>(local, here, next, park);
     }
-    switch_now::<P>(schedulers, here, next, park);
+    switch_now::<P>(local, here, next, park);
 }
 
 /// [`switch_to`] when the running thread or `next` has FP/SIMD registers or runs a program:
 /// [`CpuFp::switch`] first.
 #[inline(never)]
 fn switch_to_with_fp<P: Platform>(
-    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
+    mut local: Local<'static>,
     here: &'static Cpu,
     next: ThreadBox,
-    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
+    park: impl FnOnce(&mut Scheduler, &'static Cpu, ThreadBox),
 ) {
-    let scheduler = schedulers.of(here);
+    let scheduler = &mut *local;
     let running = scheduler
         .current
         .as_ref()
         .expect("a thread is ready, so one runs")
         .get();
     scheduler.fp.switch::<P>(running, next.get(), here);
-    switch_now::<P>(schedulers, here, next, park);
+    switch_now::<P>(local, here, next, park);
 }
 
 #[inline(always)]
@@ -1871,32 +1957,32 @@ fn start_turn(previous_user: bool, next: &Thread, clock: impl FnOnce() -> u64) -
 /// The switch itself: see [`switch_to`].
 #[inline(always)]
 fn switch_now<P: Platform>(
-    mut schedulers: LeafSpinLockGuard<'_, Schedulers>,
+    mut local: Local<'static>,
     here: &'static Cpu,
     next: ThreadBox,
-    park: impl FnOnce(&mut Schedulers, &'static Cpu, ThreadBox),
+    park: impl FnOnce(&mut Scheduler, &'static Cpu, ThreadBox),
 ) {
     let resume = next.get().context;
-    let previous_user = schedulers
-        .of(here)
+    let previous_user = local
         .current
         .as_ref()
         .is_some_and(|previous| previous.get().user);
     let now = start_turn(previous_user, next.get(), P::clock_ticks);
-    let previous = schedulers.of(here).replace_current(next);
+    let previous = local.replace_current(next);
     if let Some(now) = now {
         previous.get().charge(now);
         previous.get().add_user_ticks(here.restart_turn(now));
     }
     let save = previous.context();
-    park(&mut schedulers, here, previous);
-    SpinLockGuard::leak(schedulers);
+    park(&mut local, here, previous);
+    Local::leak(local);
     // SAFETY: interrupts are masked, as the kernel runs. `save` points into the previous
-    // thread, which `park` keeps allocated (in a list or a slot of the scheduler) and which is
-    // not resumed before this switch has saved it: that takes the scheduler's lock, which stays
-    // held until then. `resume` was saved by the switch away from `next` (or prepared by
-    // `spawn` or `start`) and not resumed since: a thread is in a list or slot only while it
-    // is not running.
+    // thread, which `park` keeps allocated (in a list or a slot of this CPU's scheduler, or a
+    // wait structure behind the scheduler's lock) and which is not resumed before this switch
+    // has saved it: resuming it takes this CPU's lock, held until then (a thread woken from a
+    // wait is made ready on this CPU, its own, under that lock). `resume` was saved by the
+    // switch away from `next` (or prepared by `spawn` or `start`) and not resumed since: a
+    // thread is in a list or slot only while it is not running.
     unsafe { P::switch_thread(save, resume) };
     finish_switch::<P>();
 }
@@ -1904,17 +1990,15 @@ fn switch_now<P: Platform>(
 /// Ends the running thread: switches to the next one, which frees this one's stack.
 fn exit<P: Platform>() -> ! {
     let here = cpu::current::<P>();
-    let mut schedulers = SCHEDULER.lock();
-    let scheduler = schedulers.of(here);
-    let next = match scheduler.ready.pop_front() {
+    let mut local = here.scheduler.lock();
+    let next = match local.ready.pop_front() {
         Some(next) => next,
-        None => scheduler
+        None => local
             .idle
             .take()
             .expect("a spawned thread runs, so the idle thread does not"),
     };
-    switch_to::<P>(schedulers, here, next, |schedulers, here, previous| {
-        let scheduler = schedulers.of(here);
+    switch_to::<P>(local, here, next, |scheduler, _, previous| {
         debug_assert!(
             scheduler.exited.is_none(),
             "every switch frees the exited thread"
@@ -1929,30 +2013,38 @@ fn exit<P: Platform>() -> ! {
 /// is no longer in use, and the lock is not held while it is freed) and wakes its joiners.
 #[inline]
 fn finish_switch<P: Platform>() {
-    // SAFETY: every switch is made holding the scheduler's lock and leaves it held for the
-    // thread it resumes, which is this one, once.
-    let mut schedulers = unsafe { SCHEDULER.assume_locked() };
-    let none_exited = if EXITED_SLOT_IS_ONE_WORD {
+    let here = cpu::current::<P>();
+    // SAFETY: every switch is made holding the lock of the CPU it runs on and leaves it held
+    // for the thread it resumes, which is this one, on this CPU, once.
+    let mut local = unsafe { here.scheduler.assume_locked() };
+    let nothing_left = if EXITED_SLOT_IS_ONE_WORD {
         // SAFETY: the per-CPU register holds this CPU's block, where `EXITED_SLOT` is the
         // offset of its scheduler's `exited` slot: an aligned word in the state's `UnsafeCell`,
-        // which nothing writes meanwhile, since this thread holds the scheduler's lock.
-        unsafe { P::cpu_local_u64::<EXITED_SLOT>() == 0 }
+        // which nothing writes meanwhile, since this thread holds this CPU's lock.
+        unsafe { P::cpu_local_u64::<EXITED_SLOT>() == 0 } && local.migrating.is_none()
     } else {
-        schedulers.of(cpu::current::<P>()).exited.is_none()
+        local.exited.is_none() && local.migrating.is_none()
     };
-    if none_exited {
+    if nothing_left {
         return;
     }
-    let exited = schedulers.of(cpu::current::<P>()).exited.take();
-    drop(schedulers);
+    let exited = local.exited.take();
+    let migrating = local.migrating.take();
+    drop(local);
     if let Some(exited) = exited {
         free_exited::<P>(exited);
+    }
+    if let Some(migrating) = migrating
+        && let Some(cpu) = make_ready::<P>(migrating)
+    {
+        cpu::wake::<P>(cpu);
     }
 }
 
 /// Where a CPU's [`Scheduler::exited`] slot is in its per-CPU block.
-const EXITED_SLOT: usize =
-    core::mem::offset_of!(Cpu, scheduler) + core::mem::offset_of!(Scheduler, exited);
+const EXITED_SLOT: usize = core::mem::offset_of!(Cpu, scheduler)
+    + core::mem::offset_of!(CpuScheduler, state)
+    + core::mem::offset_of!(Scheduler, exited);
 /// Whether the slot is one 8-byte word, nullable: on 64-bit architectures.
 const EXITED_SLOT_IS_ONE_WORD: bool =
     size_of::<Option<ThreadBox>>() == 8 && EXITED_SLOT.is_multiple_of(8);
@@ -1992,27 +2084,30 @@ fn idle_loop<P: Platform>() -> ! {
     let here = cpu::current::<P>();
     loop {
         crate::address_space::release_unused::<P>(here);
-        let mut schedulers = SCHEDULER.lock();
-        schedulers.of(here).wakeup_sent = false;
-        timer_events::<P>(&mut schedulers);
-        let next = match schedulers.of(here).ready.pop_front() {
-            Some(next) => Some(next),
-            None => schedulers.steal(here),
-        };
+        let mut local = here.scheduler.lock();
+        local.wakeup_sent = false;
+        timer_events::<P>(&mut local);
+        let mut next = local.ready.pop_front();
+        if next.is_none() {
+            drop(local);
+            next = steal(here);
+            local = here.scheduler.lock();
+            if next.is_none() {
+                next = local.ready.pop_front();
+            }
+        }
         if let Some(next) = next {
-            switch_to::<P>(schedulers, here, next, |schedulers, here, idle| {
-                let scheduler = schedulers.of(here);
+            switch_to::<P>(local, here, next, |scheduler, _, idle| {
                 scheduler.idle = Some(idle);
                 scheduler.start_slice::<P>();
             });
             continue;
         }
-        let scheduler = schedulers.of(here);
-        let deadline = scheduler.timer_needed();
-        if deadline != scheduler.armed {
-            scheduler.arm::<P>(deadline);
+        let deadline = local.timer_needed();
+        if deadline != local.armed {
+            local.arm::<P>(deadline);
         }
-        drop(schedulers);
+        drop(local);
         P::wait_for_interrupt();
         #[cfg(feature = "qemu-bench")]
         crate::bench::IDLE_WAKEUPS.fetch_add(1, Ordering::Relaxed);
@@ -2188,7 +2283,7 @@ mod tests {
         assert!(!handle.is_finished());
         handle.join::<P>();
         assert_eq!(free_frames(), before);
-        assert!(SCHEDULER.lock().of(cpu::current::<P>()).exited.is_none());
+        assert!(cpu::current::<P>().scheduler.lock().exited.is_none());
     }
 
     #[test]
@@ -2267,7 +2362,7 @@ mod tests {
             handle.join::<P>();
         }
         assert_eq!(*WOKEN.lock(), [(1, true), (2, true), (3, true)]);
-        assert!(SCHEDULER.lock().of(cpu::current::<P>()).sleeping.is_empty());
+        assert!(cpu::current::<P>().scheduler.lock().sleeping.is_empty());
     }
 
     #[test]
@@ -2480,23 +2575,20 @@ mod tests {
     #[test]
     fn make_ready_on_another_cpu_hands_back_an_idle_one_and_flags_a_busy_one() {
         let (idle, busy) = (Cpu::for_test(1), Cpu::for_test(2));
-        let mut schedulers = Schedulers {
-            slice_ticks: 10,
-            next_placement: 0,
-        };
-        schedulers.of(idle).current = Some(idle_thread_for_test(idle));
-        let busy_state = schedulers.of(busy);
+        idle.scheduler.lock().current = Some(idle_thread_for_test(idle));
+        let mut busy_state = busy.scheduler.lock();
         busy_state.current = Some(idle_thread_for_test(busy));
         busy_state.idle = Some(idle_thread_for_test(busy));
         busy_state.slice_ticks = 10;
-        let woken = make_ready::<P>(&mut schedulers, idle_thread_for_test(idle));
+        drop(busy_state);
+        let woken = make_ready::<P>(idle_thread_for_test(idle));
         assert!(woken.is_some_and(|cpu| ptr::eq(cpu, idle)));
         assert!(!idle.reschedule_requested());
-        assert!(make_ready::<P>(&mut schedulers, idle_thread_for_test(busy)).is_none());
+        assert!(make_ready::<P>(idle_thread_for_test(busy)).is_none());
         assert!(busy.reschedule_requested());
         assert_eq!(busy.see_scheduler_events(), 0);
-        empty(schedulers.of(idle));
-        empty(schedulers.of(busy));
+        empty(&mut idle.scheduler.lock());
+        empty(&mut busy.scheduler.lock());
     }
 
     #[test]
@@ -2504,26 +2596,24 @@ mod tests {
         let cpus: Vec<&'static Cpu> = (0..4).map(Cpu::for_test).collect();
         let cpus: &'static [&'static Cpu] = cpus.leak();
         let here = cpus[0];
-        let mut schedulers = Schedulers {
-            slice_ticks: 0,
-            next_placement: 0,
-        };
-        assert!(ptr::eq(schedulers.place_among(cpus, here), here));
-        assert!(ptr::eq(schedulers.place_among(&cpus[..1], here), here));
+        let next_placement = AtomicUsize::new(0);
+        assert!(ptr::eq(place_among(cpus, here, &next_placement), here));
+        assert!(ptr::eq(place_among(&cpus[..1], here, &next_placement), here));
         for &cpu in [cpus[0], cpus[1], cpus[3]].iter() {
-            let state = schedulers.of(cpu);
+            let mut state = cpu.scheduler.lock();
             state.current = Some(idle_thread_for_test(cpu));
             state.idle = Some(idle_thread_for_test(cpu));
+            cpu.scheduler.started.store(true, Ordering::Release);
         }
         let placed: Vec<usize> = (0..4)
-            .map(|_| schedulers.place_among(cpus, here).index())
+            .map(|_| place_among(cpus, here, &next_placement).index())
             .collect();
         assert_eq!(placed, [0, 1, 3, 0]);
-        let idle = schedulers.of(cpus[3]).idle.take();
-        assert_eq!(schedulers.place_among(cpus, here).index(), 3);
-        schedulers.of(cpus[3]).idle = idle;
+        let idle = cpus[3].scheduler.lock().idle.take();
+        assert_eq!(place_among(cpus, here, &next_placement).index(), 3);
+        cpus[3].scheduler.lock().idle = idle;
         for &cpu in cpus {
-            empty(schedulers.of(cpu));
+            empty(&mut cpu.scheduler.lock());
         }
     }
 
@@ -2531,36 +2621,31 @@ mod tests {
     fn an_idle_cpu_takes_a_ready_thread_from_the_next_busy_cpu_but_never_the_boot_thread() {
         let cpus: Vec<&'static Cpu> = (0..4).map(Cpu::for_test).collect();
         let cpus: &'static [&'static Cpu] = cpus.leak();
-        let mut schedulers = Schedulers {
-            slice_ticks: 0,
-            next_placement: 0,
-        };
-        schedulers.of(cpus[1]).current = Some(idle_thread_for_test(cpus[1]));
-        assert!(schedulers.steal_among(cpus, cpus[1]).is_none());
-        let woken = schedulers.of(cpus[2]);
+        cpus[1].scheduler.lock().current = Some(idle_thread_for_test(cpus[1]));
+        assert!(steal_among(cpus, cpus[1]).is_none());
+        let mut woken = cpus[2].scheduler.lock();
         woken.current = Some(idle_thread_for_test(cpus[2]));
         woken.ready.push_back(idle_thread_for_test(cpus[2]));
+        drop(woken);
         for &cpu in [cpus[3], cpus[0]].iter() {
-            let busy = schedulers.of(cpu);
+            let mut busy = cpu.scheduler.lock();
             busy.current = Some(idle_thread_for_test(cpu));
             busy.idle = Some(idle_thread_for_test(cpu));
         }
         let boot = Thread::boxed(ThreadId::BOOT, 0, None, cpus[3], false, None);
-        schedulers.of(cpus[3]).ready.push_back(boot);
+        cpus[3].scheduler.lock().ready.push_back(boot);
         let waiting = idle_thread_for_test(cpus[0]);
         let id = waiting.get().id;
-        schedulers.of(cpus[0]).ready.push_back(waiting);
-        let taken = schedulers
-            .steal_among(cpus, cpus[1])
-            .expect("CPU 0 has one ready");
+        cpus[0].scheduler.lock().ready.push_back(waiting);
+        let taken = steal_among(cpus, cpus[1]).expect("CPU 0 has one ready");
         assert_eq!(taken.get().id, id);
         assert!(ptr::eq(taken.get().cpu, cpus[1]));
-        assert!(schedulers.of(cpus[0]).ready.is_empty());
-        assert!(schedulers.steal_among(cpus, cpus[1]).is_none());
-        assert!(schedulers.steal_among(cpus, cpus[3]).is_none());
+        assert!(cpus[0].scheduler.lock().ready.is_empty());
+        assert!(steal_among(cpus, cpus[1]).is_none());
+        assert!(steal_among(cpus, cpus[3]).is_none());
         drop(taken);
         for &cpu in cpus {
-            empty(schedulers.of(cpu));
+            empty(&mut cpu.scheduler.lock());
         }
     }
 
@@ -2568,24 +2653,20 @@ mod tests {
     fn a_slice_that_ends_with_threads_ready_wakes_one_idle_cpu_per_look() {
         let cpus: Vec<&'static Cpu> = (0..4).map(Cpu::for_test).collect();
         let cpus: &'static [&'static Cpu] = cpus.leak();
-        let mut schedulers = Schedulers {
-            slice_ticks: 10,
-            next_placement: 0,
-        };
         for &cpu in [cpus[0], cpus[1]].iter() {
-            let busy = schedulers.of(cpu);
+            let mut busy = cpu.scheduler.lock();
             busy.current = Some(idle_thread_for_test(cpu));
             busy.idle = Some(idle_thread_for_test(cpu));
         }
-        schedulers.of(cpus[3]).current = Some(idle_thread_for_test(cpus[3]));
-        let woken = schedulers.idle_cpu_to_wake_among(cpus, cpus[0]);
+        cpus[3].scheduler.lock().current = Some(idle_thread_for_test(cpus[3]));
+        let woken = idle_cpu_to_wake_among(cpus, cpus[0]);
         assert!(woken.is_some_and(|cpu| ptr::eq(cpu, cpus[3])));
-        assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[1]).is_none());
-        schedulers.of(cpus[3]).wakeup_sent = false;
-        assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[3]).is_none());
-        assert!(schedulers.idle_cpu_to_wake_among(cpus, cpus[1]).is_some());
+        assert!(idle_cpu_to_wake_among(cpus, cpus[1]).is_none());
+        cpus[3].scheduler.lock().wakeup_sent = false;
+        assert!(idle_cpu_to_wake_among(cpus, cpus[3]).is_none());
+        assert!(idle_cpu_to_wake_among(cpus, cpus[1]).is_some());
         for &cpu in cpus {
-            empty(schedulers.of(cpu));
+            empty(&mut cpu.scheduler.lock());
         }
     }
 
