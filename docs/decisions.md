@@ -27128,3 +27128,39 @@ the license, by an explicit instruction recorded here.
   `PTRACE_O_TRACEVFORKDONE`; `PTRACE_LISTEN`; hardware steps and breakpoints on the other
   architectures.
 
+
+## D599 The power state's front-ends: the battery indicator, `power status`, `power_status`, the `power.*` keys, the lid action, the heat and low-battery countdowns and Settings > Power (M8; D556's front-ends; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/power-v0.1.md, by Claude Fable)
+- **One reading, four front-ends.** The kernel's `/proc/driver/power` lines (`lid`, `ac`,
+  `battery <n> <percent>% charging|discharging|full`, `thermal <n> <celsius> limit <celsius>`,
+  `dock`) are parsed once, in `eggos_device_list::power` (`PowerFacts`), which also holds the
+  words every front-end uses: the indicator's tooltip, `power status`, the `power.*` settings
+  keys and the Settings pane say the same thing. A thermal line now carries its zone's limit:
+  `_CRT`, or 95.0 °C when the zone names none, `_HOT` (or the limit less 10 °C) being where the
+  countdown starts.
+- **The bar's battery indicator** (`drivers/src/desktop/power.rs`) sits left of the network
+  indicator, only on a machine reporting a battery: a glyph filled to the mean charge, with a
+  bolt on line power; its tooltip is its accessible name; a click opens a menu of the facts
+  (dim, skipped by the arrows) and `Power Settings`, which runs `settings open power`. The
+  kernel pushes the state to the desktop when it changes (no tick in the shell).
+- **Acting on the lid and the heat** (`kernel/src/power_policy.rs`): a kernel thread reads the
+  state every 10 s (and each second during a countdown). Closing the lid does what
+  `power.lid_action` says: `sleep` (S3 when the machine has it, D597; else the power-off
+  countdown), `nothing` or `off`. A zone at its `_HOT` point starts a 30 s countdown notice that
+  keys do not close; cooling below it cancels the countdown, and its end is the power button's
+  orderly power-off. A battery at 15% and 5%, discharging, shows a notice; at 3% the countdown
+  starts. Each step is also a serial line, so a headless machine logs it. The lid action
+  reaches the kernel at boot from the settings file and later through `/dev/window`'s
+  `SET_LID_ACTION` (request 64), which needs the settings privilege.
+- **CLI and MCP.** `power [status] [--json]` (coreutils, read-only), the `POWER_STATUS` command
+  and the `power_status` MCP tool (its twin). `settings get power.battery`, `power.line`,
+  `power.lid`, `power.temperature`, `power.dock` read the facts; `power.lid_action` is the one
+  settable key, saved, then applied.
+- **Settings > Power** (`userland/settings/src/power_pane.rs`): after `Display` until a `Sound`
+  pane exists (the design puts it after `Sound`); the facts re-read once a second while it
+  shows, a label changed only when its words did; one row per battery, the rows below moving
+  down; the `When the lid closes` dropdown, disabled while no lid is reported, and the "Sleep is
+  not available yet" line while `Sleep` is chosen and `/sys/power/state` lists no `mem`; a
+  failed save puts the dropdown back and the status line says why. On a narrow page each value
+  sits under its title and the dropdown is a 48 px row.
+- **Not yet.** Building and running; a time estimate (the kernel reads no rates); per-battery
+  thresholds; hibernation.
