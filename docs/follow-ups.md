@@ -133,7 +133,7 @@ and is not listed per item.
 ## M12 Adaptive shell, desktop and accessibility
 
 - [ ] Pointer acceleration and per-device mouse preferences (D195)
-- [ ] Virtual desktops: the overview (Super+Tab, F3, Activities) with thumbnails and a desktops strip, the taskbar's `Task view`, `wm list`'s `DESKTOP` column, MCP `wm_desktop_switch`/`wm_desktop_close`/`wm_desktop_move` (D204)
+- [x] Virtual desktops: the overview (Super+Tab, F3, Activities) with thumbnails and a desktops strip, the taskbar's `Task view`, `wm list`'s `DESKTOP` column, MCP `wm_desktop_switch`/`wm_desktop_close`/`wm_desktop_move` (D204) — code written, unbuilt, D591
 - [x] Screenshots: `screenshot` with the region picker and its keys, MCP `screen_capture`, the window server's `CAPTURE_SCREEN` and `SHOW_NOTICE` (D204) — code written, unbuilt, D590
 - [ ] Accessibility: a screen reader over the element trees (speech through a sound device when one exists, braille-free text log otherwise) (D161, D224)
 - [ ] Accessibility: screen zoom, a larger pointer, bounce keys, toggle keys and mouse keys (D224)

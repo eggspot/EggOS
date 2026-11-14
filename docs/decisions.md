@@ -26875,3 +26875,41 @@ the license, by an explicit instruction recorded here.
   ships with the core utilities (a hard link to `/bin/coreutils`, a few hundred bytes), not
   with the desktop component; without a display it fails with `no_window_server`.
 - **Not yet.** Building and running; the wallpaper menu's "Take a screenshot" entry.
+
+## D591 Virtual desktops: the overview, `Task view` and `Activities`, `wm list`'s `DESKTOP` column and MCP's other desktop tools (M12; D204's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; designed by Claude Fable, `docs/ux/desktops-overview-screenshots-v0.3.md` sections 2 to 4 and 7)
+- **Opening it.** `Shortcut::Overview`: Super+Tab in the Windows and Linux profiles, F3 and
+  Ctrl+Up in the macOS one; the Linux profile's Super alone opens it (Super+A is its
+  launcher), its `Activities` item too; the Windows taskbar gains `Task view` after Start
+  (the two-rectangle icon, tooltip `Task view  Super+Tab`, pressed while the overview is
+  open). The same key, item or Esc closes it.
+- **What it shows** (`drivers/src/desktop/overview.rs`). A popup over the work area: the
+  wallpaper with no windows or desktop icons, the strip of desktop tiles (128x72, a mini of
+  the wallpaper's gradient with each not-minimised window as a rectangle, the shown one with
+  a 2 px accent outline, `Desktop N` labels, a close control on hover with two or more, a `+`
+  tile under 8 desktops), and the grid of the shown desktop's windows, most recently focused
+  first, `ceil(sqrt(n))` columns, each thumbnail its content shrunk by the smallest whole
+  factor that fits, sampled nearest-neighbour from the window's buffer while composing (runs
+  of 64 source pixels a call, nothing kept), outlined, labelled with the title (dim when
+  minimised), with a close control on hover; `No windows on this desktop` when empty.
+- **Keys and pointer.** Arrows, Tab, Home and End move the selection (Up from the top row
+  goes to the strip, Down comes back); Enter or Space picks (a window is focused and raised,
+  a tile shows its desktop, `+` makes one); Delete closes the window or the desktop; the
+  desktop keys switch, make and move while it stays open; Alt+Tab and the launcher's key close
+  it and do their own; a printable character closes it and starts the launcher's search. A
+  click picks; a thumbnail dragged past 4 px drops its window on the desktop tile under the
+  pointer (or on a new desktop from `+`); a press on bare wallpaper closes it; a press on a
+  panel closes it and goes on to the panel.
+- **`wm list`** writes `DESKTOP` after `CLIENT` and `"desktop"` in its records. The window
+  server puts the desktop, from 1, in bits 16 to 23 of `LIST_WINDOW`'s state word
+  (`list_reply::DESKTOP_SHIFT`), so the record keeps its size; a zero there reads as 1.
+- **MCP** `wm_desktop_switch` and `wm_desktop_close` (`number`) and `wm_desktop_move`
+  (`window`, `number`), with the run grant like `wm_desktop_new`.
+- **Differences from the design, by research.** The Linux profile's dash column and its
+  dynamic trailing desktop are not there yet, so every profile shows the `+` tile; an
+  interaction redraws the whole work area rather than the changed rectangles, and a commit
+  while it is open redraws the grid area: the overview is open for seconds and a full redraw
+  of a 1280x800 work area is one compose, so the narrower damage waits for a measurement.
+- **Not yet.** Building and running; the switcher's desktop marks, the `Desktop 2 of 3`
+  notice, the window menu's desktop items, the wallpaper's context menu, cycling an app's
+  windows (Alt+\`), and the phone, tablet and TV forms' overview (section 8).
+
