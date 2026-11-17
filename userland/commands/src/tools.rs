@@ -2525,18 +2525,41 @@ pub const DISK_FORMAT: ToolDefinition = ToolDefinition {
     result: ToolResult::Text,
 };
 
+const ALONGSIDE: Argument = defaulting(
+    described(
+        optional("alongside", JsonType::Boolean, Mapping::Option("--alongside")),
+        "Set to true to keep the systems on the disk and put EggOS in unallocated space or a \
+         shrunk system's free tail. Refused with table_is_mbr, table_damaged, table_full, \
+         partition_encrypted, system_hibernated, needs_check, cannot_shrink or \
+         no_room_alongside when that is not possible.",
+    ),
+    DefaultValue::Boolean(false),
+);
+
+const SIZE_BYTES: Argument = ranged(
+    described(
+        optional("size_bytes", JsonType::Integer, Mapping::Option("--size")),
+        "With alongside, EggOS's size in bytes, a whole number of GiB; the plan's opening size \
+         without it. Out of the disk's range: size_out_of_range.",
+    ),
+    1 << 30,
+    i64::MAX,
+);
+
 /// `disk_install` (D241): installs EggOS on an unmounted disk.
 pub const DISK_INSTALL: ToolDefinition = ToolDefinition {
     name: "disk_install",
     title: "Install EggOS on a disk",
     description: "Erases everything on an unmounted disk of 1 GiB or more and installs EggOS on it \
-                  from the USB stick or disk it was started from, as `disk install --yes` does. A \
+                  from the USB stick or disk it was started from, as `disk install --yes` does; \
+                  with alongside: true it keeps the systems on the disk instead (the dry run says \
+                  what would be shrunk and written; the writing itself is not built yet). A \
                   mounted or read-only disk is refused. Needs the write grant. Asks the user first, \
                   or needs confirm: true when the client cannot ask. dry_run: true says what would \
                   be erased, and writes nothing.",
     command: &["disk", "install"],
     fixed: &["--yes"],
-    arguments: &[DEVICE, confirm(GUARD), DRY_RUN],
+    arguments: &[DEVICE, confirm(GUARD), DRY_RUN, ALONGSIDE, SIZE_BYTES],
     max_effect: Effect::Destroy,
     grant: Some(Grant::Write),
     idempotent: false,

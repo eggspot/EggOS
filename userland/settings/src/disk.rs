@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::string::String;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_eggfs::{CheckMode, DiskCheck};
-use eggos_files::partitions::DiskLayout;
+use eggos_files::partitions::{self, AlongsideRefusal, DiskLayout, Placement};
 use eggos_files::storage::{
     self, DiskRecord, StorageError, WholeDisks, erased_text, headline, outcome_word,
 };
@@ -19,7 +19,8 @@ use eggos_mcp::server::write_error;
 pub const USAGE: &str = "usage: disk list [--json] | disk partitions [--json] <device> | disk \
                          check [--json] <device> | disk repair \
                          [--json] [--dry-run] <device> | disk format [--label NAME] [--yes] \
-                         [--dry-run] <device> | disk install [--yes] [--dry-run] <device>\n";
+                         [--dry-run] <device> | disk install [--alongside [--size SIZE]] [--yes] \
+                         [--dry-run] <device>\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of every other error.
@@ -48,6 +49,8 @@ struct Options<'a> {
     dry_run: bool,
     yes: bool,
     label: Option<&'a str>,
+    alongside: bool,
+    size: Option<&'a str>,
 }
 
 /// Runs `disk` with `arguments`, the words after its name; the exit status.
@@ -67,6 +70,11 @@ pub fn run(disks: &mut impl WholeDisks, console: &mut impl Console, arguments: &
                 Some(&label) => options.label = Some(label),
                 None => return usage(console, options.json),
             },
+            "--alongside" if !options_end => options.alongside = true,
+            "--size" if !options_end => match rest.next() {
+                Some(&size) => options.size = Some(size),
+                None => return usage(console, options.json),
+            },
             _ if !options_end && argument.len() > 1 && argument.starts_with('-') => {
                 let message = format!("unrecognized option '{argument}'");
                 report(console, options.json, &errors::USAGE, &message);
@@ -78,6 +86,12 @@ pub fn run(disks: &mut impl WholeDisks, console: &mut impl Console, arguments: &
                 count += 1;
             }
         }
+    }
+    if (options.alongside || options.size.is_some()) && !matches!(words[..count], ["install", _]) {
+        return usage(console, options.json);
+    }
+    if options.size.is_some() && !options.alongside {
+        return usage(console, options.json);
     }
     let plain = !options.dry_run && !options.yes && options.label.is_none();
     match words[..count] {
@@ -512,11 +526,28 @@ fn install_on(
         Ok(files) => files,
         Err(error) => return refuse(console, false, record.device, &error),
     };
+    let layout = partitions::disk_layout(disks, record.device).ok().map(|(_, layout)| layout);
+    if options.alongside {
+        return match layout {
+            Some(layout) => install_alongside(console, &record, &layout, options),
+            None => {
+                let message = format!("{}: its partition table cannot be read", record.device);
+                report(console, false, &errors::TABLE_DAMAGED, &message);
+                FAILURE
+            }
+        };
+    }
+    let erased = match layout.as_ref().and_then(partitions::erased_systems_text) {
+        Some(systems) => format!(
+            "{systems}, {}",
+            eggos_files::listing::size_text(record.size_bytes).as_str()
+        ),
+        None => erased_text(&record),
+    };
     if options.dry_run {
         let line = format!(
-            "would erase {} ({}) and install EggOS on it\n",
-            record.device,
-            erased_text(&record)
+            "would erase {} ({erased}) and install EggOS on it\n",
+            record.device
         );
         console.write_output(line.as_bytes());
         return 0;
@@ -531,10 +562,13 @@ fn install_on(
             return FAILURE;
         }
         let name = record.short_name();
+        if let Some(hint) = layout.as_ref().and_then(|layout| partitions::keep_hint(layout, record.device)) {
+            console.write_error(hint.as_bytes());
+            console.write_error(b"\n");
+        }
         let question = format!(
-            "Type {name} to install EggOS on {} (erases {}): ",
-            record.device,
-            erased_text(&record)
+            "Type {name} to install EggOS on {} (erases {erased}): ",
+            record.device
         );
         console.write_error(question.as_bytes());
         let mut answer = [0u8; ANSWER_BYTES];
@@ -554,6 +588,72 @@ fn install_on(
         }
         Err(error) => refuse(console, false, record.device, &error),
     }
+}
+
+fn refusal_error(refusal: AlongsideRefusal) -> &'static ErrorDefinition {
+    match refusal {
+        AlongsideRefusal::TableIsMbr => &errors::TABLE_IS_MBR,
+        AlongsideRefusal::TableDamaged => &errors::TABLE_DAMAGED,
+        AlongsideRefusal::TableFull => &errors::TABLE_FULL,
+        AlongsideRefusal::PartitionEncrypted => &errors::PARTITION_ENCRYPTED,
+        AlongsideRefusal::SystemHibernated => &errors::SYSTEM_HIBERNATED,
+        AlongsideRefusal::NeedsCheck => &errors::NEEDS_CHECK,
+        AlongsideRefusal::CannotShrink => &errors::CANNOT_SHRINK,
+        AlongsideRefusal::NoRoom => &errors::NO_ROOM_ALONGSIDE,
+    }
+}
+
+fn chosen_size_gib(
+    console: &mut impl Console,
+    device: &str,
+    placement: &Placement,
+    size: Option<&str>,
+) -> Result<u64, i32> {
+    let (least, most) = partitions::size_range_gib(placement);
+    let Some(written) = size else {
+        return Ok(partitions::opening_size_gib(placement));
+    };
+    let gib = partitions::size_bytes_of(written).map(|bytes| bytes >> 30);
+    match gib {
+        Some(gib) if (least..=most).contains(&gib) => Ok(gib),
+        _ => {
+            let message = format!("--size must be {least}G to {most}G on {device}");
+            report(console, false, &errors::SIZE_OUT_OF_RANGE, &message);
+            Err(USAGE_STATUS)
+        }
+    }
+}
+
+fn install_alongside(
+    console: &mut impl Console,
+    record: &DiskRecord,
+    layout: &DiskLayout,
+    options: &Options<'_>,
+) -> i32 {
+    let placement = match partitions::place(layout) {
+        Ok(placement) => placement,
+        Err(refusal) => {
+            let (first, second) = partitions::refusal_lines(refusal, layout);
+            let message = format!("{}: {first} {second}", record.device);
+            report(console, false, refusal_error(refusal), &message);
+            return FAILURE;
+        }
+    };
+    let size_gib = match chosen_size_gib(console, record.device, &placement, options.size) {
+        Ok(size_gib) => size_gib,
+        Err(status) => return status,
+    };
+    if options.dry_run {
+        let line = format!("{}\n", partitions::alongside_dry_run_text(layout, &placement, size_gib));
+        console.write_output(line.as_bytes());
+        return 0;
+    }
+    let message = format!(
+        "{}: installing alongside is planned but not written yet: disk install --alongside --dry-run {} shows the plan",
+        record.device, record.device
+    );
+    report(console, false, &errors::FAILED, &message);
+    FAILURE
 }
 
 fn format_disk(

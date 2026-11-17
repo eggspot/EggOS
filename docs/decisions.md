@@ -28074,3 +28074,30 @@ the license, by an explicit instruction recorded here.
   beside Windows: EggOS needs 1 GB.`
 - **Not yet.** Building and running; the macOS line naming Disk Utility uses the system's
   name (`Shrink it in macOS`).
+
+
+## D642 `disk install --alongside`, its size and its dry run (M8; installer dual boot v0.1 section 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Decision.** `disk install --alongside [--size SIZE] [--dry-run] [--yes] <device>` and
+  `disk_install`'s `alongside` (default false, so v0.4 callers keep their behaviour) and
+  `size_bytes` (a whole number of GiB, at least 1 GiB) are one path: the disk's layout
+  (D635), `place` (D641) and its refusals as the command's errors (`table_is_mbr`,
+  `table_damaged`, `table_full`, `partition_encrypted`, `system_hibernated`, `needs_check`,
+  `cannot_shrink`, `no_room_alongside`, each with its two lines joined), the size from
+  `--size` (`36G`, `1T`, or bytes, the tool's form) or the slider's opening size, refused
+  outside 1 GiB to the room with `size_out_of_range` (`--size must be 1G to 72G on
+  /dev/vdb`), and `--dry-run` printing section 7's sentence (`would shrink Windows
+  (partition 3) from 254 GB to 218 GB, write an EggOS partition of 36 GB, add EggOS to the EFI
+  system partition (partition 1) and add a boot entry`, or the unallocated-space form, or an
+  EFI system partition of 256 MB to write when the disk has none). The question with
+  `--alongside` is written (`alongside_question`) for the pane and the writing batch.
+- **Whole-disk installs** now name the systems they erase (`erases Windows and 3 more
+  partitions, 256 GB`) in the question and the dry run, and a terminal first gets `Windows is
+  on this disk. To keep it: disk install --alongside /dev/vdb`.
+- **Deviation.** Writing the alongside install (the GPT entry in the free run, shrinking NTFS
+  and ext4, the shared EFI system partition, the firmware entry) is the next batches' work;
+  until then `disk install --alongside` without `--dry-run` refuses with `failed` before
+  asking, and its message points at the dry run, rather than asking and then failing.
+  Sizes are shown in whole GiB written `GB`, as the design's numbers are.
+- **Not yet.** Building and running; the pane's plan panel; the confirmation sentence with
+  the BitLocker recovery-key warning.
+

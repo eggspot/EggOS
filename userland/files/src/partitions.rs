@@ -675,6 +675,135 @@ pub fn place(layout: &DiskLayout) -> Result<Placement, AlongsideRefusal> {
     }
 }
 
+fn whole_gb(bytes: u64) -> u64 {
+    bytes / GIB
+}
+
+/// The bytes `disk install --size` asks for: whole GiB or TiB with a unit (`36G`, `1T`), or a
+/// count of bytes that is a whole number of GiB, as `disk_install`'s `size_bytes` gives it.
+pub fn size_bytes_of(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (digits, unit) = match text.char_indices().find(|(_, character)| !character.is_ascii_digit()) {
+        Some((at, _)) => (&text[..at], &text[at..]),
+        None => (text, ""),
+    };
+    let number: u64 = digits.parse().ok()?;
+    let bytes = match unit.to_ascii_uppercase().as_str() {
+        "G" | "GB" | "GIB" => number.checked_mul(GIB)?,
+        "T" | "TB" | "TIB" => number.checked_mul(GIB * 1024)?,
+        "" if number % GIB == 0 => number,
+        _ => return None,
+    };
+    (bytes > 0).then_some(bytes)
+}
+
+/// The sizes, in whole GiB, EggOS may take at `placement`: 1 to all the room.
+pub fn size_range_gib(placement: &Placement) -> (u64, u64) {
+    (MIN_INSTALL_BYTES.div_ceil(GIB), placement.room_gib())
+}
+
+fn system_named(layout: &DiskLayout, partition: usize) -> &'static str {
+    layout
+        .systems
+        .iter()
+        .find(|found| found.partition == partition)
+        .map_or("the partition", |found| found.name)
+}
+
+fn efi_system_partition(layout: &DiskLayout) -> Option<usize> {
+    layout
+        .partitions
+        .iter()
+        .find(|partition| partition.kind == PartitionType::EfiSystem)
+        .map(|partition| partition.number)
+}
+
+fn shrunk_sizes(layout: &DiskLayout, partition: usize, taken_bytes: u64, following: Option<FreeRun>) -> (u64, u64) {
+    let size = layout
+        .partitions
+        .iter()
+        .find(|found| found.number == partition)
+        .map_or(0, PartitionRecord::size_bytes);
+    let from_following = following.map_or(0, |run| run.size_bytes()).min(taken_bytes);
+    (size, size.saturating_sub(taken_bytes - from_following))
+}
+
+/// The dry run's sentence for installing `size_gib` GiB alongside at `placement` (section 7):
+/// what is shrunk, written and added.
+pub fn alongside_dry_run_text(layout: &DiskLayout, placement: &Placement, size_gib: u64) -> String {
+    let taken = size_gib * GIB;
+    let made = match *placement {
+        Placement::Unallocated(_) => alloc::format!("write an EggOS partition of {size_gib} GB in unallocated space"),
+        Placement::ShrunkTail { partition, following, .. } => {
+            let (before, after) = shrunk_sizes(layout, partition, taken, following);
+            if after == before {
+                alloc::format!("write an EggOS partition of {size_gib} GB in unallocated space")
+            } else {
+                alloc::format!(
+                    "shrink {} (partition {partition}) from {} GB to {} GB, write an EggOS partition of {size_gib} GB",
+                    system_named(layout, partition),
+                    whole_gb(before),
+                    whole_gb(after)
+                )
+            }
+        }
+    };
+    let boot = match efi_system_partition(layout) {
+        Some(number) => alloc::format!("add EggOS to the EFI system partition (partition {number})"),
+        None => String::from("write an EFI system partition of 256 MB"),
+    };
+    alloc::format!("would {made}, {boot} and add a boot entry")
+}
+
+/// The question `disk install --alongside` asks on a terminal (section 7).
+pub fn alongside_question(short: &str, device: &str, layout: &DiskLayout, placement: &Placement, size_gib: u64) -> String {
+    let kept = joined_names(&layout.systems);
+    let kept = if kept.is_empty() { String::from("what is on it") } else { kept };
+    let what = match *placement {
+        Placement::ShrunkTail { partition, following, .. } => {
+            let (before, after) = shrunk_sizes(layout, partition, size_gib * GIB, following);
+            if after == before {
+                alloc::format!("uses {size_gib} GB of unallocated space")
+            } else {
+                alloc::format!("shrinks {} to {} GB", system_named(layout, partition), whole_gb(after))
+            }
+        }
+        Placement::Unallocated(_) => alloc::format!("uses {size_gib} GB of unallocated space"),
+    };
+    alloc::format!("Type {short} to install EggOS beside {kept} on {device} ({what}, erases nothing): ")
+}
+
+/// What a whole-disk install erases, naming the systems (section 7): `Windows and 3 more
+/// partitions`; `None` when no system is on the disk.
+pub fn erased_systems_text(layout: &DiskLayout) -> Option<String> {
+    if layout.systems.is_empty() {
+        return None;
+    }
+    let names = joined_names(&layout.systems);
+    let holding: Vec<usize> = layout.systems.iter().map(|found| found.partition).collect();
+    let more = layout
+        .partitions
+        .iter()
+        .filter(|partition| !holding.contains(&partition.number))
+        .count();
+    Some(match more {
+        0 => names,
+        1 => alloc::format!("{names} and 1 more partition"),
+        _ => alloc::format!("{names} and {more} more partitions"),
+    })
+}
+
+/// The hint a terminal gets before a whole-disk install of a disk that holds a system
+/// (section 7).
+pub fn keep_hint(layout: &DiskLayout, device: &str) -> Option<String> {
+    if layout.systems.is_empty() {
+        return None;
+    }
+    let names = joined_names(&layout.systems);
+    let verb = if layout.systems.len() == 1 { "is" } else { "are" };
+    Some(alloc::format!("{names} {verb} on this disk. To keep it: disk install --alongside {device}"))
+}
+
 /// The table kind sector 0 (`mbr`) and sector 1 (`gpt_header`) show: a GPT when the header
 /// reads, damaged when the protective MBR is there without one, an MBR when sector 0 carries
 /// partitions of its own, none otherwise.
@@ -1501,6 +1630,45 @@ mod tests {
         assert_eq!(first, "Windows is hibernated or uses Fast Startup: its disk is in use.");
         layout.table = TableKind::Mbr;
         assert_eq!(place(&layout), Err(AlongsideRefusal::TableIsMbr));
+    }
+
+    #[test]
+    fn alongside_sentences_name_what_is_shrunk_written_and_erased() {
+        let mut partitions = windows_disk();
+        partitions[2].shrinkable_bytes = Some(72 * GIB);
+        let systems = recognise(&mut partitions, EspFindings::default());
+        let layout = DiskLayout {
+            table: TableKind::Gpt,
+            partitions,
+            unallocated: Vec::new(),
+            systems,
+        };
+        let placement = place(&layout).unwrap();
+        assert_eq!(size_range_gib(&placement), (1, 72));
+        assert_eq!(
+            alongside_dry_run_text(&layout, &placement, 36),
+            "would shrink Windows (partition 3) from 100 GB to 64 GB, write an EggOS partition of 36 GB, add EggOS to the EFI system partition (partition 1) and add a boot entry"
+        );
+        assert_eq!(
+            alongside_question("vdb", "/dev/vdb", &layout, &placement, 36),
+            "Type vdb to install EggOS beside Windows on /dev/vdb (shrinks Windows to 64 GB, erases nothing): "
+        );
+        assert_eq!(erased_systems_text(&layout).as_deref(), Some("Windows and 3 more partitions"));
+        assert_eq!(
+            keep_hint(&layout, "/dev/vdb").as_deref(),
+            Some("Windows is on this disk. To keep it: disk install --alongside /dev/vdb")
+        );
+        let free = Placement::Unallocated(FreeRun {
+            first_sector: 1 << 30,
+            sectors: 20 * (GIB / SECTOR_BYTES),
+        });
+        assert!(alongside_dry_run_text(&layout, &free, 20).starts_with("would write an EggOS partition of 20 GB in unallocated space"));
+        assert_eq!(size_bytes_of("36G"), Some(36 * GIB));
+        assert_eq!(size_bytes_of("1T"), Some(1024 * GIB));
+        assert_eq!(size_bytes_of(&(3 * GIB).to_string()), Some(3 * GIB));
+        assert_eq!(size_bytes_of("1000"), None);
+        assert_eq!(size_bytes_of("12Q"), None);
+        assert_eq!(size_bytes_of("0G"), None);
     }
 
     #[test]

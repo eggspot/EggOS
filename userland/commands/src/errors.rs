@@ -323,6 +323,69 @@ pub const DISK_IN_USE: ErrorDefinition = error(
     "A mounted disk cannot be checked, repaired or formatted in this version.",
     None,
 );
+/// `disk install --alongside`: the disk has an MBR partition table (D642).
+pub const TABLE_IS_MBR: ErrorDefinition = error(
+    "table_is_mbr",
+    Category::Refused,
+    "Convert the disk to GPT in the other system, or install on the whole disk.",
+    None,
+);
+/// `disk install --alongside`: the partition table is damaged (D642).
+pub const TABLE_DAMAGED: ErrorDefinition = error(
+    "table_damaged",
+    Category::Damaged,
+    "Repair the partition table in the other system, or install on the whole disk.",
+    None,
+);
+/// `disk install --alongside`: the partition table has no free entry (D642).
+pub const TABLE_FULL: ErrorDefinition = error(
+    "table_full",
+    Category::TooLarge,
+    "Remove a partition in the other system, or install on the whole disk.",
+    None,
+);
+/// `disk install --alongside`: the system to shrink is encrypted (D642).
+pub const PARTITION_ENCRYPTED: ErrorDefinition = error(
+    "partition_encrypted",
+    Category::Refused,
+    "Shrink the volume in its own system, then install in the space.",
+    None,
+);
+/// `disk install --alongside`: the system to shrink is hibernated or uses Fast Startup (D642).
+pub const SYSTEM_HIBERNATED: ErrorDefinition = error(
+    "system_hibernated",
+    Category::Busy,
+    "Shut the other system down fully (shutdown /s /t 0), then try again.",
+    None,
+);
+/// `disk install --alongside`: the file system to shrink is marked for a check (D642).
+pub const NEEDS_CHECK: ErrorDefinition = error(
+    "needs_check",
+    Category::Damaged,
+    "Run chkdsk in Windows or fsck in Linux, then try again.",
+    None,
+);
+/// `disk install --alongside`: EggOS cannot shrink that file system (D642).
+pub const CANNOT_SHRINK: ErrorDefinition = error(
+    "cannot_shrink",
+    Category::Refused,
+    "Shrink it in its own system, then install in the space.",
+    None,
+);
+/// `disk install --alongside`: less than 1 GB can be freed (D642).
+pub const NO_ROOM_ALONGSIDE: ErrorDefinition = error(
+    "no_room_alongside",
+    Category::TooLarge,
+    "Free space in the other system, or install on the whole disk.",
+    None,
+);
+/// `disk install --alongside --size`: the size is outside what the disk allows (D642).
+pub const SIZE_OUT_OF_RANGE: ErrorDefinition = error(
+    "size_out_of_range",
+    Category::Usage,
+    "Give a size in the range the message names, or leave --size out.",
+    None,
+);
 /// `disk check` and `disk repair`: the disk holds no EggFS file system (D192).
 pub const NOT_EGGFS: ErrorDefinition = error(
     "not_eggfs",
@@ -615,7 +678,7 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 83] = [
+pub const ALL: [&ErrorDefinition; 92] = [
     &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
@@ -699,4 +762,13 @@ pub const ALL: [&ErrorDefinition; 83] = [
     &INSTALL_FAILED,
     &REMOVE_FAILED,
     &SCREEN_READER_OFF,
+    &TABLE_IS_MBR,
+    &TABLE_DAMAGED,
+    &TABLE_FULL,
+    &PARTITION_ENCRYPTED,
+    &SYSTEM_HIBERNATED,
+    &NEEDS_CHECK,
+    &CANNOT_SHRINK,
+    &NO_ROOM_ALONGSIDE,
+    &SIZE_OUT_OF_RANGE,
 ];
