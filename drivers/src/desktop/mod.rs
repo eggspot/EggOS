@@ -1399,6 +1399,10 @@ impl Desktop {
         self.window_mut(slot).ready = true;
         if !window.shown {
             self.show(slot, damage, events);
+            if self.focus != Some(slot) {
+                let shown = *self.window_at(slot);
+                self.reader_window_opened(shown.title(), damage);
+            }
             return Ok(());
         }
         if !self.is_visible(slot) {

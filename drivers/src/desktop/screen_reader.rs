@@ -48,11 +48,12 @@ pub enum ReaderCommand {
     Activate,
 }
 
-/// Caps Lock held as the reader's modifier: whether it is held, and whether a chord used it
-/// since it went down (its toggle is then given back).
+/// Caps Lock or Insert held as the reader's modifier: whether each is held, and whether a chord
+/// used Caps Lock since it went down (its toggle is then given back).
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct ReaderKeys {
     caps_held: bool,
+    insert_held: bool,
     chorded: bool,
 }
 
@@ -305,9 +306,9 @@ impl Desktop {
         self.say(Source::Notice, Priority::Queue, line.as_str(), damage);
     }
 
-    /// Takes the reading keys while the reader is on: Caps Lock held with an arrow, Home, End,
-    /// T, W, R, Enter or Esc (and Ctrl+Alt with them in the macOS profile, VoiceOver's keys);
-    /// a Ctrl tapped alone stops reading. Returns what the kernel must do.
+    /// Takes the reading keys while the reader is on: Caps Lock or Insert held with an arrow,
+    /// Home, End, T, W, R, Enter or Esc (and Ctrl+Alt with them in the macOS profile, VoiceOver's
+    /// keys); a Ctrl tapped alone stops reading. Returns what the kernel must do.
     pub(super) fn reader_key(
         &mut self,
         code: u16,
@@ -321,25 +322,30 @@ impl Desktop {
         }
         if code == key::CAPS_LOCK {
             match pressed {
-                true => self.reader_caps = ReaderKeys {
-                    caps_held: true,
-                    chorded: false,
-                },
+                true => {
+                    self.reader_caps.caps_held = true;
+                    self.reader_caps.chorded = false;
+                }
                 false => self.reader_caps.caps_held = false,
             }
+            return None;
+        }
+        if code == key::INSERT {
+            self.reader_caps.insert_held = pressed;
             return None;
         }
         if !pressed {
             return None;
         }
-        if matches!(code, key::LEFT_CTRL | key::RIGHT_CTRL) && !self.reader_caps.caps_held {
+        let reader_held = self.reader_caps.caps_held || self.reader_caps.insert_held;
+        if matches!(code, key::LEFT_CTRL | key::RIGHT_CTRL) && !reader_held {
             self.stop_reading();
             return None;
         }
         let held = modifiers.bits() & !Modifiers::CAPS_LOCK.bits();
         let voice_over = self.profile == super::Profile::Macos
             && held == Modifiers::CTRL.bits() | Modifiers::ALT.bits();
-        if !self.reader_caps.caps_held && !voice_over {
+        if !reader_held && !voice_over {
             return None;
         }
         let command = match code {
@@ -429,6 +435,88 @@ impl Desktop {
             return;
         }
         self.say(Source::Focus, Priority::Interrupt, line, damage);
+    }
+
+    /// Sticky keys' chips changed from `before` (latched, locked bits) to `after`: each
+    /// modifier says `Shift latched`, `Shift locked` or `Shift released`.
+    pub(super) fn reader_sticky_changed(
+        &mut self,
+        before: (u8, u8),
+        after: (u8, u8),
+        damage: &mut Damage,
+    ) {
+        if !self.reader.settings.on {
+            return;
+        }
+        for (modifier, name, _) in super::STICKY_CHIPS {
+            let bit = modifier.bits();
+            let state = |(latched, locked): (u8, u8)| match (locked & bit, latched & bit) {
+                (0, 0) => 0,
+                (0, _) => 1,
+                _ => 2,
+            };
+            let (was, now) = (state(before), state(after));
+            if was == now {
+                continue;
+            }
+            let word = match now {
+                2 => "locked",
+                1 => "latched",
+                _ => "released",
+            };
+            let mut line = LineText::new();
+            let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{name} {word}"));
+            self.say(Source::Keys, Priority::Queue, line.as_str(), damage);
+        }
+    }
+
+    /// Mouse keys' button chip changed to `words`: `Right button selected`, `Left button held`.
+    pub(super) fn reader_mouse_button(&mut self, words: &str, damage: &mut Damage) {
+        if !self.reader.settings.on {
+            return;
+        }
+        let mut line = LineText::new();
+        let _ = match words.ends_with("held") {
+            true => core::fmt::Write::write_str(&mut line, words),
+            false => core::fmt::Write::write_fmt(&mut line, format_args!("{words} selected")),
+        };
+        self.say(Source::Keys, Priority::Queue, line.as_str(), damage);
+    }
+
+    /// The window switcher shows window `title` selected, `place` of `count`.
+    pub(super) fn reader_switcher(
+        &mut self,
+        title: &str,
+        place: usize,
+        count: usize,
+        damage: &mut Damage,
+    ) {
+        if !self.reader.settings.on {
+            return;
+        }
+        let mut line = LineText::new();
+        let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{title}, {place} of {count}"));
+        self.say(Source::Shell, Priority::Interrupt, line.as_str(), damage);
+    }
+
+    /// An agent's input reached the window titled `title`: `Agent: clicked in Files`.
+    pub(super) fn reader_agent(&mut self, verb: &str, title: &str, damage: &mut Damage) {
+        if !self.reader.settings.on {
+            return;
+        }
+        let mut line = LineText::new();
+        let _ = core::fmt::Write::write_fmt(&mut line, format_args!("Agent: {verb} in {title}"));
+        self.say(Source::Agent, Priority::Queue, line.as_str(), damage);
+    }
+
+    /// A window titled `title` opened without taking the focus: `Downloads, window opened`.
+    pub(super) fn reader_window_opened(&mut self, title: &str, damage: &mut Damage) {
+        if !self.reader.settings.on {
+            return;
+        }
+        let mut line = LineText::new();
+        let _ = core::fmt::Write::write_fmt(&mut line, format_args!("{title}, window opened"));
+        self.say(Source::Window, Priority::Queue, line.as_str(), damage);
     }
 
     /// A character typed into the focused field, said while echo is on.

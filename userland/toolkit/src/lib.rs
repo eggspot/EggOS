@@ -17,6 +17,8 @@ pub mod cell_store;
 pub mod colour;
 pub mod damage;
 pub mod drag;
+#[cfg(eggos_user)]
+pub mod focus_report;
 pub mod geometry;
 pub mod input;
 pub mod menu;

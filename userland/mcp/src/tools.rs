@@ -230,6 +230,12 @@ pub enum Kind {
     WmDesktopMove,
     /// `power_status` (D599).
     PowerStatus,
+    /// `screen_reader_log` (D603).
+    ScreenReaderLog,
+    /// `screen_reader_read` (D603).
+    ScreenReaderRead,
+    /// `screen_reader_say` (D603).
+    ScreenReaderSay,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -471,7 +477,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 91] = [
+pub const TOOLS: [Tool; 94] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -950,6 +956,21 @@ pub const TOOLS: [Tool; 91] = [
         &registry::POWER_STATUS,
         Kind::PowerStatus,
         twin("/bin/power", &["status", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::SCREEN_READER_LOG,
+        Kind::ScreenReaderLog,
+        twin("/bin/screen-reader", &["log", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::SCREEN_READER_READ,
+        Kind::ScreenReaderRead,
+        twin("/bin/screen-reader", &["read", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::SCREEN_READER_SAY,
+        Kind::ScreenReaderSay,
+        twin("/bin/screen-reader", &["say"], Operand::None),
     ),
 ];
 

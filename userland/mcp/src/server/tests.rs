@@ -3821,6 +3821,7 @@ fn prompts_and_resources_are_listed_and_given() {
         .send(r#"{"jsonrpc":"2.0","id":6,"method":"resources/list"}"#)
         .unwrap();
     assert!(resources.contains("eggos://instructions") && resources.contains("eggos://grants"));
+    assert!(resources.contains("eggos://screen-reader/log"), "{resources}");
     let grants = harness
         .send(r#"{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"eggos://grants"}}"#)
         .unwrap();

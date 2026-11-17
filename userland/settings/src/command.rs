@@ -7,7 +7,7 @@
 use crate::facts::Facts;
 use crate::keys::{
     self, Change, DeviceChange, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange,
-    Refusal,
+    ReaderChange, Refusal,
 };
 use core::fmt::Write;
 use eggos_commands::commands::LIST_PAGE_LIMIT;
@@ -141,6 +141,11 @@ pub trait Machine {
     fn apply_keys(&mut self, keys: KeyAccessibility) -> Result<(), &'static [u8]>;
     /// Saves high contrast or reduced motion to the settings file (D224).
     fn save_display(&mut self, change: DisplayChange) -> Result<(), &'static [u8]>;
+    /// Saves one screen reader setting to the settings file (D603); applying the display
+    /// accessibility then sends it with `SET_ACCESSIBILITY`.
+    fn save_reader(&mut self, _change: ReaderChange) -> Result<(), &'static [u8]> {
+        Ok(())
+    }
     /// Shows `display` at once in `theme` (`SET_PALETTE` with the high-contrast index and
     /// `SET_REDUCE_MOTION`): every window repaints.
     fn apply_display(
@@ -556,6 +561,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Input(input) => machine.save_input(input),
         Change::Keys(keys) => machine.save_keys(keys),
         Change::Display(display) => machine.save_display(display),
+        Change::Reader(reader) => machine.save_reader(reader),
         Change::LidAction(action) => machine.save_lid_action(action),
         Change::Device { device, change } => machine.save_device_input(device, change),
     };
@@ -590,6 +596,11 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Display(display) => {
             let facts = machine.facts();
             machine.apply_display(facts.theme, display.applied_to(facts.display))
+        }
+        Change::Reader(_) if saved.is_err() => Ok(()),
+        Change::Reader(_) => {
+            let facts = machine.facts();
+            machine.apply_display(facts.theme, facts.display)
         }
         Change::LidAction(action) => machine.apply_lid_action(action),
         Change::Device { device, change } => {

@@ -324,6 +324,13 @@ impl Desktop {
         damage.add(with_shadow(self.switcher_rect(&switcher)));
         self.switcher = Some(switcher);
         self.begin_popup(events);
+        self.say_switcher(&switcher, damage);
+    }
+
+    fn say_switcher(&mut self, switcher: &Switcher, damage: &mut Damage) {
+        let slot = usize::from(switcher.entries[switcher.selected]);
+        let window = *self.window_at(slot);
+        self.reader_switcher(window.title(), switcher.selected + 1, switcher.length, damage);
     }
 
     fn close_switcher(&mut self, choose: bool, damage: &mut Damage, events: &mut dyn EventSink) {
@@ -351,6 +358,7 @@ impl Desktop {
                 switcher.step(modifiers.contains(Modifiers::SHIFT));
                 damage.add(self.switcher_rect(&switcher));
                 self.switcher = Some(switcher);
+                self.say_switcher(&switcher, damage);
             }
             (key::ESC, true) => self.close_switcher(false, damage, events),
             (code, false) if switcher.held.is(code) => self.close_switcher(true, damage, events),

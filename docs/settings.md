@@ -186,6 +186,10 @@ buttons are person-only and its window takes the person's input only: `wm click`
 | `accessibility.high_contrast`, `accessibility.reduce_motion` | `true` or `false` (the default), shown at once (D224; the Accessibility pane) | yes |
 | `accessibility.sticky_keys`, `accessibility.slow_keys` | `true` or `false` (the default) (D205) | yes |
 | `accessibility.slow_keys_ms` | `100` to `1000`, `300` the default (D205) | yes |
+| `accessibility.screen_reader` | `true` or `false` (the default): the focus, the windows, the shell's popups, notices and lock keys said in a caption panel and the reader's log; Super+F5, Super+Ctrl+Enter and Super+Alt+S turn it on or off (D603) | yes |
+| `accessibility.screen_reader_captions` | `true` (the default) or `false`: whether the caption panel shows; the log keeps every utterance either way (D603) | yes |
+| `accessibility.screen_reader_rate` | `100` to `400` words a minute, `200` the default: how long a caption stays before the next queued one (D603) | yes |
+| `accessibility.screen_reader_echo` | `characters` (the default) or `none`: whether each character typed into a field is said (D603) | yes |
 | `accessibility.zoom` | `true` or `false` (the default): the screen magnified around the pointer, the focus and the caret, at once (D602) | yes |
 | `accessibility.zoom_level` | `2` (the default), `3`, `4`, `6` or `8` (D602) | yes |
 | `accessibility.pointer_size` | `1` (the default), `1.5`, `2` or `3`: every pointer shape that many times larger (D602) | yes |

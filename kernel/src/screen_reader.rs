@@ -221,10 +221,6 @@ fn perform<P: Platform>(command: ReaderCommand) {
         say::<P>(Source::Read, Priority::Interrupt, "Desktop");
         return;
     };
-    if command == ReaderCommand::Activate {
-        activate::<P>(window);
-        return;
-    }
     let tree = ask::<P>(window, query_kind::TREE, 0, 0)
         .filter(|answer| answer.outcome == tree_answer::TREE)
         .map(|answer| answer.tree)
@@ -234,6 +230,10 @@ fn perform<P: Platform>(command: ReaderCommand) {
         return;
     }
     let all: Vec<Element<'_>> = elements(&tree).flatten().collect();
+    if command == ReaderCommand::Activate {
+        activate::<P>(window, &all);
+        return;
+    }
     let read: Vec<usize> = (0..all.len())
         .filter(|&index| reader::is_read(&all[index]))
         .collect();
@@ -291,13 +291,21 @@ fn perform<P: Platform>(command: ReaderCommand) {
     }
 }
 
-fn activate<P: Platform>(window: u32) {
+fn activate<P: Platform>(window: u32, all: &[Element<'_>]) {
     let (cursor_window, element) = COMMANDS_WAITING.lock().cursor;
-    if cursor_window != window || element == 0 {
+    let Some(target) = all
+        .iter()
+        .find(|candidate| candidate.id == element)
+        .filter(|_| cursor_window == window && element != 0)
+    else {
         say::<P>(Source::Read, Priority::Interrupt, CANNOT);
         return;
-    }
-    let done = ask::<P>(window, query_kind::ACT, element, Action::Invoke.value())
+    };
+    let action = match target.role {
+        Role::TextField | Role::TextArea => Action::Focus,
+        _ => Action::Invoke,
+    };
+    let done = ask::<P>(window, query_kind::ACT, element, action.value())
         .is_some_and(|answer| Outcome::from_value(answer.outcome) == Outcome::Done);
     if !done {
         say::<P>(Source::Read, Priority::Interrupt, CANNOT);

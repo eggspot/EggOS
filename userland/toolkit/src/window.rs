@@ -49,6 +49,7 @@ const HANDLES_BACK: u32 = 16;
 const FOCUS_NAVIGABLE: u32 = 32;
 const SET_FORM: usize = 0x4004_772d;
 const SET_TEXT_FOCUS: usize = 0x4010_7730;
+const REPORT_ELEMENT: usize = 0x4030_7742;
 const ON_SCREEN_KEYBOARD: usize = 0xc014_7731;
 const ON_SCREEN_KEYBOARD_SET_MODE: u32 = 3;
 const SET_ROTATION: usize = 0x4004_7732;
@@ -501,6 +502,40 @@ impl Window {
             request[index * 4..index * 4 + 4].copy_from_slice(&value.to_ne_bytes());
         }
         self.server.ioctl(SET_TEXT_FOCUS, &mut request)
+    }
+
+    /// Reports the window's focused element to the screen reader and zoom (`REPORT_ELEMENT`,
+    /// D603): `kind` 0 the focus moved, 1 its value or state changed, 2 `character` was typed
+    /// into it; its place `index` of `count` among its siblings of its role (0 when none),
+    /// `container` its nearest container's id, and `elements` the element, then that
+    /// container, in an element tree's layout.
+    pub fn report_element(
+        &self,
+        kind: u32,
+        character: u32,
+        (index, count): (u16, u16),
+        container: u32,
+        elements: &[u8],
+    ) -> Result<(), Errno> {
+        let mut request = [0u8; 48];
+        let place = u32::from(index) | (u32::from(count) << 16);
+        for (at, word) in [self.id, kind, character, place, container]
+            .into_iter()
+            .enumerate()
+        {
+            request[at * 4..at * 4 + 4].copy_from_slice(&word.to_ne_bytes());
+        }
+        request[36..40].copy_from_slice(&(elements.len() as u32).to_ne_bytes());
+        request[40..48].copy_from_slice(&(elements.as_ptr() as u64).to_ne_bytes());
+        // SAFETY: the request reads its 48-byte argument, which this function owns, and at most
+        // `elements.len()` bytes at `elements`, which it borrows for the call and only reads.
+        let answer = unsafe {
+            call(
+                number::IOCTL,
+                [self.server.fd, REPORT_ELEMENT, request.as_mut_ptr() as usize, 0, 0, 0],
+            )
+        };
+        result(answer).map(|_| ())
     }
 }
 

@@ -27,6 +27,7 @@ mod reader_log_reply {
     pub const LOGGED: usize = 8;
     pub const ON: usize = 12;
     pub const FOCUSED: usize = 16;
+    pub const CAPTIONS_AND_RATE: usize = 20;
 }
 const LOG_BYTES: usize =
     READER_LOG_ENTRIES * (reader::UTTERANCE_HEADER_BYTES + reader::MAX_UTTERANCE_BYTES);
@@ -63,12 +64,14 @@ impl Write for Line {
     }
 }
 
-/// What `READ_READER_LOG` answered: the bytes written, the records, the last serial, whether
-/// the reader is on and the focused window.
+/// What `READ_READER_LOG` answered: the bytes written, the last serial, whether the reader is
+/// on, whether it shows captions and its words a minute.
 struct LogRead {
     written: usize,
     logged: u32,
     on: bool,
+    captions: bool,
+    rate: u32,
 }
 
 fn read_log<S: System>(
@@ -91,6 +94,8 @@ fn read_log<S: System>(
         written: word(reader_log_reply::WRITTEN) as usize,
         logged: word(reader_log_reply::LOGGED),
         on: word(reader_log_reply::ON) != 0,
+        captions: word(reader_log_reply::CAPTIONS_AND_RATE) >> 16 != 0,
+        rate: word(reader_log_reply::CAPTIONS_AND_RATE) & 0xffff,
     })
 }
 
@@ -216,6 +221,10 @@ fn status<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         out.begin_object();
         out.key("on");
         out.bool(read.on);
+        out.key("captions");
+        out.bool(read.captions);
+        out.key("rate");
+        out.u64(u64::from(read.rate));
         out.key("logged");
         out.u64(u64::from(read.logged));
         out.key("last");
@@ -228,7 +237,13 @@ fn status<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let _ = match read.on {
         true => write!(
             line,
-            "Screen reader on; {} utterances logged; last: {last}\n",
+            "Screen reader on; captions {}; {} words per minute; {} utterances logged; last: \
+             {last}\n",
+            match read.captions {
+                true => "on",
+                false => "off",
+            },
+            read.rate,
             read.logged
         ),
         false => write!(line, "Screen reader off; {} utterances logged.\n", read.logged),

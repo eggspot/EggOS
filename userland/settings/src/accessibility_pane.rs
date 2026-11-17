@@ -1,18 +1,21 @@
-//! The Accessibility pane (D205, D224, D602; docs/ux/first-run-accessibility-v0.3.md section 2
-//! and docs/ux/accessibility-v0.4.md section 4.1): under `Seeing`, high contrast, reduce
-//! motion, zoom and its level, and the pointer's size; under `Keys and pointer`, sticky keys,
-//! slow keys and their delay, bounce keys and theirs, toggle keys, mouse keys and their top
-//! speed; and full keyboard navigation, always on. Each change is one
-//! [`Request::ChangeDisplay`] or [`Request::ChangeKeys`] the program saves, then applies.
+//! The Accessibility pane (D205, D224, D602, D603; docs/ux/first-run-accessibility-v0.3.md
+//! section 2 and docs/ux/accessibility-v0.4.md section 4.1): under `Seeing`, high contrast,
+//! reduce motion, the screen reader, zoom and its level, and the pointer's size; under `Keys and
+//! pointer`, sticky keys, slow keys and their delay, bounce keys and theirs, toggle keys, mouse
+//! keys and their top speed; and full keyboard navigation, always on. Each change is one
+//! [`Request::ChangeDisplay`], [`Request::ChangeReader`] or [`Request::ChangeKeys`] the program
+//! saves, then applies.
 
 use crate::agents_pane::show_line;
 use crate::facts::Facts;
 use crate::input_panes::Reply;
-use crate::keys::{DisplayChange, KeysChange};
+use crate::keys::{DisplayChange, KeysChange, ReaderChange};
 use crate::settings_window::{CAPACITY, Request};
 use alloc::vec::Vec;
 use eggos_runtime::errno::Errno;
-use eggos_settings_file::{DisplayAccessibility, KeyAccessibility, POINTER_SIZES, ZOOM_LEVELS};
+use eggos_settings_file::{
+    DisplayAccessibility, KeyAccessibility, POINTER_SIZES, ScreenReaderSettings, ZOOM_LEVELS,
+};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
@@ -55,11 +58,13 @@ fn from_right(top: i32, width: i32) -> Place {
     }
 }
 
-/// What the pane's controls show: the display's and the keys' accessibility.
+/// What the pane's controls show: the display's and the keys' accessibility and the screen
+/// reader's settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shown {
     pub display: DisplayAccessibility,
     pub keys: KeyAccessibility,
+    pub reader: ScreenReaderSettings,
 }
 
 impl Shown {
@@ -68,6 +73,7 @@ impl Shown {
         Self {
             display: facts.display,
             keys: facts.keys,
+            reader: facts.screen_reader,
         }
     }
 }
@@ -96,6 +102,7 @@ pub struct AccessibilityPane {
     navigation: [WidgetId; 3],
     contrast: WidgetId,
     motion: WidgetId,
+    reader: WidgetId,
     zoom: WidgetId,
     level: WidgetId,
     pointer_size: WidgetId,
@@ -176,6 +183,7 @@ impl AccessibilityPane {
         rows.heading("Seeing");
         let contrast = rows.check("High contrast", "White on black, every edge drawn.");
         let motion = rows.check("Reduce motion", "No blinking, no animation.");
+        let reader = rows.check("Screen reader", "Shows what it reads in a caption panel.");
         let zoom = rows.check("Zoom", "Magnifies the screen around the focus.");
         let level = rows.control(
             "Level",
@@ -264,6 +272,7 @@ impl AccessibilityPane {
             navigation,
             contrast,
             motion,
+            reader,
             zoom,
             level,
             pointer_size,
@@ -363,10 +372,15 @@ impl AccessibilityPane {
 
     /// Shows `shown` in the controls; a dependent control is enabled while its checkbox is.
     pub fn show(&self, tree: &mut WidgetTree<CAPACITY>, shown: Shown) {
-        let Shown { display, keys } = shown;
+        let Shown {
+            display,
+            keys,
+            reader,
+        } = shown;
         for (check, on) in [
             (self.contrast, display.high_contrast),
             (self.motion, display.reduce_motion),
+            (self.reader, reader.on),
             (self.zoom, display.zoom),
             (self.sticky, keys.sticky_keys),
             (self.slow, keys.slow_keys),
@@ -467,6 +481,13 @@ impl AccessibilityPane {
         if let Some(change) = display {
             let unchanged = change.applied_to(shown.display) == shown.display;
             return Reply::Done((!unchanged).then_some(Request::ChangeDisplay(change)));
+        }
+        if let Response::Toggled(id, on) = response
+            && id == self.reader
+        {
+            let change = ReaderChange::On(on);
+            let unchanged = change.applied_to(shown.reader) == shown.reader;
+            return Reply::Done((!unchanged).then_some(Request::ChangeReader(change)));
         }
         let keys = shown.keys;
         let change = match response {

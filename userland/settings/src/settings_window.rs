@@ -15,7 +15,7 @@ use crate::automatic_clock::{Adapter, AutomaticClock, ClockWidgets};
 use crate::components_pane::{self, ComponentsPane, ComponentsRead};
 use crate::facts::Facts;
 use crate::input_panes::{self, DisplayPane, InputPanes};
-use crate::keys::{DeviceChange, DisplayChange, InputChange, KeysChange};
+use crate::keys::{DeviceChange, DisplayChange, InputChange, KeysChange, ReaderChange};
 use crate::mouse_devices::MouseDevices;
 use crate::power_pane::{POWER_PANE_HEIGHT, PowerPane};
 use crate::network_pane::NetworkPane;
@@ -56,7 +56,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 /// The smallest content the user may resize it to: the three cards must fit the pane.
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
-pub const CAPACITY: usize = 281
+pub const CAPACITY: usize = 283
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -624,6 +624,9 @@ pub enum Request {
     /// Save this display accessibility setting, then apply it, then say how both went
     /// ([`SettingsWindow::display_changed`]) (D224).
     ChangeDisplay(DisplayChange),
+    /// Save this screen reader setting, then apply it, then say how both went
+    /// ([`SettingsWindow::reader_changed`]) (D603).
+    ChangeReader(ReaderChange),
     /// Save pointing device `device`'s (1 to 16) keys this change touches, then apply its own
     /// preferences, then say how both went ([`SettingsWindow::device_changed`]) (D601).
     ChangeDevice { device: u8, change: DeviceChange },
@@ -1652,6 +1655,21 @@ impl SettingsWindow {
     ) {
         if saved.is_ok() {
             self.facts.display = change.applied_to(self.facts.display);
+        }
+        self.accessibility
+            .changed(&mut self.tree, Shown::of(&self.facts), saved, applied);
+    }
+
+    /// How saving, then applying, a screen reader setting went ([`Request::ChangeReader`]):
+    /// `applied` is only looked at when `saved` worked.
+    pub fn reader_changed(
+        &mut self,
+        change: ReaderChange,
+        saved: Result<(), Errno>,
+        applied: Result<(), Errno>,
+    ) {
+        if saved.is_ok() {
+            self.facts.screen_reader = change.applied_to(self.facts.screen_reader);
         }
         self.accessibility
             .changed(&mut self.tree, Shown::of(&self.facts), saved, applied);

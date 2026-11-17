@@ -27296,3 +27296,61 @@ the license, by an explicit instruction recorded here.
   `CAPACITY` grows by 20.
 - **Not yet.** Building and running; the design's per-shape cursor choice at 3x; pinch zoom;
   the console's chips without a desktop.
+
+## D603 The screen reader (M12; D161's and D224's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/accessibility-v0.4.md section 1 and the pane's row 7, by Claude Fable)
+- **One stream, two sinks now.** The window server (`drivers/src/desktop/screen_reader.rs`)
+  keeps the utterances: a ring of 256 allocated the first time the reader turns on, a queue of
+  32, and the caption panel at the bottom of the work area (moved to the top while the focused
+  element or caret would sit under it), drawn after the zoom's lens so it is never magnified.
+  An interrupting utterance shows at once and drops the queue; a queued one waits
+  `500 + glyphs x 12000 / rate` ms. Speech, later, reads the same ring.
+- **What is said.** `Screen reader on/off`; the focused window (`Settings, window`,
+  `..., dialog`, `..., not responding`, or `Desktop 2 of 3`) on every focus change; the app's
+  focused element, its container first when that changed, its value or state changes and the
+  characters typed (echo); notices; strip notices (toggle keys, mouse keys, zoom); sticky keys
+  (`Shift latched`, `locked`, `released`); mouse keys' button (`Right button selected`); the
+  window switcher (`Files, 2 of 5`); an agent's input (`Agent: clicked in Files`); a window that
+  opened without the focus (`Downloads, window opened`).
+- **The wording** is one function, `eggos_element_tree::reader::utterance` (name, role, value,
+  state, position), used by the kernel for reports and the reading keys and by
+  `screen-reader read`.
+- **Reports from apps.** The server sends `READER_CHANGED` (record 24) while the reader or zoom
+  is on. The toolkit (`userland/toolkit/src/focus_report.rs`) then describes its tree after each
+  input, tick and focus-in, finds the `FOCUSED` element and sends `REPORT_ELEMENT` (request 66,
+  48 bytes: kind, character, place among its role's siblings, container id, caret, the element
+  and its container in tree layout) when it moved (focus), changed (a fingerprint of its flags,
+  name and value) or took a typed character (echo). `GET_TREE`'s answer and the report share
+  `write_tree`. The kernel words it, brings it into the zoom's view and keeps the caption panel
+  clear of it.
+- **Reading keys.** Caps Lock or Insert held, and Ctrl+Alt in the macOS profile, with Right,
+  Left, Home, End, Up, T, W, R, Enter or Esc; a Ctrl tapped alone stops. The kernel's reader
+  thread pulls the focused window's tree (`GET_TREE`, 500 ms) for every command; the reading
+  cursor is an element id (`wm show`'s). Reader+Enter invokes the element, or focuses a text
+  field or text area.
+  - **Caps Lock**: instead of deferring the toggle to the release, as the design asks, the
+    server gives the toggle back (`undo_caps_lock_toggle`) on the first chord while Caps Lock is
+    held. Same result for the person, and the kernel's key path stays unchanged.
+  - **Insert** reaches the app as a key press before a chord; nothing in EggOS acts on a bare
+    Insert press yet.
+- **Toggle.** Super+F5, Super+Ctrl+Enter and Super+Alt+S in every profile run
+  `settings set accessibility.screen_reader`, as Shift x5 does for sticky keys.
+- **Settings.** Four keys (`accessibility.screen_reader`, `_captions`, `_rate` 100 to 400,
+  `_echo` `characters` or `none`) in `settings`, `settings_set` and docs/settings.md. A change
+  is saved, then `SET_ACCESSIBILITY` (request 65) sends all four with zoom and the pointer size.
+  The Accessibility pane gains `Screen reader` under `Seeing` (row 7); `CAPACITY` grows by 2.
+- **CLI.** `screen-reader on|off|status|log|read|say` (coreutils). `status` shows captions and
+  the rate, which `READ_READER_LOG` (request 67) now answers in its word at 20.
+  `SAY` is request 68; both need `Manage`, like `wm`.
+- **MCP.** `screen_reader_log` and `screen_reader_read` (view grant) and `screen_reader_say`
+  (run grant), twins of the CLI, and the resource `eggos://screen-reader/log` (view grant; the
+  last 50 lines, or `Screen reader is off.`).
+- **Not yet.**
+  - Building and running.
+  - Speech and `READER_STREAM`: `log --follow` polls every 200 ms.
+  - Shell popups other than the switcher: the launcher, power, window and wallpaper menus,
+    the overview and the panel's keyboard focus.
+  - Reports from the Windows layer (`WM_SETFOCUS`, `EN_CHANGE`) and the macOS layer
+    (first-responder changes); until then those windows are read by the reading keys.
+  - The caret's rect from the toolkit (sent as zeros; the element's bounds are used).
+  - The pane's captions, rate and echo controls: CLI and MCP only.
+  - The phone's and TV's panel places; touch exploration.

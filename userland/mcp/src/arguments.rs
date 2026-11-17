@@ -829,6 +829,23 @@ pub fn check(
     if tool.kind == Kind::ScreenCapture {
         screen_capture_arguments(&get, &mut checked)?;
     }
+    if tool.kind == Kind::ScreenReaderRead {
+        let window = whole(get("window"), MAX_WINDOW_ID, ArgumentProblem::BadWindow)?;
+        if window == Some(0) {
+            return Err(ArgumentProblem::BadWindow);
+        }
+        checked.window = window.map(|window| window as u32);
+    }
+    if tool.kind == Kind::ScreenReaderSay {
+        let queue = flag(get("queue"), "queue")?;
+        let text = text_argument(get("text"), "text")?.ok_or(ArgumentProblem::Missing("text"))?;
+        let parts = [
+            queue.then_some(Part::Fixed("--queue")),
+            Some(Part::Fixed("--")),
+            Some(Part::Given(text)),
+        ];
+        checked.words = given_words(&parts, decoded.words)?;
+    }
     if matches!(tool.kind, Kind::WmDesktopSwitch | Kind::WmDesktopClose) {
         checked.desktop = Some(desktop_number(get("number"))?);
     }

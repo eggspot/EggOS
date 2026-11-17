@@ -65,10 +65,12 @@ impl Desktop {
         if (latched, locked) == (self.sticky.latched, self.sticky.locked) {
             return;
         }
+        let before = (self.sticky.latched, self.sticky.locked);
         self.damage_sticky_strip(damage);
         self.sticky.latched = latched;
         self.sticky.locked = locked;
         self.damage_sticky_strip(damage);
+        self.reader_sticky_changed(before, (latched, locked), damage);
     }
 
     /// Sticky keys were turned `on` or off: the strip says so for [`NOTICE_MS`].
@@ -108,6 +110,9 @@ impl Desktop {
         self.damage_sticky_strip(damage);
         self.sticky.mouse_keys_button = words;
         self.damage_sticky_strip(damage);
+        if let Some(words) = words {
+            self.reader_mouse_button(words, damage);
+        }
     }
 
     /// Mouse keys are on or off now, so their toggle chord knows which way to turn them.

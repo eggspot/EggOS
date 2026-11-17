@@ -122,6 +122,18 @@ impl Desktop {
         let target = *self.window_at(slot);
         self.agent.driven = Some((target.id, self.now_ms));
         self.damage_driven(damage);
+        let verb = match input {
+            InjectedInput::Click { .. } => Some("clicked"),
+            InjectedInput::DoubleClick { .. } => Some("double-clicked"),
+            InjectedInput::Drag { .. } => Some("dragged"),
+            InjectedInput::Wheel { .. } => Some("scrolled"),
+            InjectedInput::Key { .. } => Some("pressed a key"),
+            InjectedInput::Character(_) => Some("typed"),
+            _ => None,
+        };
+        if let Some(verb) = verb {
+            self.reader_agent(verb, target.title(), damage);
+        }
         if let Some((x, y)) = input.point()
             && self.is_visible(slot)
         {

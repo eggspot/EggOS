@@ -760,8 +760,10 @@ pub const SCREEN_READER_OFF: CommandDefinition = CommandDefinition {
 };
 
 /// What `screen-reader status --json` writes (D603).
-pub const SCREEN_READER_STATUS_FIELDS: [Field; 3] = [
+pub const SCREEN_READER_STATUS_FIELDS: [Field; 5] = [
     field("on", FieldType::Boolean),
+    field("captions", FieldType::Boolean),
+    field("rate", FieldType::Integer),
     field("logged", FieldType::Integer),
     field("last", FieldType::Text),
 ];
@@ -770,8 +772,8 @@ pub const SCREEN_READER_STATUS_FIELDS: [Field; 3] = [
 pub const SCREEN_READER_STATUS: CommandDefinition = CommandDefinition {
     words: &["screen-reader", "status"],
     summary: "Says whether the screen reader is on and what it said last.",
-    description: "Prints whether the reader is on, how many utterances it logged since boot and \
-                  the last one. `screen-reader` alone is `screen-reader status`.",
+    description: "Prints whether the reader is on, whether it shows captions, its words a minute, \
+                  how many utterances it logged since boot and the last one. `screen-reader` alone is `screen-reader status`.",
     options: &[JSON_OPTION],
     operands: &[],
     outputs: Outputs {

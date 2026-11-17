@@ -414,6 +414,7 @@ pub mod reader_log_reply {
     pub const LOGGED: usize = 8;
     pub const ON: usize = 12;
     pub const FOCUSED: usize = 16;
+    pub const CAPTIONS_AND_RATE: usize = 20;
 }
 
 /// `REGISTER_HOT_KEY`'s flag in its modifiers word: give the hot key up.
@@ -722,9 +723,6 @@ pub enum Request {
     PickRegion,
     /// What closing the lid does from now on (D599): 0 sleep, 1 nothing, 2 power off.
     SetLidAction { action: u32 },
-    /// The screen reader's settings (D603: on, captions, words a minute, 1 to echo characters)
-    /// and how the screen is magnified and the pointer sized (D602: zoom on, its level, the
-    /// pointer's size in halves).
     /// The app's focused element for the screen reader and zoom (D603): window `window`;
     /// `kind` 0 the focus moved, 1 its value or state changed, 2 `character` was typed into
     /// it; its place `index` of `count` among the siblings that share its role (0 when none);
@@ -747,6 +745,9 @@ pub enum Request {
     /// An utterance of `length` bytes of UTF-8 at `buffer`, queued after what is said when
     /// `queue` is 1 (D603).
     Say { buffer: u64, length: u32, queue: u32 },
+    /// The screen reader's settings (D603: on, captions, words a minute, 1 to echo characters)
+    /// and how the screen is magnified and the pointer sized (D602: zoom on, its level, the
+    /// pointer's size in halves).
     SetAccessibility {
         screen_reader: u32,
         captions: u32,

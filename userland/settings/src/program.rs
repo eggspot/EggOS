@@ -39,6 +39,7 @@ use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
 use eggos_settings::keys::{
     DeviceChange, DeviceField, DisplayChange, InputChange, KeyboardChoice, KeysChange,
+    ReaderChange,
 };
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
@@ -1282,6 +1283,11 @@ impl command::Machine for Machine {
         save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
     }
 
+    fn save_reader(&mut self, change: ReaderChange) -> Result<(), &'static [u8]> {
+        let (key, value) = change.saved();
+        save_through_a_temporary_file(key, value.as_str()).map_err(Errno::message)
+    }
+
     fn apply_display(
         &mut self,
         theme: Theme,
@@ -1598,6 +1604,18 @@ impl Application<CAPACITY> for Settings {
                     Err(_) => Ok(()),
                 };
                 self.window.display_changed(change, saved, applied);
+            }
+            Some(Request::ChangeReader(change)) => {
+                let (key, value) = change.saved();
+                let saved = save_through_a_temporary_file(key, value.as_str());
+                let applied = match saved {
+                    Ok(()) => {
+                        let facts = self.window.facts();
+                        apply_display(facts.theme, facts.display, self.server.as_ref())
+                    }
+                    Err(_) => Ok(()),
+                };
+                self.window.reader_changed(change, saved, applied);
             }
             Some(Request::ChangeInput(change)) => {
                 let (key, value) = change.saved();

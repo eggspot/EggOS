@@ -4,14 +4,15 @@
 
 use crate::canvas::Canvas;
 use crate::damage::Damage;
+use crate::focus_report::{self, FocusReports, READER_CHANGED};
 use crate::input::{self, Input, RECORD_SIZE};
 use crate::menu::POOL_CAPACITY;
 use crate::theme;
-use crate::tree::{COPIED_BYTES, PointerShape, ROOT_ELEMENT, Response, WidgetTree};
+use crate::tree::{COPIED_BYTES, PointerShape, Response, WidgetTree};
 use crate::widget::Kind;
 use crate::window::{Window, WindowServer, now_ms};
 use eggos_element_tree::{
-    Action, Bounds, Element, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, Role, TreeWriter,
+    Action, MAX_TEXT_BYTES, MAX_TREE_BYTES, Outcome, Query, TreeWriter,
     query_kind, tree_answer,
 };
 use eggos_runtime::errno::Errno;
@@ -106,14 +107,9 @@ fn answer(window: &Window, view: &mut impl View, query: &Query) {
     let server = window.server();
     if query.kind == query_kind::TREE {
         let mut bytes = [0u8; MAX_TREE_BYTES];
-        let mut tree = TreeWriter::new(&mut bytes);
-        let scale = window.scale().max(1);
-        let (width, height) = window.size();
-        let content = Bounds::new(0, 0, (width / scale) as i32, (height / scale) as i32);
-        tree.push(&Element::new(ROOT_ELEMENT, 0, Role::Window, content));
-        let (outcome, tree) = match view.describe(&mut tree) {
-            true => (tree_answer::TREE, tree.bytes()),
-            false => (tree_answer::PIXELS_ONLY, &[][..]),
+        let (outcome, tree) = match focus_report::write_tree(window, view, &mut bytes) {
+            Some(length) => (tree_answer::TREE, &bytes[..length]),
+            None => (tree_answer::PIXELS_ONLY, &[][..]),
         };
         let _ = server.answer_query(query.serial, outcome, tree);
         return;
@@ -224,7 +220,7 @@ pub trait View {
         None
     }
 
-    /// Writes the content's elements below [`ROOT_ELEMENT`] for an agent (D161, `wm show`);
+    /// Writes the content's elements below [`crate::tree::ROOT_ELEMENT`] for an agent (D161, `wm show`);
     /// `false` when the view describes none, so the agent sees pixels only.
     fn describe(&mut self, _tree: &mut TreeWriter<'_>) -> bool {
         false
@@ -486,6 +482,7 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
     view.set_global_menu(global);
     let mut sent_menu: Option<([u8; POOL_CAPACITY], usize)> = None;
     let mut sent_text_focus = (TEXT_FOCUS_NONE, 0);
+    let mut focus_reports = FocusReports::default();
     loop {
         sync_main_menu(window, view, global, &mut sent_menu);
         if let Some(title) = view.take_title() {
@@ -509,6 +506,7 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
         let watched = view.watched_descriptor();
         let (read, watched_ready) = window.read_events_or(&mut records, timeout, watched)?;
         view.tick(now_ms());
+        focus_reports.report(window, view, None);
         if watched_ready && !view.descriptor_ready(now_ms()) {
             return Ok(());
         }
@@ -523,6 +521,11 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                 view.palette_changed(palette);
                 view.motion_changed(record_word(record, 12) == 1);
                 everything = true;
+                continue;
+            }
+            if u32::from(for_window) == window.id() && kind == READER_CHANGED {
+                focus_reports.set_wanted(record_word(record, 8) == 1);
+                focus_reports.report(window, view, None);
                 continue;
             }
             if u32::from(for_window) == window.id() && kind == MENU_CHOSEN {
@@ -569,6 +572,19 @@ pub fn run_view(window: &mut Window, view: &mut impl View) -> Result<(), Errno> 
                     if !view.handle(in_scale_1(other, scale as i32), event.time_ms) {
                         return Ok(());
                     }
+                    let typed = match other {
+                        Input::Key {
+                            pressed: true,
+                            character,
+                            ..
+                        } => char::from_u32(character).filter(|&typed| typed != '\0'),
+                        Input::FocusIn => {
+                            focus_reports.forget();
+                            None
+                        }
+                        _ => None,
+                    };
+                    focus_reports.report(window, view, typed);
                     let focus = view.text_focus();
                     let cause = match other {
                         Input::Button { pressed: true, .. } => Some(FOCUS_BY_TAP),

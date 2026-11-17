@@ -10,7 +10,7 @@ use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
     DeviceInputPreferences, DisplayAccessibility, InputPreferences, KEYBOARD_LAYOUT_SET_CAPACITY,
     KEYBOARD_LAYOUTS, KeyAccessibility, KeyboardLayoutSet, LayoutSetRefusal, MAX_KEYBOARD_LAYOUTS,
-    PROFILES, SwitchKey,
+    PROFILES, ScreenReaderSettings, SwitchKey,
 };
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Theme;
@@ -55,6 +55,10 @@ pub enum Key {
     StickyKeys,
     SlowKeys,
     SlowKeysMs,
+    ScreenReader,
+    ScreenReaderCaptions,
+    ScreenReaderRate,
+    ScreenReaderEcho,
     Zoom,
     ZoomLevel,
     PointerSize,
@@ -221,6 +225,8 @@ pub enum Change {
     Keys(KeysChange),
     /// High contrast or reduced motion, shown at once (D224).
     Display(DisplayChange),
+    /// One screen reader setting, used at once (D603).
+    Reader(ReaderChange),
     /// What closing the lid does, from the next close (D599).
     LidAction(eggos_settings_file::LidAction),
     /// One pointing device's own preferences (`device` 1 to 16), used from its next move (D601).
@@ -415,6 +421,61 @@ impl DisplayChange {
     }
 }
 
+/// One screen reader setting's new value (D603).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderChange {
+    On(bool),
+    Captions(bool),
+    /// Words a minute, 100 to 400.
+    Rate(u32),
+    EchoCharacters(bool),
+}
+
+impl ReaderChange {
+    /// `reader` with this one changed.
+    pub const fn applied_to(self, reader: ScreenReaderSettings) -> ScreenReaderSettings {
+        let mut changed = reader;
+        match self {
+            Self::On(on) => changed.on = on,
+            Self::Captions(on) => changed.captions = on,
+            Self::Rate(rate) => changed.rate = rate,
+            Self::EchoCharacters(on) => changed.echo_characters = on,
+        }
+        changed
+    }
+
+    /// The setting it changes and its value as the settings file holds it.
+    pub fn saved(self) -> (&'static str, Value) {
+        let mut value = Value::new();
+        let key = match self {
+            Self::On(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::SCREEN_READER
+            }
+            Self::Captions(on) => {
+                let _ = value.write_str(boolean_name(on));
+                eggos_settings_file::SCREEN_READER_CAPTIONS
+            }
+            Self::Rate(rate) => {
+                let _ = write!(value, "{rate}");
+                eggos_settings_file::SCREEN_READER_RATE
+            }
+            Self::EchoCharacters(on) => {
+                let _ = value.write_str(echo_name(on));
+                eggos_settings_file::SCREEN_READER_ECHO
+            }
+        };
+        (key, value)
+    }
+}
+
+const fn echo_name(characters: bool) -> &'static str {
+    match characters {
+        true => "characters",
+        false => "none",
+    }
+}
+
 fn pointer_size_name(halves: u32) -> &'static str {
     eggos_settings_file::POINTER_SIZES
         .iter()
@@ -535,7 +596,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 55] = [
+    pub const ALL: [Self; 59] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -566,6 +627,10 @@ impl Key {
         Self::StickyKeys,
         Self::SlowKeys,
         Self::SlowKeysMs,
+        Self::ScreenReader,
+        Self::ScreenReaderCaptions,
+        Self::ScreenReaderRate,
+        Self::ScreenReaderEcho,
         Self::Zoom,
         Self::ZoomLevel,
         Self::PointerSize,
@@ -629,6 +694,10 @@ impl Key {
             Self::StickyKeys => eggos_settings_file::STICKY_KEYS,
             Self::SlowKeys => eggos_settings_file::SLOW_KEYS,
             Self::SlowKeysMs => eggos_settings_file::SLOW_KEYS_MS,
+            Self::ScreenReader => eggos_settings_file::SCREEN_READER,
+            Self::ScreenReaderCaptions => eggos_settings_file::SCREEN_READER_CAPTIONS,
+            Self::ScreenReaderRate => eggos_settings_file::SCREEN_READER_RATE,
+            Self::ScreenReaderEcho => eggos_settings_file::SCREEN_READER_ECHO,
             Self::Zoom => eggos_settings_file::ZOOM,
             Self::ZoomLevel => eggos_settings_file::ZOOM_LEVEL,
             Self::PointerSize => eggos_settings_file::POINTER_SIZE,
@@ -719,6 +788,10 @@ impl Key {
                 | Self::StickyKeys
                 | Self::SlowKeys
                 | Self::SlowKeysMs
+                | Self::ScreenReader
+                | Self::ScreenReaderCaptions
+                | Self::ScreenReaderRate
+                | Self::ScreenReaderEcho
                 | Self::Zoom
                 | Self::ZoomLevel
                 | Self::PointerSize
@@ -796,6 +869,8 @@ impl Key {
             | Self::ReduceMotion
             | Self::StickyKeys
             | Self::SlowKeys
+            | Self::ScreenReader
+            | Self::ScreenReaderCaptions
             | Self::Zoom
             | Self::BounceKeys
             | Self::ToggleKeys
@@ -807,6 +882,12 @@ impl Key {
             }
             Self::ZoomLevel => {
                 let _ = choices.write_str("2, 3, 4, 6 or 8");
+            }
+            Self::ScreenReaderRate => {
+                let _ = choices.write_str("100 to 400");
+            }
+            Self::ScreenReaderEcho => {
+                write_choices(&mut choices, &eggos_settings_file::SCREEN_READER_ECHOES)
             }
             Self::PointerSize => {
                 let _ = choices.write_str("1, 1.5, 2 or 3");
@@ -927,6 +1008,12 @@ impl Key {
             Self::StickyKeys => value.write_str(boolean_name(facts.keys.sticky_keys)),
             Self::SlowKeys => value.write_str(boolean_name(facts.keys.slow_keys)),
             Self::SlowKeysMs => write!(value, "{}", facts.keys.slow_keys_ms),
+            Self::ScreenReader => value.write_str(boolean_name(facts.screen_reader.on)),
+            Self::ScreenReaderCaptions => {
+                value.write_str(boolean_name(facts.screen_reader.captions))
+            }
+            Self::ScreenReaderRate => write!(value, "{}", facts.screen_reader.rate),
+            Self::ScreenReaderEcho => value.write_str(echo_name(facts.screen_reader.echo_characters)),
             Self::Zoom => value.write_str(boolean_name(facts.display.zoom)),
             Self::ZoomLevel => write!(value, "{}", facts.display.zoom_level),
             Self::PointerSize => {
@@ -1066,6 +1153,17 @@ impl Key {
             Self::SlowKeys => boolean(value).map(|on| Change::Keys(KeysChange::SlowKeys(on))),
             Self::SlowKeysMs => number_within(value, 100, 1000)
                 .map(|delay| Change::Keys(KeysChange::SlowKeysMs(delay))),
+            Self::ScreenReader => boolean(value).map(|on| Change::Reader(ReaderChange::On(on))),
+            Self::ScreenReaderCaptions => {
+                boolean(value).map(|on| Change::Reader(ReaderChange::Captions(on)))
+            }
+            Self::ScreenReaderRate => number_within(value, 100, 400)
+                .map(|rate| Change::Reader(ReaderChange::Rate(rate))),
+            Self::ScreenReaderEcho => match value {
+                "characters" => Ok(Change::Reader(ReaderChange::EchoCharacters(true))),
+                "none" => Ok(Change::Reader(ReaderChange::EchoCharacters(false))),
+                _ => Err(Refusal::InvalidValue),
+            },
             Self::Zoom => boolean(value).map(|on| Change::Display(DisplayChange::Zoom(on))),
             Self::ZoomLevel => number_within(value, 2, 8)
                 .ok()
@@ -1306,6 +1404,10 @@ mod tests {
                 ("accessibility.sticky_keys", "false".to_owned()),
                 ("accessibility.slow_keys", "false".to_owned()),
                 ("accessibility.slow_keys_ms", "300".to_owned()),
+                ("accessibility.screen_reader", "false".to_owned()),
+                ("accessibility.screen_reader_captions", "true".to_owned()),
+                ("accessibility.screen_reader_rate", "200".to_owned()),
+                ("accessibility.screen_reader_echo", "characters".to_owned()),
                 ("accessibility.zoom", "false".to_owned()),
                 ("accessibility.zoom_level", "2".to_owned()),
                 ("accessibility.pointer_size", "1".to_owned()),

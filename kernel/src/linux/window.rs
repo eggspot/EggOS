@@ -489,16 +489,17 @@ pub fn ioctl<P: Platform>(
             let mut records = Vec::new();
             records.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
             records.resize(length, 0);
-            let (written, count, logged, on, focused) = on_windows::<P, _>(|desktop, _, _, _| {
-                let (written, count) = desktop.read_reader_log(since, &mut records);
-                Ok((
-                    written,
-                    count,
-                    desktop.reader_logged().0,
-                    desktop.screen_reader().on,
-                    desktop.focused_window().map_or(0, u32::from),
-                ))
-            })?;
+            let (written, count, logged, settings, focused) =
+                on_windows::<P, _>(|desktop, _, _, _| {
+                    let (written, count) = desktop.read_reader_log(since, &mut records);
+                    Ok((
+                        written,
+                        count,
+                        desktop.reader_logged().0,
+                        desktop.screen_reader(),
+                        desktop.focused_window().map_or(0, u32::from),
+                    ))
+                })?;
             if written > 0 {
                 process
                     .write_user_memory(buffer, &records[..written])
@@ -508,8 +509,13 @@ pub fn ioctl<P: Platform>(
             put_word(bytes, protocol::reader_log_reply::WRITTEN, written as u32);
             put_word(bytes, protocol::reader_log_reply::RECORDS, count);
             put_word(bytes, protocol::reader_log_reply::LOGGED, logged);
-            put_word(bytes, protocol::reader_log_reply::ON, u32::from(on));
+            put_word(bytes, protocol::reader_log_reply::ON, u32::from(settings.on));
             put_word(bytes, protocol::reader_log_reply::FOCUSED, focused);
+            put_word(
+                bytes,
+                protocol::reader_log_reply::CAPTIONS_AND_RATE,
+                (u32::from(settings.captions) << 16) | (settings.rate & 0xffff),
+            );
             process
                 .write_user_memory(argument, bytes)
                 .map_err(|_| Errno::EFAULT)?;
