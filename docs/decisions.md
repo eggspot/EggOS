@@ -27776,3 +27776,28 @@ the license, by an explicit instruction recorded here.
   the selection; a read-only area moves but deletes nothing; a masked field is one word.
 - **Not yet.** Building and running; the word deletion as its own undo step waits for the
   undo item (section 5.1); the rest of the brief, in docs/follow-ups.md.
+
+
+## D625 Undo and redo in text fields and areas (M7; toolkit v0.6 section 5.1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **History.** A new `undo` module keeps `History<STEPS, BYTES>`: fixed arrays of steps (the
+  edit's byte, removed and inserted lengths, the caret and anchor before it, its kind, its last
+  time, whether it is open) and of their text, oldest first, nothing allocated. An edit is
+  staged (the text it removes) then committed (the text it inserted); it joins the open step
+  when it is the same kind (typing, a run of Backspace, a run of Delete), within
+  `UNDO_GROUP_MS` (1000 ms), with no selection and the caret where the step left it, and the
+  text is adjacent; a backward deletion rotates its bytes in front of the step's. Anything else,
+  and every paste, cut, Enter and word deletion, is a step of its own. A new edit drops the redo
+  steps; the oldest steps go when the budget runs out; an edit larger than the budget clears it.
+- **Where.** Text areas: one `AreaHistory` (64 steps, 8 KiB) per store, in a parallel array of
+  the tree (`area_histories`), so the history borrows apart from the bytes; edits record
+  themselves in `replace_selection` and `delete_to` through `edit_area_with`, and a change that
+  did not record itself (a dead key's, a program's `set_text`) clears the history. A caret
+  move closes the open step, as does losing the focus. Text fields: one `FieldHistory`
+  (16 steps, 512 bytes) for the focused field, recorded in `edit_field` by comparing the text
+  before and after (`record_difference`, the change kept at or before the caret or the
+  selection's end), cleared when the focus moves and on `set_text`. Mod+Z undoes,
+  Mod+Shift+Z and Mod+Y (new `key::Y`, 21) redo; both put the caret and the anchor back and
+  return `Edited`, or `Nothing` with nothing to do; a read-only area records and undoes
+  nothing.
+- **Not yet.** Building and running; the acceptance cases of the brief's section 9 as host
+  tests of the tree (the module's own tests cover grouping, redo and the budget).

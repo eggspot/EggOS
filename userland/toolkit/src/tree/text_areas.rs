@@ -6,6 +6,7 @@ use crate::input::key;
 use crate::text::Text;
 use crate::text_area::{self, Store, TextArea};
 use crate::text_keys::{self, TextKey};
+use crate::undo::{AreaHistory, EditKind};
 use crate::widget::TEXT_AREA_LINE_PITCH;
 
 /// The word of `text` around byte `at`, as a field's double click finds it, within the line
@@ -45,6 +46,20 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         now_ms: u32,
         edit: impl FnOnce(&mut TextArea, &mut Store) -> bool,
     ) -> bool {
+        self.edit_area_with(id, now_ms, |area, store, _| {
+            edit(area, store).then_some(usize::MAX)
+        })
+    }
+
+    /// [`Self::edit_area`] with the area's undo history, for an edit that records itself, an
+    /// undo or a redo; `edit` gives the first byte it changed, None when nothing changed. A
+    /// change that left the history as it was clears it.
+    pub(super) fn edit_area_with(
+        &mut self,
+        id: WidgetId,
+        now_ms: u32,
+        edit: impl FnOnce(&mut TextArea, &mut Store, &mut AreaHistory) -> Option<usize>,
+    ) -> bool {
         let Some(node) = self.nodes.get_mut(id.index()).and_then(Option::as_mut) else {
             return false;
         };
@@ -52,13 +67,26 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let Kind::TextArea(area) = &mut node.kind else {
             return false;
         };
-        let Some(store) = self.stores.get_mut(area.store) else {
+        let (Some(store), Some(history)) = (
+            self.stores.get_mut(area.store),
+            self.area_histories.get_mut(area.store),
+        ) else {
             return false;
         };
         let from = area.caret.min(area.anchor);
-        let changed = edit(area, store);
-        if changed {
-            store.wrap(from.min(area.caret), text_area::inner(rect).width);
+        let (caret, changes) = (area.caret, history.changes());
+        let first = edit(area, store, history);
+        let changed = first.is_some();
+        if changed && history.changes() == changes {
+            history.clear();
+        } else if !changed && area.caret != caret {
+            history.close();
+        }
+        if let Some(first) = first {
+            store.wrap(
+                from.min(area.caret).min(first),
+                text_area::inner(rect).width,
+            );
             area.lines = store.line_count();
             area.wanted_x = None;
         }
@@ -192,7 +220,53 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         };
     }
 
-    fn replace_selection(area: &mut TextArea, store: &mut Store, words: &str) -> bool {
+    fn replace_selection(
+        area: &mut TextArea,
+        store: &mut Store,
+        history: &mut AreaHistory,
+        words: &str,
+        kind: EditKind,
+        now_ms: u32,
+    ) -> bool {
+        let (start, end) = area.selection();
+        let (caret, anchor) = (area.caret, area.anchor);
+        history.stage(store.text().get(start..end).unwrap_or(""));
+        let changed = Self::replace_selection_unrecorded(area, store, words);
+        history.commit(
+            start,
+            store.text().get(start..area.caret).unwrap_or(""),
+            caret,
+            anchor,
+            kind,
+            now_ms,
+        );
+        changed
+    }
+
+    fn delete_to(
+        area: &mut TextArea,
+        store: &mut Store,
+        history: &mut AreaHistory,
+        target: usize,
+        kind: EditKind,
+        now_ms: u32,
+    ) -> bool {
+        let (caret, anchor) = (area.caret, area.anchor);
+        let kind = match caret == anchor {
+            true => {
+                area.anchor = target;
+                kind
+            }
+            false => EditKind::Alone,
+        };
+        let (start, end) = area.selection();
+        history.stage(store.text().get(start..end).unwrap_or(""));
+        let changed = Self::replace_selection_unrecorded(area, store, "");
+        history.commit(start, "", caret, anchor, kind, now_ms);
+        changed
+    }
+
+    fn replace_selection_unrecorded(area: &mut TextArea, store: &mut Store, words: &str) -> bool {
         let (start, end) = area.selection();
         let mut changed = start != end;
         store.remove(start, end);
@@ -225,8 +299,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if matches!(self.kind(id), Some(Kind::TextArea(area)) if area.read_only) {
             return Response::Nothing;
         }
-        let changed = self.edit_area(id, now_ms, |area, store| {
-            Self::replace_selection(area, store, text)
+        let changed = self.edit_area_with(id, now_ms, |area, store, history| {
+            Self::replace_selection(area, store, history, text, EditKind::Alone, now_ms)
+                .then_some(usize::MAX)
         });
         match changed {
             true => Response::Edited(id),
@@ -261,6 +336,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
         if shortcut {
             match code {
+                key::Z | key::Y if area.read_only => return Response::Nothing,
+                key::Z | key::Y => {
+                    let redo = code == key::Y || extend;
+                    return self.area_undo(id, redo, now_ms);
+                }
                 key::A => {
                     self.edit_area(id, now_ms, |area, store| {
                         area.anchor = 0;
@@ -277,8 +357,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         .unwrap_or("");
                     self.copied = Text::from(copied);
                     if code == key::X && !area.read_only {
-                        self.edit_area(id, now_ms, |area, store| {
-                            Self::replace_selection(area, store, "")
+                        self.edit_area_with(id, now_ms, |area, store, history| {
+                            Self::replace_selection(area, store, history, "", EditKind::Alone, now_ms)
+                                .then_some(usize::MAX)
                         });
                         return Response::Cut(id);
                     }
@@ -336,17 +417,19 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             };
         }
         let edited = match code {
-            key::ENTER => self.edit_area(id, now_ms, |area, store| {
-                Self::replace_selection(area, store, "\n")
+            key::ENTER => self.edit_area_with(id, now_ms, |area, store, history| {
+                Self::replace_selection(area, store, history, "\n", EditKind::Alone, now_ms)
+                    .then_some(usize::MAX)
             }),
-            key::BACKSPACE | key::DELETE => self.edit_area(id, now_ms, |area, store| {
-                if area.caret == area.anchor {
-                    area.anchor = match code {
-                        key::BACKSPACE => store.previous_boundary(area.caret),
-                        _ => store.next_boundary(area.caret),
-                    };
-                }
-                Self::replace_selection(area, store, "")
+            key::BACKSPACE | key::DELETE => self.edit_area_with(id, now_ms, |area, store, history| {
+                let (target, kind) = match code {
+                    key::BACKSPACE => (
+                        store.previous_boundary(area.caret),
+                        EditKind::DeletingBackward,
+                    ),
+                    _ => (store.next_boundary(area.caret), EditKind::DeletingForward),
+                };
+                Self::delete_to(area, store, history, target, kind, now_ms).then_some(usize::MAX)
             }),
             key::TAB | key::ESC => return unused,
             _ => {
@@ -357,12 +440,33 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 };
                 let mut bytes = [0; 4];
                 let typed = typed.encode_utf8(&mut bytes);
-                self.edit_area(id, now_ms, |area, store| {
-                    Self::replace_selection(area, store, typed)
+                self.edit_area_with(id, now_ms, |area, store, history| {
+                    Self::replace_selection(area, store, history, typed, EditKind::Typing, now_ms)
+                        .then_some(usize::MAX)
                 })
             }
         };
         match edited {
+            true => Response::Edited(id),
+            false => Response::Nothing,
+        }
+    }
+
+    fn area_undo(&mut self, id: WidgetId, redo: bool, now_ms: u32) -> Response {
+        let changed = self.edit_area_with(id, now_ms, |area, store, history| {
+            let change = match redo {
+                true => history.redo(),
+                false => history.undo(),
+            }?;
+            let end = (change.at + change.remove).min(store.len());
+            store.remove(change.at.min(end), end);
+            store.insert(change.at.min(store.len()), change.insert);
+            area.caret = change.caret.min(store.len());
+            area.anchor = change.anchor.min(store.len());
+            area.wanted_x = None;
+            Some(change.at)
+        });
+        match changed {
             true => Response::Edited(id),
             false => Response::Nothing,
         }
@@ -381,7 +485,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if text_key.deletes() && area.read_only {
             return Response::Nothing;
         }
-        let edited = self.edit_area(id, now_ms, |area, store| {
+        let edited = self.edit_area_with(id, now_ms, |area, store, history| {
             let words = store.text();
             let line = store.line_of(area.caret);
             let target = match text_key {
@@ -398,16 +502,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             };
             area.wanted_x = None;
             if text_key.deletes() {
-                if area.caret == area.anchor {
-                    area.anchor = target;
-                }
-                return Self::replace_selection(area, store, "");
+                return Self::delete_to(area, store, history, target, EditKind::Alone, now_ms)
+                    .then_some(usize::MAX);
             }
             area.caret = target;
             if !extend {
                 area.anchor = target;
             }
-            false
+            None
         });
         match edited {
             true => Response::Edited(id),

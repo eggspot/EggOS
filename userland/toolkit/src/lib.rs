@@ -31,6 +31,7 @@ pub mod text_keys;
 pub mod theme;
 pub mod tooltip;
 pub mod tree;
+pub mod undo;
 pub mod widget;
 #[cfg(eggos_user)]
 pub mod window;

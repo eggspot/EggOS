@@ -39,6 +39,7 @@ pub mod key {
     pub const RIGHT_SUPER: u16 = 126;
     pub const MENU: u16 = 127;
     pub const Z: u16 = 44;
+    pub const Y: u16 = 21;
     pub const F: u16 = 33;
     pub const Q: u16 = 16;
     pub const CAPS_LOCK: u16 = 58;

@@ -10,6 +10,7 @@ use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::text::Text;
 use crate::text_area::Store;
 use crate::text_keys;
+use crate::undo::{self, AreaHistory, EditKind, FieldHistory};
 use crate::theme::{self, Palette};
 use crate::widget::{
     self, DropMode, Field, FieldKey, FormFactor, Horizontal, Kind, Length, List, Look, Place,
@@ -202,6 +203,10 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     pick: Option<drags::Pick>,
     foreign: Option<drags::Foreign>,
     stores: [Store; A],
+    area_histories: [AreaHistory; A],
+    field_history: FieldHistory,
+    field_edit_kind: EditKind,
+    replaying_field: bool,
 }
 
 /// The most bytes a copy or a cut hands to the clipboard.
@@ -262,6 +267,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             pick: None,
             foreign: None,
             stores: [Store::EMPTY; A],
+            area_histories: [const { AreaHistory::EMPTY }; A],
+            field_history: FieldHistory::EMPTY,
+            field_edit_kind: EditKind::Alone,
+            replaying_field: false,
         }
     }
 
@@ -352,6 +361,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.count += 1;
         if let Kind::TextArea(area) = kind {
             self.stores[area.store] = Store::EMPTY;
+            self.area_histories[area.store].clear();
         }
         Some(id)
     }
@@ -394,7 +404,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if self.text_of(id) == Some(words) {
             return;
         }
+        if self.focus == Some(id) {
+            self.field_history.clear();
+        }
         if let Some(Kind::TextArea(area)) = self.kind(id).copied() {
+            self.area_histories[area.store].clear();
             self.stores[area.store].set(words);
             let length = self.stores[area.store].len();
             self.edit_area(id, 0, |area, _| {
@@ -1280,8 +1294,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return;
         }
         if let Some(old) = self.focus {
+            if let Some(Kind::TextArea(area)) = self.kind(old).copied()
+                && let Some(history) = self.area_histories.get_mut(area.store)
+            {
+                history.close();
+            }
             self.damage_widget(old);
         }
+        self.field_history.clear();
         self.focus = id;
         self.dead_key = None;
         if let Some(new) = id {
@@ -2026,6 +2046,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if matches!(self.kind(id), Some(Kind::TextArea(_))) {
             return self.area_paste(id, text, now_ms);
         }
+        self.field_edit_kind = EditKind::Alone;
         let changed = self.edit_field(id, now_ms, |field| {
             let mut changed = field.remove_selection();
             for character in text.chars() {
@@ -2375,14 +2396,61 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         now_ms: u32,
         edit: impl FnOnce(&mut Field) -> bool,
     ) -> bool {
+        let kind = core::mem::replace(&mut self.field_edit_kind, EditKind::Alone);
         let Some(Kind::TextField(field)) = self.node_mut(id).map(|node| &mut node.kind) else {
             return false;
         };
+        let before = *field;
         let changed = edit(field);
+        let after = *field;
+        if self.focus == Some(id) && !self.replaying_field && before.text != after.text {
+            undo::record_difference(
+                &mut self.field_history,
+                before.text.as_str(),
+                after.text.as_str(),
+                before.caret,
+                before.anchor,
+                kind,
+                now_ms,
+            );
+        } else if before.caret != after.caret {
+            self.field_history.close();
+        }
         self.damage_widget(id);
         self.keep_caret_visible(id);
         self.restart_caret(now_ms);
         changed
+    }
+
+    fn field_undo(&mut self, id: WidgetId, field: Field, redo: bool, now_ms: u32) -> Response {
+        let change = match redo {
+            true => self.field_history.redo(),
+            false => self.field_history.undo(),
+        };
+        let Some(change) = change else {
+            return Response::Nothing;
+        };
+        let words = field.text.as_str();
+        let end = (change.at + change.remove).min(words.len());
+        let at = change.at.min(end);
+        let mut text = Text::<255>::from(&words[..at]);
+        for character in change.insert.chars().chain(words[end..].chars()) {
+            text.insert(text.len(), character);
+        }
+        let (caret, anchor) = (change.caret.min(text.len()), change.anchor.min(text.len()));
+        self.replaying_field = true;
+        let changed = self.edit_field(id, now_ms, |edited| {
+            let changed = edited.text != text;
+            edited.text = text;
+            edited.caret = caret;
+            edited.anchor = anchor;
+            changed
+        });
+        self.replaying_field = false;
+        match changed {
+            true => Response::Edited(id),
+            false => Response::Nothing,
+        }
     }
 
     fn keep_caret_visible(&mut self, id: WidgetId) {
@@ -2409,10 +2477,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if text_keys::left_to_program(code, self.held_keys, self.mac_text_keys) {
             return unused;
         }
+        if self.shortcut_held && matches!(code, key::Z | key::Y) {
+            let redo = code == key::Y || self.shift_held;
+            return self.field_undo(id, edited, redo, now_ms);
+        }
+        let selecting = edited.anchor != edited.caret;
+        self.field_edit_kind = match code {
+            key::BACKSPACE if !selecting => EditKind::DeletingBackward,
+            key::DELETE if !selecting => EditKind::DeletingForward,
+            key::BACKSPACE | key::DELETE | key::ESC | key::ENTER | key::TAB => EditKind::Alone,
+            _ if character != 0 && !command => EditKind::Typing,
+            _ => EditKind::Alone,
+        };
         let before = self.text_before_focus;
         let selected = Text::<255>::from(edited.selected());
         if let Some(text_key) = text_keys::text_key(code, self.held_keys, self.mac_text_keys) {
             let key = widget::field_text_key(&mut edited, text_key, self.shift_held);
+            self.field_edit_kind = EditKind::Alone;
             self.edit_field(id, now_ms, |field| {
                 *field = edited;
                 false
