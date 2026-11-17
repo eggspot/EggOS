@@ -10,7 +10,10 @@ use super::{
 };
 use crate::block::{BlockDevice, BlockError};
 use crate::devices::Deadline;
+use crate::sync::{SleepLock, Sleeping};
 use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_drivers::storage::{self, ahci, nvme};
@@ -55,7 +58,32 @@ fn block_error(error: storage::Error) -> BlockError {
     }
 }
 
-struct NvmeDisk(nvme::Nvme<Mmio, DmaRegion>, Option<&'static DeviceEvents>);
+/// One namespace of an NVMe controller as a disk (D613): the namespaces of a controller share
+/// it, each request choosing its namespace first.
+struct NvmeDisk {
+    controller: Arc<SleepLock<nvme::Nvme<Mmio, DmaRegion>>>,
+    events: Option<&'static DeviceEvents>,
+    namespace: usize,
+    sectors: u64,
+    block_bytes: usize,
+}
+
+impl NvmeDisk {
+    fn with<R>(
+        &mut self,
+        deadline: &mut Deadline,
+        request: impl FnOnce(
+            &mut nvme::Nvme<Mmio, DmaRegion>,
+            &mut dyn FnMut() -> bool,
+        ) -> Result<R, storage::Error>,
+    ) -> Result<R, BlockError> {
+        let mut controller = self.controller.lock();
+        controller.use_namespace(self.namespace);
+        request(&mut *controller, &mut waiting_for(self.events, deadline)).map_err(block_error)
+    }
+}
+
+static NVME_CONTROLLERS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 static NVME_EVENTS: [DeviceEvents; crate::block::MAX_DISKS] =
     [const { DeviceEvents::new() }; crate::block::MAX_DISKS];
@@ -68,13 +96,13 @@ fn take_nvme_events() -> Option<&'static DeviceEvents> {
 
 impl BlockDevice for NvmeDisk {
     fn sectors(&self) -> u64 {
-        self.0.sectors()
+        self.sectors
     }
     fn is_read_only(&self) -> bool {
         false
     }
     fn logical_block_bytes(&self) -> usize {
-        self.0.block_bytes()
+        self.block_bytes
     }
     fn read(
         &mut self,
@@ -82,9 +110,7 @@ impl BlockDevice for NvmeDisk {
         buffer: &mut [u8],
         deadline: &mut Deadline,
     ) -> Result<(), BlockError> {
-        self.0
-            .read(sector, buffer, &mut waiting_for(self.1, deadline))
-            .map_err(block_error)
+        self.with(deadline, |nvme, waiting| nvme.read(sector, buffer, waiting))
     }
     fn write(
         &mut self,
@@ -92,14 +118,10 @@ impl BlockDevice for NvmeDisk {
         buffer: &[u8],
         deadline: &mut Deadline,
     ) -> Result<(), BlockError> {
-        self.0
-            .write(sector, buffer, &mut waiting_for(self.1, deadline))
-            .map_err(block_error)
+        self.with(deadline, |nvme, waiting| nvme.write(sector, buffer, waiting))
     }
     fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
-        self.0
-            .flush(&mut waiting_for(self.1, deadline))
-            .map_err(block_error)
+        self.with(deadline, |nvme, waiting| nvme.flush(waiting))
     }
     fn discard(
         &mut self,
@@ -107,9 +129,9 @@ impl BlockDevice for NvmeDisk {
         count: u64,
         deadline: &mut Deadline,
     ) -> Result<(), BlockError> {
-        self.0
-            .deallocate(sector, count, &mut waiting_for(self.1, deadline))
-            .map_err(block_error)
+        self.with(deadline, |nvme, waiting| {
+            nvme.deallocate(sector, count, waiting)
+        })
     }
 }
 
@@ -269,8 +291,33 @@ fn probe_nvme(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
     )?;
     let events =
         take_nvme_events().filter(|events| message_interrupts::connect(probe, id, events).is_ok());
-    crate::block::install(Box::new(NvmeDisk(controller, events)))
-        .map_err(|_| ProbeError::Refused("no room for another disk"))
+    let number = NVME_CONTROLLERS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let namespaces: Vec<nvme::Namespace> = controller.namespaces().to_vec();
+    let controller = Arc::new(SleepLock::new(controller, Sleeping::spinning()));
+    let mut installed = 0;
+    for (index, namespace) in namespaces.iter().enumerate() {
+        let disk = NvmeDisk {
+            controller: controller.clone(),
+            events,
+            namespace: index,
+            sectors: namespace
+                .blocks
+                .saturating_mul((namespace.block_bytes / storage::SECTOR_SIZE) as u64),
+            block_bytes: namespace.block_bytes,
+        };
+        let kind = crate::block::DiskKind::Nvme {
+            controller: number,
+            namespace: namespace.id,
+        };
+        if crate::block::install(Box::new(disk), kind).is_err() {
+            break;
+        }
+        installed += 1;
+    }
+    match installed {
+        0 => Err(ProbeError::Refused("no room for another disk")),
+        _ => Ok(()),
+    }
 }
 
 fn probe_ahci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
@@ -325,7 +372,7 @@ fn probe_ahci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
                     events: interrupting.then_some(&SATA_EVENTS),
                     controller: Some((base, port)),
                 };
-                if crate::block::install(Box::new(sata)).is_ok() {
+                if crate::block::install(Box::new(sata), crate::block::DiskKind::Scsi).is_ok() {
                     installed += 1;
                 }
             }

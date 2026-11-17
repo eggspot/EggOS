@@ -27561,3 +27561,22 @@ the license, by an explicit instruction recorded here.
   after the commit keeps a crash from leaving metadata that points at discarded blocks.
 - **Not yet.** Building and running; virtio-blk's `VIRTIO_BLK_T_DISCARD`; USB disks
   (UNMAP); a periodic `fstrim` of free space; queued TRIM (NCQ's `SEND FPDMA QUEUED`).
+
+## D613 Every NVMe namespace a disk, Linux-style disk names, and sixteen disks (M13; D238's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, names as Linux gives them)
+- **NVMe namespaces** (`drivers/src/storage/nvme.rs`): the controller reads the active
+  namespace list (up to 1024 ids) and identifies each, keeping the first eight whose block size
+  the kernel takes (`Namespace`, `namespaces`); `use_namespace(index)` makes one the target of
+  reads, writes, flushes and deallocates. The kernel makes a disk of each (`NvmeDisk`), all of
+  them sharing the controller behind one `SleepLock`, each request choosing its namespace
+  first.
+- **Names** (`block::DiskKind`, `DiskName`): a disk is installed with its bus and named as
+  Linux names it: `vda`, `vdb`... for virtio; `nvme<controller>n<namespace id>` for NVMe;
+  `sda`, `sdb`... for SATA and USB (after `z`, `aa`, `ab`...). `/proc/driver/disks` and
+  `/dev` use the name.
+- **Sixteen disks** (`MAX_DISKS`): `/dev`'s disk nodes are numbered from `0x10000` by place
+  instead of four fixed entries, listed and looked up by their names; the fixed `vda` to `vdd`
+  entries are gone. `DiskFacts` gained the bus and the name, and `install` now also fills the
+  label field D562 added.
+- **Not yet.** Building and running; AHCI port multipliers (a line of its own now); names that
+  stay the same across boots when disks come in another order; partitions' own nodes
+  (`nvme0n1p1`, `sda1`).

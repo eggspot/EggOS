@@ -1166,7 +1166,10 @@ mod disk {
         if events.is_some() {
             disk.enable_interrupts();
         }
-        crate::block::install(Box::new(VirtioDisk { disk, events }))
+        crate::block::install(
+            Box::new(VirtioDisk { disk, events }),
+            crate::block::DiskKind::Virtio,
+        )
             .map_err(|_| ProbeError::Refused("no room for another disk"))
     }
 }

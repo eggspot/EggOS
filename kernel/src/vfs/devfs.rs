@@ -162,7 +162,7 @@ const ANDROID_LOG: u64 = 25;
 
 const DEVICE: (u32, u32) = (0, 5);
 
-const DISKS: [u64; MAX_DISKS] = [26, 27, 28, 29];
+const FIRST_DISK: u64 = 0x1_0000;
 
 const RTC: u64 = 30;
 
@@ -178,7 +178,7 @@ pub const RENDER_NODE_DEVICE: (u32, u32) = (226, 128);
 
 const RENDER_NODE_NAME: &[u8] = b"renderD128";
 
-const FILES: [(&[u8], u64); 26] = [
+const FILES: [(&[u8], u64); 22] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
@@ -199,10 +199,6 @@ const FILES: [(&[u8], u64); 26] = [
     (b"stdout", STDOUT),
     (b"tty", TTY),
     (b"urandom", URANDOM),
-    (b"vda", DISKS[0]),
-    (b"vdb", DISKS[1]),
-    (b"vdc", DISKS[2]),
-    (b"vdd", DISKS[3]),
     (b"window", WINDOW),
     (b"zero", ZERO),
 ];
@@ -252,7 +248,20 @@ fn is_listed(node: u64) -> bool {
 }
 
 fn disk_of(node: u64) -> Option<usize> {
-    DISKS.iter().position(|&disk| disk == node)
+    node.checked_sub(FIRST_DISK)
+        .and_then(|index| usize::try_from(index).ok())
+        .filter(|&index| index < MAX_DISKS)
+}
+
+const fn disk_node(index: usize) -> u64 {
+    FIRST_DISK + index as u64
+}
+
+fn listed_disks() -> impl Iterator<Item = (Name, u64)> {
+    (0..MAX_DISKS)
+        .map(|index| (index, block::facts(index)))
+        .filter(|(_, facts)| facts.present)
+        .map(|(index, facts)| (Name::new(facts.name.as_bytes()), disk_node(index)))
 }
 
 fn refused(error: WholeDiskError) -> Refused {
@@ -264,8 +273,12 @@ fn refused(error: WholeDiskError) -> Refused {
     }
 }
 
-fn listed() -> impl Iterator<Item = &'static (&'static [u8], u64)> {
-    FILES.iter().filter(|(_, node)| is_listed(*node))
+fn listed() -> impl Iterator<Item = (Name, u64)> {
+    FILES
+        .iter()
+        .filter(|(_, node)| is_listed(*node))
+        .map(|&(name, node)| (Name::new(name), node))
+        .chain(listed_disks())
 }
 
 fn link_of(node: u64) -> Option<&'static [u8]> {
@@ -342,8 +355,8 @@ impl FileSystem for DeviceFiles {
     fn lookup(&self, directory: u64, name: &[u8]) -> Option<u64> {
         match directory {
             ROOT => listed()
-                .find(|(file, _)| *file == name)
-                .map(|&(_, node)| node),
+                .find(|(file, _)| file.as_bytes() == name)
+                .map(|(_, node)| node),
             PTS => parse_number(name)
                 .filter(|&number| pseudo_terminal::is_listed(number))
                 .map(pseudo_terminal_node),
@@ -371,6 +384,9 @@ impl FileSystem for DeviceFiles {
         }
         if node == RENDER_NODE {
             return Name::new(RENDER_NODE_NAME);
+        }
+        if let Some(index) = disk_of(node) {
+            return Name::new(block::facts(index).name.as_bytes());
         }
         Name::new(
             FILES
@@ -454,9 +470,9 @@ impl FileSystem for DeviceFiles {
         let position = usize::try_from(position).ok()?;
         match directory {
             ROOT => {
-                let &(name, node) = listed().nth(position)?;
+                let (name, node) = listed().nth(position)?;
                 Some(DirectoryEntry {
-                    name: Name::new(name),
+                    name,
                     node,
                     kind: kind_of(node),
                 })
@@ -589,8 +605,8 @@ mod tests {
     fn only_the_disks_and_the_clock_can_be_opened_for_writing() {
         let files = DeviceFiles;
         assert!(!files.is_writable());
-        for disk in DISKS {
-            assert!(files.is_node_writable(disk));
+        for index in 0..MAX_DISKS {
+            assert!(files.is_node_writable(disk_node(index)));
         }
         assert!(files.is_node_writable(RTC));
         for node in [PROPERTIES, ANDROID_LOG, ROOT, SHM, WINDOW] {

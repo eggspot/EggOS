@@ -15,7 +15,7 @@ use core::fmt::Write;
 pub const SECTOR_SIZE: usize = 512;
 
 /// The most disks installed at once.
-pub const MAX_DISKS: usize = 4;
+pub const MAX_DISKS: usize = 16;
 
 /// Why a transfer failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,8 +86,94 @@ pub trait BlockDevice: Send {
     }
 }
 
-/// The names of the disks in `/dev`, by the place they were installed at.
-pub const DISK_NAMES: [&str; MAX_DISKS] = ["vda", "vdb", "vdc", "vdd"];
+const DISK_NAME_BYTES: usize = 16;
+const LETTERS: u8 = 26;
+
+/// The bus a disk is on, which its name in `/dev` follows as Linux names it (D613): `vda` for
+/// virtio, `nvme0n1` for an NVMe controller's namespace, `sda` for SATA and USB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskKind {
+    Virtio,
+    Nvme { controller: u8, namespace: u32 },
+    Scsi,
+}
+
+/// A disk's name in `/dev`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskName {
+    bytes: [u8; DISK_NAME_BYTES],
+    length: u8,
+}
+
+impl DiskName {
+    const EMPTY: Self = Self {
+        bytes: [0; DISK_NAME_BYTES],
+        length: 0,
+    };
+
+    /// Its bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+
+    /// Its text.
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(self.as_bytes()).unwrap_or("")
+    }
+}
+
+impl core::fmt::Write for DiskName {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        let at = usize::from(self.length);
+        let end = (at + text.len()).min(DISK_NAME_BYTES);
+        self.bytes[at..end].copy_from_slice(&text.as_bytes()[..end - at]);
+        self.length = end as u8;
+        Ok(())
+    }
+}
+
+fn letters(number: usize) -> [u8; 2] {
+    let number = number as u8;
+    match number < LETTERS {
+        true => [b'a' + number, 0],
+        false => [b'a' + number / LETTERS - 1, b'a' + number % LETTERS],
+    }
+}
+
+fn name_for(kind: DiskKind, facts: &[DiskFacts; MAX_DISKS]) -> DiskName {
+    let mut name = DiskName::EMPTY;
+    let same_bus = |wanted: DiskKind| {
+        facts
+            .iter()
+            .filter(|facts| facts.present)
+            .filter(|facts| {
+                matches!(
+                    (facts.kind, wanted),
+                    (DiskKind::Virtio, DiskKind::Virtio) | (DiskKind::Scsi, DiskKind::Scsi)
+                )
+            })
+            .count()
+    };
+    let (prefix, number) = match kind {
+        DiskKind::Nvme {
+            controller,
+            namespace,
+        } => {
+            let _ = write!(name, "nvme{controller}n{namespace}");
+            return name;
+        }
+        DiskKind::Virtio => ("vd", same_bus(kind)),
+        DiskKind::Scsi => ("sd", same_bus(kind)),
+    };
+    let suffix = letters(number);
+    let length = if suffix[1] == 0 { 1 } else { 2 };
+    let _ = write!(
+        name,
+        "{prefix}{}",
+        core::str::from_utf8(&suffix[..length]).unwrap_or("?")
+    );
+    name
+}
 
 /// What is known of the disk at one place, whether or not a file system holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +188,9 @@ pub struct DiskFacts {
     pub mounted_on: Option<&'static str>,
     /// The mounted volume's label, up to 64 bytes, empty for none (D562).
     pub label: [u8; 64],
+    /// Its bus, and its name in `/dev` (D613).
+    pub kind: DiskKind,
+    pub name: DiskName,
 }
 
 const NO_DISK: DiskFacts = DiskFacts {
@@ -110,6 +199,8 @@ const NO_DISK: DiskFacts = DiskFacts {
     read_only: false,
     label: [0; 64],
     mounted_on: None,
+    kind: DiskKind::Virtio,
+    name: DiskName::EMPTY,
 };
 
 static DISKS: LeafSpinLock<[Option<Box<dyn BlockDevice>>; MAX_DISKS]> =
@@ -121,16 +212,19 @@ type NewDeadline = fn(u64) -> Deadline;
 
 static NEW_DEADLINE: LeafSpinLock<Option<NewDeadline>> = LeafSpinLock::new_leaf(None);
 
-/// Installs `disk` for a file system to take, at the first free place; gives it back when
-/// [`MAX_DISKS`] are installed.
-pub fn install(disk: Box<dyn BlockDevice>) -> Result<(), Box<dyn BlockDevice>> {
+/// Installs `disk`, on bus `kind`, for a file system to take, at the first free place, named
+/// as Linux names it; gives it back when [`MAX_DISKS`] are installed.
+pub fn install(disk: Box<dyn BlockDevice>, kind: DiskKind) -> Result<(), Box<dyn BlockDevice>> {
+    let mut facts = FACTS.lock();
     let installed = DiskFacts {
         present: true,
         sectors: disk.sectors(),
         read_only: disk.is_read_only(),
         mounted_on: None,
+        label: [0; 64],
+        kind,
+        name: name_for(kind, &facts),
     };
-    let mut facts = FACTS.lock();
     let mut disks = DISKS.lock();
     let free = (0..MAX_DISKS).find(|&index| !facts[index].present && disks[index].is_none());
     match free {
@@ -310,11 +404,8 @@ impl Span {
 pub fn disks_text() -> Option<Vec<u8>> {
     let facts = *FACTS.lock();
     let mut text = Text(Vec::new());
-    for (name, facts) in DISK_NAMES
-        .iter()
-        .zip(facts)
-        .filter(|(_, facts)| facts.present)
-    {
+    for facts in facts.iter().filter(|facts| facts.present) {
+        let name = facts.name.as_str();
         let access = if facts.read_only { "ro" } else { "rw" };
         let place = facts.mounted_on.unwrap_or("-");
         write!(text, "{name} {} {access} {place}", facts.sectors).ok()?;

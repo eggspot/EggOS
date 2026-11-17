@@ -186,7 +186,7 @@ fn probe_xhci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
             index,
             sectors,
         });
-        if crate::block::install(disk).is_err() {
+        if crate::block::install(disk, crate::block::DiskKind::Scsi).is_err() {
             break;
         }
     }

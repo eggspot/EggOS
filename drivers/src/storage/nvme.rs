@@ -34,6 +34,17 @@ const IO_FLUSH: u8 = 0x00;
 const IO_WRITE: u8 = 0x01;
 const IO_READ: u8 = 0x02;
 const IO_DATASET_MANAGEMENT: u8 = 0x09;
+/// The most namespaces a controller's disks are made of (D613).
+pub const MAX_NAMESPACES: usize = 8;
+const ACTIVE_NAMESPACE_IDS: usize = 1024;
+
+/// One active namespace: its id, its size in logical blocks and its block size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Namespace {
+    pub id: u32,
+    pub blocks: u64,
+    pub block_bytes: usize,
+}
 const ONCS_DATASET_MANAGEMENT: u16 = 1 << 2;
 const DEALLOCATE: u32 = 1 << 2;
 const RANGE_BYTES: usize = 16;
@@ -149,6 +160,8 @@ pub struct Nvme<R: RegisterIo, M: DmaMemory> {
     max_transfer: usize,
     volatile_write_cache: bool,
     deallocates: bool,
+    namespaces: [Namespace; MAX_NAMESPACES],
+    namespace_count: usize,
 }
 
 fn read64<R: RegisterIo>(regs: &R, offset: usize) -> u64 {
@@ -194,6 +207,8 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
             max_transfer: DATA_BYTES,
             volatile_write_cache: false,
             deallocates: false,
+            namespaces: [Namespace::default(); MAX_NAMESPACES],
+            namespace_count: 0,
         };
         match controller.start(keep_waiting) {
             Ok(()) => Ok(controller),
@@ -279,25 +294,38 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
                 .dword(10, IDENTIFY_ACTIVE_NAMESPACES),
             keep_waiting,
         )?;
-        let namespace = read32(&self.memory, IDENTIFY);
-        if namespace == 0 {
-            return Err(Error::Unsupported("the controller has no active namespace"));
+        let mut active = [0u32; ACTIVE_NAMESPACE_IDS];
+        for (index, id) in active.iter_mut().enumerate() {
+            *id = read32(&self.memory, IDENTIFY + index * 4);
         }
-        self.namespace = namespace;
-        self.admin_command(
-            Command::new(ADMIN_IDENTIFY)
-                .namespace(namespace)
-                .data(identify, 0)
-                .dword(10, IDENTIFY_NAMESPACE),
-            keep_waiting,
-        )?;
-        let mut description = [0u8; 256];
-        copy_out(&self.memory, IDENTIFY, &mut description);
-        let (blocks, block_bytes) = namespace_size(&description).ok_or(Error::Unsupported(
-            "the namespace's block size is not one the kernel takes",
-        ))?;
-        self.blocks = blocks;
-        self.block_bytes = block_bytes;
+        for &id in active.iter().take_while(|&&id| id != 0) {
+            if self.namespace_count == MAX_NAMESPACES {
+                break;
+            }
+            self.admin_command(
+                Command::new(ADMIN_IDENTIFY)
+                    .namespace(id)
+                    .data(identify, 0)
+                    .dword(10, IDENTIFY_NAMESPACE),
+                keep_waiting,
+            )?;
+            let mut description = [0u8; 256];
+            copy_out(&self.memory, IDENTIFY, &mut description);
+            if let Some((blocks, block_bytes)) = namespace_size(&description) {
+                self.namespaces[self.namespace_count] = Namespace {
+                    id,
+                    blocks,
+                    block_bytes,
+                };
+                self.namespace_count += 1;
+            }
+        }
+        if self.namespace_count == 0 {
+            return Err(Error::Unsupported(
+                "the controller has no active namespace with a block size the kernel takes",
+            ));
+        }
+        self.use_namespace(0);
 
         let entries = self.io.entries as u32;
         self.admin_command(
@@ -378,6 +406,21 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<u32, Error> {
         self.submit(false, command, keep_waiting)
+    }
+
+    /// The active namespaces the kernel takes, at most [`MAX_NAMESPACES`] (D613).
+    pub fn namespaces(&self) -> &[Namespace] {
+        &self.namespaces[..self.namespace_count]
+    }
+
+    /// Makes namespace `index` of [`Self::namespaces`] the one reads, writes, flushes and
+    /// deallocates go to; nothing for an index past them.
+    pub fn use_namespace(&mut self, index: usize) {
+        if let Some(namespace) = self.namespaces().get(index).copied() {
+            self.namespace = namespace.id;
+            self.blocks = namespace.blocks;
+            self.block_bytes = namespace.block_bytes;
+        }
     }
 
     /// The disk's size in 512-byte sectors.
