@@ -5,6 +5,7 @@
 use crate::facts::Facts;
 use crate::network_pane::servers_text;
 use core::fmt::Write;
+use eggos_components::state::UpdatePolicy;
 use eggos_net::status::{InterfaceStatus, State, state_word};
 use eggos_settings_file::clock_sync::Record;
 use eggos_settings_file::{
@@ -79,6 +80,7 @@ pub enum Key {
     PowerTemperature,
     PowerDock,
     PowerLidAction,
+    UpdatePolicy,
     SystemVersion,
     SystemArch,
     SystemCpus,
@@ -231,6 +233,8 @@ pub enum Change {
     LidAction(eggos_settings_file::LidAction),
     /// One pointing device's own preferences (`device` 1 to 16), used from its next move (D601).
     Device { device: u8, change: DeviceChange },
+    /// How component updates are installed, from the next check (D658).
+    UpdatePolicy(UpdatePolicy),
 }
 
 /// What the keyboard uses, all of it (D221): the layouts the switch key cycles through, the
@@ -588,6 +592,15 @@ fn number_within(value: &str, low: u32, high: u32) -> Result<u32, Refusal> {
     }
 }
 
+/// The update policy's key, there only while the `management` component is installed (D658).
+pub const UPDATE_POLICY: &str = "update.policy";
+
+/// Whether `key` is one the machine has: `update.policy` only with the `management`
+/// component.
+pub fn present(key: Key, facts: &Facts) -> bool {
+    key != Key::UpdatePolicy || facts.update_policy.is_some()
+}
+
 /// The names `shell.profile` takes, as the refusal of another one lists them.
 pub const PROFILE_CHOICES: &str = "windows, macos or linux";
 
@@ -596,7 +609,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 60] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -651,6 +664,7 @@ impl Key {
         Self::PowerTemperature,
         Self::PowerDock,
         Self::PowerLidAction,
+        Self::UpdatePolicy,
         Self::SystemVersion,
         Self::SystemArch,
         Self::SystemCpus,
@@ -718,6 +732,7 @@ impl Key {
             Self::PowerTemperature => "power.temperature",
             Self::PowerDock => "power.dock",
             Self::PowerLidAction => eggos_settings_file::POWER_LID_ACTION,
+            Self::UpdatePolicy => UPDATE_POLICY,
             Self::SystemVersion => "system.version",
             Self::SystemArch => "system.arch",
             Self::SystemCpus => "system.cpus",
@@ -743,7 +758,7 @@ impl Key {
     /// the four keys of every pointing device present or with a value of its own (D601).
     pub fn listed(facts: &Facts) -> alloc::vec::Vec<Self> {
         let mut keys = alloc::vec::Vec::with_capacity(Self::ALL.len());
-        for key in Self::ALL {
+        for key in Self::ALL.into_iter().filter(|key| present(*key, facts)) {
             keys.push(key);
             if key != Self::MouseDevices {
                 continue;
@@ -801,6 +816,7 @@ impl Key {
                 | Self::MouseKeys
                 | Self::MouseKeysSpeed
                 | Self::PowerLidAction
+                | Self::UpdatePolicy
         )
     }
 
@@ -820,6 +836,10 @@ impl Key {
                 write_choices(&mut choices, &eggos_settings_file::DISPLAY_ROTATIONS)
             }
             Self::PowerLidAction => write_choices(&mut choices, &eggos_settings_file::LID_ACTIONS),
+            Self::UpdatePolicy => {
+                let names = UpdatePolicy::ALL.map(UpdatePolicy::name);
+                write_choices(&mut choices, &names);
+            }
             Self::TimeZone => {
                 let _ = choices.write_str(ZONE_CHOICES);
             }
@@ -1061,6 +1081,7 @@ impl Key {
                 value.write_str(fact_word(facts.power.docked, "attached", "detached"))
             }
             Self::PowerLidAction => value.write_str(facts.lid_action.name()),
+            Self::UpdatePolicy => value.write_str(facts.update_policy.map_or("", UpdatePolicy::name)),
             Self::SystemVersion => value.write_str(facts.version),
             Self::SystemArch => value.write_str(facts.architecture.as_str()),
             Self::SystemCpus => write!(value, "{}", facts.cpus),
@@ -1184,6 +1205,9 @@ impl Key {
                 .map(|speed| Change::Keys(KeysChange::MouseKeysSpeed(speed))),
             Self::PowerLidAction => eggos_settings_file::LidAction::named(value.as_bytes())
                 .map(Change::LidAction)
+                .ok_or(Refusal::InvalidValue),
+            Self::UpdatePolicy => UpdatePolicy::named(value)
+                .map(Change::UpdatePolicy)
                 .ok_or(Refusal::InvalidValue),
             Self::MouseDevice(index, field) => {
                 let follows = value == eggos_settings_file::FOLLOW_GLOBAL;

@@ -28351,3 +28351,16 @@ the license, by an explicit instruction recorded here.
   record (D658); automatic updates run by the daily check; the Components pane's row and
   band lines; `component list`'s `update_policy`; the confirmation line when removing
   `management`.
+
+
+## D658 `update.policy` is a setting while the `management` component is installed (M16 editions; editions-policy v0.1 sections 2 and 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** The key `update.policy` (`automatic`, `notify` or `managed`; another value
+  `invalid value 'x' (automatic, notify or managed)`) exists only while `management` is
+  installed: without it `settings list` leaves it out and `get` and `set` answer `no such
+  setting`, through one check, `keys::present`, against the new fact `update_policy`.
+  `settings set update.policy ...` records it in D657's state file; the policy file can lock
+  it like any other key (D655). Each time Settings reads the policy file it brings the record
+  in line: a locked value is written with `locked_by=<manager>`, and a lock that went away is
+  cleared while the value chosen stays.
+- **Not yet.** Building and running; agents setting `managed` needing the person's
+  confirmation; the Components pane's `Install updates` row; automatic updates.

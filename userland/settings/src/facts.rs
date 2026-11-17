@@ -85,6 +85,8 @@ pub struct Facts {
     pub sleep_available: bool,
     /// What closing the lid does, `power.lid_action` (D599).
     pub lid_action: eggos_settings_file::LidAction,
+    /// `update.policy`, `None` without the `management` component (D658).
+    pub update_policy: Option<eggos_components::state::UpdatePolicy>,
     /// `shell.form`: its index in [`FORM_SETTINGS`] (D303).
     pub form_setting: usize,
     /// The form on screen: its index in [`FORMS_IN_USE`] (D303).
@@ -151,6 +153,7 @@ impl Facts {
             pointing_devices: eggos_device_list::pointers::PointingDevices::default(),
             device_input: Default::default(),
             lid_action: eggos_settings_file::LidAction::Sleep,
+            update_policy: None,
             form_setting: 0,
             on_screen_keyboard: 0,
             rotation: 0,

@@ -647,14 +647,40 @@ fn ownership(path: &str, kind: u32) -> Option<policy::Ownership> {
     })
 }
 
-fn policy_file() -> PolicyFile {
+fn management_installed() -> bool {
     let record = alloc::format!(
         "{}/{}/{}",
         component_manager::COMPONENTS,
         eggos_settings::managed::COMPONENT,
         component_manager::RECORD
     );
-    if read_file(&record, &mut [0u8; 1]).is_err() {
+    read_file(&record, &mut [0u8; 1]).is_ok()
+}
+
+fn record_update_policy_lock(file: &PolicyFile) {
+    let mut files = LinuxFiles::new();
+    let recorded = component_state::update_policy(&mut files);
+    let wanted = match file
+        .locked(eggos_settings::keys::UPDATE_POLICY)
+        .and_then(component_state::UpdatePolicy::named)
+    {
+        Some(policy) => component_state::UpdatePolicyRecord {
+            policy,
+            locked_by: Some(String::from(file.manager())),
+        },
+        None if recorded.locked_by.is_some() => component_state::UpdatePolicyRecord {
+            policy: recorded.policy,
+            locked_by: None,
+        },
+        None => return,
+    };
+    if wanted != recorded {
+        let _ = component_state::set_update_policy(&mut files, &wanted);
+    }
+}
+
+fn policy_file() -> PolicyFile {
+    if !management_installed() {
         return PolicyFile::NotInstalled;
     }
     let Some(file) = ownership(policy::PATH, REGULAR_FILE) else {
@@ -753,6 +779,8 @@ fn facts(server: Option<&WindowServer>) -> Facts {
         }),
         sleep_available: sleep_available(),
         lid_action: settings_file::lid_action(&file[..length]),
+        update_policy: management_installed()
+            .then(|| component_state::update_policy(&mut LinuxFiles::new()).policy),
         form_setting: form.map_or(0, |(_, setting, _)| setting as usize),
         form_in_use: form.map_or(0, |(in_use, _, _)| in_use as usize),
         input_kinds: form.map_or(0, |(_, _, kinds)| kinds),
@@ -1133,7 +1161,25 @@ impl command::Machine for Machine {
     }
 
     fn policy(&mut self) -> PolicyFile {
-        policy_file()
+        let file = policy_file();
+        if file != PolicyFile::NotInstalled {
+            record_update_policy_lock(&file);
+        }
+        file
+    }
+
+    fn save_update_policy(
+        &mut self,
+        policy: component_state::UpdatePolicy,
+    ) -> Result<(), &'static [u8]> {
+        let record = component_state::UpdatePolicyRecord {
+            policy,
+            locked_by: None,
+        };
+        match component_state::set_update_policy(&mut LinuxFiles::new(), &record) {
+            true => Ok(()),
+            false => Err(b"could not record the update policy"),
+        }
     }
 
     fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {

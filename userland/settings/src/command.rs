@@ -162,6 +162,13 @@ pub trait Machine {
     /// Whether the program was started with `EGGOS_CODED_ERRORS=1` (D226): an MCP tool's twin,
     /// which writes each error's `{"error":{...}}` line after its text.
     fn wants_coded_errors(&self) -> bool;
+    /// Records how component updates are installed (D658).
+    fn save_update_policy(
+        &mut self,
+        _policy: eggos_components::state::UpdatePolicy,
+    ) -> Result<(), &'static [u8]> {
+        Ok(())
+    }
     /// The policy file, when the `management` component is installed (D655).
     fn policy(&mut self) -> PolicyFile {
         PolicyFile::NotInstalled
@@ -518,10 +525,10 @@ fn no_such_setting(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
 }
 
 fn get(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
-    let Some(key) = Key::named(name) else {
+    let facts = machine.facts();
+    let Some(key) = Key::named(name).filter(|key| keys::present(*key, &facts)) else {
         return no_such_setting(machine, json, name);
     };
-    let facts = machine.facts();
     match json {
         true => write_record(machine, key, &facts),
         false => {
@@ -540,7 +547,11 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         report(machine, false, &errors::MANAGED, message.as_str());
         return FAILURE;
     }
-    let (key, change) = match keys::change(name, value) {
+    let present = Key::named(name).is_none_or(|key| keys::present(key, &machine.facts()));
+    let (key, change) = match keys::change(name, value).and_then(|changed| match present {
+        true => Ok(changed),
+        false => Err(Refusal::NoSuchSetting),
+    }) {
         Ok(changed) => changed,
         Err(Refusal::NoSuchSetting) => return no_such_setting(machine, false, name),
         Err(Refusal::ReadOnly) => {
@@ -589,6 +600,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         Change::Reader(reader) => machine.save_reader(reader),
         Change::LidAction(action) => machine.save_lid_action(action),
         Change::Device { device, change } => machine.save_device_input(device, change),
+        Change::UpdatePolicy(policy) => machine.save_update_policy(policy),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -628,6 +640,7 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
             machine.apply_display(facts.theme, facts.display)
         }
         Change::LidAction(action) => machine.apply_lid_action(action),
+        Change::UpdatePolicy(_) => Ok(()),
         Change::Device { device, change } => {
             let facts = machine.facts();
             let own = facts
@@ -886,6 +899,28 @@ mod tests {
         fn policy(&mut self) -> PolicyFile {
             self.policy.clone()
         }
+    }
+
+    #[test]
+    fn the_update_policy_is_a_setting_only_with_the_management_component() {
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &["get", "update.policy"]), FAILURE);
+        assert_eq!(
+            String::from_utf8_lossy(&fake.errors),
+            "settings: update.policy: no such setting\n  try: settings list\n"
+        );
+        assert!(keys::change("update.policy", "managed").is_ok());
+        assert_eq!(
+            Key::UpdatePolicy.choices().as_str(),
+            "automatic, notify or managed"
+        );
+        let facts = Facts {
+            update_policy: Some(eggos_components::state::UpdatePolicy::Automatic),
+            ..Facts::example()
+        };
+        assert!(Key::listed(&facts).contains(&Key::UpdatePolicy));
+        assert!(!Key::listed(&Facts::example()).contains(&Key::UpdatePolicy));
+        assert_eq!(Key::UpdatePolicy.value(&facts).as_str(), "automatic");
     }
 
     #[test]
