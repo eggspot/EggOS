@@ -7,7 +7,7 @@
 
 mod existing;
 
-pub use existing::{Reader, add_files};
+pub use existing::{Reader, add_files, has_file};
 
 pub const SECTOR_BYTES: usize = 512;
 pub const MAX_CLUSTER_BYTES: usize = SECTOR_BYTES * 8;

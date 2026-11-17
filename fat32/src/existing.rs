@@ -343,6 +343,46 @@ pub fn add_files<'a, E>(files: &[File<'_>], read: &mut Reader<'a, E>, write: &mu
     Ok(())
 }
 
+/// Whether the FAT32 volume `read` reads holds a file at `path` (8.3 names, `/` between
+/// folders), reading nothing but its folders (D671).
+///
+/// # Errors
+///
+/// A volume that is not FAT32 with 512-byte sectors or whose chains are damaged
+/// (`NotFat32`), a name that is not 8.3 (`BadName`), or a failed read.
+pub fn has_file<'a, E>(path: &str, read: &mut Reader<'a, E>) -> Result<bool, Error<E>> {
+    let mut boot = [0u8; SECTOR_BYTES];
+    read(0, &mut boot).map_err(Error::Read)?;
+    let volume = volume_of(&boot).ok_or(Error::NotFat32)?;
+    if !volume.valid(volume.root_cluster) {
+        return Err(Error::NotFat32);
+    }
+    let mut writes_nothing = |_: u64, _: &[u8]| Ok(());
+    let mut access = Access {
+        read,
+        write: &mut writes_nothing,
+        volume,
+        next_free_hint: 2,
+    };
+    let mut folder = volume.root_cluster;
+    let mut parts = path.split('/').peekable();
+    while let Some(part) = parts.next() {
+        let name = short_name(part).ok_or(Error::BadName)?;
+        let Some((_, entry)) = access.find(folder, &name)? else {
+            return Ok(false);
+        };
+        let is_folder = entry[11] & ATTRIBUTE_DIRECTORY != 0;
+        if parts.peek().is_none() {
+            return Ok(!is_folder);
+        }
+        if !is_folder {
+            return Ok(false);
+        }
+        folder = (u16_at(&entry, 20) << 16) | u16_at(&entry, 26);
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +447,23 @@ mod tests {
             folder = found?.0;
         }
         found
+    }
+
+    #[test]
+    fn a_file_is_found_by_its_path_and_a_folder_is_not_a_file() {
+        let image = volume_with(&[File {
+            path: "EFI/BOOT/BOOTX64.EFI",
+            bytes: b"theirs",
+        }]);
+        let mut read = |offset: u64, buffer: &mut [u8]| {
+            let at = offset as usize;
+            buffer.copy_from_slice(&image[at..at + buffer.len()]);
+            Ok::<(), ()>(())
+        };
+        assert_eq!(has_file("EFI/BOOT/BOOTX64.EFI", &mut read), Ok(true));
+        assert_eq!(has_file("EFI/BOOT/BOOTAA64.EFI", &mut read), Ok(false));
+        assert_eq!(has_file("EFI/BOOT", &mut read), Ok(false));
+        assert_eq!(has_file("EGGOS/KERNEL.ELF", &mut read), Ok(false));
     }
 
     #[test]

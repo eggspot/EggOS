@@ -1532,6 +1532,7 @@ fn write_shared_boot_files(
     device: &'static str,
     system_partition: &crate::partitions::PartitionRecord,
     files: &[eggos_fat32::File<'_>],
+    fallback: eggos_fat32::File<'_>,
 ) -> Result<(), BesideError> {
     let handle = disks
         .open(device, true)
@@ -1553,7 +1554,16 @@ fn write_shared_boot_files(
             true => shared.borrow_mut().write_at(handle, base + offset, bytes),
             false => Err(Fault::Failed),
         };
-        eggos_fat32::add_files(files, &mut read, &mut write)
+        match eggos_fat32::has_file(fallback.path, &mut read) {
+            Ok(true) => eggos_fat32::add_files(files, &mut read, &mut write),
+            Ok(false) => {
+                let mut with_fallback = alloc::vec::Vec::with_capacity(files.len() + 1);
+                with_fallback.extend_from_slice(files);
+                with_fallback.push(fallback);
+                eggos_fat32::add_files(&with_fallback, &mut read, &mut write)
+            }
+            Err(error) => Err(error),
+        }
     };
     let flushed = disks.flush(handle);
     disks.close(handle);
@@ -1638,6 +1648,11 @@ pub fn install_beside(
     let kernel_path = format!("{SHARED_BOOT_FOLDER}/KERNEL.ELF");
     let command_line_path = format!("{SHARED_BOOT_FOLDER}/CMDLINE.TXT");
     let command_line = format!("eggos.data={}\n", guid_text(&unique));
+    let fallback_path = format!("EFI/BOOT/{}", files.loader_name);
+    let fallback = eggos_fat32::File {
+        path: &fallback_path,
+        bytes: &files.loader,
+    };
     let shared_files = [
         eggos_fat32::File {
             path: &loader_path,
@@ -1653,7 +1668,7 @@ pub fn install_beside(
         },
     ];
     let shared = match system_partition {
-        Some(partition) => match write_shared_boot_files(disks, line.device, partition, &shared_files) {
+        Some(partition) => match write_shared_boot_files(disks, line.device, partition, &shared_files, fallback) {
             Ok(()) => true,
             Err(BesideError::SystemPartitionFull | BesideError::SystemPartitionNotFat32) => false,
             Err(error) => return Err(error),
@@ -1671,7 +1686,8 @@ pub fn install_beside(
         return Err(BesideError::Storage(StorageError::TooSmallToInstall));
     }
     if !shared {
-        write_own_system_partition(disks, line.device, room.first_sector, &shared_files)?;
+        let own_files = [shared_files[0], shared_files[1], shared_files[2], fallback];
+        write_own_system_partition(disks, line.device, room.first_sector, &own_files)?;
         let mut own = [0u8; 16];
         disks.unique_bytes(&mut own);
         let system = eggos_gpt::NewPartition {

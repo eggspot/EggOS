@@ -28528,3 +28528,12 @@ the license, by an explicit instruction recorded here.
   whether EggOS wrote its own (`own_system_partition`).
 - **Not yet.** Building and running; the confirmation's line 31 saying which will happen
   before anything is written; the dry run's sentence for it.
+
+
+## D671 The firmware's fallback loader is written only where none is (M8; installer dual boot v0.1 section 5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `eggos_fat32::has_file` finds a file by its 8.3 path on an existing FAT32
+  volume, reading only its folders (a folder is not a file). Installing beside another system
+  writes `\EFI\BOOT\BOOTX64.EFI` (or `BOOTAA64.EFI`), the firmware's fallback path, with
+  EggOS's loader only when no file is there, since on a shared partition it is usually the
+  other system's; EggOS's own EFI system partition (D670) always gets it.
+- **Not yet.** Building and running.
