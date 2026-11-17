@@ -27463,3 +27463,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; an `xtask run --remote` flag that adds the word; the
   rest of D307's deviations (keys mode, centred dialogs, the toolkit's TV padding, the
   notice's TV place); the TV's own entries in the shell's tree.
+
+## D608 The Components pane's last deviations: the band button's tooltip, the chip's focus on `Update all`, and the chip in the shell's tree (M14; D300's deviations; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/components-v0.5.md sections 2 and 7, by Claude Fable)
+- **Already done before this entry**: the per-cause failure lines (`messages::update_failure`
+  from the failure the command records) and check times in the local time zone
+  (`ComponentsPane::local`). The rows' disabled buttons already carried their tooltips.
+- **The band's button** (`Check now` / `Update all`) gets its tooltip too while another
+  component installs, updates or is removed (`Another component is installing`, `is
+  updating`, `is being removed`). `UPDATES_WIDGETS` grows by 1.
+- **The chip leads to `Update all`**: `SettingsPane::Components` now runs `settings open
+  updates` (`command::UPDATES_TARGET`, `WindowAsked::Updates`), which opens the window on
+  Components with the focus on the band's button.
+- **The chip in the shell's tree**: the desktop form now answers `wm show shell` too, with
+  the `Updates` button valued with the count while the chip shows; `wm act shell <id> invoke`
+  opens Settings as a click does (`run_shell_action` opens Settings panes for the shell).
+- **Not yet.** Building and running; the desktop form's other panels in the shell's tree; the
+  phone, tablet and TV layouts of the pane (section 10); the edition confirmation's plan.

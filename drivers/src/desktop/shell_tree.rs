@@ -29,6 +29,7 @@ const HOME: u32 = 9;
 const APPS_BUTTON: u32 = 10;
 const SEARCH: u32 = 11;
 const APPS_LIST: u32 = 12;
+const UPDATES: u32 = 13;
 const FIRST_APP: u32 = 100;
 const VALUE_BYTES: usize = 64;
 
@@ -84,11 +85,26 @@ impl Write for Value {
 
 impl Desktop {
     fn shell_has_tree(&self) -> bool {
-        matches!(self.form, Form::Phone | Form::Tablet)
+        matches!(self.form, Form::Phone | Form::Tablet | Form::Desktop)
+    }
+
+    /// The bar's `Updates` chip (docs/ux/components-v0.5.md section 7): a button valued with
+    /// the count of updates, while it shows.
+    fn describe_updates_chip(&self, tree: &mut TreeWriter<'_>) {
+        let Some(chip) = self.updates_chip() else {
+            return;
+        };
+        let mut count = Value::new();
+        let _ = write!(count, "{}", self.updates_count());
+        tree.push(
+            &Element::new(UPDATES, ROOT, Role::Button, bounds(chip))
+                .named(b"Updates")
+                .valued(count.as_bytes()),
+        );
     }
 
     /// The shell's element tree in an element tree's layout, or nothing outside the forms
-    /// that have one yet.
+    /// that have one yet. The desktop form lists only its `Updates` chip so far.
     pub fn shell_tree(&self) -> Vec<u8> {
         if !self.shell_has_tree() {
             return Vec::new();
@@ -96,6 +112,12 @@ impl Desktop {
         let mut bytes = alloc::vec![0u8; eggos_element_tree::MAX_TREE_BYTES];
         let mut tree = TreeWriter::new(&mut bytes);
         tree.push(&Element::new(ROOT, 0, Role::Window, bounds(self.screen())).named(b"Shell"));
+        if self.form == Form::Desktop {
+            self.describe_updates_chip(&mut tree);
+            let length = tree.bytes().len();
+            bytes.truncate(length);
+            return bytes;
+        }
         if let Some(bar) = self.layout.status_bar {
             let expanded = match self.phone.shade {
                 true => flags::EXPANDED,
@@ -215,6 +237,16 @@ impl Desktop {
             return (Outcome::NoSuchElement, Action::None);
         }
         damage.add(self.screen());
+        if self.form == Form::Desktop {
+            return match (element, action) {
+                (UPDATES, ElementAction::Invoke) if self.updates_chip().is_some() => (
+                    Outcome::Done,
+                    Action::OpenSettingsPane(super::SettingsPane::Components),
+                ),
+                (ROOT, _) => (Outcome::NotSupported, Action::None),
+                _ => (Outcome::NoSuchElement, Action::None),
+            };
+        }
         let home = self.phone_shown_window().is_none();
         match (element, action) {
             (STATUS_BAR, ElementAction::Invoke) => {

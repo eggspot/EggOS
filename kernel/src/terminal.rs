@@ -1540,6 +1540,15 @@ fn launch_failed<P: Platform>() {
     with_windows::<P, _>(|desktop, _, damage, _| desktop.launch_failed(damage));
 }
 
+/// Does what acting on the shell's tree asked (`wm act shell`, D605, D608): opens a Settings
+/// pane, or starts what [`run_launch`] starts.
+pub fn run_shell_action<P: Platform>(action: Action) {
+    match action {
+        Action::OpenSettingsPane(pane) => open_settings_pane::<P>(pane),
+        other => run_launch::<P>(other),
+    }
+}
+
 /// Starts what a desktop action asks to start: an app, its installer or one of its actions, a
 /// screenshot; nothing for the other actions.
 pub fn run_launch<P: Platform>(action: Action) {

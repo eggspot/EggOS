@@ -29,7 +29,7 @@ pub const ROWS: usize = MAX_COMPONENTS;
 pub const WIDGETS: usize = 4 + 7 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1 + PLAN_LINES;
 const PLAN_LINES: usize = 6;
 const PLAN_LINE_PITCH: i32 = 20;
-const UPDATES_WIDGETS: usize = 4;
+const UPDATES_WIDGETS: usize = 5;
 const UPDATES_BAND: (i32, i32, i32, i32) = (16, 124, 432, 48);
 const UPDATES_LINE: (i32, i32, i32) = (24, 6, 296);
 const DAILY_BOX: (i32, i32) = (24, 24);
@@ -205,6 +205,7 @@ struct Widgets {
     updates_line: WidgetId,
     daily: WidgetId,
     updates_button: WidgetId,
+    updates_tip: WidgetId,
     download: WidgetId,
     plan_lines: [WidgetId; PLAN_LINES],
 }
@@ -495,6 +496,13 @@ impl ComponentsPane {
             ),
             Kind::button("Check now", false),
         );
+        let updates_tip = add(
+            tree,
+            updates_button,
+            Place::at(0, 0, Length::Content, Length::Content),
+            Kind::tooltip("", ""),
+        );
+        tree.set_shown(updates_tip, false);
         let band = add(
             tree,
             pane,
@@ -630,6 +638,7 @@ impl ComponentsPane {
                 updates_line,
                 daily,
                 updates_button,
+                updates_tip,
                 download,
                 plan_lines,
             },
@@ -701,6 +710,12 @@ impl ComponentsPane {
             .and_then(|(_, rule)| eggos_calendar::zone::parse(rule))
             .map_or(0, |rule| rule.at(utc as i64).offset);
         utc.saturating_add_signed(offset)
+    }
+
+    /// Gives the keyboard focus to the band's button, `Check now` or `Update all`: where the
+    /// bar's `Updates` chip leads (section 7).
+    pub fn focus_updates_button(&self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        tree.set_focus(Some(self.widgets.updates_button), now_ms);
     }
 
     /// The pane is shown again: messages and a `Failed` state are forgotten, an open
@@ -1401,6 +1416,9 @@ impl ComponentsPane {
         show_line(tree, widgets.updates_line, &line, Token::Text);
         tree.set_text(widgets.updates_button, button);
         tree.set_enabled(widgets.updates_button, enabled);
+        let busy_elsewhere = !enabled && others_busy;
+        tree.set_text(widgets.updates_tip, self.busy_reason());
+        tree.set_shown(widgets.updates_tip, busy_elsewhere);
         tree.set_accessible_name(
             widgets.updates_button,
             match button {

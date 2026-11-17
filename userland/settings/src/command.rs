@@ -192,6 +192,9 @@ pub const PANE_OPTION: &str = "--pane";
 /// 4.5): `settings open network`, what the bar's network indicator runs; the pane is named as
 /// [`PANE_OPTION`] names it.
 pub const OPEN_VERB: &str = "open";
+/// What `settings open` takes for the Components pane with the focus on its `Update all`
+/// (or `Check now`): where the bar's `Updates` chip leads (D300, D608).
+pub const UPDATES_TARGET: &str = "updates";
 /// Opens the first run's window (D224, docs/ux/first-run-accessibility-v0.3.md section 1): the
 /// profile, the keyboard and the time zone, each saved as it is chosen.
 pub const FIRST_RUN_OPTION: &str = "--first-run";
@@ -215,6 +218,8 @@ pub enum WindowAsked<'a> {
     Pairing(PairingAsked<'a>),
     /// The window on this pane (an index of `PANES`).
     Pane(usize),
+    /// The window on the Components pane with the focus on its updates button (D608).
+    Updates,
     /// The first run's window (D224).
     FirstRun,
     /// `--pair` or `--name` without what they need.
@@ -232,6 +237,7 @@ pub fn window_asked<'a>(arguments: &[&'a str]) -> WindowAsked<'a> {
             asked(id, name)
         }
         [FIRST_RUN_OPTION] => WindowAsked::FirstRun,
+        [PANE_OPTION | OPEN_VERB, UPDATES_TARGET] => WindowAsked::Updates,
         [PANE_OPTION | OPEN_VERB, name] => match crate::settings_window::pane_named(name) {
             Some(pane) => WindowAsked::Pane(pane),
             None => WindowAsked::Usage,

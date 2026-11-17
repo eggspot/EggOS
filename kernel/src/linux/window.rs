@@ -1297,7 +1297,7 @@ pub fn ioctl<P: Platform>(
                     desktop.note_agent_action(damage);
                     Ok(done)
                 })?;
-                crate::terminal::run_launch::<P>(then);
+                crate::terminal::run_shell_action::<P>(then);
                 put_word(bytes, act_request::OUTCOME, outcome.value());
                 return process
                     .write_user_memory(argument, bytes)

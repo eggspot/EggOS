@@ -2536,6 +2536,12 @@ impl SettingsWindow {
             .paired(&mut self.tree, agent, outcome, grants, network, now_ms);
     }
 
+    /// Gives the focus to the Components pane's `Update all` (or `Check now`), as the bar's
+    /// `Updates` chip asks (D608).
+    pub fn focus_updates_button(&mut self, now_ms: u32) {
+        self.components.focus_updates_button(&mut self.tree, now_ms);
+    }
+
     /// Shows pane `pane` (an index of [`PANES`]) and selects it in the sidebar, as
     /// `settings --pane` asks (D221): what the program reads for it, as for a click on the
     /// sidebar.

@@ -346,7 +346,8 @@ pub enum SettingsPane {
     Keyboard,
     /// The Network pane, from the bar's network indicator (D225).
     Network,
-    /// The Components pane, from the bar's `Updates` chip (D300).
+    /// The Components pane with the focus on `Update all`, from the bar's `Updates` chip
+    /// (D300, D608): `settings open updates`.
     Components,
     /// Any pane by the name `settings open` takes: the TV's `Settings` row (D307).
     Named(&'static str),
@@ -358,7 +359,7 @@ impl SettingsPane {
         match self {
             Self::Keyboard => "keyboard",
             Self::Network => "network",
-            Self::Components => "components",
+            Self::Components => "updates",
             Self::Named(name) => name,
         }
     }

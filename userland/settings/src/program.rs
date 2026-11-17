@@ -2191,7 +2191,12 @@ fn grant_prompt() -> i32 {
     view.finish()
 }
 
-fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>, home: &str) -> i32 {
+fn open_window(
+    pairing: Option<PairingAsked<'_>>,
+    pane: Option<usize>,
+    focus_updates: bool,
+    home: &str,
+) -> i32 {
     let (width, height) = DEFAULT_SIZE;
     let mut window = match Window::create(TITLE, width, height, MINIMUM_SIZE) {
         Ok(window) => window,
@@ -2225,6 +2230,9 @@ fn open_window(pairing: Option<PairingAsked<'_>>, pane: Option<usize>, home: &st
     }
     if let Some(pane) = pane {
         settings.open_pane(pane);
+    }
+    if focus_updates {
+        settings.window.focus_updates_button(now_ms());
     }
     let served = application::run(&mut window, &mut settings);
     settings.save_unsaved();
@@ -2569,8 +2577,12 @@ pub fn run(startup: &Startup) -> i32 {
         .filter(|home| !home.is_empty())
         .unwrap_or(DEFAULT_HOME);
     match command::window_asked(&arguments[..count]) {
-        WindowAsked::Pairing(asked) => return open_window(Some(asked), None, home),
-        WindowAsked::Pane(pane) => return open_window(None, Some(pane), home),
+        WindowAsked::Pairing(asked) => return open_window(Some(asked), None, false, home),
+        WindowAsked::Pane(pane) => return open_window(None, Some(pane), false, home),
+        WindowAsked::Updates => {
+            let components = eggos_settings::settings_window::COMPONENTS;
+            return open_window(None, Some(components), true, home);
+        }
         WindowAsked::FirstRun => return open_first_run(),
         WindowAsked::Usage => {
             write_all(STANDARD_ERROR, USAGE.as_bytes());
