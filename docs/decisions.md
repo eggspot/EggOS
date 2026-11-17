@@ -27527,3 +27527,16 @@ the license, by an explicit instruction recorded here.
   - The terminal window app (`userland/terminal`) following `PaletteChanged`.
   - The 1 px black ring on the window controls in light high contrast.
   - The installer's art, and the Windows and macOS layers' system colours.
+
+## D611 PAN on AArch64 (M13; D201's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Arm Architecture Reference Manual's FEAT_PAN)
+- **Decision.** Each CPU, as `timer::init_this_cpu` sets it up, checks
+  `ID_AA64MMFR1_EL1.PAN` (bits 20 to 23). Where PAN exists it clears `SCTLR_EL1.SPAN` (bit 23,
+  RES1 without PAN, so it is changed at run time, not in the boot constant), so every exception
+  taken to EL1 sets `PSTATE.PAN`, and sets `PSTATE.PAN` itself (`msr pan, #1`, emitted as its
+  encoding `0xd500419f` for assemblers without Armv8.1's name). `with_user_access` clears it for
+  the access and sets it again after (`0xd500409f`, then `0xd500419f`); the asm keeps the
+  compiler's memory ordering (no `nomem`), so no user access moves out of the window. An
+  exception inside the window enters with PAN set and `eret` restores the window's clear state
+  from `SPSR_EL1`. Without PAN nothing changes. The 32-bit Arm port has done the same since D570.
+- **Not yet.** Building and running (QEMU's `-cpu max` has PAN); EPAN and `PSTATE.UAO` with
+  `ldtr`/`sttr` user accesses instead of the window.

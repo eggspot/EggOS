@@ -148,7 +148,7 @@ and is not listed per item.
 
 ## M13 Real hardware, vendor drivers and mitigations
 
-- [ ] PAN on AArch64 (`SCTLR_EL1.SPAN` clear, `PSTATE.PAN` set, cleared only inside user-access windows) (D201)
+- [x] PAN on AArch64 (`SCTLR_EL1.SPAN` clear, `PSTATE.PAN` set, cleared only inside user-access windows) (D201) — code written, unbuilt, D611
 - [ ] NVMe Deallocate (TRIM) and AHCI `DATA SET MANAGEMENT` TRIM, issued by EggFS when blocks are freed (D238)
 - [ ] NVMe namespaces past the first and AHCI port multipliers (D238)
 - [ ] Linux-style disk names (`nvme0n1`, `sda`) beside `vdX`, and more than four disks (D238)

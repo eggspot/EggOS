@@ -305,6 +305,58 @@ const PSCI_INVALID_PARAMETERS: i64 = -2;
 const PSCI_ALREADY_ON: i64 = -4;
 const PSCI_ON_PENDING: i64 = -5;
 
+const ID_AA64MMFR1_PAN_SHIFT: u32 = 20;
+const SCTLR_SPAN: u64 = 1 << 23;
+const MSR_PAN_OFF: u32 = 0xd500_409f;
+const MSR_PAN_ON: u32 = 0xd500_419f;
+
+static PAN_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Turns PAN on where the CPU has it (Armv8.1, `ID_AA64MMFR1_EL1.PAN`; D611): `SCTLR_EL1.SPAN`
+/// cleared, so every exception taken to EL1 sets `PSTATE.PAN`, and `PSTATE.PAN` set now. The
+/// kernel then reaches user pages only inside `with_user_access`. Each CPU runs it.
+pub(super) fn enable_pan() {
+    let features: u64;
+    // SAFETY: reading an ID register has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, id_aa64mmfr1_el1", out(reg) features, options(nomem, nostack))
+    };
+    if features >> ID_AA64MMFR1_PAN_SHIFT & 0xf == 0 {
+        return;
+    }
+    // SAFETY: clearing `SPAN` only makes exceptions taken to EL1 set `PSTATE.PAN`, which this
+    // CPU has (checked above); `isb` makes the change take effect before the next instruction.
+    unsafe {
+        core::arch::asm!(
+            "mrs {sctlr}, sctlr_el1",
+            "bic {sctlr}, {sctlr}, {span}",
+            "msr sctlr_el1, {sctlr}",
+            "isb",
+            sctlr = out(reg) _,
+            span = in(reg) SCTLR_SPAN,
+            options(nostack),
+        )
+    };
+    set_pan(true);
+    PAN_ON.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+fn set_pan(on: bool) {
+    match on {
+        // SAFETY: `msr pan, #1` (encoded, as the assembler may not take Armv8.1's name) only
+        // forbids EL1 data accesses to EL0 pages, which the kernel makes only inside
+        // `with_user_access`.
+        true => unsafe {
+            core::arch::asm!(".inst {}", const MSR_PAN_ON, options(nostack))
+        },
+        // SAFETY: `msr pan, #0` lets EL1 reach EL0 pages until `set_pan(true)`, which
+        // `with_user_access` runs right after its access.
+        false => unsafe {
+            core::arch::asm!(".inst {}", const MSR_PAN_OFF, options(nostack))
+        },
+    }
+}
+
 extern "C" fn secondary_main(start: &CpuStart) -> ! {
     // SAFETY: `start_cpu`'s caller guarantees the tables are the kernel's own, which map
     // everything this CPU uses at the addresses it uses now, as they did for the boot CPU;
@@ -871,7 +923,13 @@ impl Platform for Aarch64 {
     }
 
     fn with_user_access<R>(access: impl FnOnce() -> R) -> R {
-        access()
+        if !PAN_ON.load(core::sync::atomic::Ordering::Relaxed) {
+            return access();
+        }
+        set_pan(false);
+        let result = access();
+        set_pan(true);
+        result
     }
 
     unsafe fn run_user(context: &mut crate::user::UserContext) -> crate::user::UserExit {

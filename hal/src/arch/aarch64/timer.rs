@@ -283,6 +283,7 @@ pub(super) extern "C" fn init() {
 /// kernel's code.
 pub(super) fn init_this_cpu() {
     disarm();
+    super::enable_pan();
     if is_gicv3() {
         if let Some(redistributor) = gicv3_this_redistributor() {
             redistributor.wake();
