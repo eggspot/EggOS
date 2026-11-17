@@ -133,27 +133,9 @@ const DOUBLE_CLICK_MS: u32 = 400;
 const LEFT_SHIFT: u16 = key::LEFT_SHIFT;
 const RIGHT_SHIFT: u16 = key::RIGHT_SHIFT;
 const DAMAGE_OUTSET: i32 = 5;
-const LOCK_SIZE: i32 = 16;
+const LOCK_SIZE: i32 = crate::canvas::LOCK_SIZE;
 const LOCK_GAP: i32 = 24;
 const LOCK_AFTER: i32 = 8;
-const LOCK_GLYPH: [u16; 16] = [
-    0,
-    0,
-    0b0000_0111_1110_0000,
-    0b0000_1000_0001_0000,
-    0b0000_1000_0001_0000,
-    0b0000_1000_0001_0000,
-    0b0001_1111_1111_1000,
-    0b0001_1111_1111_1000,
-    0b0001_1110_0111_1000,
-    0b0001_1110_0111_1000,
-    0b0001_1111_1111_1000,
-    0b0001_1111_1111_1000,
-    0b0001_1111_1111_1000,
-    0,
-    0,
-    0,
-];
 
 #[derive(Debug, Clone, Copy)]
 struct Node {
@@ -729,14 +711,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return;
         }
         let previous = canvas.narrow(reach);
-        let colour = self.palette.get(crate::theme::Token::TextDim);
-        for (row, bits) in LOCK_GLYPH.iter().enumerate() {
-            for column in 0..LOCK_SIZE {
-                if bits & (0x8000 >> column) != 0 {
-                    canvas.pixel(cell.x + column, cell.y + row as i32, colour);
-                }
-            }
-        }
+        canvas.lock(cell.x, cell.y, self.palette.get(crate::theme::Token::TextDim));
         canvas.restore(previous);
     }
 

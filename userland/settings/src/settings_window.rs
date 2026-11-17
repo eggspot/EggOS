@@ -57,6 +57,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
 pub const CAPACITY: usize = 283
+    + BANNER_WIDGETS
     + crate::management_pane::WIDGETS
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
@@ -64,6 +65,12 @@ pub const CAPACITY: usize = 283
     + crate::wifi_section::WIDGETS;
 
 const SIDEBAR_WIDTH: i32 = 176;
+const BANNER_WIDGETS: usize = 5;
+const BANNER_HEIGHT: i32 = 28;
+const BANNER_HEIGHT_PAGES: i32 = 48;
+const BANNER_LOCK: (i32, i32) = (16, 6);
+const BANNER_NAME: (i32, i32) = (40, 6);
+const BANNER_CONTACT_END: i32 = 16;
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
 /// Below this window width the sidebar gives way to pages (docs/ux/settings-forms-v0.5.md 1):
 /// the sidebar and the narrowest pane the desktop layouts were drawn for.
@@ -845,6 +852,9 @@ struct Frame {
     sidebar: WidgetId,
     pane_area: WidgetId,
     scroll: WidgetId,
+    banner: WidgetId,
+    banner_name: WidgetId,
+    banner_contact: WidgetId,
     bar: WidgetId,
     back: WidgetId,
     title: WidgetId,
@@ -969,6 +979,7 @@ pub struct SettingsWindow {
     components: ComponentsPane,
     management_pane: crate::management_pane::ManagementPane,
     management: bool,
+    banner_panes: u32,
     windows_layer: bool,
     facts: Facts,
     pane: usize,
@@ -976,6 +987,34 @@ pub struct SettingsWindow {
     form: SettingsForm,
     shape: Shape,
     page: Page,
+}
+
+fn paint_banner_lock(
+    canvas: &mut eggos_toolkit::canvas::Canvas<'_>,
+    rect: eggos_toolkit::geometry::Rect,
+    _: u32,
+) {
+    let colour = canvas.palette().get(Token::Text);
+    canvas.lock(rect.x, rect.y, colour);
+}
+
+fn banner_panes(file: &crate::managed::PolicyFile) -> u32 {
+    let Some(text) = file.text() else {
+        return 0;
+    };
+    let mut panes = 0u32;
+    for (key, _) in file.locks() {
+        let shown = crate::management_pane::pane_of(key);
+        if let Some(pane) = PANES.iter().position(|name| *name == shown && !shown.is_empty()) {
+            panes |= 1 << pane;
+        }
+    }
+    let agents = eggos_settings_file::policy::agent_ceiling(text).is_some()
+        || eggos_settings_file::policy::denied_tools(text).next().is_some();
+    if agents {
+        panes |= 1 << AGENTS;
+    }
+    panes
 }
 
 fn panes_listed_by_default() -> u32 {
@@ -1159,6 +1198,47 @@ impl SettingsWindow {
             Kind::panel(Token::Menu),
         );
         let scroll = build.add(Some(pane_area), Place::fill(), Kind::scroll_view());
+        let banner = build.add(
+            Some(pane_area),
+            Place::at(0, 0, Length::Fill(0), Length::Px(BANNER_HEIGHT)),
+            Kind::Panel {
+                fill: Some(Token::MenuHover),
+                border_right: None,
+            },
+        );
+        build.add(
+            Some(banner),
+            Place::at(0, BANNER_HEIGHT - 1, Length::Fill(0), Length::Px(1)),
+            Kind::Panel {
+                fill: Some(Token::MenuBorder),
+                border_right: None,
+            },
+        );
+        build.add(
+            Some(banner),
+            Place::at(
+                BANNER_LOCK.0,
+                BANNER_LOCK.1,
+                Length::Px(eggos_toolkit::canvas::LOCK_SIZE),
+                Length::Px(eggos_toolkit::canvas::LOCK_SIZE),
+            ),
+            Kind::Custom {
+                painter: paint_banner_lock,
+                data: 0,
+            },
+        );
+        let banner_name = build.add(
+            Some(banner),
+            Place::at(BANNER_NAME.0, BANNER_NAME.1, Length::Content, Length::Content),
+            Kind::label("", Token::Text),
+        );
+        let banner_contact = build.add(
+            Some(banner),
+            Place::right(BANNER_CONTACT_END, BANNER_NAME.1),
+            Kind::label("", Token::Text),
+        );
+        build.tree.set_accessible_name(banner, "Managed");
+        build.tree.set_shown(banner, false);
         let bar = build.add(
             Some(pane_area),
             Place::at(0, 0, Length::Fill(0), Length::Px(PAGE_BAR)),
@@ -1220,6 +1300,9 @@ impl SettingsWindow {
             sidebar,
             pane_area,
             scroll,
+            banner,
+            banner_name,
+            banner_contact,
             bar,
             back,
             title,
@@ -1599,6 +1682,7 @@ impl SettingsWindow {
             components,
             management_pane,
             management: false,
+            banner_panes: 0,
             windows_layer: false,
             facts,
             pane: APPEARANCE,
@@ -1803,7 +1887,11 @@ impl SettingsWindow {
         }
         self.tree.set_shown(self.widgets.panes[self.pane], false);
         self.tree.set_shown(self.widgets.panes[pane], true);
+        let banner_before = self.banner_height();
         self.pane = pane;
+        if self.banner_height() != banner_before {
+            self.lay_out_frame();
+        }
         if pane == DATE_AND_TIME {
             self.reset_date_and_time();
         }
@@ -1874,11 +1962,37 @@ impl SettingsWindow {
     pub fn show_policy(&mut self, file: crate::managed::PolicyFile) -> Option<Request> {
         self.management = file != crate::managed::PolicyFile::NotInstalled;
         self.management_pane.show(&mut self.tree, &file, &self.facts);
+        self.banner_panes = banner_panes(&file);
+        let frame = self.frame;
+        let name = alloc::format!("Managed by {}", file.manager());
+        self.tree.set_text(frame.banner_name, &name);
+        let contact = file
+            .text()
+            .and_then(eggos_settings_file::policy::contact)
+            .unwrap_or("");
+        self.tree.set_text(frame.banner_contact, contact);
+        self.tree.set_accessible_value(frame.banner, file.manager());
+        self.lay_out_frame();
         self.filter_list();
         match (self.management, self.pane == MANAGEMENT) {
             (false, true) => self.open_pane(COMPONENTS),
             _ => None,
         }
+    }
+
+    fn banner_height(&self) -> i32 {
+        if self.banner_panes & (1 << self.pane) == 0 {
+            return 0;
+        }
+        match self.shape {
+            Shape::Pages => BANNER_HEIGHT_PAGES,
+            _ => BANNER_HEIGHT,
+        }
+    }
+
+    /// Whether the open pane shows the banner saying who manages it (D665).
+    pub fn banner_shown(&self) -> bool {
+        self.banner_height() > 0
     }
 
     /// Whether the `Management` row shows.
@@ -2135,7 +2249,15 @@ impl SettingsWindow {
                 );
                 self.tree.set_shown(frame.pane_area, true);
                 self.tree.set_shown(frame.bar, false);
-                self.tree.set_place(frame.scroll, Place::fill());
+                let banner = self.banner_height();
+                self.tree.set_place(
+                    frame.banner,
+                    Place::at(0, 0, Length::Fill(0), Length::Px(BANNER_HEIGHT)),
+                );
+                self.tree.set_place(
+                    frame.scroll,
+                    Place::at(0, banner, Length::Fill(0), Length::Fill(0)),
+                );
             }
             Shape::Pages => {
                 let on_list = self.page == Page::List;
@@ -2179,12 +2301,18 @@ impl SettingsWindow {
                     Place::at(bar, (bar - 16) / 2, Length::Fill(16), Length::Content),
                 );
                 self.tree.set_text(frame.title, PANES[self.pane]);
+                let banner = self.banner_height();
+                self.tree.set_place(
+                    frame.banner,
+                    Place::at(0, bar, Length::Fill(0), Length::Px(BANNER_HEIGHT_PAGES)),
+                );
                 self.tree.set_place(
                     frame.scroll,
-                    Place::at(0, bar, Length::Fill(0), Length::Fill(0)),
+                    Place::at(0, bar + banner, Length::Fill(0), Length::Fill(0)),
                 );
             }
         }
+        self.tree.set_shown(frame.banner, self.banner_height() > 0);
         let facts_page = self.shape == Shape::Pages && self.page == Page::Pane && wearable;
         self.tree.set_shown(frame.wearable_facts, facts_page);
         self.tree.set_shown(frame.wearable_hint, facts_page);
@@ -3314,6 +3442,25 @@ mod tests {
         assert_eq!(tree.selected(window.widgets.cards), Some(0));
         assert_eq!(window.facts().profile, 0);
         assert_eq!(click(&mut window, card.x + 20, card.y + 20), None);
+    }
+
+    #[test]
+    fn a_pane_with_a_locked_setting_shows_who_manages_it_above_its_content() {
+        let mut window = SettingsWindow::new(Facts::example());
+        let file = crate::managed::PolicyFile::Trusted(String::from(
+            "policy.manager=Contoso IT\npolicy.contact=helpdesk@contoso.example\nshell.profile=linux\n",
+        ));
+        let _ = window.show_policy(file);
+        assert_eq!(window.pane(), APPEARANCE);
+        assert!(window.banner_shown());
+        assert_eq!(window.tree.text_of(window.frame.banner_name), Some("Managed by Contoso IT"));
+        let scroll = window.tree.rect(window.frame.scroll).unwrap();
+        let area = window.tree.rect(window.frame.pane_area).unwrap();
+        assert_eq!(scroll.y - area.y, BANNER_HEIGHT);
+        let _ = window.open_pane(STORAGE);
+        assert!(!window.banner_shown());
+        let scroll = window.tree.rect(window.frame.scroll).unwrap();
+        assert_eq!(scroll.y, area.y);
     }
 
     #[test]

@@ -28448,3 +28448,18 @@ the license, by an explicit instruction recorded here.
   open, Components opens. Search words are section 5.3's.
 - **Not yet.** Building and running; Enter or a double-click on a row showing its pane; the
   pane banner (section 5.1); the phone and TV layouts (section 10).
+
+
+## D665 A pane with a locked setting shows who manages it (M16 editions; editions-policy v0.1 sections 5.1 and 9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** The Settings window has one banner, five window-level widgets in the pane
+  area: a `menu.hover` panel 28 px tall with a 1 px `menu.border` bottom row, the lock in
+  `text` at (16, 6), `Managed by Contoso IT` at (40, 6) and the contact right-aligned ending
+  16 px from the right. It shows above any pane that holds a locked key (the key's first word
+  names the pane), above Agents when the policy caps or denies agents, and above Components
+  when `update.policy` is locked; the scroll view of the panes then starts 28 px lower (48 on
+  the pages form, under the top bar), so no pane's own coordinates change. It takes no focus;
+  agents read it as the group `Managed` valued with the manager. The lock glyph moves into the
+  toolkit canvas (`Canvas::lock`), which the tree's control locks use too (D663).
+- **Not yet.** Building and running; hiding the contact when it would come within 16 px of
+  the name; the pages form's (16, 16) and (48, 16) places and a tap opening Management; locks
+  on each pane's own controls.

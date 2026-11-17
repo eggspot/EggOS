@@ -4,6 +4,27 @@
 //! number and stroke doubles and glyphs are pixel-doubled. Nothing is drawn outside the clip.
 
 use crate::geometry::Rect;
+
+/// A lock's width and height.
+pub const LOCK_SIZE: i32 = 16;
+const LOCK_GLYPH: [u16; 16] = [
+    0,
+    0,
+    0b0000_0111_1110_0000,
+    0b0000_1000_0001_0000,
+    0b0000_1000_0001_0000,
+    0b0000_1000_0001_0000,
+    0b0001_1111_1111_1000,
+    0b0001_1111_1111_1000,
+    0b0001_1110_0111_1000,
+    0b0001_1110_0111_1000,
+    0b0001_1111_1111_1000,
+    0b0001_1111_1111_1000,
+    0b0001_1111_1111_1000,
+    0,
+    0,
+    0,
+];
 use crate::theme::{self, Palette};
 use eggos_font::egg_sans::{self, HEIGHT as GLYPH_HEIGHT};
 
@@ -216,6 +237,17 @@ impl<'a> Canvas<'a> {
     /// Fills one pixel.
     pub fn pixel(&mut self, x: i32, y: i32, colour: u32) {
         self.row(y, x, x + 1, colour);
+    }
+
+    /// Draws the 16x16 lock of a locked setting (D663) with its top-left at (`x`, `y`).
+    pub fn lock(&mut self, x: i32, y: i32, colour: u32) {
+        for (row, bits) in LOCK_GLYPH.iter().enumerate() {
+            for column in 0..LOCK_SIZE {
+                if bits & (0x8000 >> column) != 0 {
+                    self.pixel(x + column, y + row as i32, colour);
+                }
+            }
+        }
     }
 
     /// Fills `rect` with its corners cut by `insets`.
