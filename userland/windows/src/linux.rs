@@ -785,6 +785,68 @@ pub fn rename(from: &[u8], to: &[u8], no_replace: bool) -> Result<usize, Errno> 
     }
 }
 
+/// Makes the NUL-terminated `new` another name of the file `existing` names (`linkat`).
+pub fn hard_link(existing: &[u8], new: &[u8]) -> Result<usize, Errno> {
+    if existing.last() != Some(&0) || new.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `linkat` reads the two NUL-terminated paths.
+    unsafe {
+        syscall(
+            number::LINKAT,
+            [AT_FDCWD, existing.as_ptr() as usize, AT_FDCWD, new.as_ptr() as usize, 0, 0],
+        )
+    }
+}
+
+/// Makes `link` a symbolic link holding `target`, both NUL-terminated (`symlinkat`).
+pub fn symbolic_link(target: &[u8], link: &[u8]) -> Result<usize, Errno> {
+    if target.last() != Some(&0) || link.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `symlinkat` reads the two NUL-terminated paths.
+    unsafe {
+        syscall(
+            number::SYMLINKAT,
+            [target.as_ptr() as usize, AT_FDCWD, link.as_ptr() as usize, 0, 0, 0],
+        )
+    }
+}
+
+/// What the symbolic link at the NUL-terminated `path` holds, in `out`; its length
+/// (`readlinkat`, no NUL added).
+pub fn read_link(path: &[u8], out: &mut [u8]) -> Result<usize, Errno> {
+    if path.last() != Some(&0) {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: `readlinkat` reads the NUL-terminated path and writes at most `out.len()` bytes.
+    unsafe {
+        syscall(
+            number::READLINKAT,
+            [AT_FDCWD, path.as_ptr() as usize, out.as_mut_ptr() as usize, out.len(), 0, 0],
+        )
+    }
+}
+
+/// A record lock's kind: `F_RDLCK`, `F_WRLCK` or `F_UNLCK`.
+pub const READ_LOCK: i16 = 0;
+pub const WRITE_LOCK: i16 = 1;
+pub const UNLOCK: i16 = 2;
+const SET_LOCK: usize = 6;
+const SET_LOCK_WAIT: usize = 7;
+
+/// Locks, or with [`UNLOCK`] unlocks, `length` bytes of `fd` from `start` (`fcntl`'s
+/// `F_SETLK`, or `F_SETLKW` when `wait`).
+pub fn lock_range(fd: usize, kind: i16, start: u64, length: u64, wait: bool) -> Result<usize, Errno> {
+    let mut record = [0u8; 32];
+    record[0..2].copy_from_slice(&kind.to_ne_bytes());
+    record[8..16].copy_from_slice(&start.to_ne_bytes());
+    record[16..24].copy_from_slice(&length.to_ne_bytes());
+    let command = if wait { SET_LOCK_WAIT } else { SET_LOCK };
+    // SAFETY: `fcntl` reads the 32-byte `struct flock` from `record`.
+    unsafe { syscall(number::FCNTL, [fd, command, record.as_mut_ptr() as usize, 0, 0, 0]) }
+}
+
 /// How many CPUs the process may run on.
 pub fn cpu_count() -> u32 {
     let mut mask = [0u64; 16];

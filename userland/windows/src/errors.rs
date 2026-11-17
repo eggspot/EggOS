@@ -56,6 +56,9 @@ pub mod code {
     pub const NOT_ALL_ASSIGNED: u32 = 1300;
     pub const NO_SUCH_PRIVILEGE: u32 = 1313;
     pub const BAD_LENGTH: u32 = 24;
+    pub const LOCK_VIOLATION: u32 = 33;
+    pub const NOT_LOCKED: u32 = 158;
+    pub const REQUEST_ABORTED: u32 = 1235;
     pub const INVALID_CURSOR_HANDLE: u32 = 1402;
     pub const RESOURCE_DATA_NOT_FOUND: u32 = 1812;
     pub const RESOURCE_TYPE_NOT_FOUND: u32 = 1813;

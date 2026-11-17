@@ -556,6 +556,208 @@ extern "efiapi" fn set_end_of_file(handle: usize) -> Bool {
     }
 }
 
+const COPY_FILE_FAIL_IF_EXISTS: u32 = 1;
+const LOCKFILE_FAIL_IMMEDIATELY: u32 = 1;
+const LOCKFILE_EXCLUSIVE_LOCK: u32 = 2;
+const OVERLAPPED_OFFSET: usize = 16;
+const VOLUME_NAME_NT: u32 = 2;
+const VOLUME_NAME_NONE: u32 = 4;
+const DOS_DEVICE_PREFIX: &str = "\\\\?\\";
+const NT_VOLUME_PREFIX: &str = "\\Device\\HarddiskVolume1";
+const FINAL_PATH_UNITS: usize = text::PATH_CAPACITY + 32;
+const FD_LINK_PREFIX: &[u8] = b"/proc/self/fd/";
+
+unsafe extern "efiapi" fn copy_file_ex_w(
+    from: *const u16,
+    to: *const u16,
+    _progress: *const c_void,
+    _data: *const c_void,
+    cancel: *const i32,
+    flags: u32,
+) -> Bool {
+    // SAFETY: `CopyFileExW`'s contract: `cancel` is null or a flag the caller may set.
+    if !cancel.is_null() && unsafe { cancel.read_volatile() } != 0 {
+        return fail(error::REQUEST_ABORTED, FALSE);
+    }
+    let fail_if_exists = if flags & COPY_FILE_FAIL_IF_EXISTS != 0 { TRUE } else { FALSE };
+    // SAFETY: the same two NUL-terminated names `CopyFileW` takes.
+    unsafe { copy_file_w(from, to, fail_if_exists) }
+}
+
+unsafe extern "efiapi" fn create_hard_link_w(new: *const u16, existing: *const u16, _security: *const c_void) -> Bool {
+    let (mut new_path, mut old_path) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
+    // SAFETY: `CreateHardLinkW`'s contract: two NUL-terminated names.
+    let new_length = unsafe { super::directory::eggos_path(new, &mut new_path) };
+    // SAFETY: as above.
+    let old_length = unsafe { super::directory::eggos_path(existing, &mut old_path) };
+    let (Some(new_length), Some(old_length)) = (new_length, old_length) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    match linux::hard_link(&old_path[..old_length], &new_path[..new_length]) {
+        Ok(_) => TRUE,
+        Err(errno) => fail(super::directory::path_error(&new_path[..new_length], errno), FALSE),
+    }
+}
+
+fn relative_target(target: *const u16, out: &mut [u8; text::PATH_CAPACITY]) -> Option<usize> {
+    let mut length = 0;
+    let mut at = 0;
+    loop {
+        // SAFETY: the caller's NUL-terminated name, read up to its NUL.
+        let unit = unsafe { target.add(at).read() };
+        if unit == 0 {
+            break;
+        }
+        at += 1;
+        let character = char::from_u32(u32::from(unit)).unwrap_or('?');
+        let character = if character == '\\' { '/' } else { character };
+        let mut encoded = [0u8; 4];
+        let bytes = character.encode_utf8(&mut encoded).as_bytes();
+        out.get_mut(length..length + bytes.len())?.copy_from_slice(bytes);
+        length += bytes.len();
+    }
+    *out.get_mut(length)? = 0;
+    Some(length + 1)
+}
+
+fn is_absolute(target: *const u16) -> bool {
+    // SAFETY: the caller's NUL-terminated name; at most its first two units are read.
+    let (first, second) = unsafe { (target.read(), if target.read() == 0 { 0 } else { target.add(1).read() }) };
+    first == u16::from(b'\\') || first == u16::from(b'/') || second == u16::from(b':')
+}
+
+unsafe extern "efiapi" fn create_symbolic_link_w(link: *const u16, target: *const u16, _flags: u32) -> u8 {
+    if link.is_null() || target.is_null() {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    let (mut link_path, mut target_path) = ([0u8; text::PATH_CAPACITY], [0u8; text::PATH_CAPACITY]);
+    // SAFETY: `CreateSymbolicLinkW`'s contract: a NUL-terminated name.
+    let link_length = unsafe { super::directory::eggos_path(link, &mut link_path) };
+    let target_length = match is_absolute(target) {
+        // SAFETY: as above.
+        true => unsafe { super::directory::eggos_path(target, &mut target_path) },
+        false => relative_target(target, &mut target_path),
+    };
+    let (Some(link_length), Some(target_length)) = (link_length, target_length) else {
+        return fail(error::INVALID_PARAMETER, 0);
+    };
+    match linux::symbolic_link(&target_path[..target_length], &link_path[..link_length]) {
+        Ok(_) => 1,
+        Err(errno) => fail(super::directory::path_error(&link_path[..link_length], errno), 0),
+    }
+}
+
+fn final_path(fd: usize, flags: u32, out: &mut [u16; FINAL_PATH_UNITS]) -> Option<usize> {
+    let mut link = [0u8; 40];
+    let mut length = FD_LINK_PREFIX.len();
+    link[..length].copy_from_slice(FD_LINK_PREFIX);
+    let mut digits = [0u8; 20];
+    let mut count = 0;
+    let mut rest = fd;
+    loop {
+        digits[count] = b'0' + (rest % 10) as u8;
+        count += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    for digit in digits[..count].iter().rev() {
+        link[length] = *digit;
+        length += 1;
+    }
+    let mut path = [0u8; text::PATH_CAPACITY];
+    let read = linux::read_link(&link[..=length], &mut path).ok()?;
+    let mut windows = [0u16; text::PATH_CAPACITY];
+    let units = super::directory::write_windows_path(&path[..read], &mut windows).ok()?;
+    let windows = &windows[..units];
+    let without_drive = match windows.get(1) {
+        Some(&colon) if colon == u16::from(b':') => &windows[2..],
+        _ => windows,
+    };
+    let (prefix, rest) = match flags {
+        _ if flags & VOLUME_NAME_NONE != 0 => ("", without_drive),
+        _ if flags & VOLUME_NAME_NT != 0 => (NT_VOLUME_PREFIX, without_drive),
+        _ => (DOS_DEVICE_PREFIX, windows),
+    };
+    let mut at = 0;
+    for unit in prefix.encode_utf16().chain(rest.iter().copied()) {
+        *out.get_mut(at)? = unit;
+        at += 1;
+    }
+    Some(at)
+}
+
+unsafe extern "efiapi" fn get_final_path_name_by_handle_w(handle: usize, buffer: *mut u16, size: u32, flags: u32) -> u32 {
+    let Some(fd) = fd_of(handle) else {
+        return fail(error::INVALID_HANDLE, 0);
+    };
+    let mut path = [0u16; FINAL_PATH_UNITS];
+    let Some(units) = final_path(fd, flags, &mut path) else {
+        return fail(error::PATH_NOT_FOUND, 0);
+    };
+    if buffer.is_null() || units >= size as usize {
+        return (units + 1) as u32;
+    }
+    // SAFETY: the caller's buffer holds `size` units, more than `units`.
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer, units + 1) };
+    out[..units].copy_from_slice(&path[..units]);
+    out[units] = 0;
+    units as u32
+}
+
+fn lock(handle: usize, kind: i16, offset: u64, length: u64, wait: bool) -> Bool {
+    let Some(fd) = fd_of(handle) else {
+        return fail(error::INVALID_HANDLE, FALSE);
+    };
+    match linux::lock_range(fd, kind, offset, length, wait) {
+        Ok(_) => TRUE,
+        Err(Errno::EAGAIN | Errno::EACCES) if kind == linux::UNLOCK => fail(error::NOT_LOCKED, FALSE),
+        Err(Errno::EAGAIN | Errno::EACCES) => fail(error::LOCK_VIOLATION, FALSE),
+        Err(errno) => fail(error_for(errno), FALSE),
+    }
+}
+
+fn overlapped_offset(overlapped: *const u8) -> Option<u64> {
+    if overlapped.is_null() {
+        return None;
+    }
+    // SAFETY: `OVERLAPPED`'s `Offset` and `OffsetHigh` follow its two pointer-sized fields.
+    let low = unsafe { overlapped.add(OVERLAPPED_OFFSET).cast::<u32>().read_unaligned() };
+    // SAFETY: as above.
+    let high = unsafe { overlapped.add(OVERLAPPED_OFFSET + 4).cast::<u32>().read_unaligned() };
+    Some(u64::from(high) << 32 | u64::from(low))
+}
+
+extern "efiapi" fn lock_file_ex(handle: usize, flags: u32, _reserved: u32, low: u32, high: u32, overlapped: *const u8) -> Bool {
+    let Some(offset) = overlapped_offset(overlapped) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    let kind = match flags & LOCKFILE_EXCLUSIVE_LOCK != 0 {
+        true => linux::WRITE_LOCK,
+        false => linux::READ_LOCK,
+    };
+    let length = u64::from(high) << 32 | u64::from(low);
+    lock(handle, kind, offset, length, flags & LOCKFILE_FAIL_IMMEDIATELY == 0)
+}
+
+extern "efiapi" fn unlock_file_ex(handle: usize, _reserved: u32, low: u32, high: u32, overlapped: *const u8) -> Bool {
+    let Some(offset) = overlapped_offset(overlapped) else {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    };
+    lock(handle, linux::UNLOCK, offset, u64::from(high) << 32 | u64::from(low), false)
+}
+
+extern "efiapi" fn lock_file(handle: usize, offset_low: u32, offset_high: u32, low: u32, high: u32) -> Bool {
+    let offset = u64::from(offset_high) << 32 | u64::from(offset_low);
+    lock(handle, linux::WRITE_LOCK, offset, u64::from(high) << 32 | u64::from(low), false)
+}
+
+extern "efiapi" fn unlock_file(handle: usize, offset_low: u32, offset_high: u32, low: u32, high: u32) -> Bool {
+    let offset = u64::from(offset_high) << 32 | u64::from(offset_low);
+    lock(handle, linux::UNLOCK, offset, u64::from(high) << 32 | u64::from(low), false)
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"ReadFile" => read_file,
     b"WriteFile" => write_file,
@@ -569,6 +771,14 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetFileType" => get_file_type,
     b"FlushFileBuffers" => flush_file_buffers,
     b"CopyFileW" => copy_file_w,
+    b"CopyFileExW" => copy_file_ex_w,
+    b"CreateHardLinkW" => create_hard_link_w,
+    b"CreateSymbolicLinkW" => create_symbolic_link_w,
+    b"GetFinalPathNameByHandleW" => get_final_path_name_by_handle_w,
+    b"LockFile" => lock_file,
+    b"LockFileEx" => lock_file_ex,
+    b"UnlockFile" => unlock_file,
+    b"UnlockFileEx" => unlock_file_ex,
     b"SetFileAttributesW" => set_file_attributes_w,
     b"SetFileTime" => set_file_time,
     b"SetEndOfFile" => set_end_of_file,

@@ -28577,3 +28577,22 @@ the license, by an explicit instruction recorded here.
   Only then does `doesNotRecognizeSelector:` run. The `_stret` sends keep their old path.
 - **Not yet.** Building and running; `methodSignatureForSelector:` and `forwardInvocation:` with
   `NSInvocation` (marshalling arguments by their type encoding); forwarding `_stret` sends.
+
+
+## D675 kernel32's link, final-path and byte-range lock functions (M15 Windows; follow-up of D189; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `CopyFileExW` is `CopyFileW` honouring `COPY_FILE_FAIL_IF_EXISTS` and a cancel
+  flag already set (`ERROR_REQUEST_ABORTED`); its progress routine is not called.
+  `CreateHardLinkW` is `linkat`. `CreateSymbolicLinkW` is `symlinkat`: an absolute target
+  (`C:\...`, `\...`) becomes its EggOS path, a relative one keeps its words with `\` turned to
+  `/`, so the link resolves the same way on both systems; the directory flag needs nothing, as
+  a Linux link serves files and folders. `GetFinalPathNameByHandleW` reads
+  `/proc/self/fd/<n>` and answers the Windows form, `\\?\C:\...` by default, without the drive
+  for `VOLUME_NAME_NONE` and under `\Device\HarddiskVolume1` for `VOLUME_NAME_NT`, with the
+  usual size-or-length answer. `LockFile`, `LockFileEx`, `UnlockFile` and `UnlockFileEx` are
+  `fcntl` record locks (`F_SETLK`, `F_SETLKW` when `LockFileEx` may wait; shared or exclusive
+  by `LOCKFILE_EXCLUSIVE_LOCK`), the offset from the `OVERLAPPED`; a conflict answers
+  `ERROR_LOCK_VIOLATION`, unlocking what is not locked `ERROR_NOT_LOCKED`.
+- **Differences kept.** Windows' locks are mandatory and belong to a handle; these are
+  advisory and belong to the process, which is what Windows programs that lock to coordinate
+  with each other need. An overlapped `LockFileEx` completes before it returns.
+- **Not yet.** Building and running; the copy progress routine; a guest test program.
