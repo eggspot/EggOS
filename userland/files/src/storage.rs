@@ -1216,6 +1216,7 @@ pub const MIN_INSTALL_BYTES: u64 = 1 << 30;
 const MAX_BOOT_FILE_BYTES: usize = 256 << 20;
 const BOOT_TEXT_BYTES: usize = 256;
 const DATA_START_ZEROED: u64 = 1 << 20;
+const ALIGNMENT_SECTORS: u64 = 2048;
 const ZERO_CHUNK: usize = 64 * 1024;
 
 /// The files EggOS was started from: the loader and the kernel, and the loader's name on the
@@ -1425,24 +1426,26 @@ pub fn add_eggos_partition(
     let mut unique = [0u8; 16];
     disks.unique_bytes(&mut unique);
     let unique = eggos_gpt::random_guid(unique);
-    add_partition_named(disks, device, unique, first_sector, sectors)
+    add_partition_named(disks, device, eggos_partition(unique, first_sector, sectors))
+}
+
+fn eggos_partition(unique: eggos_gpt::Guid, first: u64, sectors: u64) -> eggos_gpt::NewPartition<'static> {
+    eggos_gpt::NewPartition {
+        kind: eggos_gpt::EGGOS_DATA_PARTITION,
+        unique,
+        first,
+        last: first.saturating_add(sectors).saturating_sub(1),
+        name: "EggOS",
+    }
 }
 
 fn add_partition_named(
     disks: &mut (impl WholeDisks + ?Sized),
     device: &str,
-    unique: eggos_gpt::Guid,
-    first_sector: u64,
-    sectors: u64,
+    partition: eggos_gpt::NewPartition<'_>,
 ) -> Result<eggos_gpt::Guid, AddPartitionError> {
     let line = unmounted(disks, device, true).map_err(AddPartitionError::Storage)?;
-    let partition = eggos_gpt::NewPartition {
-        kind: eggos_gpt::EGGOS_DATA_PARTITION,
-        unique,
-        first: first_sector,
-        last: first_sector.saturating_add(sectors).saturating_sub(1),
-        name: "EggOS",
-    };
+    let unique = partition.unique;
     let handle = disks
         .open(line.device, true)
         .map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
@@ -1494,6 +1497,8 @@ pub struct BesideInstallation {
     /// EggOS's partition's unique GUID, which its `CMDLINE.TXT` names.
     pub partition: eggos_gpt::Guid,
     pub partition_bytes: u64,
+    /// Whether EggOS wrote its own EFI system partition at the start of its room (D670).
+    pub own_system_partition: bool,
 }
 
 /// Why EggOS could not be installed beside what a disk holds (D648).
@@ -1575,6 +1580,33 @@ fn clear_data_start(
     flushed.map_err(StorageError::of)
 }
 
+fn write_own_system_partition(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &'static str,
+    first: u64,
+    files: &[eggos_fat32::File<'_>],
+) -> Result<(), BesideError> {
+    let mut volume = [0u8; 4];
+    disks.unique_bytes(&mut volume);
+    let sectors = u32::try_from(SYSTEM_PARTITION_BYTES / SECTOR_BYTES).unwrap_or(u32::MAX);
+    let hidden = u32::try_from(first).unwrap_or(u32::MAX);
+    let handle = disks
+        .open(device, true)
+        .map_err(|fault| BesideError::Storage(StorageError::of(fault)))?;
+    let base = first * SECTOR_BYTES;
+    let written = eggos_fat32::write_volume(
+        sectors,
+        hidden,
+        u32::from_le_bytes(volume),
+        files,
+        &mut |offset, bytes| disks.write_at(handle, base + offset, bytes),
+    );
+    let flushed = disks.flush(handle);
+    disks.close(handle);
+    written.map_err(shared_partition_error)?;
+    flushed.map_err(|fault| BesideError::Storage(StorageError::of(fault)))
+}
+
 /// Installs EggOS beside what the unmounted disk `device` holds (D648), in the free `room`:
 /// writes the loader, the kernel and a `CMDLINE.TXT` naming EggOS's partition into
 /// `\EFI\EGGOS\` on the disk's own EFI system partition, touching no other file there; then
@@ -1590,13 +1622,12 @@ fn clear_data_start(
 pub fn install_beside(
     disks: &mut (impl WholeDisks + ?Sized),
     device: &str,
-    system_partition: &crate::partitions::PartitionRecord,
+    system_partition: Option<&crate::partitions::PartitionRecord>,
     room: crate::partitions::FreeRun,
     sectors: u64,
     files: &BootFiles,
 ) -> Result<BesideInstallation, BesideError> {
     let line = unmounted(disks, device, true).map_err(BesideError::Storage)?;
-    let sectors = sectors.min(room.sectors);
     let mut unique = [0u8; 16];
     disks.unique_bytes(&mut unique);
     let unique = eggos_gpt::random_guid(unique);
@@ -1621,14 +1652,45 @@ pub fn install_beside(
             bytes: command_line.as_bytes(),
         },
     ];
-    write_shared_boot_files(disks, line.device, system_partition, &shared_files)?;
-    add_partition_named(disks, line.device, unique, room.first_sector, sectors)
+    let shared = match system_partition {
+        Some(partition) => match write_shared_boot_files(disks, line.device, partition, &shared_files) {
+            Ok(()) => true,
+            Err(BesideError::SystemPartitionFull | BesideError::SystemPartitionNotFat32) => false,
+            Err(error) => return Err(error),
+        },
+        None => false,
+    };
+    let own_sectors = SYSTEM_PARTITION_BYTES / SECTOR_BYTES;
+    let data_first = match shared {
+        true => room.first_sector,
+        false => room.first_sector + own_sectors.next_multiple_of(ALIGNMENT_SECTORS),
+    };
+    let room_end = room.first_sector + room.sectors;
+    let data_sectors = sectors.min(room_end.saturating_sub(data_first));
+    if data_sectors == 0 || (!shared && data_sectors * SECTOR_BYTES < MIN_INSTALL_BYTES) {
+        return Err(BesideError::Storage(StorageError::TooSmallToInstall));
+    }
+    if !shared {
+        write_own_system_partition(disks, line.device, room.first_sector, &shared_files)?;
+        let mut own = [0u8; 16];
+        disks.unique_bytes(&mut own);
+        let system = eggos_gpt::NewPartition {
+            kind: eggos_gpt::EFI_SYSTEM_PARTITION,
+            unique: eggos_gpt::random_guid(own),
+            first: room.first_sector,
+            last: room.first_sector + own_sectors - 1,
+            name: "EFI system partition",
+        };
+        add_partition_named(disks, line.device, system).map_err(BesideError::Partition)?;
+    }
+    add_partition_named(disks, line.device, eggos_partition(unique, data_first, data_sectors))
         .map_err(BesideError::Partition)?;
-    clear_data_start(disks, line.device, room.first_sector).map_err(BesideError::Storage)?;
+    clear_data_start(disks, line.device, data_first).map_err(BesideError::Storage)?;
     Ok(BesideInstallation {
         device: line.device,
         partition: unique,
-        partition_bytes: sectors * SECTOR_BYTES,
+        partition_bytes: data_sectors * SECTOR_BYTES,
+        own_system_partition: !shared,
     })
 }
 
@@ -1929,8 +1991,9 @@ mod install_tests {
             kernel: b"EggOS kernel".to_vec(),
             loader_name: "BOOTX64.EFI",
         };
-        let installed = install_beside(&mut disks, "/dev/vdb", &system_partition, room, 4096, &files).expect("installed");
+        let installed = install_beside(&mut disks, "/dev/vdb", Some(&system_partition), room, 4096, &files).expect("installed");
         assert_eq!(installed.device, "/dev/vdb");
+        assert!(!installed.own_system_partition);
         assert_eq!(installed.partition_bytes, 4096 * SECTOR_BYTES);
         let image = &disks.disk("vdb").image;
         let holds = |wanted: &[u8]| image.windows(wanted.len()).any(|window| window == wanted);
@@ -1947,6 +2010,26 @@ mod install_tests {
             .collect();
         assert_eq!(found.len(), 2);
         assert_eq!((found[1].unique, found[1].first, found[1].blocks()), (installed.partition, room_first, 4096));
+    }
+
+    #[test]
+    fn without_a_system_partition_to_share_the_room_must_hold_eggos_own_too() {
+        use crate::partitions::FreeRun;
+        use crate::storage::memory::{MemoryDisks, MemoryWholeDisk};
+        let mut disks = MemoryDisks::of(alloc::vec![MemoryWholeDisk::blank("vdb", 12_000)]);
+        let files = BootFiles {
+            loader: b"EggOS loader".to_vec(),
+            kernel: b"EggOS kernel".to_vec(),
+            loader_name: "BOOTX64.EFI",
+        };
+        let room = FreeRun {
+            first_sector: 4096,
+            sectors: 8192,
+        };
+        assert_eq!(
+            install_beside(&mut disks, "/dev/vdb", None, room, 4096, &files),
+            Err(BesideError::Storage(StorageError::TooSmallToInstall))
+        );
     }
 
     #[test]

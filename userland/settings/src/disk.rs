@@ -721,14 +721,7 @@ fn install_alongside(
         report(console, false, &errors::CANNOT_SHRINK, &message);
         return FAILURE;
     };
-    let Some(system_partition) = partitions::system_partition(layout) else {
-        let message = format!(
-            "{}: it has no EFI system partition to share, and writing EggOS's own one beside it is not written yet",
-            record.device
-        );
-        report(console, false, &errors::FAILED, &message);
-        return FAILURE;
-    };
+    let system_partition = partitions::system_partition(layout);
     if !options.yes {
         if let Err(status) = confirmed_alongside(console, record, layout, &placement, size_gib) {
             return status;

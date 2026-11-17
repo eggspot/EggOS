@@ -28514,3 +28514,17 @@ the license, by an explicit instruction recorded here.
   confirmation or touches the store; an untrusted file allows `view` only. The buffer is on
   the stack, as the agent command allocates nothing.
 - **Not yet.** Building and running.
+
+
+## D670 EggOS writes its own EFI system partition when it cannot share one (M8; installer dual boot v0.1 section 5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** When the disk has no EFI system partition, or the one it has is full or not
+  FAT32 with 512-byte sectors, `install_beside` makes EggOS's own: a 256 MiB FAT32 volume
+  holding the same `\EFI\EGGOS\` files, written at the start of EggOS's room (still
+  unallocated, so writing it first risks nothing), then its `EFI system partition` entry, then
+  EggOS's data partition from the next 1 MiB boundary, then the data partition's cleared start.
+  The room must then hold at least 256 MiB and 1 GiB more, else `too small to install`. UEFI
+  allows two EFI system partitions on one disk, and the loader's own boot entry (D652) points
+  at the file wherever it is. The CLI no longer refuses a disk without one; the result says
+  whether EggOS wrote its own (`own_system_partition`).
+- **Not yet.** Building and running; the confirmation's line 31 saying which will happen
+  before anything is written; the dry run's sentence for it.
