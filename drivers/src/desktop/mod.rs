@@ -2149,6 +2149,12 @@ impl Desktop {
         {
             return action;
         }
+        if self.form == Form::Tv
+            && code == button::LEFT
+            && let Some(action) = self.tv_press(x, y, damage, events)
+        {
+            return action;
+        }
         if let Some(action) = self.end_app_press(x, y, damage, events) {
             return action;
         }

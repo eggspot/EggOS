@@ -27447,3 +27447,19 @@ the license, by an explicit instruction recorded here.
   - `wm move` and `wm size` answering with the rect the window got.
   - The tablet's own entries in the shell's tree (window menus, `Dock`, `Divider`, the chooser).
   - The notice's place and dialogs centred on a wide side.
+
+## D607 The TV form's strip indicators, a pretend remote from the command line, and pointer clicks on the home screen (M12; D307's deviations; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/adaptive-shell-tv-v0.5.md sections 1.2 and 3.3, by Claude Fable)
+- **The strip's right run** (`draw_strip_indicators`): left of the clock, 16 px apart, the
+  network glyph while an adapter exists, then the `Agent` chip (56x20 at y 40, idle or acting
+  as on the desktop) while an agent is connected; an absent item takes no room. Both are
+  read-only.
+- **A pretend remote from the kernel command line**: the word `eggos.remote`
+  (`input::PRETEND_REMOTE_WORD`) makes `input::present_kinds` report a remote from the first
+  interactive screen on, so a machine or a QEMU run without one shows the TV form.
+- **An attached pointer on the home screen** (`tv_press`): a click on a tile or a strip button
+  moves the focus there and opens it; a click on a menu row chooses it (as OK would); a click
+  outside an open menu closes it; elsewhere it does nothing. Over a shown app the pointer is
+  the app's. The menu's rectangle is one function now (`tv_menu_rect`) for drawing and clicks.
+- **Not yet.** Building and running; an `xtask run --remote` flag that adds the word; the
+  rest of D307's deviations (keys mode, centred dialogs, the toolkit's TV padding, the
+  notice's TV place); the TV's own entries in the shell's tree.

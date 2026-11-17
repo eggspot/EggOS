@@ -808,6 +808,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
         Ordering::Relaxed,
     );
     if session == Session::Interactive {
+        input::pretend_remote_if_asked::<P>();
         input::subscribe();
     }
     *TERMINAL.lock() = Some(terminal);

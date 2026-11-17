@@ -9,7 +9,7 @@ use super::icons::{IconSize, draw_icon};
 use super::paint::{self, Canvas};
 use super::protocol::EventSink;
 use super::windows;
-use super::{Action, Contents, Desktop, MAX_WINDOWS, SettingsPane, colour};
+use super::{Action, Contents, Desktop, MAX_WINDOWS, SettingsPane, colour, contains};
 use crate::display::{Damage, Rect};
 use crate::font::GLYPH_WIDTH;
 use crate::input::key;
@@ -37,6 +37,10 @@ const LABEL_GLYPHS: usize = 16;
 const MENU_WIDTH: u32 = 320;
 const MENU_ROW: u32 = 32;
 const RING: u32 = 2;
+const STRIP_GAP: u32 = 16;
+const NETWORK_SIDE: u32 = 16;
+const AGENT_CHIP: (u32, u32, u32) = (40, 56, 20);
+const AGENT_TEXT_INSET: (u32, u32) = (8, 2);
 const PANES: [(&str, &str); 12] = [
     ("appearance", "Appearance"),
     ("network", "Network"),
@@ -176,6 +180,7 @@ impl Desktop {
         let clock = self.clock_text();
         let clock_x = self.width - TV_MARGIN_X - clock.len() as u32 * GLYPH_WIDTH as u32;
         canvas.text(clock_x, STRIP_TEXT_Y, clock, colour::TEXT);
+        self.draw_strip_indicators(canvas, clock_x);
         let rows = self.tv_rows();
         let view_bottom = self.height - TV_MARGIN_Y;
         for (visible, (kind, tiles)) in rows.iter().enumerate().skip(self.tv.view) {
@@ -354,6 +359,112 @@ impl Desktop {
         Self::menu_rows(menu, closable, uninstallable)
     }
 
+    fn tv_menu_rect(&self, rows: usize) -> Rect {
+        let height = MENU_ROW * rows as u32 + 8;
+        Rect::new(
+            (self.width - MENU_WIDTH) / 2,
+            (self.height - height) / 2,
+            MENU_WIDTH,
+            height,
+        )
+    }
+
+    /// The strip's right run left of the clock (section 1.2): the network glyph while an
+    /// adapter exists, then the `Agent` chip while an agent is connected.
+    fn draw_strip_indicators(&self, canvas: &mut Canvas<'_>, clock_x: u32) {
+        let mut right = clock_x.saturating_sub(STRIP_GAP);
+        if let Some(state) = self.network_state() {
+            let x = right.saturating_sub(NETWORK_SIDE);
+            for rect in state.glyph().into_iter().flatten() {
+                canvas.fill(rect.placed(x, STRIP_TEXT_Y, 1), colour::TEXT);
+            }
+            right = x.saturating_sub(STRIP_GAP);
+        }
+        if self.agent_connected() {
+            let chip = Rect::new(
+                right.saturating_sub(AGENT_CHIP.1),
+                AGENT_CHIP.0,
+                AGENT_CHIP.1,
+                AGENT_CHIP.2,
+            );
+            let (fill, text) = match self.agent_acting() {
+                true => (colour::ACCENT, colour::ICON_DARK),
+                false => (colour::BAR_HOVER, colour::TEXT_DIM),
+            };
+            canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
+            canvas.text(
+                chip.x + AGENT_TEXT_INSET.0,
+                chip.y + AGENT_TEXT_INSET.1,
+                super::AGENT_LABEL,
+                text,
+            );
+        }
+    }
+
+    /// A click on the home screen with an attached pointer (section 3.3): a tile or a strip
+    /// button takes the focus and opens; a menu row is chosen; a click outside a menu closes
+    /// it. Over a shown app the pointer is the app's: `None`.
+    pub(super) fn tv_press(
+        &mut self,
+        x: u32,
+        y: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
+        if self.phone_shown_window().is_some() {
+            return None;
+        }
+        damage.add(self.screen());
+        if let Some(menu) = self.tv.menu {
+            let rows = self.tv_menu_rows(menu);
+            let rect = self.tv_menu_rect(rows.len());
+            let row = (0..rows.len()).find(|&index| {
+                let top = rect.y + 4 + MENU_ROW * index as u32;
+                contains(Rect::new(rect.x, top, rect.width, MENU_ROW), x, y)
+            });
+            let Some(row) = row else {
+                self.tv.menu = None;
+                return Some(Action::None);
+            };
+            let chosen = match menu {
+                Menu::Tile(tile, _) => Menu::Tile(tile, row),
+                Menu::Power(_) => Menu::Power(row),
+            };
+            return Some(self.tv_menu_key(chosen, key::ENTER, damage, events));
+        }
+        for (index, (_, button_x, _)) in STRIP_BUTTONS.into_iter().enumerate() {
+            let rect = Rect::new(button_x, STRIP_BUTTON.0, STRIP_BUTTON.1, STRIP_BUTTON.2);
+            if contains(rect, x, y) {
+                self.tv.focus = Focus::Strip(index as u8);
+                return Some(self.tv_open_focused(damage, events));
+            }
+        }
+        let rows = self.tv_rows();
+        let view_bottom = self.height - TV_MARGIN_Y;
+        for (visible, (kind, tiles)) in rows.iter().enumerate().skip(self.tv.view) {
+            let row_top = ROWS_TOP + ROW_PITCH * (visible - self.tv.view) as u32;
+            if row_top >= view_bottom {
+                break;
+            }
+            let row_slot = Self::row_index(*kind);
+            let offset = self.tv.scroll[row_slot];
+            for (index, tile) in tiles.iter().enumerate().skip(offset) {
+                let tile_x = TV_MARGIN_X + TILE_PITCH * (index - offset) as u32;
+                if tile_x >= self.width - TV_MARGIN_X {
+                    break;
+                }
+                if contains(Rect::new(tile_x, row_top + TILE_TOP, TILE.0, TILE.1), x, y) {
+                    self.tv.focus = Focus::Tiles;
+                    self.tv.row = visible;
+                    self.tv.tile[row_slot] = index;
+                    let tile = *tile;
+                    return Some(self.tv_open(tile, damage, events));
+                }
+            }
+        }
+        Some(Action::None)
+    }
+
     fn draw_tv_menu(&self, canvas: &mut Canvas<'_>) {
         let Some(menu) = self.tv.menu else {
             return;
@@ -362,13 +473,7 @@ impl Desktop {
         let focused = match menu {
             Menu::Tile(_, row) | Menu::Power(row) => row,
         };
-        let height = MENU_ROW * rows.len() as u32 + 8;
-        let rect = Rect::new(
-            (self.width - MENU_WIDTH) / 2,
-            (self.height - height) / 2,
-            MENU_WIDTH,
-            height,
-        );
+        let rect = self.tv_menu_rect(rows.len());
         canvas.shadow(rect);
         canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
         canvas.rounded(

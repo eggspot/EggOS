@@ -1880,6 +1880,23 @@ fn note_kind_of(event: &InputEvent) {
     }
 }
 
+/// The kernel command line's word that pretends a TV remote is attached (D307, D607), so a
+/// machine without one shows the TV form: `eggos.remote`.
+pub const PRETEND_REMOTE_WORD: &[u8] = b"eggos.remote";
+
+/// Pretends a remote is attached when the kernel command line holds [`PRETEND_REMOTE_WORD`].
+pub fn pretend_remote_if_asked<P: Platform>() {
+    let mut asked = false;
+    P::command_line(&mut |line| {
+        asked = line
+            .split(u8::is_ascii_whitespace)
+            .any(|word| word == PRETEND_REMOTE_WORD);
+    });
+    if asked {
+        pretend_remote(true);
+    }
+}
+
 /// A boot option's pretend TV remote, for testing the TV form (D303).
 pub fn pretend_remote(present: bool) {
     REMOTE_PRETENDED.store(present, Ordering::Relaxed);
