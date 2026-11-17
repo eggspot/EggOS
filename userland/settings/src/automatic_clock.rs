@@ -256,6 +256,11 @@ fn set_ink(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, ink: Token) {
 }
 
 impl AutomaticClock {
+    /// The `Set automatically` check box, which sets `time.automatic`, for a lock (D666).
+    pub fn check_box(&self) -> WidgetId {
+        self.widgets.check_box
+    }
+
     /// `Set automatically` over `widgets`, showing `facts`.
     pub fn new(tree: &mut WidgetTree<CAPACITY>, widgets: ClockWidgets, facts: &Facts) -> Self {
         let mut clock = Self {

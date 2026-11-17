@@ -651,6 +651,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     pub fn set_enabled(&mut self, id: WidgetId, enabled: bool) {
         if let Some(node) = self.node_mut(id)
             && node.enabled != enabled
+            && !(enabled && node.locked)
         {
             node.enabled = enabled;
             self.damage_widget(id);

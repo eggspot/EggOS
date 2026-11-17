@@ -321,6 +321,17 @@ pub struct DisplayPane {
 }
 
 impl DisplayPane {
+    /// The control that sets `key` on this pane, for a lock (D666).
+    pub fn control(&self, key: crate::keys::Key) -> Option<WidgetId> {
+        use crate::keys::Key;
+        match key {
+            Key::DisplayScale => Some(self.scales),
+            Key::DisplayResolution => Some(self.choice),
+            Key::DisplayRotation => Some(self.rotation),
+            _ => None,
+        }
+    }
+
     /// Builds the pane's rows in `pane` under its heading, showing `facts`.
     pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, facts: &Facts) -> Self {
         let resolution_label = label(tree, pane, PADDING, 76, "Resolution");
@@ -692,6 +703,19 @@ pub struct InputPanes {
 }
 
 impl InputPanes {
+    /// The control that sets `key` on the Mouse or Keyboard pane, for a lock (D666).
+    pub fn control(&self, key: crate::keys::Key) -> Option<WidgetId> {
+        use crate::keys::Key;
+        match key {
+            Key::MouseButtons => Some(self.hands),
+            Key::MouseScrolling => Some(self.scrolling),
+            Key::MouseSpeed => Some(self.speed),
+            Key::KeyboardRepeatDelay => Some(self.delay),
+            Key::KeyboardRepeatRate => Some(self.rate),
+            _ => None,
+        }
+    }
+
     /// Builds the Mouse pane's rows in `mouse` and the repeat rows in `keyboard`, whose status
     /// line is `keyboard_status`, showing `input`.
     pub fn build(

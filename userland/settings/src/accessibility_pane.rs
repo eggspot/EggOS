@@ -173,6 +173,29 @@ impl Builder<'_> {
 }
 
 impl AccessibilityPane {
+    /// The controls that set `key` on this pane, for a lock (D666).
+    pub fn controls(&self, key: crate::keys::Key) -> &[WidgetId] {
+        use crate::keys::Key;
+        match key {
+            Key::KeyboardNavigation => &self.navigation,
+            Key::HighContrast => core::slice::from_ref(&self.contrast),
+            Key::ReduceMotion => core::slice::from_ref(&self.motion),
+            Key::ScreenReader => core::slice::from_ref(&self.reader),
+            Key::Zoom => core::slice::from_ref(&self.zoom),
+            Key::ZoomLevel => core::slice::from_ref(&self.level),
+            Key::PointerSize => core::slice::from_ref(&self.pointer_size),
+            Key::StickyKeys => core::slice::from_ref(&self.sticky),
+            Key::SlowKeys => core::slice::from_ref(&self.slow),
+            Key::SlowKeysMs => core::slice::from_ref(&self.delay),
+            Key::BounceKeys => core::slice::from_ref(&self.bounce),
+            Key::BounceKeysMs => core::slice::from_ref(&self.bounce_delay),
+            Key::ToggleKeys => core::slice::from_ref(&self.toggle),
+            Key::MouseKeys => core::slice::from_ref(&self.mouse_keys),
+            Key::MouseKeysSpeed => core::slice::from_ref(&self.top_speed),
+            _ => &[],
+        }
+    }
+
     /// Builds the pane's rows in `pane`, under its heading, showing `shown`.
     pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, shown: Shown) -> Self {
         let mut rows = Builder {

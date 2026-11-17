@@ -980,6 +980,7 @@ pub struct SettingsWindow {
     management_pane: crate::management_pane::ManagementPane,
     management: bool,
     banner_panes: u32,
+    locked_controls: Vec<WidgetId>,
     windows_layer: bool,
     facts: Facts,
     pane: usize,
@@ -1683,6 +1684,7 @@ impl SettingsWindow {
             management_pane,
             management: false,
             banner_panes: 0,
+            locked_controls: Vec::new(),
             windows_layer: false,
             facts,
             pane: APPEARANCE,
@@ -1963,6 +1965,7 @@ impl SettingsWindow {
         self.management = file != crate::managed::PolicyFile::NotInstalled;
         self.management_pane.show(&mut self.tree, &file, &self.facts);
         self.banner_panes = banner_panes(&file);
+        self.lock_controls(&file);
         let frame = self.frame;
         let name = alloc::format!("Managed by {}", file.manager());
         self.tree.set_text(frame.banner_name, &name);
@@ -1978,6 +1981,48 @@ impl SettingsWindow {
             (false, true) => self.open_pane(COMPONENTS),
             _ => None,
         }
+    }
+
+    fn controls_of(&self, key: crate::keys::Key) -> Vec<WidgetId> {
+        use crate::keys::Key;
+        let widgets = &self.widgets;
+        let mut controls = match key {
+            Key::ShellProfile => alloc::vec![widgets.cards],
+            Key::AppearanceTheme => alloc::vec![widgets.theme],
+            Key::KeyboardLayout | Key::KeyboardLayouts => alloc::vec![
+                widgets.layouts,
+                widgets.add_layout,
+                widgets.move_up,
+                widgets.move_down,
+                widgets.remove,
+            ],
+            Key::KeyboardSwitchKey => alloc::vec![widgets.switch_key],
+            Key::KeyboardOnScreen => alloc::vec![widgets.on_screen_keyboard],
+            Key::TimeAutomatic => alloc::vec![self.clock.check_box()],
+            Key::TimeZone => self.zones.controls().to_vec(),
+            _ => Vec::new(),
+        };
+        controls.extend(self.display.control(key));
+        controls.extend(self.inputs.control(key));
+        controls.extend(self.power.control(key));
+        controls.extend_from_slice(self.accessibility.controls(key));
+        controls
+    }
+
+    fn lock_controls(&mut self, file: &crate::managed::PolicyFile) {
+        for id in core::mem::take(&mut self.locked_controls) {
+            self.tree.set_locked(id, false);
+        }
+        let mut locked = Vec::new();
+        for (name, _) in file.locks() {
+            if let Some(key) = crate::keys::Key::named(name) {
+                locked.extend(self.controls_of(key));
+            }
+        }
+        for &id in &locked {
+            self.tree.set_locked(id, true);
+        }
+        self.locked_controls = locked;
     }
 
     fn banner_height(&self) -> i32 {
@@ -3442,6 +3487,21 @@ mod tests {
         assert_eq!(tree.selected(window.widgets.cards), Some(0));
         assert_eq!(window.facts().profile, 0);
         assert_eq!(click(&mut window, card.x + 20, card.y + 20), None);
+    }
+
+    #[test]
+    fn a_locked_key_locks_its_control_and_lifting_the_lock_frees_it() {
+        let mut window = SettingsWindow::new(Facts::example());
+        let file = crate::managed::PolicyFile::Trusted(String::from(
+            "appearance.theme=dark\naccessibility.keyboard_navigation=always\n",
+        ));
+        let _ = window.show_policy(file);
+        assert!(window.tree.is_locked(window.widgets.theme));
+        assert!(!window.tree.is_enabled(window.widgets.theme));
+        assert!(!window.tree.is_locked(window.widgets.cards));
+        let _ = window.show_policy(crate::managed::PolicyFile::Absent);
+        assert!(!window.tree.is_locked(window.widgets.theme));
+        assert!(window.tree.is_enabled(window.widgets.theme));
     }
 
     #[test]

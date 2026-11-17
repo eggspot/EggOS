@@ -176,6 +176,11 @@ fn at(place: (i32, i32, i32, i32)) -> Place {
 }
 
 impl ZonePicker {
+    /// The controls that choose `time.zone`, for a lock (D666): the search field and the list.
+    pub fn controls(&self) -> [WidgetId; 2] {
+        [self.widgets.field, self.widgets.list]
+    }
+
     /// Builds the picker in `pane`, the `Date & time` pane, showing zone `chosen` (an index of
     /// `ZONES`) at `now_s`.
     pub fn build(

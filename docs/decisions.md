@@ -28463,3 +28463,18 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; hiding the contact when it would come within 16 px of
   the name; the pages form's (16, 16) and (48, 16) places and a tap opening Management; locks
   on each pane's own controls.
+
+
+## D666 A locked key locks the control that sets it (M16 editions; editions-policy v0.1 sections 5.2 and 9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Each time Settings reads the policy file it unlocks the controls it locked
+  before and locks, with D663's `set_locked`, every control that sets a locked key: the
+  profile cards, the theme, the keyboard layouts list and its buttons, the switch key, the
+  on-screen keyboard, the display's scale, resolution and rotation, the mouse's buttons,
+  scrolling and speed, the key repeat sliders, every accessibility control (the three
+  keyboard-navigation radios as one), the lid action, `Set automatically` and the time zone's
+  field and list. Each pane says which of its controls sets a key (`control` or `controls`),
+  so the window keeps no copy of another pane's widgets. The toolkit now refuses to enable a
+  locked widget, so a pane's own refresh cannot lift a lock.
+- **Not yet.** Building and running; a control a pane had disabled for its own reason comes
+  back enabled when a lock is lifted, until that pane refreshes; the owner tooltip; the
+  per-device mouse keys.

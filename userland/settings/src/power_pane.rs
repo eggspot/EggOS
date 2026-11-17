@@ -140,6 +140,11 @@ pub struct PowerPane {
 }
 
 impl PowerPane {
+    /// The control that sets `key` on this pane, for a lock (D666).
+    pub fn control(&self, key: crate::keys::Key) -> Option<WidgetId> {
+        (key == crate::keys::Key::PowerLidAction).then_some(self.lid_choice)
+    }
+
     /// Builds the pane's rows in `pane`, under its heading, showing `facts`.
     pub fn build(tree: &mut WidgetTree<CAPACITY>, pane: WidgetId, facts: &Facts) -> Self {
         let mut battery_titles = [pane; BATTERY_ROWS];
