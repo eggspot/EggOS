@@ -28537,3 +28537,16 @@ the license, by an explicit instruction recorded here.
   EggOS's loader only when no file is there, since on a shared partition it is usually the
   other system's; EggOS's own EFI system partition (D670) always gets it.
 - **Not yet.** Building and running.
+
+
+## D672 The Objective-C runtime replaces and exchanges methods (M15 macOS; follow-up of D142; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** A `Method` handle now remembers the class record that owns the method (the
+  class itself or the nearest superclass with its own entry for the selector), so
+  `method_setImplementation` replaces that record's entry and answers the old IMP,
+  `method_exchangeImplementations` swaps two handles' IMPs that way, and
+  `class_replaceMethod` replaces the class's own entry (answering the old IMP) or adds one
+  (answering nil) when only a superclass has it, as Apple's runtime does. Every change flushes
+  all method caches and refreshes the class's reference-counting and `.cxx_destruct` flags,
+  as adding methods already does. `objc_msgSend_fpret` and `objc_msgSend_fp2ret` resolve to
+  `objc_msgSend`, which leaves the IMP's return registers (x87 `st0` included) untouched.
+- **Not yet.** Building and running; a guest test program for swizzling.

@@ -404,7 +404,9 @@ pub fn msg_send_as<F: Copy>() -> F {
 
 pub fn resolve(name: &[u8]) -> Option<u64> {
     let address = match name {
-        b"_objc_msgSend" => eggos_objc_msg_send as *const () as usize,
+        b"_objc_msgSend" | b"_objc_msgSend_fpret" | b"_objc_msgSend_fp2ret" => {
+            eggos_objc_msg_send as *const () as usize
+        }
         b"_objc_msgSendSuper2" => eggos_objc_msg_send_super2 as *const () as usize,
         #[cfg(target_arch = "x86_64")]
         b"_objc_msgSend_stret" => eggos_objc_msg_send_stret as *const () as usize,

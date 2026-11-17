@@ -99,17 +99,21 @@ extern "C" fn class_get_instance_size(class: *mut ClassObject) -> usize {
 struct MethodHandle {
     sel: usize,
     imp: usize,
+    owner: usize,
 }
 
 static HANDLES: crate::libsystem::Exclusive<super::buffer::Buffer<*mut MethodHandle>> =
     crate::libsystem::Exclusive::new(super::buffer::Buffer::new());
 
-fn handle(sel: Sel, imp: Imp) -> *mut MethodHandle {
+fn handle(sel: Sel, owner: &'static ClassRecord) -> *mut MethodHandle {
+    let owner_address = owner as *const ClassRecord as usize;
+    let imp = RUNTIME.with(|_| owner.own_method(sel)).unwrap_or(0);
     HANDLES.with(|handles| {
         for &existing in handles.as_slice() {
             // SAFETY: handles are permanent blocks made below.
-            let found = unsafe { &*existing };
-            if found.sel == sel as usize && found.imp == imp {
+            let found = unsafe { &mut *existing };
+            if found.sel == sel as usize && found.owner == owner_address {
+                found.imp = imp;
                 return existing;
             }
         }
@@ -123,6 +127,7 @@ fn handle(sel: Sel, imp: Imp) -> *mut MethodHandle {
             made.write(MethodHandle {
                 sel: sel as usize,
                 imp,
+                owner: owner_address,
             })
         };
         handles.push(made);
@@ -131,9 +136,57 @@ fn handle(sel: Sel, imp: Imp) -> *mut MethodHandle {
 }
 
 extern "C" fn class_get_instance_method(class: *mut ClassObject, sel: Sel) -> *mut MethodHandle {
-    match class::find(class, sel) {
-        Some(imp) if !class.is_null() => handle(sel, imp),
-        _ => core::ptr::null_mut(),
+    if class.is_null() || class::find(class, sel).is_none() {
+        return core::ptr::null_mut();
+    }
+    match record(class).and_then(|record| class::owner_of(record, sel)) {
+        Some(owner) => handle(sel, owner),
+        None => core::ptr::null_mut(),
+    }
+}
+
+fn set_implementation(method: *mut MethodHandle, imp: Imp) -> Imp {
+    if method.is_null() {
+        return 0;
+    }
+    // SAFETY: a handle from `handle`, permanent.
+    let handle = unsafe { &mut *method };
+    let owner = handle.owner as *const ClassRecord;
+    if owner.is_null() {
+        return 0;
+    }
+    // SAFETY: the owner is a record the runtime made, which lives as long as the program.
+    let owner = unsafe { &*owner };
+    let old = RUNTIME.with(|runtime| class::replace_own_method(runtime, owner, handle.sel as Sel, imp));
+    handle.imp = imp;
+    old.unwrap_or(0)
+}
+
+extern "C" fn method_set_implementation(method: *mut MethodHandle, imp: Imp) -> Imp {
+    set_implementation(method, imp)
+}
+
+extern "C" fn method_exchange_implementations(first: *mut MethodHandle, second: *mut MethodHandle) {
+    if first.is_null() || second.is_null() {
+        return;
+    }
+    let first_imp = method_get_implementation(first);
+    let second_imp = method_get_implementation(second);
+    set_implementation(first, second_imp);
+    set_implementation(second, first_imp);
+}
+
+extern "C" fn class_replace_method(class: *mut ClassObject, sel: Sel, imp: Imp, types: *const u8) -> Imp {
+    let Some(record) = class::prepare(class) else {
+        return 0;
+    };
+    let replaced = RUNTIME.with(|runtime| class::replace_own_method(runtime, record, sel, imp));
+    match replaced {
+        Some(old) => old,
+        None => {
+            class_add_method(class, sel, imp, types);
+            0
+        }
     }
 }
 
@@ -213,6 +266,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_method_getImplementation" => method_get_implementation as *const () as usize,
         b"_method_getName" => method_get_name as *const () as usize,
         b"_class_addMethod" => class_add_method as *const () as usize,
+        b"_class_replaceMethod" => class_replace_method as *const () as usize,
+        b"_method_setImplementation" => method_set_implementation as *const () as usize,
+        b"_method_exchangeImplementations" => method_exchange_implementations as *const () as usize,
         b"_sel_registerName" | b"_sel_getUid" => sel_register_name as *const () as usize,
         b"_sel_getName" => sel_get_name as *const () as usize,
         b"_sel_isEqual" => sel_is_equal as *const () as usize,

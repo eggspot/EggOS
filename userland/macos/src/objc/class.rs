@@ -457,6 +457,33 @@ fn uikit_method(record: &ClassRecord, sel: Sel) -> Option<Imp> {
     }
 }
 
+/// The record in `record`'s chain whose own method for `sel` a send finds: `record` itself or
+/// its nearest superclass with one.
+pub fn owner_of(record: &'static ClassRecord, sel: Sel) -> Option<&'static ClassRecord> {
+    let mut current = record;
+    loop {
+        if current.own_method(sel).is_some() {
+            return Some(current);
+        }
+        current = current.superclass()?;
+    }
+}
+
+/// Replaces `record`'s own method for `sel` with `imp` and flushes every cache (D672); the
+/// method it had, or `None` when it had none, in which case nothing changes.
+pub fn replace_own_method(runtime: &mut Runtime, record: &ClassRecord, sel: Sel, imp: Imp) -> Option<Imp> {
+    let methods = methods_mut(record);
+    let entry = methods
+        .as_mut_slice()
+        .iter_mut()
+        .find(|(found, _)| *found == sel as usize)?;
+    let old = entry.1;
+    entry.1 = imp;
+    flush_all(runtime);
+    refresh_flags(record);
+    Some(old)
+}
+
 /// The IMP for `sel` in `record` or its superclasses.
 pub fn find_method(record: &ClassRecord, sel: Sel) -> Option<Imp> {
     let mut current = record;
