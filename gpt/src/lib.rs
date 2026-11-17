@@ -399,9 +399,53 @@ pub fn random_guid(mut bytes: [u8; 16]) -> Guid {
     bytes
 }
 
+const TEXT_ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+const DASHES: [usize; 4] = [8, 13, 18, 23];
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// The length of a GUID's text, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+pub const GUID_TEXT_BYTES: usize = 36;
+
+/// A GUID as its text, lower case, its first three fields read little-endian as GPT stores
+/// them.
+pub fn guid_text(guid: &Guid) -> [u8; GUID_TEXT_BYTES] {
+    let mut text = [b'-'; GUID_TEXT_BYTES];
+    let digits = (0..GUID_TEXT_BYTES).filter(|at| !DASHES.contains(at));
+    for (at, digit) in digits.enumerate() {
+        let byte = guid[TEXT_ORDER[at / 2]];
+        let nibble = if at % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+        text[digit] = HEX[nibble as usize];
+    }
+    text
+}
+
+/// The GUID a text names, either case; `None` when it is not exactly a GUID's text.
+pub fn guid_of_text(text: &[u8]) -> Option<Guid> {
+    if text.len() != GUID_TEXT_BYTES || DASHES.iter().any(|&at| text[at] != b'-') {
+        return None;
+    }
+    let mut guid = [0u8; 16];
+    let digits = (0..GUID_TEXT_BYTES).filter(|at| !DASHES.contains(at));
+    for (at, digit) in digits.enumerate() {
+        let nibble = (text[digit] as char).to_digit(16)? as u8;
+        let byte = &mut guid[TEXT_ORDER[at / 2]];
+        *byte = if at % 2 == 0 { nibble << 4 } else { *byte | nibble };
+    }
+    Some(guid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guid_s_text_reads_its_first_three_fields_little_endian() {
+        assert_eq!(&guid_text(&EFI_SYSTEM_PARTITION), b"c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
+        assert_eq!(guid_of_text(b"C12A7328-F81F-11D2-BA4B-00A0C93EC93B"), Some(EFI_SYSTEM_PARTITION));
+        assert_eq!(guid_of_text(&guid_text(&EGGOS_DATA_PARTITION)), Some(EGGOS_DATA_PARTITION));
+        assert_eq!(guid_of_text(b"c12a7328f81f-11d2-ba4b-00a0c93ec93b0"), None);
+        assert_eq!(guid_of_text(b"c12a7328-f81f-11d2-ba4b-00a0c93ec93g"), None);
+    }
 
     #[test]
     fn crc32_matches_its_check_value() {

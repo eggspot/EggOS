@@ -444,11 +444,26 @@ pub fn take_all() -> [Option<Box<dyn BlockDevice>>; MAX_DISKS] {
 
 const MAX_ENTRY_BYTES: usize = 128 * 1024;
 
+/// The kernel command line's word naming EggOS's data partition by its unique GUID (D649).
+pub const DATA_PARTITION_WORD: &[u8] = b"eggos.data=";
+
+/// The data partition the kernel command line `line` names with [`DATA_PARTITION_WORD`]: the
+/// first such word decides; `None` without one, or when its value is not a GUID.
+pub fn named_data_partition(line: &[u8]) -> Option<eggos_gpt::Guid> {
+    let value = line
+        .split(u8::is_ascii_whitespace)
+        .find_map(|word| word.strip_prefix(DATA_PARTITION_WORD))?;
+    eggos_gpt::guid_of_text(value)
+}
+
 /// Where EggOS's data partition is on a disk with a GUID partition table (D238), in sectors:
-/// its first sector and how many; `None` when the disk has no valid table, or no such partition.
+/// its first sector and how many. With `named`, only the EggOS partition with that unique GUID
+/// counts (D649), so a second EggOS on the machine is never taken for this one; without it, the
+/// first EggOS partition. `None` when the disk has no valid table, or no such partition.
 pub fn eggos_data_partition(
     disk: &mut dyn BlockDevice,
     deadline: &mut Deadline,
+    named: Option<eggos_gpt::Guid>,
 ) -> Option<(u64, u64)> {
     let block_bytes = disk.logical_block_bytes();
     if !block_bytes.is_multiple_of(SECTOR_SIZE) || block_bytes == 0 {
@@ -475,7 +490,10 @@ pub fn eggos_data_partition(
     )
     .ok()?;
     let partition = eggos_gpt::partitions(&header, &entries)?
-        .find(|partition| partition.kind == eggos_gpt::EGGOS_DATA_PARTITION)?;
+        .find(|partition| {
+            partition.kind == eggos_gpt::EGGOS_DATA_PARTITION
+                && named.is_none_or(|unique| partition.unique == unique)
+        })?;
     let first = partition.first.checked_mul(per_block)?;
     let sectors = partition.blocks().checked_mul(per_block)?;
     (first.checked_add(sectors)? <= disk.sectors()).then_some((first, sectors))
@@ -558,5 +576,18 @@ impl BlockDevice for Partition {
             .filter(|&end| end <= self.sectors)
             .ok_or(BlockError::OutOfRange)?;
         self.disk.discard(self.first + sector, count, deadline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_command_line_names_the_data_partition_by_its_guid() {
+        let named = named_data_partition(b"eggos.mcp_allow=write eggos.data=c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
+        assert_eq!(named, Some(eggos_gpt::EFI_SYSTEM_PARTITION));
+        assert_eq!(named_data_partition(b"eggos.data=not-a-guid"), None);
+        assert_eq!(named_data_partition(b"quiet"), None);
     }
 }

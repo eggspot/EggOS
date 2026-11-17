@@ -1474,18 +1474,9 @@ fn add_partition_named(
     Ok(unique)
 }
 
-/// A GUID as text, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, its first three groups read
-/// little-endian as GPT stores them.
+/// A GUID as text, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, as GPT tools write it.
 pub fn guid_text(guid: &eggos_gpt::Guid) -> String {
-    const ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-    let mut text = String::with_capacity(36);
-    for (at, index) in ORDER.iter().enumerate() {
-        if matches!(at, 4 | 6 | 8 | 10) {
-            text.push('-');
-        }
-        text.push_str(&format!("{:02x}", guid[*index]));
-    }
-    text
+    eggos_gpt::guid_text(guid).iter().map(|&byte| byte as char).collect()
 }
 
 /// The folder EggOS writes on an EFI system partition it shares with other systems.
@@ -1959,11 +1950,9 @@ mod install_tests {
     }
 
     #[test]
-    fn a_guid_reads_as_gpt_writes_its_groups() {
-        let guid = [
-            0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
-        ];
-        assert_eq!(guid_text(&guid), "c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
+    fn the_shared_folder_names_the_loader_after_eggos() {
+        assert_eq!(guid_text(&eggos_gpt::EFI_SYSTEM_PARTITION), "c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
+        assert_eq!(shared_loader_name("BOOTX64.EFI"), "EGGOSX64.EFI");
         assert_eq!(shared_loader_name("BOOTAA64.EFI"), "EGGOSAA64.EFI");
     }
 

@@ -28199,3 +28199,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the kernel choosing the data partition `eggos.data`
   names (it takes the first EggOS partition today, D238); `\EFI\BOOT\BOOT<ARCH>.EFI` when no
   file is there; the firmware entry and boot menu (section 6); the Storage pane's plan panel.
+
+
+## D649 The kernel takes the data partition `eggos.data=` names (M8; installer dual boot v0.1 section 5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** A kernel command line word `eggos.data=<GUID>` (the first one decides) makes
+  the kernel mount only the EggOS partition with that unique GUID as its data partition; on
+  every other disk the EggOS partitions are passed over. Without the word, or when its value is
+  not a GUID, the first EggOS partition of each disk counts, as before (D238), so the USB stick
+  and whole-disk installs are unchanged. GUID text, both ways, moves into `eggos-gpt`
+  (`guid_text`, `guid_of_text`), which the installer's `CMDLINE.TXT` (D648) and the kernel share.
+- **Not yet.** Building and running.

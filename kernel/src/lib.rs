@@ -265,10 +265,12 @@ fn mount_disks<P: Platform>(console: &mut impl Write) -> core::fmt::Result {
     let mut work = false;
     let mut host_folder = false;
     block::set_deadline(devices::Deadline::after::<P>);
+    let mut named = None;
+    P::command_line(&mut |line| named = block::named_data_partition(line));
     let taken = block::take_all().into_iter().enumerate();
     for (index, mut device) in taken.filter_map(|(index, device)| Some((index, device?))) {
         let mut deadline = devices::Deadline::after::<P>(block::WHOLE_DISK_TIMEOUT_MS);
-        if let Some((first, sectors)) = block::eggos_data_partition(&mut *device, &mut deadline) {
+        if let Some((first, sectors)) = block::eggos_data_partition(&mut *device, &mut deadline, named) {
             device = alloc::boxed::Box::new(block::Partition::new(device, first, sectors));
         }
         let mut disk = vfs::eggfs::BlockDisk::new(device, devices::Deadline::after::<P>);
