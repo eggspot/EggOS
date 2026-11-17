@@ -27389,3 +27389,33 @@ the license, by an explicit instruction recorded here.
   - A two-finger tap as a right click; edge swipes; four fingers.
   - Pinch for the accessibility zoom (D602).
   - Precision touchpads' gestures (D256).
+
+## D605 The phone form's deviations closed: the shell's element tree, the home grid's long press, pan, half row and keys, and the console on a touch screen too small (M12; D303's deviations; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/adaptive-shell-v0.5.md sections 1.3, 2.4, 7 and 9, by Claude Fable)
+- **The home grid** (`drivers/src/desktop/phone.rs`).
+  - A press on the grid no longer opens the app at once: it is held (`GridPress`). Released on
+    the same cell it opens the app; moved 8 px it pans the grid instead and opens nothing.
+    The held cell is drawn `selection`.
+  - Resting 500 ms on an installed app's cell opens its menu as a bottom sheet (`Open`,
+    `Uninstall...`), drawn and pressed like the power sheet. `next_change_ms` wakes the server
+    for it.
+  - The arrows move a selected cell (drawn `selection`, scrolled into view), Enter opens it,
+    and the Menu key or Shift+F10 opens an installed app's sheet.
+  - Cells cut by the grid's edge are drawn clipped (`Canvas::within`), so the seventh row's top
+    56 px shows at 390x844.
+- **The shell's element tree** (`drivers/src/desktop/shell_tree.rs`). The window server answers
+  `GET_TREE` and `ACT_ON_ELEMENT` for window 0 itself, in the phone and tablet forms. The tree
+  lists `Status bar` (expanded or expandable) with `Clock`, `Title`, `Network`, `Battery` and
+  `Agent` (while connected) below it; `Back` (disabled when nothing goes back), `Home`, `Apps`;
+  and on the home screen `Search apps`, the `Apps` list valued `<n> apps`, and one button per
+  app, valued `running` when it has a window. `invoke` presses the buttons and opens apps,
+  `focus` and `set-text` reach the search. `wm show shell` and `wm act shell ...` take `shell`
+  for the window; MCP's `wm_show` and `wm_act` take window 0.
+- **The console on a touch screen too small.** When the form in use is the console (a touch
+  screen under 320x480), the kernel drops the desktop and gives the display to the full-screen
+  console (`fall_back_to_console`), resizing the console's grid and its programs' window size.
+  The windows' programs lose their window server, as on a display that never had room.
+- **Not yet.**
+  - Building and running.
+  - The shell's tree in the desktop and TV forms (the desktop's panels, the TV's rows).
+  - The `Back` glyph at 2x drawn from rectangles (D303).
+  - Coming back from the console when a larger display appears.

@@ -85,6 +85,20 @@ impl<'a> Canvas<'a> {
         self.clip
     }
 
+    /// The same canvas drawing only inside `rect` too; `None` when nothing of it is left.
+    pub(super) fn within(&mut self, rect: Rect) -> Option<Canvas<'_>> {
+        let left = self.clip.x.max(rect.x + self.shift);
+        let top = self.clip.y.max(rect.y);
+        let right = self.clip.right().min(rect.right() + self.shift);
+        let bottom = self.clip.bottom().min(rect.bottom());
+        (right > left && bottom > top).then(|| Canvas {
+            pixels: &mut *self.pixels,
+            stride: self.stride,
+            clip: Rect::new(left, top, right - left, bottom - top),
+            shift: self.shift,
+        })
+    }
+
     pub(super) fn row(&mut self, row: u32, left: u32, right: u32, colour: u32) {
         if row < self.clip.y || row >= self.clip.bottom() {
             return;

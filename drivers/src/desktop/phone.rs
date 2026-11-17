@@ -16,6 +16,7 @@ use super::{Action, Desktop, MAX_WINDOWS, colour, contains};
 use crate::display::{Damage, Rect};
 use crate::font::{GLYPH_HEIGHT, GLYPH_WIDTH};
 use crate::input::key;
+use crate::input::keymap::Modifiers;
 
 const QUERY_CAPACITY: usize = 32;
 const TEXT_Y: u32 = 14;
@@ -63,14 +64,29 @@ enum Target {
 const SWIPE: u32 = 48;
 const SWIPE_UP: u32 = 64;
 const EDGE: u32 = 16;
+/// How long a finger rests on a cell before its menu opens (section 2.4).
+pub(super) const LONG_PRESS_MS: u32 = 500;
+/// How far a finger moves on the grid before the press becomes a pan (section 7).
+const PAN_START: u32 = 8;
+
+/// A press on the home grid: the cell under it, if any, when it began, where, and the scroll
+/// then; once it moved past [`PAN_START`] it pans the grid and launches nothing.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GridPress {
+    cell: Option<usize>,
+    since_ms: u32,
+    at: (u32, u32),
+    scroll: u32,
+    panned: bool,
+}
 
 /// The phone shell's own state: the grid's scroll, the search, the pressed zone.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PhoneState {
     scroll: u32,
-    query: [u8; QUERY_CAPACITY],
-    query_length: usize,
-    search_focused: bool,
+    pub(super) query: [u8; QUERY_CAPACITY],
+    pub(super) query_length: usize,
+    pub(super) search_focused: bool,
     pressed: Option<Target>,
     press_at: (u32, u32),
     pub(super) switcher: bool,
@@ -83,6 +99,11 @@ pub(super) struct PhoneState {
     pub(super) notices: [&'static str; super::phone_sheets::NOTICES_KEPT],
     pub(super) notice_count: usize,
     awaiting_back: Option<u8>,
+    grid_press: Option<GridPress>,
+    /// The cell the arrow keys selected, with the ring (section 2.4's keys).
+    selected: Option<usize>,
+    /// The app whose menu shows as a bottom sheet: `Open`, `Uninstall...`.
+    pub(super) app_sheet: Option<AppId>,
 }
 
 impl Default for PhoneState {
@@ -102,12 +123,15 @@ impl Default for PhoneState {
             notices: [""; super::phone_sheets::NOTICES_KEPT],
             notice_count: 0,
             awaiting_back: None,
+            grid_press: None,
+            selected: None,
+            app_sheet: None,
         }
     }
 }
 
 impl PhoneState {
-    fn query(&self) -> &str {
+    pub(super) fn query(&self) -> &str {
         core::str::from_utf8(&self.query[..self.query_length]).unwrap_or("")
     }
 }
@@ -250,7 +274,7 @@ impl Desktop {
         Some(Rect::new(bar.x + width * index, bar.y, width, bar.height))
     }
 
-    fn search_field(&self) -> Rect {
+    pub(super) fn search_field(&self) -> Rect {
         let work = self.layout.work_area;
         if self.form == Form::Tablet {
             return Rect::new(
@@ -294,7 +318,7 @@ impl Desktop {
         }
     }
 
-    fn grid_area(&self) -> Rect {
+    pub(super) fn grid_area(&self) -> Rect {
         let work = self.layout.work_area;
         Rect::new(
             work.x,
@@ -304,7 +328,7 @@ impl Desktop {
         )
     }
 
-    fn cell(&self, index: usize) -> Rect {
+    pub(super) fn cell(&self, index: usize) -> Rect {
         let area = self.grid_area();
         let columns = self.grid_columns();
         let (column, row) = (index as u32 % columns, index as u32 / columns);
@@ -470,6 +494,9 @@ impl Desktop {
         if self.phone.switcher && !on_bar {
             return Some(self.phone_switcher_press(x, y, damage, events));
         }
+        if self.phone.app_sheet.is_some() && !on_bar {
+            return Some(self.app_sheet_press(x, y, damage, events));
+        }
         if self
             .layout
             .navigation_bar
@@ -507,21 +534,27 @@ impl Desktop {
             return Some(Action::None);
         }
         self.phone.search_focused = self.phone.query_length > 0;
-        let chosen = match self.phone.query_length {
-            0 => self
-                .catalogue
-                .desktop_apps()
-                .enumerate()
-                .find(|(index, _)| {
-                    contains(self.cell(*index), x, y) && contains(self.grid_area(), x, y)
-                })
-                .map(|(_, app)| app),
-            _ => self
-                .matching_apps()
-                .enumerate()
-                .find(|(index, _)| contains(self.search_row(*index), x, y))
-                .map(|(_, app)| app),
-        };
+        if self.phone.query_length == 0 {
+            if !contains(self.grid_area(), x, y) {
+                return None;
+            }
+            let cell = (0..self.catalogue.desktop_apps().count())
+                .find(|&index| contains(self.cell(index), x, y));
+            self.phone.selected = None;
+            self.phone.grid_press = Some(GridPress {
+                cell,
+                since_ms: self.now_ms,
+                at: (x, y),
+                scroll: self.phone.scroll,
+                panned: false,
+            });
+            return Some(Action::None);
+        }
+        let chosen = self
+            .matching_apps()
+            .enumerate()
+            .find(|(index, _)| contains(self.search_row(*index), x, y))
+            .map(|(_, app)| app);
         let app = chosen?;
         self.phone.query_length = 0;
         self.phone.search_focused = false;
@@ -539,6 +572,70 @@ impl Desktop {
             0 => self.launch(app, damage, events),
             _ => self.activate_app(app, damage, events),
         }
+    }
+
+    /// The pointer moved to row `y` while a press on the home grid is held: past
+    /// [`PAN_START`] the grid follows the finger.
+    pub(super) fn phone_grid_moved(&mut self, y: u32, damage: &mut Damage) {
+        let Some(mut press) = self.phone.grid_press else {
+            return;
+        };
+        let moved = i64::from(y) - i64::from(press.at.1);
+        if !press.panned && moved.unsigned_abs() < u64::from(PAN_START) {
+            return;
+        }
+        press.panned = true;
+        self.phone.grid_press = Some(press);
+        let scroll = (i64::from(press.scroll) - moved).clamp(0, i64::from(self.most_scroll()));
+        self.phone.scroll = scroll as u32;
+        damage.add(self.grid_area());
+    }
+
+    /// The left button went up after a press on the home grid: a tap that stayed on its cell
+    /// opens the app; a pan or a long press opens nothing.
+    pub(super) fn phone_grid_release(
+        &mut self,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
+        let press = self.phone.grid_press.take()?;
+        damage.add(self.grid_area());
+        let index = press.cell.filter(|_| !press.panned)?;
+        let (x, y) = self.pointer;
+        if !contains(self.cell(index), x, y) {
+            return None;
+        }
+        let app = self.catalogue.desktop_apps().nth(index)?;
+        Some(self.phone_open_app(app, damage, events))
+    }
+
+    /// A press resting on an installed app's cell for [`LONG_PRESS_MS`] opens its menu as a
+    /// bottom sheet.
+    pub(super) fn tick_phone_hold(&mut self, damage: &mut Damage) {
+        let Some(press) = self.phone.grid_press else {
+            return;
+        };
+        if press.panned || self.now_ms.wrapping_sub(press.since_ms) < LONG_PRESS_MS {
+            return;
+        }
+        let Some(app) = press
+            .cell
+            .and_then(|index| self.catalogue.desktop_apps().nth(index))
+        else {
+            return;
+        };
+        if !matches!(app, AppId::Installed(_)) {
+            return;
+        }
+        self.phone.grid_press = None;
+        self.phone.app_sheet = Some(app);
+        damage.add(self.screen());
+    }
+
+    /// How long until a resting press on the grid becomes a long press, while one may.
+    pub(super) fn phone_hold_change_after(&self) -> Option<u32> {
+        let press = self.phone.grid_press.filter(|press| !press.panned && press.cell.is_some())?;
+        Some(LONG_PRESS_MS.saturating_sub(self.now_ms.wrapping_sub(press.since_ms)))
     }
 
     /// The left button went up: a pressed bar zone is drawn as before.
@@ -601,11 +698,13 @@ impl Desktop {
     }
 
     /// Key `code` on the home screen: Esc is `Back`, typing goes to the search, Backspace
-    /// takes a character back, Enter opens the first match. Returns the action when it was
-    /// the shell's.
+    /// takes a character back, Enter opens the first match. With the search empty the arrows
+    /// move the selected cell, Enter opens it, and the Menu key or Shift+F10 opens its menu.
+    /// Returns the action when it was the shell's.
     pub(super) fn phone_key(
         &mut self,
         code: u16,
+        modifiers: Modifiers,
         damage: &mut Damage,
         events: &mut dyn EventSink,
     ) -> Option<Action> {
@@ -613,6 +712,24 @@ impl Desktop {
             return None;
         }
         damage.add(self.layout.work_area);
+        if let Some(app) = self.phone.app_sheet {
+            return Some(match code {
+                key::ENTER | key::KEYPAD_ENTER => {
+                    self.phone.app_sheet = None;
+                    self.phone_open_app(app, damage, events)
+                }
+                _ => {
+                    self.phone.app_sheet = None;
+                    damage.add(self.screen());
+                    Action::None
+                }
+            });
+        }
+        if self.phone.query_length == 0
+            && let Some(action) = self.phone_grid_key(code, modifiers, damage, events)
+        {
+            return Some(action);
+        }
         match code {
             key::ESC => {
                 self.phone_back(damage, events);
@@ -641,6 +758,62 @@ impl Desktop {
                 self.phone.search_focused = true;
                 Some(Action::None)
             }
+        }
+    }
+
+    fn phone_grid_key(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
+        let count = self.catalogue.desktop_apps().count();
+        if count == 0 {
+            return None;
+        }
+        let columns = self.grid_columns() as usize;
+        let at = self.phone.selected.unwrap_or(0);
+        let moved = match code {
+            key::LEFT => Some(at.saturating_sub(1)),
+            key::RIGHT => Some((at + 1).min(count - 1)),
+            key::UP => Some(at.checked_sub(columns).unwrap_or(at)),
+            key::DOWN => Some((at + columns).min(count - 1)),
+            _ => None,
+        };
+        if let Some(index) = moved {
+            self.phone.selected = Some(match self.phone.selected {
+                Some(_) => index,
+                None => 0,
+            });
+            self.keep_cell_in_view(self.phone.selected.unwrap_or(0));
+            damage.add(self.grid_area());
+            return Some(Action::None);
+        }
+        let selected = self.phone.selected?;
+        let app = self.catalogue.desktop_apps().nth(selected)?;
+        let menu_key =
+            code == key::COMPOSE || (code == key::F10 && modifiers.contains(Modifiers::SHIFT));
+        match code {
+            key::ENTER | key::KEYPAD_ENTER => Some(self.phone_open_app(app, damage, events)),
+            _ if menu_key && matches!(app, AppId::Installed(_)) => {
+                self.phone.app_sheet = Some(app);
+                damage.add(self.screen());
+                Some(Action::None)
+            }
+            _ => None,
+        }
+    }
+
+    fn keep_cell_in_view(&mut self, index: usize) {
+        let area = self.grid_area();
+        let row_top = CELL.1 * (index as u32 / self.grid_columns());
+        if row_top < self.phone.scroll {
+            self.phone.scroll = row_top;
+        }
+        let row_bottom = row_top + CELL.1;
+        if row_bottom > self.phone.scroll + area.height {
+            self.phone.scroll = (row_bottom - area.height).min(self.most_scroll());
         }
     }
 
@@ -697,10 +870,21 @@ impl Desktop {
             }
             return;
         }
+        let highlighted = match self.phone.grid_press {
+            Some(press) if !press.panned => press.cell,
+            _ => self.phone.selected,
+        };
         for (index, app) in self.catalogue.desktop_apps().enumerate() {
             let cell = self.cell(index);
-            if cell.y < area.y || cell.bottom() > area.bottom() {
+            if cell.bottom() <= area.y || cell.y >= area.bottom() {
                 continue;
+            }
+            let Some(mut clipped) = canvas.within(area) else {
+                continue;
+            };
+            let canvas = &mut clipped;
+            if highlighted == Some(index) {
+                canvas.rounded(cell, &paint::INSET_R4, true, true, colour::SELECTION);
             }
             draw_icon(
                 canvas,

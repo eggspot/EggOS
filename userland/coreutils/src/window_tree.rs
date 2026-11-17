@@ -31,7 +31,13 @@ fn element_id(text: &[u8]) -> Option<u32> {
     (value > 0).then_some(value)
 }
 
+const SHELL_WORD: &[u8] = b"shell";
+const SHELL_WINDOW: u32 = 0;
+
 fn window_operand<S: System>(output: &mut Output<S>, operand: &[u8]) -> Option<u32> {
+    if operand == SHELL_WORD {
+        return Some(SHELL_WINDOW);
+    }
     match number(operand) {
         Some(window) if window >= 0 => Some(window as u32),
         _ => {

@@ -39,6 +39,7 @@ const POWER_ROWS: [(&str, Action); 2] = [
     ("Restart", Action::Restart),
 ];
 const POWER_ROW_HEIGHT: u32 = 48;
+const APP_SHEET_ROWS: [&str; 2] = ["Open", "Uninstall..."];
 const NOTICE_GLYPHS: usize = 40;
 const SHADE_WIDTH: u32 = 390;
 
@@ -67,7 +68,10 @@ impl Desktop {
 
     /// Whether the switcher, the shade or the power sheet is open.
     pub(super) fn phone_overlay_open(&self) -> bool {
-        self.phone.switcher || self.phone.shade || self.phone.power_sheet
+        self.phone.switcher
+            || self.phone.shade
+            || self.phone.power_sheet
+            || self.phone.app_sheet.is_some()
     }
 
     /// Closes the open sheet; whether one was open.
@@ -76,6 +80,7 @@ impl Desktop {
         self.phone.switcher = false;
         self.phone.shade = false;
         self.phone.power_sheet = false;
+        self.phone.app_sheet = None;
         open
     }
 
@@ -259,6 +264,36 @@ impl Desktop {
         Rect::new(0, work.bottom() - height, self.width, height)
     }
 
+    fn app_sheet_rect(&self) -> Rect {
+        let work = self.layout.work_area;
+        let height = POWER_ROW_HEIGHT * APP_SHEET_ROWS.len() as u32 + 1;
+        Rect::new(0, work.bottom() - height, self.width, height)
+    }
+
+    /// A press while an app's sheet shows: `Open` opens it, `Uninstall...` asks the installer
+    /// to remove it; anywhere else closes the sheet.
+    pub(super) fn app_sheet_press(
+        &mut self,
+        x: u32,
+        y: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        damage.add(self.screen());
+        let Some(app) = self.phone.app_sheet.take() else {
+            return Action::None;
+        };
+        let sheet = self.app_sheet_rect();
+        if !contains(sheet, x, y) {
+            return Action::None;
+        }
+        match (y - sheet.y) / POWER_ROW_HEIGHT {
+            0 => self.phone_open_app(app, damage, events),
+            1 => self.uninstall(app),
+            _ => Action::None,
+        }
+    }
+
     fn tile_state(&self, tile: Tile) -> (&'static str, &str, bool) {
         match tile {
             Tile::Network => (
@@ -385,6 +420,24 @@ impl Desktop {
                 colour::MENU_BORDER,
             );
             for (index, (label, _)) in POWER_ROWS.iter().enumerate() {
+                let top = sheet.y + 1 + POWER_ROW_HEIGHT * index as u32;
+                canvas.text(SIDE, top + 16, label, colour::TEXT);
+            }
+        }
+        if self.phone.app_sheet.is_some() {
+            let sheet = self.app_sheet_rect();
+            canvas.dim(Rect::new(
+                0,
+                self.layout.work_area.y,
+                self.width,
+                sheet.y - self.layout.work_area.y,
+            ));
+            canvas.fill(sheet, colour::MENU);
+            canvas.fill(
+                Rect::new(sheet.x, sheet.y, sheet.width, 1),
+                colour::MENU_BORDER,
+            );
+            for (index, label) in APP_SHEET_ROWS.iter().enumerate() {
                 let top = sheet.y + 1 + POWER_ROW_HEIGHT * index as u32;
                 canvas.text(SIDE, top + 16, label, colour::TEXT);
             }

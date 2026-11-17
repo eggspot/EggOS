@@ -577,6 +577,24 @@ impl Desktop {
         self.show_caption(next, damage);
     }
 
+    /// How long until the caption panel changes by itself: the queued line's turn, or the
+    /// panel hiding after `Screen reader off`.
+    pub(super) fn reader_change_after(&self) -> Option<u32> {
+        if let Some(hide_at) = self.reader.hide_at {
+            return Some(hide_at.wrapping_sub(self.now_ms).min(OFF_SHOWN_MS));
+        }
+        if self.reader.queued == 0 {
+            return None;
+        }
+        let (serial, since) = self.reader.shown?;
+        let glyphs = self
+            .reader
+            .line(serial)
+            .map_or(0, |line| line.text().chars().count());
+        let lasts = caption_ms(glyphs, self.reader.settings.rate);
+        Some(lasts.saturating_sub(self.now_ms.wrapping_sub(since)))
+    }
+
     /// Writes the log's utterances after `since`, oldest first, as `READ_READER_LOG`'s records
     /// into `out`; the bytes written and the records.
     pub fn read_reader_log(&self, since: u32, out: &mut [u8]) -> (usize, u32) {

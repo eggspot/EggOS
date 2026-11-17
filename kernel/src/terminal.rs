@@ -401,9 +401,56 @@ fn apply_form(desktop: &mut Desktop, damage: &mut Damage, events: &mut dyn Event
     let (width, height) = (desktop.screen().width, desktop.screen().height);
     let (form, _) =
         eggos_drivers::desktop::form::in_use(form_setting(), width, height, input::present_kinds());
-    if form != Form::Console {
-        desktop.set_form(form, damage, events);
+    match form {
+        Form::Console => CONSOLE_WANTED.store(true, Ordering::Relaxed),
+        form => desktop.set_form(form, damage, events),
     }
+}
+
+/// A touch screen too small for the phone form (D303, D605): the desktop goes and the
+/// full-screen console takes the display, as on a display without room for the desktop. Its
+/// windows' programs lose their window server.
+fn fall_back_to_console<P: Platform>() {
+    if !CONSOLE_WANTED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let Some(mode) = display::mode() else {
+        return;
+    };
+    let console = display::draw(|framebuffer| {
+        let mut guard = SCREEN.lock();
+        let screen = &mut **guard.as_mut()?;
+        screen.desktop.as_ref()?;
+        let console = console_area(mode.width, mode.height)?;
+        let pixels = grid_pixels(console)?;
+        let resized = TERMINAL
+            .lock()
+            .as_mut()
+            .is_some_and(|terminal| terminal.resize(console.columns, console.rows));
+        if !resized {
+            return None;
+        }
+        screen.desktop = None;
+        screen.console = console;
+        screen.terminal_pixels = pixels;
+        let mut whole = Damage::new();
+        whole.add(mode.rect());
+        compose(screen, framebuffer, &whole);
+        Some(console)
+    })
+    .flatten();
+    let Some(console) = console else {
+        return;
+    };
+    CONSOLE_ALONE.store(true, Ordering::Relaxed);
+    KEYS_TO_TERMINAL.store(true, Ordering::Relaxed);
+    crate::linux::terminal::resize_window::<P>(
+        console.rows,
+        console.columns,
+        GLYPH_WIDTH as u16,
+        GLYPH_HEIGHT as u16,
+    );
+    request_render::<P>();
 }
 
 /// The form on screen, the setting and the input kinds present, for `GET_FORM`.
@@ -652,6 +699,7 @@ pub fn takes_from_terminal(code: u16, modifiers: Modifiers) -> bool {
 }
 
 static CONSOLE_ALONE: AtomicBool = AtomicBool::new(false);
+static CONSOLE_WANTED: AtomicBool = AtomicBool::new(false);
 
 const NO_DESKTOP_MARKER: &[u8] = b"/var/lib/eggos/components/.no-desktop";
 
@@ -1491,7 +1539,9 @@ fn launch_failed<P: Platform>() {
     with_windows::<P, _>(|desktop, _, damage, _| desktop.launch_failed(damage));
 }
 
-fn run_launch<P: Platform>(action: Action) {
+/// Starts what a desktop action asks to start: an app, its installer or one of its actions, a
+/// screenshot; nothing for the other actions.
+pub fn run_launch<P: Platform>(action: Action) {
     let launch = match action {
         Action::Start(app) | Action::Type(app) => launch_command(app),
         Action::Uninstall(app) => SCREEN
@@ -1677,6 +1727,7 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
     AGENT_CONNECTED.store(crate::agent_channel::is_connected(), Ordering::Relaxed);
     read_stored_updates::<P>();
     follow_display_size::<P>();
+    fall_back_to_console::<P>();
     crate::orientation::apply_if_automatic::<P>();
     let drawn = display::draw(|framebuffer| {
         SCREEN

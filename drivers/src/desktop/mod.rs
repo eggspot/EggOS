@@ -45,6 +45,7 @@ pub mod protocol;
 mod responsiveness;
 pub mod screenshots;
 mod shell;
+mod shell_tree;
 mod screen_reader;
 mod shell_menu;
 pub mod shortcuts;
@@ -114,6 +115,7 @@ pub use pointer::{
     write_cursor_image,
 };
 pub use screen_reader::{READER_LOG_ENTRIES, ReaderCommand, ReaderSettings};
+pub use shell_tree::SHELL_WINDOW;
 pub use zoom::{ZOOM_LEVELS, ZoomView, magnify_rows, view_size as zoom_view_size};
 pub use responsiveness::{
     APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
@@ -1916,6 +1918,7 @@ impl Desktop {
             self.on_screen_keyboard_move(x, y, damage);
         }
         self.tablet_drag(x, damage);
+        self.phone_grid_moved(y, damage);
         if let Some(resize) = self.resize {
             self.resize_to(resize, x, y, damage, events);
         }
@@ -2086,12 +2089,16 @@ impl Desktop {
                 return Action::None;
             }
             if code == button::LEFT {
+                let opened = self.phone_grid_release(damage, events);
                 self.phone_release(damage, events);
                 self.tablet_release(damage, events);
                 self.drag = None;
                 self.resize = None;
                 self.panel_release(damage);
                 self.release_control(damage, events);
+                if let Some(action) = opened {
+                    return action;
+                }
             }
             if let Some(grab) = self.grab {
                 let (cx, cy) = self.content_point(grab);
@@ -2416,7 +2423,7 @@ impl Desktop {
         }
         if self.touch_form()
             && pressed
-            && let Some(action) = self.phone_key(code, damage, events)
+            && let Some(action) = self.phone_key(code, modifiers, damage, events)
         {
             return action;
         }

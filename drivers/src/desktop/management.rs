@@ -702,6 +702,7 @@ impl Desktop {
         self.tick_agent(damage);
         self.tick_sticky_notice(damage);
         self.tick_screen_reader(damage);
+        self.tick_phone_hold(damage);
         destroyed
     }
 

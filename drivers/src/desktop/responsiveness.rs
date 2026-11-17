@@ -286,6 +286,12 @@ impl Desktop {
         if let Some(after) = self.caret_change_after() {
             consider(after);
         }
+        if let Some(after) = self.phone_hold_change_after() {
+            consider(after);
+        }
+        if let Some(after) = self.reader_change_after() {
+            consider(after);
+        }
         next.map(|after| now.wrapping_add(after.max(1)))
     }
 

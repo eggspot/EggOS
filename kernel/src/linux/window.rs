@@ -1230,6 +1230,24 @@ pub fn ioctl<P: Platform>(
             buffer
                 .checked_add(MAX_TREE_BYTES as u64)
                 .ok_or(Errno::EFAULT)?;
+            if window == eggos_drivers::desktop::SHELL_WINDOW {
+                let tree = on_windows::<P, _>(|desktop, _, _, _| Ok(desktop.shell_tree()))?;
+                if !tree.is_empty() {
+                    process
+                        .write_user_memory(buffer, &tree)
+                        .map_err(|_| Errno::EFAULT)?;
+                }
+                let outcome = match tree.is_empty() {
+                    true => tree_answer::PIXELS_ONLY,
+                    false => tree_answer::TREE,
+                };
+                put_word(bytes, get_tree_reply::ANSWER, outcome);
+                put_word(bytes, get_tree_reply::LENGTH, tree.len() as u32);
+                return process
+                    .write_user_memory(argument, bytes)
+                    .map_err(|_| Errno::EFAULT)
+                    .map(|_| 0);
+            }
             let unresponsive =
                 on_windows::<P, _>(|desktop, _, _, _| Ok(desktop.not_responding_window(window)))?;
             let tree = match unresponsive {
@@ -1268,10 +1286,25 @@ pub fn ioctl<P: Platform>(
             if !known || !readable || element == 0 {
                 return Err(Errno::EINVAL);
             }
-            on_windows::<P, _>(|desktop, _, _, _| desktop.refuse_if_not_responding(window))?;
             if crate::input::person_holds_input() || crate::input::has_pending_events() {
                 return Err(Errno::EBUSY);
             }
+            if window == eggos_drivers::desktop::SHELL_WINDOW {
+                let wanted = eggos_element_tree::Action::from_value(action).ok_or(Errno::EINVAL)?;
+                let words = core::str::from_utf8(text).map_err(|_| Errno::EINVAL)?;
+                let (outcome, then) = on_windows::<P, _>(|desktop, _, damage, events| {
+                    let done = desktop.act_on_shell(element, wanted, words, damage, events);
+                    desktop.note_agent_action(damage);
+                    Ok(done)
+                })?;
+                crate::terminal::run_launch::<P>(then);
+                put_word(bytes, act_request::OUTCOME, outcome.value());
+                return process
+                    .write_user_memory(argument, bytes)
+                    .map_err(|_| Errno::EFAULT)
+                    .map(|_| 0);
+            }
+            on_windows::<P, _>(|desktop, _, _, _| desktop.refuse_if_not_responding(window))?;
             let mut request = query(window, query_kind::ACT);
             request.element = element;
             request.action = action;
