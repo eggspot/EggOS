@@ -1573,10 +1573,22 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 }
                 response
             }
+            Input::PressCancelled => {
+                if let Some(pressed) = self.pressed.take() {
+                    self.damage_widget(pressed.widget);
+                }
+                self.pressed_inside = false;
+                self.slide = None;
+                self.selecting = None;
+                self.drag = None;
+                Response::Nothing
+            }
             Input::CloseRequest
             | Input::Resize { .. }
             | Input::StateChanged { .. }
-            | Input::Overflow => Response::Nothing,
+            | Input::Overflow
+            | Input::Touch { .. }
+            | Input::Pinch { .. } => Response::Nothing,
         }
     }
 

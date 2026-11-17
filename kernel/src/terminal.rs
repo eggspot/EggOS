@@ -1142,6 +1142,12 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
             InputEvent::SecondTouch { x, y, down } => {
                 desktop.second_touch(x, y, down, damage, &mut queues)
             }
+            InputEvent::Touch {
+                finger,
+                x,
+                y,
+                phase,
+            } => desktop.touch(finger, x, y, phase.value(), damage, &mut queues),
             InputEvent::LayoutChanged(number) => {
                 if let Some(layout) = eggos_settings_file::KEYBOARD_LAYOUTS.get(usize::from(number))
                 {

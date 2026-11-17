@@ -167,6 +167,28 @@ pub enum Input {
     },
     /// The window's own drag between windows ended, `landed` on a window or not.
     DragEnded { landed: bool },
+    /// A finger beyond the first touched the content at (`x`, `y`) (D604): `finger` 1 the
+    /// second, 2 the third; the first is the pointer and its left button.
+    Touch {
+        x: i32,
+        y: i32,
+        finger: u32,
+        phase: TouchPhase,
+    },
+    /// Two fingers spread or closed over (`x`, `y`): `scale` their spread against where it
+    /// started, in thousandths (D604).
+    Pinch { x: i32, y: i32, scale: u32 },
+    /// The press the window held became a gesture: it clicks nothing, and no release follows
+    /// (D604).
+    PressCancelled,
+}
+
+/// Where a finger is in its touch (D604).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchPhase {
+    Down,
+    Move,
+    Up,
 }
 
 /// One record: the window it is for, when, and what.
@@ -252,6 +274,18 @@ pub fn decode(record: &[u8; RECORD_SIZE]) -> Option<Event> {
             serial: d,
         },
         22 => Input::DragEnded { landed: a != 0 },
+        25 => Input::Touch {
+            x: a,
+            y: b,
+            finger: c,
+            phase: match d {
+                0 => TouchPhase::Down,
+                1 => TouchPhase::Move,
+                _ => TouchPhase::Up,
+            },
+        },
+        26 => Input::Pinch { x: a, y: b, scale: c },
+        27 => Input::PressCancelled,
         _ => return None,
     };
     Some(Event {

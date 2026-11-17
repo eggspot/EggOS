@@ -21,6 +21,7 @@ mod catalogue;
 mod desktop_icons;
 mod desktops;
 mod events;
+mod gestures;
 pub mod form;
 mod hot_keys;
 mod icons;
@@ -430,6 +431,7 @@ pub struct Desktop {
     zoom: zoom::Zoom,
     reader: screen_reader::ScreenReader,
     reader_caps: screen_reader::ReaderKeys,
+    gesture: gestures::Gesture,
     profile: Profile,
     layout: Layout,
     catalogue: Catalogue,
@@ -532,6 +534,7 @@ impl Desktop {
             zoom: zoom::Zoom::default(),
             reader: screen_reader::ScreenReader::default(),
             reader_caps: screen_reader::ReaderKeys::default(),
+            gesture: gestures::Gesture::default(),
             profile: Profile::default(),
             layout: layout(width, height, 1, Profile::default()),
             catalogue: Catalogue::new(),
@@ -2062,6 +2065,13 @@ impl Desktop {
         if !pressed && code == button::LEFT && self.carrying() {
             self.buttons &= !bit;
             self.carry_release(damage, events);
+            return Action::None;
+        }
+        if !pressed && code == button::LEFT && self.release_ends_gesture() {
+            self.buttons &= !bit;
+            self.grab = None;
+            self.drag = None;
+            self.resize = None;
             return Action::None;
         }
         if !pressed {

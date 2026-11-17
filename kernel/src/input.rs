@@ -124,6 +124,43 @@ pub enum InputEvent {
     /// A touch screen's second finger went down at (`x`, `y`), or lifted there (D329): what
     /// the on-screen keyboard types with while the first holds a key.
     SecondTouch { x: u32, y: u32, down: bool },
+    /// A touch screen's finger `finger` (1 the second, 2 the third; the first is the pointer)
+    /// went down, moved or lifted at (`x`, `y`) (D604): what gestures and apps' touch records
+    /// are made of.
+    Touch {
+        finger: u8,
+        x: u32,
+        y: u32,
+        phase: TouchPhase,
+    },
+}
+
+/// Where a finger is in its touch (D604).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TouchPhase {
+    Down,
+    Move,
+    Up,
+}
+
+impl TouchPhase {
+    /// Its number in a packed event and in a `TOUCH` record: 0 down, 1 move, 2 up.
+    pub const fn value(self) -> u32 {
+        match self {
+            Self::Down => 0,
+            Self::Move => 1,
+            Self::Up => 2,
+        }
+    }
+
+    const fn from_value(value: u64) -> Option<Self> {
+        match value {
+            0 => Some(Self::Down),
+            1 => Some(Self::Move),
+            2 => Some(Self::Up),
+            _ => None,
+        }
+    }
 }
 
 const KEY: u64 = 1;
@@ -134,6 +171,9 @@ const LAYOUT_CHANGED: u64 = 5;
 const SIDEWAYS_WHEEL: u64 = 6;
 const SECOND_TOUCH: u64 = 7;
 const SECOND_TOUCH_DOWN: u64 = 1 << 56;
+const TOUCH: u64 = 8;
+const TOUCH_FINGER_SHIFT: u32 = 56;
+const TOUCH_PHASE_SHIFT: u32 = 58;
 const COORDINATE_MASK: u32 = 0x00ff_ffff;
 const CHARACTER_MASK: u32 = 0x00ff_ffff;
 
@@ -189,6 +229,28 @@ impl InputEvent {
                 let down = if down { SECOND_TOUCH_DOWN } else { 0 };
                 SECOND_TOUCH | (x as u64) << 8 | (y as u64) << 32 | down
             }
+            InputEvent::Touch {
+                finger,
+                x,
+                y,
+                phase,
+            } => {
+                let x = if x > COORDINATE_MASK {
+                    COORDINATE_MASK
+                } else {
+                    x
+                };
+                let y = if y > COORDINATE_MASK {
+                    COORDINATE_MASK
+                } else {
+                    y
+                };
+                TOUCH
+                    | (x as u64) << 8
+                    | (y as u64) << 32
+                    | ((finger & 3) as u64) << TOUCH_FINGER_SHIFT
+                    | (phase.value() as u64) << TOUCH_PHASE_SHIFT
+            }
         }
     }
 
@@ -225,6 +287,15 @@ impl InputEvent {
                 x: field(word, 8, COORDINATE_MASK as u64) as u32,
                 y: field(word, 32, COORDINATE_MASK as u64) as u32,
                 down: word & SECOND_TOUCH_DOWN != 0,
+            },
+            TOUCH => InputEvent::Touch {
+                finger: field(word, TOUCH_FINGER_SHIFT, 3) as u8,
+                x: field(word, 8, COORDINATE_MASK as u64) as u32,
+                y: field(word, 32, COORDINATE_MASK as u64) as u32,
+                phase: match TouchPhase::from_value(field(word, TOUCH_PHASE_SHIFT, 3)) {
+                    Some(phase) => phase,
+                    None => return None,
+                },
             },
             _ => return None,
         })
@@ -374,6 +445,15 @@ pub fn dropped_events() -> u64 {
     events().map_or(0, EventQueue::dropped)
 }
 
+/// What one finger beyond the first reported in a report: its positions, and whether it went
+/// down or lifted.
+#[derive(Debug, Default, Clone, Copy)]
+struct ExtraFinger {
+    x: Option<i32>,
+    y: Option<i32>,
+    down: Option<bool>,
+}
+
 /// What a device reported since the end of its last report, applied at the end of the next.
 #[derive(Debug, Default)]
 pub struct PendingReport {
@@ -387,10 +467,9 @@ pub struct PendingReport {
     y: Option<i32>,
     presses: u8,
     releases: u8,
-    /// The second finger's positions and whether it went down or lifted (D329).
-    second_x: Option<i32>,
-    second_y: Option<i32>,
-    second_down: Option<bool>,
+    /// The second and third fingers' positions and whether each went down or lifted (D329,
+    /// D604).
+    extra: [ExtraFinger; EXTRA_FINGERS],
     pending: bool,
     /// The accelerometer's last x and y, until its z completes a reading (D435).
     acceleration: (i32, i32),
@@ -421,8 +500,9 @@ pub struct InputState {
     slow: Option<(u16, u64)>,
     cursor_keys: CursorKeys,
     pointer: (u32, u32),
-    /// Where the touch screen's second finger is, while it is down (D329).
-    second_touch: Option<(u32, u32)>,
+    /// Where the touch screen's second and third fingers are, while they are down (D329,
+    /// D604).
+    extra_touches: [Option<(u32, u32)>; EXTRA_FINGERS],
     buttons_held: u8,
     last_event: u64,
     layouts: KeyboardLayoutSet,
@@ -890,7 +970,7 @@ impl InputState {
             slow: None,
             cursor_keys: CursorKeys::Normal,
             pointer: (0, 0),
-            second_touch: None,
+            extra_touches: [None; EXTRA_FINGERS],
             buttons_held: 0,
             last_event: 0,
             layouts: KeyboardLayoutSet::DEFAULT,
@@ -1545,13 +1625,16 @@ impl InputState {
         if sideways != 0 {
             sink.event(InputEvent::SidewaysWheel { delta: sideways });
         }
-        self.second_touch_report(capabilities, &report, screen, sink);
+        for index in 0..EXTRA_FINGERS {
+            self.extra_touch_report(index, capabilities, &report.extra[index], screen, sink);
+        }
     }
 
-    fn second_touch_report(
+    fn extra_touch_report(
         &mut self,
+        index: usize,
         capabilities: &Capabilities,
-        report: &PendingReport,
+        finger: &ExtraFinger,
         screen: Option<(u32, u32)>,
         sink: &mut dyn InputSink,
     ) {
@@ -1563,27 +1646,40 @@ impl InputState {
         };
         let rotation = crate::display::rotation();
         let (device_width, device_height) = turned_size(rotation, width, height);
-        let at = self.second_touch.unwrap_or(self.pointer);
+        let held = self.extra_touches[index];
+        let at = held.unwrap_or(self.pointer);
         let (at_x, at_y) = rotation.turn(at.0.min(width - 1), at.1.min(height - 1), width, height);
-        let device_x = report
-            .second_x
+        let device_x = finger
+            .x
             .map_or(at_x, |value| scale_to_screen(value, x_range, device_width));
-        let device_y = report
-            .second_y
+        let device_y = finger
+            .y
             .map_or(at_y, |value| scale_to_screen(value, y_range, device_height));
         let (x, y) = rotation.unturn(device_x, device_y, width, height);
-        match report.second_down {
-            Some(true) if self.second_touch.is_none() => {
-                self.second_touch = Some((x, y));
-                sink.event(InputEvent::SecondTouch { x, y, down: true });
-            }
-            Some(false) if self.second_touch.is_some() => {
-                self.second_touch = None;
-                sink.event(InputEvent::SecondTouch { x, y, down: false });
-            }
-            _ if self.second_touch.is_some() => self.second_touch = Some((x, y)),
-            _ => {}
+        let number = index as u8 + 1;
+        let phase = match (finger.down, held) {
+            (Some(true), None) => TouchPhase::Down,
+            (Some(false), Some(_)) => TouchPhase::Up,
+            (_, Some(was)) if was != (x, y) => TouchPhase::Move,
+            _ => return,
+        };
+        self.extra_touches[index] = match phase {
+            TouchPhase::Up => None,
+            TouchPhase::Down | TouchPhase::Move => Some((x, y)),
+        };
+        if number == 1 && phase != TouchPhase::Move {
+            sink.event(InputEvent::SecondTouch {
+                x,
+                y,
+                down: phase == TouchPhase::Down,
+            });
         }
+        sink.event(InputEvent::Touch {
+            finger: number,
+            x,
+            y,
+            phase,
+        });
     }
 
     /// Translates `event` from a device with `capabilities` whose report so far is `report`,
@@ -1639,23 +1735,19 @@ impl InputState {
                 report.y = Some(event.value);
                 report.pending = true;
             }
-            (event_type::ABS, absolute::MT_POSITION_X)
-                if report.touch_slot == SECOND_TOUCH_SLOT =>
-            {
-                report.second_x = Some(event.value);
-                report.pending = true;
-            }
-            (event_type::ABS, absolute::MT_POSITION_Y)
-                if report.touch_slot == SECOND_TOUCH_SLOT =>
-            {
-                report.second_y = Some(event.value);
-                report.pending = true;
-            }
-            (event_type::ABS, absolute::MT_TRACKING_ID)
-                if report.touch_slot == SECOND_TOUCH_SLOT =>
-            {
-                report.second_down = Some(event.value >= 0);
-                report.pending = true;
+            (
+                event_type::ABS,
+                code @ (absolute::MT_POSITION_X | absolute::MT_POSITION_Y | absolute::MT_TRACKING_ID),
+            ) => {
+                if let Some(index) = extra_finger(report.touch_slot) {
+                    let finger = &mut report.extra[index];
+                    match code {
+                        absolute::MT_POSITION_X => finger.x = Some(event.value),
+                        absolute::MT_POSITION_Y => finger.y = Some(event.value),
+                        _ => finger.down = Some(event.value >= 0),
+                    }
+                    report.pending = true;
+                }
             }
 
             (event_type::ABS, absolute::ACCELERATION_X) => report.acceleration.0 = event.value,
@@ -1758,7 +1850,14 @@ fn turned_size(rotation: crate::display::Rotation, width: u32, height: u32) -> (
 }
 
 const PRIMARY_TOUCH: i32 = 0;
-const SECOND_TOUCH_SLOT: i32 = 1;
+const EXTRA_FINGERS: usize = 2;
+
+fn extra_finger(slot: i32) -> Option<usize> {
+    usize::try_from(slot)
+        .ok()
+        .and_then(|slot| slot.checked_sub(1))
+        .filter(|&index| index < EXTRA_FINGERS)
+}
 
 static TOUCH_SCREEN: AtomicBool = AtomicBool::new(false);
 

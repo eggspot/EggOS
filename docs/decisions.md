@@ -27354,3 +27354,38 @@ the license, by an explicit instruction recorded here.
   - The caret's rect from the toolkit (sent as zeros; the element's bounds are used).
   - The pane's captions, rate and echo controls: CLI and MCP only.
   - The phone's and TV's panel places; touch exploration.
+
+## D604 Touch gestures: two-finger scroll and pinch, three-finger desktop swipe, and touch records for apps (M12; D256's and D296's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering; thresholds from the platforms' published touch slop and gesture conventions)
+- **Input layer** (`kernel/src/input.rs`). It now follows multi-touch slots 1 and 2, the second
+  and third fingers (`ExtraFinger` in each report, `extra_touches` in the state), and sends
+  `InputEvent::Touch { finger, x, y, phase }` (packed kind 8: finger and phase in bits 56 to 59)
+  for each finger's down, move and lift. The second finger still sends `SecondTouch` on down and
+  lift for two-finger typing (D329). The first finger stays the pointer and its left button
+  (D296).
+- **Window server** (`drivers/src/desktop/gestures.rs`).
+  - Two or three fingers down, the first not on the on-screen keyboard, start an undecided
+    gesture. Nothing is decided until the fingers' middle or the first two's spread moves
+    16 px (`SLOP`, about Android's 8 dp touch slop at scale 2), so a press by the first finger
+    works as before.
+  - Once decided, the window holding the press gets `PRESS_CANCELLED` (record 27), and the
+    first finger's later release only lets the grab go: nothing clicks.
+  - **Two fingers moving together scroll** the window under them: a wheel notch per 24 px, the
+    content following the fingers, sideways too.
+  - **Two fingers spreading or closing pinch**: `PINCH` (record 26) with their middle and their
+    spread against the start in thousandths, for the app to zoom its content.
+  - **Three fingers moving 120 px sideways** show the next desktop (fingers to the left) or the
+    previous one, once per gesture.
+  - **Every finger beyond the first** reaches the window it landed on as `TOUCH` records
+    (record 25: content position, finger, phase), so an app can follow it itself.
+- **Toolkit.** `Input::Touch`, `Input::Pinch` and `Input::PressCancelled`. A cancelled press
+  is dropped with its slider, selection and scroll-thumb drags; touch and pinch reach a view's
+  own `handle`. The macOS layer ignores all three for now.
+- **Not yet.**
+  - Building and running.
+  - Multi-touch for the compatibility layers: eggway's `wl_touch`, Windows' `WM_POINTER` and
+    `WM_TOUCH`, Android's multi-pointer `MotionEvent`, UIKit's several touches.
+  - Toolkit widgets that zoom on `Pinch` (images, text).
+  - The first finger as a `TOUCH` record of its own.
+  - A two-finger tap as a right click; edge swipes; four fingers.
+  - Pinch for the accessibility zoom (D602).
+  - Precision touchpads' gestures (D256).

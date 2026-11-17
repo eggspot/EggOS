@@ -368,7 +368,10 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
         | Input::DragOver { .. }
         | Input::DragLeave
         | Input::Drop { .. }
-        | Input::DragEnded { .. } => {}
+        | Input::DragEnded { .. }
+        | Input::Touch { .. }
+        | Input::Pinch { .. }
+        | Input::PressCancelled => {}
     }
 }
 

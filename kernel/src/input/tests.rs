@@ -479,6 +479,24 @@ fn every_event_packs_into_a_word_and_back() {
         InputEvent::LayoutChanged(19),
         InputEvent::SidewaysWheel { delta: i32::MIN },
         InputEvent::SidewaysWheel { delta: 3 },
+        InputEvent::Touch {
+            finger: 1,
+            x: 0,
+            y: 0xff_ffff,
+            phase: TouchPhase::Down,
+        },
+        InputEvent::Touch {
+            finger: 2,
+            x: 640,
+            y: 400,
+            phase: TouchPhase::Move,
+        },
+        InputEvent::Touch {
+            finger: 1,
+            x: 3,
+            y: 4,
+            phase: TouchPhase::Up,
+        },
     ];
     for event in events {
         assert_eq!(InputEvent::unpack(event.pack()), Some(event));

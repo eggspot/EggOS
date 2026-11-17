@@ -137,7 +137,7 @@ and is not listed per item.
 - [x] Screenshots: `screenshot` with the region picker and its keys, MCP `screen_capture`, the window server's `CAPTURE_SCREEN` and `SHOW_NOTICE` (D204) — code written, unbuilt, D590
 - [x] Accessibility: a screen reader over the element trees (speech through a sound device when one exists, braille-free text log otherwise) (D161, D224) — code written, unbuilt, D603
 - [x] Accessibility: screen zoom, a larger pointer, bounce keys, toggle keys and mouse keys (D224) — code written, unbuilt, D602
-- [ ] Touch gestures: two-finger scroll, pinch to zoom, three-finger swipe between desktops, with touch events delivered to apps (D256, D296)
+- [x] Touch gestures: two-finger scroll, pinch to zoom, three-finger swipe between desktops, with touch events delivered to apps (D256, D296) — code written, unbuilt, D604
 - [ ] Phone form (D303's deviations): `wm show shell` and the shell's element tree, the home grid's long-press menu, its half-shown seventh row and arrow keys, switching to the console when a touch screen is too small
 - [ ] Tablet form (D306's deviations): window cards in the chooser, the dock's icon long-press menu, Super+Shift+Left/Right, a split pair as one switcher card, `wm move`/`wm size` picking a side or share
 - [ ] TV form (D307's deviations): the network glyph and `Agent` chip in the strip, a boot option for `input::pretend_remote`, an attached pointer's clicks on the home screen

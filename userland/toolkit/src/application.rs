@@ -164,6 +164,26 @@ fn in_scale_1(input: Input, scale: i32) -> Input {
             y: y.div_euclid(scale),
             notches,
         },
+        Input::Touch {
+            x,
+            y,
+            finger,
+            phase,
+        } => Input::Touch {
+            x: x.div_euclid(scale),
+            y: y.div_euclid(scale),
+            finger,
+            phase,
+        },
+        Input::Pinch {
+            x,
+            y,
+            scale: spread,
+        } => Input::Pinch {
+            x: x.div_euclid(scale),
+            y: y.div_euclid(scale),
+            scale: spread,
+        },
         other => other,
     }
 }

@@ -405,6 +405,17 @@ pub mod event {
     /// screen reader or zoom is on, 0 else. The app then sends `REPORT_ELEMENT` on every focus
     /// move and every change of the focused element's value or state.
     pub const READER_CHANGED: u16 = 24;
+    /// A finger beyond the first touched the window (D604): `a`, `b` where, in content pixels;
+    /// `c` the finger (1 the second, 2 the third); `d` 0 down, 1 moved, 2 lifted. The first
+    /// finger is the pointer and its left button.
+    pub const TOUCH: u16 = 25;
+    /// Two fingers spread or closed over the window (D604): `a`, `b` their middle in content
+    /// pixels; `c` their spread against where it started, in thousandths (1500: half as far
+    /// again apart).
+    pub const PINCH: u16 = 26;
+    /// The press the window holds became a gesture (D604): it clicks nothing, and no release
+    /// follows.
+    pub const PRESS_CANCELLED: u16 = 27;
 }
 
 /// `READ_READER_LOG`'s answer, written over its argument (D603).
