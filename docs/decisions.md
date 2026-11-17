@@ -28375,3 +28375,17 @@ the license, by an explicit instruction recorded here.
   organisation manages) runs `settings policy` and answers its text; the server's tool list
   grows to 96.
 - **Not yet.** Building and running; `settings policy --json`; the tool's structured result.
+
+
+## D660 What an agent may not do to the policy (M16 editions; editions-policy v0.1 section 8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Rule 2 (the policy file) already holds for every file tool: reads stay in
+  `/home`, `/media/host` and `/work`, writes in `/home/root`, so `/etc/eggos/` answers
+  `path_not_allowed` with no change. Rule 5: `settings_set` with `update.policy` and
+  `managed` (not a dry run) needs the person's yes, asked by elicitation like a destroy tool's,
+  or `confirm: true` from a client that cannot ask; the other values need only the grant.
+  Rule 6: `component_remove` of `management` answers `managed` (`Refused: the management
+  component is managed by Contoso IT while /etc/eggos/policy is there; no agent may remove
+  it.`) while a policy file is there, trusted or not; without one it needs the person's yes as
+  every remove does. Rules 1, 3 and 4 are D655 and D656.
+- **Not yet.** Building and running; a program an agent starts with the `run` grant having no
+  write access to `/etc/eggos/` (it runs as root today; that needs accounts or a sandbox).

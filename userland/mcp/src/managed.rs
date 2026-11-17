@@ -11,6 +11,13 @@ pub const MOST_DENIED: usize = 32;
 pub const TOOL_NAME_BYTES: usize = 48;
 pub const COMPONENT_RECORD: &str = "/var/lib/eggos/components/management/component";
 
+/// The setting and value whose change stops updates, which an agent makes only with the
+/// person's yes (section 8, rule 5).
+pub const STOPS_UPDATES: (&str, &str) = ("update.policy", "managed");
+
+/// The component an agent may not remove while a policy file is there (section 8, rule 6).
+pub const COMPONENT: &str = "management";
+
 /// What the machine found of the policy file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyRead {
@@ -88,6 +95,8 @@ impl Default for Ceiling {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub ceiling: Ceiling,
+    /// Whether a policy file is there, trusted or not.
+    pub file_present: bool,
     denied: [[u8; TOOL_NAME_BYTES]; MOST_DENIED],
     denied_lengths: [u8; MOST_DENIED],
     denied_count: usize,
@@ -99,6 +108,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             ceiling: Ceiling::EVERY,
+            file_present: false,
             denied: [[0; TOOL_NAME_BYTES]; MOST_DENIED],
             denied_lengths: [0; MOST_DENIED],
             denied_count: 0,
@@ -116,10 +126,12 @@ impl Limits {
             PolicyRead::NotManaged => return limits,
             PolicyRead::Untrusted => {
                 limits.ceiling = Ceiling::VIEW_ONLY;
+                limits.file_present = true;
                 return limits;
             }
             PolicyRead::Trusted(length) => length,
         };
+        limits.file_present = true;
         let Ok(text) = core::str::from_utf8(text.get(..length).unwrap_or_default()) else {
             limits.ceiling = Ceiling::VIEW_ONLY;
             return limits;
@@ -170,6 +182,8 @@ mod tests {
         assert!(limits.denies(b"disk_install"));
         assert!(!limits.denies(b"disk_list"));
         assert_eq!(limits.manager(), "Contoso IT");
+        assert!(limits.file_present);
+        assert!(!Limits::of(PolicyRead::NotManaged, b"").file_present);
     }
 
     #[test]

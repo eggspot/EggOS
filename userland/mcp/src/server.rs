@@ -1454,8 +1454,34 @@ impl Server {
             );
             return;
         }
+        if tool.kind == Kind::ComponentRemove
+            && self.limits.file_present
+            && checked.name.as_ref().is_some_and(|name| name.as_str() == crate::managed::COMPONENT)
+        {
+            let mut message = [0u8; 480];
+            let length = keeps_management(self.limits.manager(), &mut message);
+            let message = text_prefix(&message, length);
+            self.stop(
+                system,
+                scratch,
+                id,
+                number,
+                tool_name,
+                Outcome::Refused,
+                Logged::Names(arguments),
+                message,
+                Ending::Refused(&errors::MANAGED),
+                out,
+            );
+            return;
+        }
         let replaces = !checked.append && state != FileState::Missing;
-        let destructive = tool.confirmation.needed(replaces, checked.dry_run);
+        let stops_updates = tool.kind == Kind::SettingsSet
+            && !checked.dry_run
+            && arguments::setting_key_text(&checked, scratch.words)
+                .zip(arguments::setting_value_text(&checked, scratch.words))
+                == Some(crate::managed::STOPS_UPDATES);
+        let destructive = tool.confirmation.needed(replaces, checked.dry_run) || stops_updates;
         let mut needs_yes = ask_user || destructive;
         let mut approval = match session_answer {
             true => Approval::ForSession,
@@ -3751,6 +3777,14 @@ fn denied(tool: &Tool, denial: Denial, out: &mut [u8]) -> usize {
     text.length
 }
 
+fn keeps_management(manager: &str, out: &mut [u8]) -> usize {
+    let mut text = Text::new(out);
+    text.put("Refused: the management component is managed by ");
+    text.put(manager);
+    text.put(" while /etc/eggos/policy is there; no agent may remove it.");
+    text.length
+}
+
 fn denied_by_policy(tool: &Tool, manager: &str, out: &mut [u8]) -> usize {
     let mut text = Text::new(out);
     text.put("Refused: ");
@@ -3802,6 +3836,7 @@ fn confirmation_needed(tool: &Tool, out: &mut [u8]) -> usize {
         Kind::AppUninstall => text.put("app_uninstall removes the app"),
         Kind::DiskFormat => text.put("disk_format erases the disk"),
         Kind::DiskInstall => text.put("disk_install erases the disk"),
+        Kind::SettingsSet => text.put("update.policy managed stops EggOS updating itself"),
         _ => {
             text.put(tool.name);
             text.put(" needs the user's yes");
