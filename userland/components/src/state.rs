@@ -13,6 +13,9 @@ use eggos_app::files::Files;
 pub const UPDATES_PATH: &str = "/var/lib/eggos/updates";
 /// `off` when the daily check is off; on otherwise.
 pub const DAILY_PATH: &str = "/var/lib/eggos/updates-daily";
+/// How component updates are installed (D657): `policy=automatic|notify|managed`, and
+/// `locked_by=<name>` while the policy file locks it. Only Settings writes it.
+pub const UPDATE_POLICY_PATH: &str = "/var/lib/eggos/update-policy";
 /// The running job's progress.
 pub const JOB_PATH: &str = "/run/eggos/component-job";
 /// Present while a front-end asks the running job to stop.
@@ -167,6 +170,82 @@ pub fn daily<F: Files>(files: &mut F) -> bool {
 /// Turns the daily check on or off.
 pub fn set_daily<F: Files>(files: &mut F, on: bool) -> bool {
     write_text(files, DAILY_PATH, if on { "on\n" } else { "off\n" })
+}
+
+/// How component updates are installed (editions-policy v0.1 section 2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum UpdatePolicy {
+    /// EggOS installs updates the daily check finds, by itself.
+    Automatic,
+    /// It checks and tells the person, as before.
+    #[default]
+    Notify,
+    /// It neither checks nor installs; whoever manages the computer runs the updates.
+    Managed,
+}
+
+impl UpdatePolicy {
+    pub const ALL: [UpdatePolicy; 3] = [Self::Automatic, Self::Notify, Self::Managed];
+
+    /// Its value for `update.policy`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Notify => "notify",
+            Self::Managed => "managed",
+        }
+    }
+
+    /// The policy `name` names.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|policy| policy.name() == name)
+    }
+}
+
+/// The update policy and who locked it, as Settings last recorded it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdatePolicyRecord {
+    pub policy: UpdatePolicy,
+    pub locked_by: Option<String>,
+}
+
+impl UpdatePolicyRecord {
+    /// The file's text.
+    pub fn text(&self) -> String {
+        match &self.locked_by {
+            Some(manager) => format!("policy={}\nlocked_by={manager}\n", self.policy.name()),
+            None => format!("policy={}\n", self.policy.name()),
+        }
+    }
+
+    /// The record `text` holds; an unknown or missing policy reads as `notify`.
+    pub fn parse(text: &str) -> Self {
+        let mut record = Self::default();
+        for line in text.lines() {
+            match line.split_once('=') {
+                Some(("policy", name)) => {
+                    record.policy = UpdatePolicy::named(name.trim()).unwrap_or_default();
+                }
+                Some(("locked_by", name)) if !name.trim().is_empty() => {
+                    record.locked_by = Some(String::from(name.trim()));
+                }
+                _ => {}
+            }
+        }
+        record
+    }
+}
+
+/// The update policy recorded, `notify` without a record.
+pub fn update_policy<F: Files>(files: &mut F) -> UpdatePolicyRecord {
+    read_text(files, UPDATE_POLICY_PATH).map_or_else(UpdatePolicyRecord::default, |text| {
+        UpdatePolicyRecord::parse(&text)
+    })
+}
+
+/// Records the update policy.
+pub fn set_update_policy<F: Files>(files: &mut F, record: &UpdatePolicyRecord) -> bool {
+    write_text(files, UPDATE_POLICY_PATH, &record.text())
 }
 
 /// Records `job`'s progress.

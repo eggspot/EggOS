@@ -2349,7 +2349,10 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
                   copying the others from the installed folder. Each component is staged whole, \
                   every file checked against its SHA-256, then swapped in, so a failure or a \
                   power cut leaves the old copy or the new one, never a mix. Only root updates. \
-                  --dry-run says what would change and how much would be fetched.",
+                  --dry-run says what would change and how much would be fetched. While \
+                  update.policy is managed it is refused unless --as-manager says the tool that \
+                  manages the computer runs it; under automatic the daily check cannot be \
+                  turned off.",
     options: &[
         DRY_RUN_OPTION,
         JSON_OPTION,
@@ -2360,6 +2363,14 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
             ValueType::Text,
             "Turn the daily check for updates on or off instead (D299).",
         ),
+        OptionDefinition {
+            short: None,
+            long: Some("as-manager"),
+            value: None,
+            repeatable: false,
+            default: None,
+            help: "Update although update.policy is managed, as the tool that manages the computer (D657).",
+        },
     ],
     operands: &[operand("name", ValueType::Text, Count::ZeroOrOne)],
     outputs: Outputs {
@@ -2376,6 +2387,7 @@ pub const COMPONENT_UPDATE: CommandDefinition = CommandDefinition {
         exits(&STORE_DETACHED, 1),
         exits(&NO_SPACE, 1),
         exits(&INSTALL_FAILED, 1),
+        exits(&crate::errors::MANAGED, 1),
         exits(&PERMISSION_DENIED, 1),
     ],
     examples: &[example(

@@ -29,13 +29,13 @@ pub const EDITIONS: [Edition; 4] = [
         name: "professional",
         title: "Professional",
         summary: "Personal, with every tool for work that the store offers.",
-        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps"],
+        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps", "management"],
     },
     Edition {
         name: "enterprise",
         title: "Enterprise",
         summary: "Professional, ready for managed fleets.",
-        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps"],
+        components: &["desktop", "builtin-apps", "windows-apps", "mac-apps", "management"],
     },
 ];
 
@@ -95,7 +95,13 @@ mod tests {
         let none: [&str; 0] = [];
         assert_eq!(current(none.iter().copied()).unwrap().name, "server");
         let both = ["mac-apps", "windows-apps", "builtin-apps", "desktop"];
-        assert_eq!(current(both.iter().copied()).unwrap().name, "enterprise");
+        assert_eq!(current(both.iter().copied()).unwrap().name, "personal");
+        let managed = ["mac-apps", "windows-apps", "builtin-apps", "desktop", "management"];
+        assert_eq!(current(managed.iter().copied()).unwrap().name, "enterprise");
+        assert_eq!(
+            current_preferring(managed.iter().copied(), Some("professional")).unwrap().name,
+            "professional"
+        );
         let one = ["mac-apps"];
         assert!(current(one.iter().copied()).is_none());
     }

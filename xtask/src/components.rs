@@ -22,7 +22,7 @@ pub struct Offered {
 }
 
 /// Every component a store may offer, each after those it needs.
-pub const OFFERED: [Offered; 5] = [
+pub const OFFERED: [Offered; 6] = [
     Offered {
         name: "desktop",
         title: "Desktop",
@@ -67,6 +67,15 @@ pub const OFFERED: [Offered; 5] = [
         needs: &["desktop"],
         files: &[(crate::ANDROID_LAYER_PATH, crate::ANDROID_LAYER_PACKAGE)],
         runs_on: |arch| crate::ANDROID_LAYER_ARCHES.contains(&arch),
+    },
+    Offered {
+        name: "management",
+        title: "Management",
+        summary: "Policies an administrator sets, and how updates are installed.",
+        on_remove: "Policies in /etc/eggos/policy stop applying.",
+        needs: &[],
+        files: &[],
+        runs_on: |_| true,
     },
 ];
 
@@ -230,7 +239,8 @@ mod tests {
                 "builtin-apps",
                 "windows-apps",
                 "mac-apps",
-                "android-apps"
+                "android-apps",
+                "management"
             ]
         );
         for file in read
@@ -290,7 +300,7 @@ mod tests {
             offered("riscv64")
                 .map(|offered| offered.name)
                 .collect::<Vec<_>>(),
-            ["desktop", "builtin-apps"]
+            ["desktop", "builtin-apps", "management"]
         );
     }
 }

@@ -28331,3 +28331,23 @@ the license, by an explicit instruction recorded here.
   `settings_list|get`; the grant prompt and the Agents pane not offering a class above the
   ceiling; file tools refusing `/etc/eggos/`; `update.policy` set to `managed` by an agent
   needing confirmation; `component_remove management` while a policy file exists.
+
+
+## D657 The `management` component and the update policy it records (M16 editions; editions-policy v0.1 sections 1 and 2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** The store offers `management` (`Management`, `Policies an administrator sets,
+  and how updates are installed.`) on every architecture, with no files: its record is what
+  makes Settings and the MCP server read the policy file (D655, D656). Professional and
+  Enterprise list it, Personal and Server do not, so installed components with it are
+  Enterprise (Professional when that was the edition chosen) and without it Personal. The
+  update policy (`automatic`, `notify`, `managed`; `notify` by default) lives in the
+  component manager's state, `/var/lib/eggos/update-policy`, as `policy=...` and, while the
+  policy file locks it, `locked_by=<manager>`. Only Settings writes it, because only Settings
+  can check the policy file's owner (the component manager's `Files` status carries none), so
+  `component` trusts the record and never reads the policy file itself. `component update`
+  under `managed` answers `updates are managed by Contoso IT` (or, chosen locally, how to undo
+  it) with the coded error `managed`, `--dry-run` too, unless `--as-manager`; `component update
+  --daily off` under `automatic` answers `the daily check is part of automatic updates`.
+- **Not yet.** Building and running; the `update.policy` setting in Settings writing the
+  record (D658); automatic updates run by the daily check; the Components pane's row and
+  band lines; `component list`'s `update_policy`; the confirmation line when removing
+  `management`.

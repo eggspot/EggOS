@@ -1031,3 +1031,29 @@ fn a_store_image_places_each_file_and_reads_back_with_its_digest() {
         "/var/cache/eggos/eggos-0.5.0-x86_64-display-firmware.img"
     );
 }
+
+#[test]
+fn a_managed_update_policy_refuses_updates_and_automatic_keeps_the_daily_check() {
+    let mut files = machine(&[WINDOWS]);
+    files.file(
+        crate::state::UPDATE_POLICY_PATH,
+        b"policy=managed\nlocked_by=Contoso IT\n",
+    );
+    let mut console = FakeConsole::default();
+    assert_eq!(run(&mut files, &mut console, "update --dry-run"), 1);
+    assert!(console.error.starts_with("updates are managed by Contoso IT\n"));
+    assert_eq!(
+        crate::state::update_policy(&mut files).locked_by.as_deref(),
+        Some("Contoso IT")
+    );
+    let mut console = FakeConsole::default();
+    assert_ne!(run(&mut files, &mut console, "update --dry-run --as-manager"), 1);
+    files.file(crate::state::UPDATE_POLICY_PATH, b"policy=automatic\n");
+    let mut console = FakeConsole::default();
+    assert_eq!(run(&mut files, &mut console, "update --daily off"), 1);
+    assert!(console.error.starts_with("the daily check is part of automatic updates\n"));
+    assert_eq!(
+        crate::state::UpdatePolicyRecord::parse("policy=sideways\n").policy,
+        crate::state::UpdatePolicy::Notify
+    );
+}

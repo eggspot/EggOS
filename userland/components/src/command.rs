@@ -18,7 +18,7 @@ use eggos_mcp::json::JsonWriter;
 pub const USAGE: &str = "usage: component list [--json] [--download]\n       component cancel\n       component install [--dry-run] \
                          [--json] <name>\n       component remove [--yes] [--dry-run] [--json] \
                          <name>\n       component edition [--dry-run] [<name>]\n       \
-                         component update [--dry-run] [--json] [<name>]\n       \
+                         component update [--dry-run] [--json] [--as-manager] [<name>]\n       \
                          component update --daily on|off\n";
 /// The exit status of a command line written wrongly.
 pub const USAGE_STATUS: i32 = 2;
@@ -87,6 +87,7 @@ pub enum Command<'a> {
         dry_run: bool,
         json: bool,
         daily: Option<bool>,
+        as_manager: bool,
     },
     /// `component remove`.
     Remove {
@@ -101,7 +102,7 @@ pub enum Command<'a> {
 pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     let (&verb, rest) = arguments.split_first()?;
     let (mut json, mut dry_run, mut yes, mut name) = (false, false, false, None);
-    let (mut download, mut daily) = (false, None);
+    let (mut download, mut daily, mut as_manager) = (false, None, false);
     let mut operands_only = false;
     let mut words = rest.iter();
     while let Some(&word) = words.next() {
@@ -114,6 +115,7 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
                     _ => return None,
                 });
             }
+            "--as-manager" if !operands_only && verb == "update" => as_manager = true,
             "--json" if !operands_only => json = true,
             "--dry-run" if !operands_only && verb != "list" => dry_run = true,
             "--yes" if !operands_only && verb == "remove" => yes = true,
@@ -127,11 +129,12 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     match verb {
         "list" => Some(Command::List { json, download }),
         "cancel" if name.is_none() => Some(Command::Cancel),
-        "update" => Some(Command::Update {
+        "update" if daily.is_none() || !as_manager => Some(Command::Update {
             name,
             dry_run,
             json,
             daily,
+            as_manager,
         }),
         "edition" if !json => Some(Command::Edition { name, dry_run }),
         "install" => Some(Command::Install {
@@ -241,6 +244,16 @@ pub fn run<F: Files, C: Console>(
             json,
             ..
         } => set_daily(files, &mut out, on, json),
+        Command::Update {
+            json, as_manager, ..
+        } if !as_manager && crate::state::update_policy(files).policy == crate::state::UpdatePolicy::Managed => {
+            let record = crate::state::update_policy(files);
+            let message = match &record.locked_by {
+                Some(manager) => format!("updates are managed by {manager}"),
+                None => String::from("updates are managed: settings set update.policy notify lets EggOS update again"),
+            };
+            out.fail(json, &eggos_commands::errors::MANAGED, &message)
+        }
         Command::Update {
             name,
             dry_run,
@@ -454,6 +467,13 @@ fn set_daily<F: Files, C: Console>(
     on: bool,
     json: bool,
 ) -> i32 {
+    if !on && crate::state::update_policy(files).policy == crate::state::UpdatePolicy::Automatic {
+        return out.fail(
+            json,
+            &eggos_commands::errors::MANAGED,
+            "the daily check is part of automatic updates",
+        );
+    }
     if !crate::state::set_daily(files, on) {
         return out.fail(
             json,
