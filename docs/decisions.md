@@ -28167,3 +28167,14 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; `BOOT.TXT` and the boot menu (section 6), which read
   from the same folder.
 
+
+
+## D647 The install line names what it can keep on a partitioned disk (M8; installer dual boot v0.1 section 7, item 11; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `DiskRecord` gains `kept_systems`, the systems the disk holds joined as the
+  design names them (`Windows and Ubuntu`), set only when the disk has a GPT table with
+  partitions. When installing is allowed on such a disk, the Storage pane's install line reads
+  `Install EggOS... can keep Windows on this disk, or use all of it.`, or `can keep what is on
+  this disk` when no known system is found; a blank disk keeps the line that says installing
+  erases it.
+- **Not yet.** Building and running; the install sheet's choice between keeping and using the
+  whole disk, which needs `disk install --alongside` to write (D644 to D646).

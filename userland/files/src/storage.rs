@@ -141,6 +141,10 @@ pub struct DiskRecord {
     /// What a partitioned disk holds, as its contents line reads it: `Windows · 4 partitions`
     /// (D636); None for a disk without a partition table.
     pub partitions: Option<String>,
+    /// The systems on a partitioned disk, as the install line names what it can keep
+    /// (`Windows and Ubuntu`, D647); empty when it holds none EggOS knows, None for a disk
+    /// without a partition table.
+    pub kept_systems: Option<String>,
 }
 
 impl DiskRecord {
@@ -335,6 +339,7 @@ fn record(disks: &mut (impl WholeDisks + ?Sized), line: Line) -> DiskRecord {
         used_bytes: None,
         available_bytes: None,
         partitions: None,
+        kept_systems: None,
     };
     if let Some(place) = line.place {
         record.file_system = match place == HOST_FOLDER {
@@ -385,6 +390,7 @@ fn record(disks: &mut (impl WholeDisks + ?Sized), line: Line) -> DiskRecord {
         && !layout.partitions.is_empty()
     {
         record.partitions = Some(crate::partitions::contents_line(&layout));
+        record.kept_systems = Some(crate::partitions::joined_names(&layout.systems));
     }
     record
 }
@@ -1565,9 +1571,13 @@ pub fn install_allowed(record: &DiskRecord, boot_files: bool) -> Result<(), Stor
 /// The Storage pane's install line for `record` while nothing runs (docs/ux/installer-v0.4.md).
 pub fn install_idle_text(record: &DiskRecord, boot_files: bool) -> String {
     match install_allowed(record, boot_files) {
-        Ok(()) => String::from(
-            "Install EggOS... erases the disk and writes EggOS on it, to start this machine from.",
-        ),
+        Ok(()) => match record.kept_systems.as_deref() {
+            Some("") => String::from("Install EggOS... can keep what is on this disk, or use all of it."),
+            Some(systems) => format!("Install EggOS... can keep {systems} on this disk, or use all of it."),
+            None => String::from(
+                "Install EggOS... erases the disk and writes EggOS on it, to start this machine from.",
+            ),
+        },
         Err(StorageError::InUse(place)) => {
             format!("In use at {place}: EggOS cannot be installed on a mounted disk.")
         }
@@ -1634,6 +1644,7 @@ mod install_tests {
             used_bytes: None,
             available_bytes: None,
             partitions: None,
+            kept_systems: None,
         }
     }
 
@@ -1683,6 +1694,23 @@ mod install_tests {
         }
         let mut blank = MemoryDisks::of(alloc::vec![MemoryWholeDisk::blank("vdb", 1024)]);
         assert_eq!(add_eggos_partition(&mut blank, "/dev/vdb", start, 2048), Err(AddPartitionError::NoTable));
+    }
+
+    #[test]
+    fn the_install_line_offers_to_keep_the_systems_on_a_partitioned_disk() {
+        let mut partitioned = record(64 << 30, None, false);
+        partitioned.partitions = Some(String::from("Windows \u{b7} 4 partitions"));
+        partitioned.kept_systems = Some(String::from("Windows"));
+        assert_eq!(
+            install_idle_text(&partitioned, true),
+            "Install EggOS... can keep Windows on this disk, or use all of it."
+        );
+        partitioned.kept_systems = Some(String::new());
+        assert_eq!(
+            install_idle_text(&partitioned, true),
+            "Install EggOS... can keep what is on this disk, or use all of it."
+        );
+        assert!(install_idle_text(&record(64 << 30, None, false), true).starts_with("Install EggOS... erases"));
     }
 
     #[test]
