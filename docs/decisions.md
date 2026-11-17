@@ -28263,3 +28263,18 @@ the license, by an explicit instruction recorded here.
   is never moved.
 - **Not yet.** Building and running; the whole-disk install's entry (it starts from
   `\EFI\BOOT\`, which a USB stick shares, so the loader cannot tell them apart yet).
+
+
+## D653 The boot menu is drawn on the framebuffer with Egg Mono (M8; installer dual boot v0.1 section 6, "Look"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `boot/uefi/src/menu_picture.rs` lays the menu out exactly as section 6 says
+  (background `#0E1726`; `EggOS` at 2x centred, top at `H / 2 - 160`; rows 400 by 40 at
+  `(W - 400) / 2`, the first at `H / 2 - 96`; names at row x + 40, cell top + 12; the selected
+  row `#2E4A6B` with `>` in `#F2B33D` at x + 16; ` (default)` and the hint in `#8A94A6`, the
+  hint centred 16 under the last row; everything doubled from 2560 wide; high contrast's
+  colours and 1 px outline) and draws it with `eggos-font`'s glyph rows into a `Canvas` of
+  filled rectangles, so the host checks the 1280x800 positions. The loader's canvas writes the
+  GOP framebuffer (BGRX, or RGBX with red and blue swapped), clipped to the mode, and redraws
+  after each key and each second. Without a usable framebuffer it keeps D651's text lines,
+  whose prompt is now section 6's serial line (`Starts 1 in 5 s. Press a number.`). The loader
+  now depends on `eggos-font`.
+- **Not yet.** Building and running.

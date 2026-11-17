@@ -4,6 +4,8 @@ use core::ptr::{null, null_mut};
 use crate::efi::{self, InputKey};
 use crate::loader::{Firmware, print, read_file};
 use crate::firmware_entry;
+use crate::menu_picture::{self, Canvas};
+use eggos_boot_handoff::{Framebuffer, pixel_format};
 use crate::menu::{self, Action, Entry, Key, Kind, Menu, Text};
 use crate::paths::{self, Path};
 
@@ -143,6 +145,61 @@ fn stall(firmware: &Firmware, microseconds: usize) {
     unsafe { (firmware.services().stall)(microseconds) };
 }
 
+struct Screen {
+    pixels: *mut u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    swap_red_blue: bool,
+}
+
+impl Screen {
+    fn of(framebuffer: &Framebuffer) -> Option<Self> {
+        let known = matches!(framebuffer.format, pixel_format::BGRX | pixel_format::RGBX);
+        (known && framebuffer.is_usable() && framebuffer.width > 0).then(|| Self {
+            pixels: framebuffer.address as *mut u32,
+            width: framebuffer.width,
+            height: framebuffer.height,
+            stride: framebuffer.stride_pixels,
+            swap_red_blue: framebuffer.format == pixel_format::RGBX,
+        })
+    }
+}
+
+impl Canvas for Screen {
+    fn fill(&mut self, x: u32, y: u32, width: u32, height: u32, colour: u32) {
+        let pixel = match self.swap_red_blue {
+            true => (colour & 0x00_FF_00) | ((colour >> 16) & 0xFF) | ((colour & 0xFF) << 16),
+            false => colour,
+        };
+        let right = x.saturating_add(width).min(self.width);
+        let bottom = y.saturating_add(height).min(self.height);
+        for row in y..bottom {
+            for column in x..right {
+                let at = row as usize * self.stride as usize + column as usize;
+                // SAFETY: `row` and `column` are inside the mode's width and height, and
+                // `is_usable` checked that every row of `stride` pixels lies in the framebuffer.
+                unsafe { self.pixels.add(at).write_volatile(pixel) };
+            }
+        }
+    }
+}
+
+fn show(menu: &Menu, screen: &mut Option<Screen>, rows_changed: bool) {
+    match screen {
+        Some(screen) => {
+            let (width, height) = (screen.width, screen.height);
+            menu_picture::draw(menu, width, height, screen);
+        }
+        None => {
+            if rows_changed {
+                show_rows(menu);
+            }
+            show_hint(menu);
+        }
+    }
+}
+
 fn show_rows(menu: &Menu) {
     print("\n");
     for index in 0..menu.entries().count() {
@@ -154,7 +211,7 @@ fn show_rows(menu: &Menu) {
 
 fn show_hint(menu: &Menu) {
     let mut line = Text::<80>::new();
-    let _ = write!(line, "\r{:<64}", menu.hint().as_str());
+    let _ = write!(line, "\r{:<64}", menu.serial_prompt().as_str());
     print(line.as_str());
 }
 
@@ -249,16 +306,16 @@ pub fn run(firmware: &Firmware, root: *mut efi::File, own_path: Option<&Path>) -
         let default = menu.default;
         return start_entry(firmware, root, own_path, &mut menu, default);
     }
-    show_rows(&menu);
-    show_hint(&menu);
+    let mut screen = Screen::of(&crate::loader::framebuffer(firmware));
+    show(&menu, &mut screen, true);
     let mut ticks = 0;
     loop {
         stall(firmware, TICK_US);
+        let mut rows_changed = false;
         let action = match read_key(firmware) {
             Some(key) => {
-                let action = menu.press(key);
-                show_rows(&menu);
-                action
+                rows_changed = true;
+                menu.press(key)
             }
             None => {
                 ticks += 1;
@@ -281,7 +338,7 @@ pub fn run(firmware: &Firmware, root: *mut efi::File, own_path: Option<&Path>) -
                 return start_entry(firmware, root, own_path, &mut menu, index);
             }
         }
-        show_hint(&menu);
+        show(&menu, &mut screen, rows_changed);
     }
 }
 

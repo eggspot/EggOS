@@ -308,7 +308,7 @@ fn mode_score(info: &efi::GraphicsModeInformation) -> Option<u64> {
     (is_bgrx(info) && pixels <= MAX_FRAMEBUFFER_PIXELS).then_some(pixels * 2 + u64::from(packed))
 }
 
-fn framebuffer(firmware: &Firmware) -> Framebuffer {
+pub(crate) fn framebuffer(firmware: &Firmware) -> Framebuffer {
     let Some(output) = firmware.locate::<efi::GraphicsOutput>(&efi::GRAPHICS_OUTPUT_PROTOCOL)
     else {
         return Framebuffer::default();

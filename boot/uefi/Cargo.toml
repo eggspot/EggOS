@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 eggos-boot-handoff = { path = "../handoff" }
+eggos-font = { path = "../../font" }
 
 [lints]
 workspace = true
