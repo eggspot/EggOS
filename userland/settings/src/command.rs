@@ -5,6 +5,7 @@
 //! the registry's examples against example facts.
 
 use crate::facts::Facts;
+use crate::managed::PolicyFile;
 use crate::keys::{
     self, Change, DeviceChange, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange,
     ReaderChange, Refusal,
@@ -24,7 +25,8 @@ use eggos_toolkit::theme::Theme;
 /// The command's usage, printed for a usage error.
 pub const USAGE: &str = "usage: settings [open <pane> | --pair <id> [--name <name>] | --pane \
                          <pane> | --first-run | list [--json] [--limit <count>] [--after \
-                         <cursor>] | get [--json] <key> | set [--dry-run] <key> <value>]\n";
+                         <cursor>] | get [--json] <key> | set [--dry-run] <key> <value> | \
+                         policy]\n";
 /// The exit status of a usage error.
 pub const USAGE_STATUS: i32 = 2;
 /// The exit status of a value the setting does not take.
@@ -160,6 +162,10 @@ pub trait Machine {
     /// Whether the program was started with `EGGOS_CODED_ERRORS=1` (D226): an MCP tool's twin,
     /// which writes each error's `{"error":{...}}` line after its text.
     fn wants_coded_errors(&self) -> bool;
+    /// The policy file, when the `management` component is installed (D655).
+    fn policy(&mut self) -> PolicyFile {
+        PolicyFile::NotInstalled
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -313,6 +319,12 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
     match words[..count] {
         ["list"] if !dry_run => list(machine, json, &page),
         _ if page.is_paged() => usage(machine, json),
+        ["policy"] if !dry_run && !json => {
+            let file = machine.policy();
+            let facts = machine.facts();
+            machine.write_output(crate::managed::report(&file, &facts).as_bytes());
+            0
+        }
         ["get", name] if !dry_run => get(machine, json, name),
         ["set", name, value] if !json => set(machine, name, value, dry_run),
         _ => usage(machine, json),
@@ -521,6 +533,13 @@ fn get(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
 }
 
 fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i32 {
+    let policy = machine.policy();
+    if policy.locked(name).is_some() {
+        let mut message = Message::new();
+        let _ = write!(message, "{name}: managed by {}", policy.manager());
+        report(machine, false, &errors::MANAGED, message.as_str());
+        return FAILURE;
+    }
     let (key, change) = match keys::change(name, value) {
         Ok(changed) => changed,
         Err(Refusal::NoSuchSetting) => return no_such_setting(machine, false, name),
@@ -742,6 +761,7 @@ mod tests {
         display_saved: Option<DisplayChange>,
         display_applied: Option<(Theme, DisplayAccessibility)>,
         coded_errors: bool,
+        policy: PolicyFile,
     }
 
     impl Machine for Fake {
@@ -862,6 +882,31 @@ mod tests {
         fn wants_coded_errors(&self) -> bool {
             self.coded_errors
         }
+
+        fn policy(&mut self) -> PolicyFile {
+            self.policy.clone()
+        }
+    }
+
+    #[test]
+    fn a_locked_setting_is_refused_with_its_manager_even_on_a_dry_run() {
+        let mut fake = Fake {
+            policy: PolicyFile::Trusted(String::from("policy.manager=Contoso IT\nshell.profile=linux\n")),
+            ..Fake::default()
+        };
+        assert_eq!(run(&mut fake, &["set", "--dry-run", "shell.profile", "windows"]), FAILURE);
+        assert_eq!(
+            String::from_utf8_lossy(&fake.errors),
+            "settings: shell.profile: managed by Contoso IT\n  try: settings policy\n"
+        );
+        assert_eq!(fake.saved, None);
+        let mut fake = Fake {
+            policy: fake.policy.clone(),
+            ..Fake::default()
+        };
+        assert_eq!(run(&mut fake, &["policy"]), 0);
+        assert!(String::from_utf8_lossy(&fake.output).starts_with("Managed by Contoso IT\n/etc/eggos/policy: 1 setting locked\n"));
+        assert_eq!(run(&mut Fake::default(), &["set", "--dry-run", "shell.profile", "windows"]), 0);
     }
 
     fn settings(fake: &mut Fake, arguments: &[&str]) -> (i32, String, String) {

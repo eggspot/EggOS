@@ -34,6 +34,8 @@ use eggos_settings::command::{
 };
 use eggos_settings::components_pane::{ComponentJob, ComponentsRead};
 use eggos_settings::facts::Facts;
+use eggos_settings::managed::PolicyFile;
+use eggos_settings_file::policy;
 use eggos_settings::first_run::{self, FirstRunRequest, FirstRunWindow};
 use eggos_settings::grant_prompt::{self as prompt, GrantPrompt, allowed_always};
 use eggos_settings::keys::APPEARANCE_THEME;
@@ -79,6 +81,13 @@ const DIRECTORY_MODE: usize = 0o755;
 const STATX_SIZE: usize = 256;
 const STATX_BASIC_STATS: usize = 0x7ff;
 const STATX_DEVICE_MAJOR: usize = 136;
+const STATX_OWNER: usize = 20;
+const STATX_MODE: usize = 28;
+const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+const FILE_KIND_MASK: u32 = 0o170_000;
+const REGULAR_FILE: u32 = 0o100_000;
+const DIRECTORY: u32 = 0o040_000;
+const PERMISSION_BITS: u32 = 0o7777;
 const UTSNAME_SIZE: usize = 390;
 const UTSNAME_MACHINE: usize = 260;
 const UTSNAME_FIELD: usize = 65;
@@ -614,6 +623,56 @@ fn architecture() -> Text<16> {
     Text::from(core::str::from_utf8(&machine[..end]).unwrap_or(""))
 }
 
+fn ownership(path: &str, kind: u32) -> Option<policy::Ownership> {
+    let mut record = [0u8; STATX_SIZE];
+    let place = CPath::new(path);
+    syscall(
+        number::STATX,
+        [
+            AT_FDCWD,
+            place.pointer(),
+            AT_SYMLINK_NOFOLLOW,
+            STATX_BASIC_STATS,
+            record.as_mut_ptr() as usize,
+            0,
+        ],
+    )
+    .ok()?;
+    let owner = u32::from_ne_bytes(record[STATX_OWNER..STATX_OWNER + 4].try_into().ok()?);
+    let mode = u32::from(u16::from_ne_bytes(record[STATX_MODE..STATX_MODE + 2].try_into().ok()?));
+    Some(policy::Ownership {
+        right_kind: mode & FILE_KIND_MASK == kind,
+        owner,
+        mode: mode & PERMISSION_BITS,
+    })
+}
+
+fn policy_file() -> PolicyFile {
+    let record = alloc::format!(
+        "{}/{}/{}",
+        component_manager::COMPONENTS,
+        eggos_settings::managed::COMPONENT,
+        component_manager::RECORD
+    );
+    if read_file(&record, &mut [0u8; 1]).is_err() {
+        return PolicyFile::NotInstalled;
+    }
+    let Some(file) = ownership(policy::PATH, REGULAR_FILE) else {
+        return PolicyFile::Absent;
+    };
+    let folder = ownership(policy::FOLDER, DIRECTORY).unwrap_or(policy::Ownership {
+        right_kind: false,
+        owner: u32::MAX,
+        mode: 0,
+    });
+    let mut text = alloc::vec![0u8; policy::LARGEST + 1];
+    let length = read_file(policy::PATH, &mut text).unwrap_or(0);
+    if let Some(why) = policy::distrust(file, folder, &text[..length]) {
+        return PolicyFile::Untrusted(why);
+    }
+    PolicyFile::Trusted(String::from(core::str::from_utf8(&text[..length]).unwrap_or("")))
+}
+
 fn home_is_on_a_disk() -> bool {
     let mut record = [0u8; STATX_SIZE];
     let home = CPath::new("/home");
@@ -1071,6 +1130,10 @@ struct Machine {
 impl command::Machine for Machine {
     fn facts(&mut self) -> Facts {
         facts(self.server.as_ref())
+    }
+
+    fn policy(&mut self) -> PolicyFile {
+        policy_file()
     }
 
     fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]> {

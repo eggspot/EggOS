@@ -274,6 +274,13 @@ pub const NO_SUCH_SETTING: ErrorDefinition = error(
     "Use a key settings list shows.",
     Some("settings list"),
 );
+/// `settings set`: the policy file locks the setting (D655, editions-policy v0.1 section 6).
+pub const MANAGED: ErrorDefinition = error(
+    "managed",
+    Category::Refused,
+    "Ask whoever manages this computer. settings policy lists what is locked.",
+    Some("settings policy"),
+);
 /// `settings set`: the setting reports a fact and cannot be set (D163).
 pub const SETTING_READ_ONLY: ErrorDefinition = error(
     "setting_read_only",
@@ -678,7 +685,7 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 92] = [
+pub const ALL: [&ErrorDefinition; 93] = [
     &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
@@ -771,4 +778,5 @@ pub const ALL: [&ErrorDefinition; 92] = [
     &CANNOT_SHRINK,
     &NO_ROOM_ALONGSIDE,
     &SIZE_OUT_OF_RANGE,
+    &MANAGED,
 ];

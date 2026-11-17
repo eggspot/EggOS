@@ -4201,6 +4201,28 @@ pub const SETTINGS_GET: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Settings' panes"),
 };
 
+/// `settings policy` (D655, docs/ux/editions-policy-v0.1.md section 6).
+pub const SETTINGS_POLICY: CommandDefinition = CommandDefinition {
+    words: &["settings", "policy"],
+    summary: "Prints what the policy file locks.",
+    description: "Prints who manages the computer, the settings /etc/eggos/policy locks with \
+                  their values, (pending) after a value the running system does not have yet, \
+                  what agents may be granted and which tools they may not call, and each line \
+                  the file has that is ignored, with its reason. Without the management \
+                  component, without a file, or with a file that cannot be trusted it says so; \
+                  the view succeeds in every case.",
+    options: &[],
+    operands: &[],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2)],
+    examples: &[example(
+        "settings policy",
+        "Not managed: the management component is not installed.\n",
+    )],
+    surface: Surface::Gui("Settings: Management"),
+};
+
 /// `settings open` (D225, docs/ux/network-v0.3.md section 4.5).
 pub const SETTINGS_OPEN: CommandDefinition = CommandDefinition {
     words: &["settings", "open"],
@@ -4245,6 +4267,7 @@ pub const SETTINGS_SET: CommandDefinition = CommandDefinition {
         exits(&USAGE, 2),
         exits(&NO_SUCH_SETTING, 1),
         exits(&SETTING_READ_ONLY, 1),
+        exits(&crate::errors::MANAGED, 1),
         exits(&INVALID_VALUE, 2),
         exits(&NOT_APPLIED, 1),
         exits(&FAILED, 1),
@@ -4738,7 +4761,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 127] = [
+pub static COMMANDS: [CommandDefinition; 128] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4816,6 +4839,7 @@ pub static COMMANDS: [CommandDefinition; 127] = [
     SETTINGS_GET,
     SETTINGS_LIST,
     SETTINGS_OPEN,
+    SETTINGS_POLICY,
     SETTINGS_SET,
     SHUTDOWN,
     SLEEP,

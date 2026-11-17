@@ -28293,3 +28293,21 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the `management` component and `update.policy`;
   `settings policy`, the `managed` refusal of `settings set`, the MCP ceiling and denied tools,
   the locks drawn in the panes and the Management pane (sections 1 to 9).
+
+
+## D655 `settings policy` and the `managed` refusal of a locked setting (M16 editions; editions-policy v0.1 sections 4 and 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Settings reads the policy file only while the `management` component is
+  installed (its record in `/var/lib/eggos/components/management/`), takes the file's owner
+  and mode with `statx` without following a link, and trusts it by D654's rules. A setting is
+  locked when the file's last line for its key holds a value `settings set` would take.
+  `settings set` on a locked key, `--dry-run` too and root too, prints `settings:
+  shell.profile: managed by Contoso IT` and `  try: settings policy` with the new coded error
+  `managed` (status 1). The new verb `settings policy` (registry `SETTINGS_POLICY`, read)
+  prints section 6's text: who manages it and the contact, `/etc/eggos/policy: N settings
+  locked`, each `key=value` sorted by key with `(pending)` when the running value differs, the
+  agents line (`at most ...; denied ...`, or `reading only`), then `ignored line N: reason`
+  (`not key=value`, `longer than 32 bytes`, `given again on line M`, `no such setting`,
+  `read-only`, `invalid value`, an unknown agent class); without the component, without a file
+  or with an untrusted one it says so. Status 0 in every case.
+- **Not yet.** Building and running; `settings policy --json` and `--apply`; the `locked` and
+  `managed_by` fields of `settings list|get --json`; `update.policy`; the MCP side (D656).
