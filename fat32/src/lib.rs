@@ -1,8 +1,13 @@
 //! Writing a FAT32 volume (Microsoft's FAT specification, 1.03) with a few files in a few
 //! folders, for EggOS's EFI system partition: `cargo xtask usb-image` and the installer
-//! (D241). Short 8.3 names only, which UEFI's paths for EggOS need.
+//! (D241); and adding files to an existing FAT32 volume, for an EFI system partition EggOS
+//! shares with another system (D645). Short 8.3 names only, which UEFI's paths for EggOS need.
 
 #![cfg_attr(not(test), no_std)]
+
+mod existing;
+
+pub use existing::{Reader, add_files};
 
 pub const SECTOR_BYTES: usize = 512;
 pub const MAX_CLUSTER_BYTES: usize = SECTOR_BYTES * 8;
@@ -35,6 +40,12 @@ pub enum Error<E> {
     BadName,
     /// The writer failed.
     Write(E),
+    /// The reader failed.
+    Read(E),
+    /// The volume is not FAT32 with 512-byte sectors, or its chains are damaged.
+    NotFat32,
+    /// The volume has no free cluster left.
+    Full,
 }
 
 /// The 11 bytes of an 8.3 name, upper case.

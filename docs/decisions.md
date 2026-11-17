@@ -28133,3 +28133,24 @@ the license, by an explicit instruction recorded here.
   (as whole-disk installs do), the shrink that frees a tail, the shared EFI system partition
   and the firmware entry, and calling all of it from `disk install --alongside` (D642).
 
+
+## D645 Adding files to an existing FAT32 volume (M8; installer dual boot v0.1 section 5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `eggos_fat32::add_files(files, read, write)` adds files at 8.3 paths to a
+  FAT32 volume another system made, as the shared EFI system partition needs
+  (`\EFI\EGGOS\...`): it reads the boot sector (512-byte sectors, 1 to 128 sectors a
+  cluster, one or two FATs, FAT32's empty root-entry count), finds each folder by its short
+  name in the directory's cluster chain (skipping long-name and deleted entries), makes a
+  missing folder in a fresh zeroed cluster with `.` and `..`, takes the first free or
+  deleted directory slot and grows a full directory by a cluster, replaces a file already
+  there by freeing its chain first, writes every FAT copy, keeps each FAT entry's reserved top
+  four bits, and marks FSInfo's free count and next free cluster unknown, as the FAT
+  specification allows, rather than counting them. It works a sector at a time, with no
+  allocation, so the kernel-side and no_std installer can use it. Chains longer than 4M
+  clusters or pointing outside the volume are refused as damaged.
+- **Error.** `eggos_fat32::Error` gains `Read`, `NotFat32` and `Full`; the installer's
+  existing match keeps its catch-all.
+- **Not yet.** Building and running; long names (`EggOS` is written `EGGOS`), 4096-byte
+  sectors, and the installer's call that writes `\EFI\EGGOS\` with the loader, kernel,
+  `CMDLINE.TXT` and `BOOT.TXT` (section 5), with EggOS's own 256 MB partition when the shared
+  one is full.
+
