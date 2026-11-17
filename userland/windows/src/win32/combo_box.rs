@@ -34,6 +34,7 @@ const SHOWN_TEXT_CAPACITY: usize = 256;
 /// The messages a combo box answers and the notifications it sends.
 pub mod code {
     pub const CB_GETEDITSEL: u32 = 0x0140;
+    pub const CB_LIMITTEXT: u32 = 0x0141;
     pub const CB_ADDSTRING: u32 = 0x0143;
     pub const CB_DELETESTRING: u32 = 0x0144;
     pub const CB_GETCOUNT: u32 = 0x0146;
@@ -632,7 +633,7 @@ fn combo_message(window: usize, number: u32, wparam: usize, lparam: usize) -> us
         }
         code::CB_SETITEMHEIGHT => return 0,
         code::CB_GETMINVISIBLE => return MOST_VISIBLE,
-        code::CB_GETEDITSEL => return 0,
+        code::CB_GETEDITSEL | code::CB_LIMITTEXT if !is_editable(window) => return CB_ERR,
         _ => {}
     }
     let answer = with(|gui| {
@@ -771,6 +772,28 @@ pub fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> us
                 eggos_windows_gui::controls::edit::EditOutcome::Changed
             });
             invalidate(window);
+            1
+        }
+        code::CB_GETEDITSEL => {
+            let mut selection = (0, 0);
+            with_edit(window, |field, _| {
+                selection = field.selection();
+                eggos_windows_gui::controls::edit::EditOutcome::Unchanged
+            });
+            let (start, end) = selection;
+            for (place, value) in [(wparam, start), (lparam as usize, end)] {
+                if place != 0 {
+                    // SAFETY: `CB_GETEDITSEL`'s contract: null or a writable `DWORD`.
+                    unsafe { (place as *mut u32).write_unaligned(value as u32) };
+                }
+            }
+            (start.min(0xffff)) | (end.min(0xffff) << 16)
+        }
+        code::CB_LIMITTEXT => {
+            with_edit(window, |field, _| {
+                field.set_limit(wparam);
+                eggos_windows_gui::controls::edit::EditOutcome::Unchanged
+            });
             1
         }
         code::CB_SETEDITSEL if is_editable(window) => {

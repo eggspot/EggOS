@@ -28677,3 +28677,12 @@ the license, by an explicit instruction recorded here.
   has no other.)
 - **Not yet.** Building and running; the main thread's overflow raised as
   `STATUS_STACK_OVERFLOW`.
+
+
+## D682 Combo boxes answer `CB_GETEDITSEL` and `CB_LIMITTEXT` (M15 Windows; follow-up of D340; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** An editable combo box answers `CB_GETEDITSEL` with its edit's selection,
+  start in the low word and end in the high word, and writes them to the two `DWORD`s
+  `wParam` and `lParam` point to when they are not null; `CB_LIMITTEXT` sets its edit's limit
+  as `EM_LIMITTEXT` does (0 for the most it holds) and answers TRUE. A drop-down list, which
+  has no edit, answers `CB_ERR` to both, as Windows does.
+- **Not yet.** Building and running; auto-completion from the list.

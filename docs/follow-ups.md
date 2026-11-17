@@ -223,7 +223,7 @@ and is not listed per item.
 - [ ] Windows edits: word wrap in multi-line edits, `EM_SETRECT`, `EM_SETTABSTOPS`, `EM_FMTLINES`, Windows' 30,000-character default limit (D341)
 - [ ] Windows scroll bars: `EnableScrollBar`, `ScrollWindowEx`, `ScrollWindow`, `WM_NCHITTEST` answering `HTVSCROLL`/`HTHSCROLL`, the arrows' repeat while held (D342, D343)
 - [ ] Windows menus: Alt pressed and released alone selects the bar; mnemonic underlines only once Alt is pressed (D338)
-- [ ] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340)
+- [ ] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340; the two messages code written, unbuilt: D682)
 - [ ] Windows: `SetThreadStackGuarantee` and `GetThreadStackLimits`; the main thread's overflow as `STATUS_STACK_OVERFLOW` (D346; `GetCurrentThreadStackLimits` code written, unbuilt: D681)
 - [ ] Windows C++: `__CxxFrameHandler3`/`4` honour `EXCEPTION_COLLIDED_UNWIND` (D347)
 - [ ] Winsock: `listen`/`accept` with `FD_ACCEPT`, `FD_OOB`, `WSAEventSelect`, `WSAEnumNetworkEvents` (D348)
