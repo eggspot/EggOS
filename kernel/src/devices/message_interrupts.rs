@@ -41,7 +41,10 @@ pub fn connect(
     if found_msix.is_none() && found_msi.is_none() {
         return connect_pin(probe, id, function.address, events);
     }
-    let (line, message) = probe.message_interrupt()?;
+    let requester = (u32::from(function.address.bus) << 8)
+        | (u32::from(function.address.device) << 3)
+        | u32::from(function.address.function);
+    let (line, message) = probe.message_interrupt_from(requester)?;
     let enabled = enable_message(
         probe,
         node,

@@ -31,6 +31,7 @@ mod channel_bus;
 pub mod dma;
 #[cfg(any(test, feature = "ethernet"))]
 pub mod ethernet;
+pub mod gic_its;
 mod fdt_bus;
 #[cfg(any(test, feature = "i2c-hid"))]
 pub mod i2c;
@@ -212,6 +213,24 @@ pub trait Probe {
     fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
         Err(ProbeError::Refused("no message-signalled interrupts"))
     }
+    /// Takes a message-signalled interrupt for the PCI function whose requester id is
+    /// `requester` (bus, device, function): through the ITS where there is one (D618), else as
+    /// [`Self::message_interrupt`].
+    fn message_interrupt_from(
+        &mut self,
+        _requester: u32,
+    ) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
+        self.message_interrupt()
+    }
+    /// Turns LPIs on ([`Platform::enable_lpis`], D618). None by default.
+    fn enable_lpis(
+        &mut self,
+        _properties: u64,
+        _pending: u64,
+        _id_bits: u32,
+    ) -> Result<(u16, u64), ProbeError> {
+        Err(ProbeError::Refused("no LPIs"))
+    }
     /// The machine's channel subsystem ([`Platform::channel_subsystem`], D322). None by default.
     fn channel_subsystem(&self) -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {
         None
@@ -297,6 +316,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::CONSOLE_DRIVER,
     #[cfg(any(test, feature = "virtio-net"))]
     &virtio::NET_DRIVER,
+    #[cfg(target_arch = "aarch64")]
+    &gic_its::ITS_DRIVER,
     #[cfg(any(test, feature = "rtc"))]
     &rtc::PL031_DRIVER,
     #[cfg(any(test, feature = "rtc"))]
@@ -683,6 +704,30 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
 
     fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
         P::message_interrupt().map_err(ProbeError::Refused)
+    }
+
+    fn message_interrupt_from(
+        &mut self,
+        requester: u32,
+    ) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
+        let routed = gic_its::message_for(
+            requester,
+            &mut |id| P::route_lpi(id),
+            &mut |milliseconds| self.deadline(milliseconds),
+        );
+        match routed {
+            Some(result) => result,
+            None => self.message_interrupt(),
+        }
+    }
+
+    fn enable_lpis(
+        &mut self,
+        properties: u64,
+        pending: u64,
+        id_bits: u32,
+    ) -> Result<(u16, u64), ProbeError> {
+        P::enable_lpis(properties, pending, id_bits).map_err(ProbeError::Refused)
     }
 
     fn channel_subsystem(&self) -> Option<&'static dyn eggos_drivers::channel::ChannelSubsystem> {

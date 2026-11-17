@@ -27654,3 +27654,29 @@ the license, by an explicit instruction recorded here.
   the signal it was.
 - **Not yet.** Building and running; 32-bit programs (compatibility mode's addressing); the
   Windows layer's own exception path for these instructions.
+
+## D618 AArch64: PCI MSIs through a GICv3 Interrupt Translation Service (M13; D237's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Arm's GICv3/v4 architecture specification, chapters 5 and 6)
+- **The service** (`drivers/src/interrupt/gic_its.rs`): stops the ITS and waits for it to be
+  quiescent, gives it a 64 KiB command ring (`GITS_CBASER`, `GITS_CWRITER`/`GITS_CREADR`), and
+  memory for its device table (`2^DeviceID bits`, at most `2^16`) and collection table through
+  the `GITS_BASER<n>` that ask for them (4 KiB pages, inner write-back, inner shareable). The
+  commands are encoded as the specification lays them out: `MAPD`, `MAPC`, `MAPTI`, `INV`,
+  `SYNC`; `target` names a redistributor by address or processor number as `GITS_TYPER.PTA`
+  says.
+- **LPIs** (`drivers/src/interrupt/gicv3.rs`, HAL): the redistributor gets `GICR_PROPBASER`
+  (one configuration byte per LPI, 14 id bits, so LPIs 8192 to 16383) and `GICR_PENDBASER`
+  (64 KiB, zeroed) and `GICR_CTLR.EnableLPIs`; the CPU interface no longer treats ids from 8192
+  on as spurious; `Platform::enable_lpis` and `Platform::route_lpi` (a device line for an LPI,
+  with no distributor set-up) are new, aarch64's only. Releasing or steering an LPI's line
+  leaves the distributor alone.
+- **The kernel** (`kernel/src/devices/gic_its.rs`): the `arm,gic-v3-its` node is probed in
+  the interrupt-controller pass; it maps collection 0 to the boot CPU's redistributor. A PCI
+  function's MSI (`Probe::message_interrupt_from(requester)`, the requester id being bus,
+  device and function) gets the next LPI, enabled at priority `0xa0`; a new device gets its own
+  translation table for 32 events (`MAPD`), then `MAPTI`, `INV` and `SYNC`. The message is the
+  ITS's `GITS_TRANSLATER` address with the event as data. Machines without an ITS keep
+  `Platform::message_interrupt`.
+- **Not yet.** Building and running (QEMU's `virt` with `its=on`); the PCI host's `msi-map`
+  translation of requester ids (QEMU's is the identity); a second PCI segment; LPIs at the
+  other CPUs (steering moves only SPIs today); freeing an LPI and its event; GICv4 virtual
+  LPIs.

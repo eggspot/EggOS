@@ -129,6 +129,25 @@ pub trait Platform: 'static {
         Err("this machine has no message-signalled interrupts")
     }
 
+    /// Turns LPIs on at the boot CPU's redistributor (a GICv3's; D618), with their
+    /// configuration table at physical address `properties` for interrupt ids below
+    /// `2^id_bits` and the redistributor's pending table at `pending`: where an ITS delivers
+    /// MSIs. Answers the redistributor's processor number and physical address, which the ITS
+    /// names it by. Fails without a GICv3 (the default).
+    fn enable_lpis(
+        _properties: u64,
+        _pending: u64,
+        _id_bits: u32,
+    ) -> Result<(u16, u64), &'static str> {
+        Err("this machine has no LPIs")
+    }
+
+    /// A device line for LPI `id` (D618), which an ITS raises for a device's message. Fails
+    /// without LPIs (the default) or when every line is taken.
+    fn route_lpi(_id: u32) -> Result<DeviceLine, &'static str> {
+        Err("this machine has no LPIs")
+    }
+
     /// Routes the legacy interrupt input `global` (an x86 global system interrupt, which a PCI
     /// function's INTx pin arrives on), level-triggered and active-low as PCI's are unless
     /// `edge`, to the boot CPU: it raises [`Interrupt::Device`] with the line returned and is

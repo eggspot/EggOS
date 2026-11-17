@@ -608,6 +608,18 @@ impl Platform for Aarch64 {
         timer::release_device_interrupt(line);
     }
 
+    fn enable_lpis(
+        properties: u64,
+        pending: u64,
+        id_bits: u32,
+    ) -> Result<(u16, u64), &'static str> {
+        timer::enable_lpis(properties, pending, id_bits)
+    }
+
+    fn route_lpi(id: u32) -> Result<crate::DeviceLine, &'static str> {
+        timer::route_lpi(id)
+    }
+
     fn steer_device_interrupt(line: crate::DeviceLine, cpu: u64) -> Result<(), &'static str> {
         timer::steer_device_interrupt(line, cpu)
     }

@@ -21,7 +21,19 @@ const GICD_CTLR_ENABLE_GROUP_1: u32 = 1 << 1;
 const GICD_CTLR_AFFINITY_ROUTING: u32 = 1 << 4;
 const GICD_CTLR_REGISTER_WRITE_PENDING: u32 = 1 << 31;
 
+const GICR_CTLR: usize = 0x0000;
 const GICR_TYPER: usize = 0x0008;
+const GICR_PROPBASER: usize = 0x0070;
+const GICR_PENDBASER: usize = 0x0078;
+const GICR_CTLR_ENABLE_LPIS: u32 = 1;
+const GICR_TYPER_PROCESSOR_SHIFT: u32 = 8;
+const TABLE_INNER_WRITE_BACK: u64 = 0b111 << 7;
+const TABLE_INNER_SHAREABLE: u64 = 0b01 << 10;
+const TABLE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const PENDING_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_0000;
+const PENDING_TABLE_ZEROED: u64 = 1 << 62;
+/// The first LPI interrupt id (D618).
+pub const FIRST_LPI_ID: u32 = 8192;
 const GICR_WAKER: usize = 0x0014;
 const GICR_TYPER_LAST: u32 = 1 << 4;
 const GICR_TYPER_VIRTUAL_LPIS: u32 = 1 << 1;
@@ -235,6 +247,35 @@ impl<R: RegisterIo> Gicv3Redistributor<R> {
         Self { regs }
     }
 
+    /// Its processor number (`GICR_TYPER` bits 23:8), which an ITS names it by unless it takes
+    /// physical addresses (D618).
+    pub fn processor_number(&self) -> u16 {
+        (self.regs.read32(GICR_TYPER) >> GICR_TYPER_PROCESSOR_SHIFT) as u16
+    }
+
+    /// Turns LPIs on (D618): their configuration table at physical address `properties`, one
+    /// byte (priority, and bit 0 enabled) per LPI below `2^id_bits`, and this redistributor's
+    /// pending table at `pending`, 64 KiB aligned and zeroed. Once on, LPIs stay on until a reset.
+    pub fn enable_lpis(&self, properties: u64, pending: u64, id_bits: u32) {
+        let property_base = TABLE_INNER_WRITE_BACK
+            | TABLE_INNER_SHAREABLE
+            | (properties & TABLE_ADDRESS_MASK)
+            | u64::from(id_bits.saturating_sub(1) & 0x1f);
+        self.regs.write32(GICR_PROPBASER, property_base as u32);
+        self.regs
+            .write32(GICR_PROPBASER + 4, (property_base >> 32) as u32);
+        let pending_base = TABLE_INNER_WRITE_BACK
+            | TABLE_INNER_SHAREABLE
+            | PENDING_TABLE_ZEROED
+            | (pending & PENDING_ADDRESS_MASK);
+        self.regs.write32(GICR_PENDBASER, pending_base as u32);
+        self.regs
+            .write32(GICR_PENDBASER + 4, (pending_base >> 32) as u32);
+        let control = self.regs.read32(GICR_CTLR);
+        self.regs
+            .write32(GICR_CTLR, control | GICR_CTLR_ENABLE_LPIS);
+    }
+
     /// Wakes the redistributor so it forwards interrupts to its CPU.
     pub fn wake(&self) {
         let waker = self.regs.read32(GICR_WAKER);
@@ -291,7 +332,8 @@ impl<C: CpuInterfaceRegisters> Gicv3CpuInterface<C> {
     pub fn acknowledge(&self) -> Option<Acknowledged> {
         let raw = self.registers.read_acknowledge() as u32;
         let interrupt = Acknowledged { raw };
-        (interrupt.id() < SPURIOUS_FIRST).then_some(interrupt)
+        let id = interrupt.id();
+        (id < SPURIOUS_FIRST || id >= FIRST_LPI_ID).then_some(interrupt)
     }
 
     pub fn end_of_interrupt(&self, interrupt: Acknowledged) {

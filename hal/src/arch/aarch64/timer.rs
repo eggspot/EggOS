@@ -344,11 +344,45 @@ pub(super) fn route_device_interrupt(
     Ok(line)
 }
 
+/// Turns LPIs on at this CPU's redistributor (D618): its processor number and physical address.
+pub(super) fn enable_lpis(
+    properties: u64,
+    pending: u64,
+    id_bits: u32,
+) -> Result<(u16, u64), &'static str> {
+    if !is_gicv3() {
+        return Err("LPIs need a GICv3");
+    }
+    let range = gicv3_redistributors();
+    let length = GIC_SECOND_BLOCK_BYTES.load(Ordering::Relaxed);
+    let offset = gicv3::find_redistributor(&range, length, affinity())
+        .ok_or("this CPU's redistributor is not in the range the firmware gave")?;
+    let redistributor = gicv3_this_redistributor().ok_or("no redistributor for this CPU")?;
+    redistributor.enable_lpis(properties, pending, id_bits);
+    let address = GIC_SECOND_BLOCK.load(Ordering::Relaxed) + offset;
+    Ok((redistributor.processor_number(), address as u64))
+}
+
+/// A device line for LPI `id` (D618): no distributor set-up, the ITS and the LPI's
+/// configuration byte do that.
+pub(super) fn route_lpi(id: u32) -> Result<crate::DeviceLine, &'static str> {
+    if id < gicv3::FIRST_LPI_ID {
+        return Err("not an LPI");
+    }
+    DEVICE_LINES
+        .claim(id)
+        .map(|(line, _)| line)
+        .ok_or("every device interrupt line is taken")
+}
+
 /// Gives `line` back: its shared interrupt is disabled at the distributor (D413).
 pub(super) fn release_device_interrupt(line: crate::DeviceLine) {
     let Some(id) = DEVICE_LINES.release(line) else {
         return;
     };
+    if id >= gicv3::FIRST_LPI_ID {
+        return;
+    }
     match is_gicv3() {
         true => gicv3_distributor().disable_shared_interrupt(id),
         false => distributor().disable_interrupt(id),
@@ -365,6 +399,9 @@ pub(super) fn steer_device_interrupt(
     let id = DEVICE_LINES
         .source_of(line)
         .ok_or("the line is not routed")?;
+    if id >= gicv3::FIRST_LPI_ID {
+        return Err("an LPI goes where its ITS collection sends it");
+    }
     if is_gicv3() {
         gicv3_distributor().set_route(id, cpu);
         return Ok(());
