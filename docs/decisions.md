@@ -28686,3 +28686,13 @@ the license, by an explicit instruction recorded here.
   as `EM_LIMITTEXT` does (0 for the most it holds) and answers TRUE. A drop-down list, which
   has no edit, answers `CB_ERR` to both, as Windows does.
 - **Not yet.** Building and running; auto-completion from the list.
+
+
+## D683 Winsock `bind`, `listen`, `accept` and `FD_ACCEPT` (M15 Windows; follow-up of D348; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Winsock gains `bind` and `listen` for IPv4 sockets (the backlog kept between 1
+  and 4096) and `accept`, which answers the new connection's SOCKET and writes the peer's
+  `sockaddr_in` and its length when the program asks; a non-blocking listener with no
+  connection waiting answers `WSAEWOULDBLOCK`. `WSAAsyncSelect`'s `FD_ACCEPT` is a listening
+  socket turning readable, posted once and re-enabled by the next `accept`, as on Windows.
+- **Not yet.** Building and running; `WSAEventSelect` and `WSAEnumNetworkEvents`, which need
+  the wait functions to watch sockets; `FD_OOB`; IPv6.

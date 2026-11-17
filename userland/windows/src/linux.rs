@@ -1051,6 +1051,28 @@ pub fn listen(fd: usize, backlog: usize) -> Result<usize, Errno> {
     unsafe { syscall(number::LISTEN, [fd, backlog, 0, 0, 0, 0]) }
 }
 
+/// The next connection waiting on the listening socket `fd` and the peer's address, written
+/// into `address` (a `struct sockaddr`'s bytes): the new descriptor, which closes on `execve`,
+/// and the address's length.
+pub fn accept_from(fd: usize, address: &mut [u8]) -> Result<(usize, usize), Errno> {
+    let mut length = address.len() as u32;
+    // SAFETY: `accept4` writes at most `length` bytes of address and the length word.
+    let accepted = unsafe {
+        syscall(
+            number::ACCEPT4,
+            [
+                fd,
+                address.as_mut_ptr() as usize,
+                &raw mut length as usize,
+                O_CLOEXEC,
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok((accepted, length as usize))
+}
+
 /// The next connection waiting on the listening socket `fd`, a new descriptor that closes on
 /// `execve` and also has the `O_NONBLOCK` in `flags`.
 pub fn accept(fd: usize, flags: usize) -> Result<usize, Errno> {

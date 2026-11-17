@@ -29,6 +29,7 @@ const MSG_OOB_PEEK: i32 = 0x3;
 const MSG_WAITALL: i32 = 0x8;
 const LINUX_MSG_WAITALL: usize = 0x100;
 const EINPROGRESS: u16 = 115;
+const EAGAIN: u16 = 11;
 const SOCKADDR_IN_SIZE: usize = 16;
 const HIGHEST_VERSION: u16 = 0x0202;
 const WSADATA_SIZE: usize = 408;
@@ -297,6 +298,70 @@ extern "efiapi" fn close_socket(socket: usize) -> i32 {
         Ok(fd) => count_or_error(super::file::close_descriptor(fd)).min(0),
         Err(error) => fail(error, SOCKET_ERROR),
     }
+}
+
+fn ipv4_address(address: *const u8, length: i32) -> Result<[u8; SOCKADDR_IN_SIZE], u32> {
+    if address.is_null() || length < SOCKADDR_IN_SIZE as i32 {
+        return Err(code::WSAEFAULT);
+    }
+    let mut bytes = [0u8; SOCKADDR_IN_SIZE];
+    // SAFETY: the caller's contract: `length` readable bytes, at least a `sockaddr_in`.
+    unsafe { bytes.as_mut_ptr().copy_from_nonoverlapping(address, SOCKADDR_IN_SIZE) };
+    if u16::from_le_bytes([bytes[0], bytes[1]]) != AF_INET as u16 {
+        return Err(code::WSAEAFNOSUPPORT);
+    }
+    Ok(bytes)
+}
+
+unsafe extern "efiapi" fn bind(socket: usize, address: *const u8, length: i32) -> i32 {
+    let fd = match socket_fd(socket) {
+        Ok(fd) => fd,
+        Err(error) => return fail(error, SOCKET_ERROR),
+    };
+    let bytes = match ipv4_address(address, length) {
+        Ok(bytes) => bytes,
+        Err(error) => return fail(error, SOCKET_ERROR),
+    };
+    match linux::bind(fd, &bytes) {
+        Ok(_) => 0,
+        Err(errno) => fail(sockets::error_for(errno.0), SOCKET_ERROR),
+    }
+}
+
+extern "efiapi" fn listen(socket: usize, backlog: i32) -> i32 {
+    let fd = match socket_fd(socket) {
+        Ok(fd) => fd,
+        Err(error) => return fail(error, SOCKET_ERROR),
+    };
+    match linux::listen(fd, backlog.clamp(1, 4096) as usize) {
+        Ok(_) => 0,
+        Err(errno) => fail(sockets::error_for(errno.0), SOCKET_ERROR),
+    }
+}
+
+unsafe extern "efiapi" fn accept(socket: usize, address: *mut u8, length: *mut i32) -> usize {
+    let fd = match socket_fd(socket) {
+        Ok(fd) => fd,
+        Err(error) => return fail(error, INVALID_SOCKET),
+    };
+    let mut peer = [0u8; SOCKADDR_IN_SIZE];
+    let accepted = linux::accept_from(fd, &mut peer);
+    super::async_select::rearm(socket, super::async_select::event::ACCEPT);
+    let (connection, peer_length) = match accepted {
+        Ok(accepted) => accepted,
+        Err(errno) if errno.0 == EAGAIN => return fail(code::WSAEWOULDBLOCK, INVALID_SOCKET),
+        Err(errno) => return fail(sockets::error_for(errno.0), INVALID_SOCKET),
+    };
+    if !address.is_null() && !length.is_null() {
+        // SAFETY: `accept`'s contract: a writable length holding the address buffer's size.
+        let room = unsafe { length.read_unaligned() }.max(0) as usize;
+        let copied = room.min(peer_length).min(peer.len());
+        // SAFETY: the program's buffer holds `room` bytes, at least `copied`.
+        unsafe { address.copy_from_nonoverlapping(peer.as_ptr(), copied) };
+        // SAFETY: as above.
+        unsafe { length.write_unaligned(copied as i32) };
+    }
+    handle_of(connection)
 }
 
 unsafe extern "efiapi" fn connect(socket: usize, address: *const u8, length: i32) -> i32 {
@@ -611,8 +676,11 @@ extern "efiapi" fn wsa_async_select(
 }
 
 pub(super) const EXPORTS: &[Export] = exports![
+    b"accept" => accept,
+    b"bind" => bind,
     b"closesocket" => close_socket,
     b"connect" => connect,
+    b"listen" => listen,
     b"htonl" => htonl,
     b"htons" => htons,
     b"inet_addr" => inet_addr,

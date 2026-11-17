@@ -3,7 +3,8 @@
 //! thread checks them when it looks for a message. Each event is posted once to the window,
 //! with the socket as `wParam` and the event and its error as `lParam`, until the call that
 //! re-enables it, as on Windows: `FD_READ` and `FD_OOB` after a `recv`, `FD_WRITE` after a
-//! `send` that would have blocked; `FD_CONNECT` and `FD_CLOSE` once.
+//! `send` that would have blocked, `FD_ACCEPT` (a listening socket readable) after an `accept`;
+//! `FD_CONNECT` and `FD_CLOSE` once.
 
 use super::{SpinLock, gui};
 use crate::linux::{self, POLL_ERROR, POLL_HANG_UP, POLL_IN, POLL_OUT, Watched};
@@ -107,7 +108,7 @@ pub fn forget(socket: usize) {
 
 fn poll_events(armed: u32) -> u16 {
     let mut asked = 0;
-    if armed & (event::READ | event::OOB | event::CLOSE) != 0 {
+    if armed & (event::READ | event::OOB | event::CLOSE | event::ACCEPT) != 0 {
         asked |= POLL_IN;
     }
     if armed & (event::WRITE | event::CONNECT) != 0 {
@@ -162,6 +163,7 @@ fn happened(registered: &Registered, reported: u16) -> [Option<(u32, u32)>; 2] {
         () => None,
     };
     let inbound = match reported & POLL_IN != 0 {
+        true if armed & event::ACCEPT != 0 => Some((event::ACCEPT, 0)),
         true => incoming(registered.fd),
         false if reported & POLL_HANG_UP != 0 => Some((event::CLOSE, code::WSAECONNRESET)),
         false => None,

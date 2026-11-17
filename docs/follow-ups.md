@@ -226,7 +226,7 @@ and is not listed per item.
 - [ ] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340; the two messages code written, unbuilt: D682)
 - [ ] Windows: `SetThreadStackGuarantee` and `GetThreadStackLimits`; the main thread's overflow as `STATUS_STACK_OVERFLOW` (D346; `GetCurrentThreadStackLimits` code written, unbuilt: D681)
 - [ ] Windows C++: `__CxxFrameHandler3`/`4` honour `EXCEPTION_COLLIDED_UNWIND` (D347)
-- [ ] Winsock: `listen`/`accept` with `FD_ACCEPT`, `FD_OOB`, `WSAEventSelect`, `WSAEnumNetworkEvents` (D348)
+- [ ] Winsock: `listen`/`accept` with `FD_ACCEPT`, `FD_OOB`, `WSAEventSelect`, `WSAEnumNetworkEvents` (D348; `bind`, `listen`, `accept` and `FD_ACCEPT` code written, unbuilt: D683)
 - [ ] Windows hooks: `WH_CBT`'s activation, focus and move codes; low-level hooks on the installing thread's loop; injected-input flags (D349)
 - [ ] Windows edits: dragging the edit's thumb and arrow repeat while held (D351)
 - [ ] WinINet: `INTERNET_FLAG_IGNORE_CERT_*`, `InternetSetOption` security flags, TLS 1.2 servers (with a TLS 1.2 client in `eggos-tls`) (D352)
