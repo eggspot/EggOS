@@ -112,6 +112,10 @@ pub const TABLE_HANDLE: i32 = 7;
 pub const TABLE_MIN_COLUMN: i32 = 40;
 /// The room the sorted column keeps for its arrow.
 pub const TABLE_ARROW_ROOM: i32 = 20;
+/// How many rows from the first a column's fit to content measures, besides those shown.
+pub const TABLE_FIT_SAMPLE_ROWS: usize = 1000;
+/// The widest a column's fit to content makes it.
+pub const TABLE_MAX_FIT: i32 = 640;
 /// How far Left and Right scroll a wide table.
 pub const TABLE_KEY_SCROLL: i32 = 48;
 /// The most columns a table holds.

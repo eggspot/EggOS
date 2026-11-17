@@ -79,8 +79,8 @@ fn describe_entries(
 }
 
 fn row_value<const N: usize>(table: &crate::table::Table, row: usize, out: &mut Text<N>) {
-    for column in 0..table.column_count {
-        if column > 0 {
+    for (position, column) in table.visual_columns().enumerate() {
+        if position > 0 {
             out.push_str("\t");
         }
         out.push_str(table.cell_text(row, column).as_str());
@@ -438,7 +438,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 )
             }
             Kind::Table(table) => {
-                let columns = (0..table.column_count).all(|column| {
+                let columns = table.visual_columns().all(|column| {
                     let held = table.columns[column];
                     let left = table.column_x(node.rect, column);
                     let sorted = table.sort.filter(|(sorted, _)| *sorted == column);
@@ -464,7 +464,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 columns
                     && shown.take(LAST_PART + 1 - ROW_PART).all(|row| {
                         let mut name = Text::<64>::new();
-                        name.push_str(table.cell_text(row, 0).as_str());
+                        let first = table.visual_columns().next().unwrap_or(0);
+                        name.push_str(table.cell_text(row, first).as_str());
                         let mut cells = Text::<VALUE_BYTES>::new();
                         row_value(table, row, &mut cells);
                         let rect = table.row_rect(node.rect, row);
@@ -682,6 +683,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 match (action, part.checked_sub(ROW_PART)) {
                     (Action::Invoke, None) if table.columns[part].sortable => {
                         (Outcome::Done, self.header_clicked(id, part))
+                    }
+                    (Action::SetText, None) if text.trim() == "fit" => {
+                        let before = table.columns[part].width;
+                        let width = table.fit_width(rect, part);
+                        self.set_column_width(id, part, width);
+                        match width == before {
+                            true => (Outcome::Done, Response::Nothing),
+                            false => (Outcome::Done, Response::ColumnResized(id, part, width)),
+                        }
+                    }
+                    (Action::SetText, None) if text.trim().starts_with("move ") => {
+                        match text.trim()["move ".len()..].trim().parse::<usize>() {
+                            Ok(position) if position >= 1 && position <= table.column_count => {
+                                (Outcome::Done, self.move_column_by_agent(id, part, position - 1))
+                            }
+                            _ => (Outcome::NotSupported, Response::Nothing),
+                        }
                     }
                     (Action::SetText, None) => match text.trim().parse::<i32>() {
                         Ok(width) => {

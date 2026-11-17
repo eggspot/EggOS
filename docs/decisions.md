@@ -27847,3 +27847,28 @@ the license, by an explicit instruction recorded here.
   the column's visual order, which `column` will then follow; the right-click rules of the
   pointer table (they need the drag source's release path checked against them); Files
   moving to `RowSet`.
+
+
+## D628 Table column reordering by drag and fit to content (M7; toolkit v0.6 sections 4.1 and 4.2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **A column keeps its index.** `Table.order` maps a drawn position to a column index
+  (identity at first); `column_x` and the new `column_right` place a column by that order, so
+  hit tests, drawing and the first column's `>` and indent follow it, while `cell`, `sort`,
+  `Sorted`, `ColumnResized`, the widths and the header element ids keep the index.
+  `set_column_order` takes a whole permutation (anything else is ignored) and
+  `column_order` reads it back.
+- **Drag.** A press on a header of a table with two or more columns arms a `HeaderMove`;
+  moving `DRAG_THRESHOLD` (6) sideways starts it (pointer `Hand`), and the table draws the
+  column's own header pressed, the ghost under the pointer and the 2 px insertion line at the
+  slot `slot_at` finds (before a column over its left half, after it over its right half),
+  none at the two slots beside the column. A release over a line moves the column
+  (`move_column`) and returns `ColumnMoved(id, from, to)` in drawn positions; Esc, a release
+  without a line and the window losing focus cancel. A release before the threshold is the
+  click it always was.
+- **Fit.** A double press on a handle sets the width from `fit_width`: the title plus
+  padding (and the sort arrow's room on the sorted column), the cells of the shown rows and
+  of the first `TABLE_FIT_SAMPLE_ROWS` (1000), the first drawn column's indent included,
+  within the column's narrowest and `TABLE_MAX_FIT` (640); `ColumnResized` when it changed.
+- **Agents.** Headers and each row's tab-joined value follow the drawn order; a header takes
+  `fit` and `move <position>` as `set-text`, next to the width it already took.
+- **Not yet.** Building and running; scrolling the table while a header drag is near its
+  edges (`DRAG_EDGE`, `DRAG_SCROLL_MS`); Files saving its order.

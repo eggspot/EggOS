@@ -4,7 +4,8 @@
 use super::{Kind, Response, Target, WidgetId, WidgetTree};
 use crate::input::key;
 use crate::table::{HANDLE_PART, ROW_HIT, RowSelected, SelectionChange, Table};
-use crate::widget::{MAX_COLUMNS, SortOrder, TABLE_KEY_SCROLL, TABLE_ROW_HEIGHT};
+use crate::table::ColumnMove;
+use crate::widget::{DRAG_THRESHOLD, MAX_COLUMNS, SortOrder, TABLE_KEY_SCROLL, TABLE_ROW_HEIGHT};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ColumnDrag {
@@ -14,7 +15,110 @@ pub(super) struct ColumnDrag {
     grab_x: i32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct HeaderMove {
+    table: WidgetId,
+    column: usize,
+    start_x: i32,
+    grab: i32,
+    pub(super) started: bool,
+}
+
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
+    /// Draws table `id`'s columns in `order` (visual position to column index, every column
+    /// once); an order that is not one is ignored. Without a response.
+    pub fn set_column_order(&mut self, id: WidgetId, order: &[u8]) {
+        self.change_table(id, |table| {
+            let count = table.column_count;
+            let mut seen = [false; MAX_COLUMNS];
+            let whole = order.len() == count
+                && order.iter().all(|&column| {
+                    let column = usize::from(column);
+                    column < count && !core::mem::replace(&mut seen[column], true)
+                });
+            if whole {
+                table.order[..count].copy_from_slice(order);
+            }
+        });
+    }
+
+    pub(super) fn move_column_by_agent(
+        &mut self,
+        id: WidgetId,
+        column: usize,
+        position: usize,
+    ) -> Response {
+        let Some(table) = self.table(id) else {
+            return Response::Nothing;
+        };
+        let from = table.position_of(column);
+        if from == position {
+            return Response::Nothing;
+        }
+        let slot = match position > from {
+            true => position + 1,
+            false => position,
+        };
+        let mut to = from;
+        self.change_table(id, |table| to = table.move_column(from, slot));
+        Response::ColumnMoved(id, from, to)
+    }
+
+    /// Table `id`'s columns as drawn, by index, left to right.
+    pub fn column_order(&self, id: WidgetId) -> Option<[u8; MAX_COLUMNS]> {
+        self.table(id).map(|table| table.order)
+    }
+
+    pub(super) fn header_moved(&mut self, moving: HeaderMove, x: i32) -> Response {
+        let (Some(table), Some(rect)) = (self.table(moving.table), self.rect(moving.table)) else {
+            self.header_move = None;
+            return Response::Nothing;
+        };
+        let started = moving.started || (x - moving.start_x).abs() >= DRAG_THRESHOLD;
+        if !started {
+            return Response::Nothing;
+        }
+        self.header_move = Some(HeaderMove {
+            started: true,
+            ..moving
+        });
+        let from = table.position_of(moving.column);
+        let slot = Some(table.slot_at(rect, x)).filter(|&slot| slot != from && slot != from + 1);
+        let ghost_x = x - moving.grab;
+        self.change_table(moving.table, |table| {
+            table.moving = Some(ColumnMove {
+                column: moving.column,
+                ghost_x,
+                slot,
+            });
+        });
+        Response::Nothing
+    }
+
+    /// Ends a header's drag: `cancel` leaves the order, else a release over a slot moves the
+    /// column and says [`Response::ColumnMoved`].
+    pub(super) fn end_header_move(&mut self, cancel: bool) -> Response {
+        let Some(moving) = self.header_move.take() else {
+            return Response::Nothing;
+        };
+        let Some(table) = self.table(moving.table) else {
+            return Response::Nothing;
+        };
+        let slot = table.moving.and_then(|shown| shown.slot);
+        let from = table.position_of(moving.column);
+        let mut to = from;
+        self.change_table(moving.table, |table| {
+            table.moving = None;
+            if let (false, Some(slot)) = (cancel, slot) {
+                to = table.move_column(from, slot);
+            }
+        });
+        match to == from {
+            true => Response::Nothing,
+            false => Response::ColumnMoved(moving.table, from, to),
+        }
+    }
+
     fn table(&self, id: WidgetId) -> Option<Table> {
         match self.kind(id)? {
             Kind::Table(table) => Some(*table),
@@ -232,6 +336,18 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
         if part >= HANDLE_PART {
             let column = part - HANDLE_PART;
+            if double {
+                let Some(rect) = self.rect(id) else {
+                    return Response::Nothing;
+                };
+                let before = table.columns[column].width;
+                let width = table.fit_width(rect, column);
+                self.set_column_width(id, column, width);
+                return match width == before {
+                    true => Response::Nothing,
+                    false => Response::ColumnResized(id, column, width),
+                };
+            }
             self.column = Some(ColumnDrag {
                 table: id,
                 column,
@@ -240,6 +356,16 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             });
             self.damage_widget(id);
             return Response::Nothing;
+        }
+        if part < MAX_COLUMNS && table.column_count > 1 {
+            let grab = self.rect(id).map_or(0, |rect| x - table.column_x(rect, part));
+            self.header_move = Some(HeaderMove {
+                table: id,
+                column: part,
+                start_x: x,
+                grab,
+                started: false,
+            });
         }
         if part < MAX_COLUMNS && table.columns[part].sortable {
             self.pressed = Some(Target { widget: id, part });

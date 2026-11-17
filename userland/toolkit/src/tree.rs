@@ -64,6 +64,9 @@ pub enum Response {
     Sorted(WidgetId, usize, SortOrder),
     /// A table's column was resized to this width by a drag that just ended.
     ColumnResized(WidgetId, usize, i32),
+    /// A table's column was dragged from one drawn place to another (both from 0 at the left;
+    /// docs/ux/toolkit-v0.6.md section 4.1): save [`WidgetTree::column_order`] if it keeps it.
+    ColumnMoved(WidgetId, usize, usize),
     /// A person changed a multi-selection table's set of rows: apply it to the set, then call
     /// [`WidgetTree::set_selection_count`] (docs/ux/toolkit-v0.6.md section 4.3).
     Selection(WidgetId, crate::table::SelectionChange),
@@ -205,6 +208,7 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     alt_alone: bool,
     tip: tooltips::Tip,
     column: Option<tables::ColumnDrag>,
+    header_move: Option<tables::HeaderMove>,
     pick: Option<drags::Pick>,
     foreign: Option<drags::Foreign>,
     stores: [Store; A],
@@ -270,6 +274,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             alt_alone: false,
             tip: tooltips::Tip::NONE,
             column: None,
+            header_move: None,
             pick: None,
             foreign: None,
             stores: [Store::EMPTY; A],
@@ -1277,6 +1282,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if self.column.is_some() {
             return PointerShape::ResizeEW;
         }
+        if self.header_move.is_some_and(|moving| moving.started) {
+            return PointerShape::Hand;
+        }
         let hover = self.hover.filter(|_| self.pressed.is_none());
         match hover.and_then(|target| Some((target, self.kind(target.widget)?))) {
             Some((_, Kind::TextField(_))) => PointerShape::IBeam,
@@ -1456,6 +1464,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 if let Some(column) = self.column {
                     return self.column_moved(column, x);
                 }
+                if let Some(moving) = self.header_move {
+                    return self.header_moved(moving, x);
+                }
                 if self.pick.is_some() {
                     return self.pick_moved(x, y, time_ms);
                 }
@@ -1604,6 +1615,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     self.alt_alone = false;
                     response = self.cancel_drag_response();
                     self.end_column_drag(true);
+                    self.end_header_move(true);
                 }
                 if self.window_focused != focused {
                     self.window_focused = focused;
@@ -2124,6 +2136,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if self.column.is_some() {
             return self.end_column_drag(false);
         }
+        if self.header_move.is_some_and(|moving| moving.started) {
+            self.pressed = None;
+            self.pressed_inside = false;
+            return self.end_header_move(false);
+        }
+        self.header_move = None;
         if self.pick.is_some() {
             return self.pick_released(x, y, time_ms);
         }
@@ -2215,6 +2233,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             matches!(code, key::LEFT_ALT | key::RIGHT_ALT) && self.menu_bar().is_some();
         if code == key::ESC && self.column.is_some() {
             return self.end_column_drag(true);
+        }
+        if code == key::ESC && self.header_move.is_some_and(|moving| moving.started) {
+            self.pressed = None;
+            self.pressed_inside = false;
+            return self.end_header_move(true);
         }
         if code == key::ESC && self.pick.is_some() {
             return self.cancel_drag_response();

@@ -10,6 +10,17 @@ use crate::widget::{
     TABLE_FIRST_TEXT_X, TABLE_HANDLE, TABLE_HEADER_HEIGHT, TABLE_MARK_X, TABLE_MIN_COLUMN,
     TABLE_ROW_HEIGHT, THUMB, THUMB_X, clipped_text, focus_ring, scroll_bars, sort_arrow, viewport,
 };
+use crate::widget::{TABLE_FIT_SAMPLE_ROWS, TABLE_MAX_FIT};
+
+/// A header being dragged to move its column (docs/ux/toolkit-v0.6.md section 4.1): the
+/// column, the ghost's left edge, and the boundary (a visual position) a release would move it
+/// to, None where it would not move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnMove {
+    pub column: usize,
+    pub ghost_x: i32,
+    pub slot: Option<usize>,
+}
 
 /// Writes the text of cell (`row`, `column`) into `out`, from the program's `data`.
 pub type CellText = fn(data: u32, row: usize, column: usize, out: &mut Text<64>);
@@ -179,6 +190,10 @@ pub struct Table {
     pub cell_focus: bool,
     /// The focused cell's column.
     pub column: usize,
+    /// Visual position to column index: the columns as drawn, left to right.
+    pub order: [u8; MAX_COLUMNS],
+    /// The header being dragged, while one is.
+    pub moving: Option<ColumnMove>,
 }
 
 impl Table {
@@ -218,6 +233,8 @@ impl Table {
             anchor: 0,
             cell_focus: false,
             column: 0,
+            order: core::array::from_fn(|position| position as u8),
+            moving: None,
         }
     }
 
@@ -283,13 +300,102 @@ impl Table {
             .clamp(0, (self.content_width() - view.width).max(0));
     }
 
-    /// Column `column`'s left edge in a table at `rect`.
+    /// The columns as drawn, left to right, by index.
+    pub fn visual_columns(&self) -> impl Iterator<Item = usize> + '_ {
+        self.order[..self.column_count]
+            .iter()
+            .map(|&column| usize::from(column))
+    }
+
+    /// Where column `column` is drawn, from 0 at the left; the column count for none.
+    pub fn position_of(&self, column: usize) -> usize {
+        self.visual_columns()
+            .position(|found| found == column)
+            .unwrap_or(self.column_count)
+    }
+
+    /// Column `column`'s left edge in a table at `rect`, by the drawn order; past the last
+    /// column for an index beyond them.
     pub fn column_x(&self, rect: Rect, column: usize) -> i32 {
+        let position = self.position_of(column);
         rect.x - self.offset_x
-            + self.columns[..column.min(self.column_count)]
-                .iter()
-                .map(|column| column.width)
+            + self
+                .visual_columns()
+                .take(position)
+                .map(|before| self.columns[before].width)
                 .sum::<i32>()
+    }
+
+    /// Column `column`'s right edge in a table at `rect`.
+    pub fn column_right(&self, rect: Rect, column: usize) -> i32 {
+        let width = self.columns.get(column).map_or(0, |held| held.width);
+        self.column_x(rect, column) + width
+    }
+
+    /// The boundary between drawn columns (0 before the first, the count after the last)
+    /// nearest `x` in a table at `rect`: before a column over its left half, after it over its
+    /// right half.
+    pub fn slot_at(&self, rect: Rect, x: i32) -> usize {
+        for (position, column) in self.visual_columns().enumerate() {
+            let left = self.column_x(rect, column);
+            let right = self.column_right(rect, column);
+            if x < (left + right) / 2 {
+                return position;
+            }
+            if x < right {
+                return position + 1;
+            }
+        }
+        self.column_count
+    }
+
+    /// Moves the column drawn at `from` to boundary `slot`: where it is drawn now.
+    pub fn move_column(&mut self, from: usize, slot: usize) -> usize {
+        let count = self.column_count;
+        if from >= count {
+            return from;
+        }
+        let to = match slot > from {
+            true => (slot - 1).min(count - 1),
+            false => slot,
+        };
+        let moved = self.order[from];
+        match to > from {
+            true => self.order.copy_within(from + 1..=to, from),
+            false => self.order.copy_within(to..from, to + 1),
+        }
+        self.order[to] = moved;
+        to
+    }
+
+    /// The width that fits column `column`'s title and the cells of the rows shown in a table
+    /// at `rect` and of the first [`TABLE_FIT_SAMPLE_ROWS`] rows, within its narrowest and
+    /// [`TABLE_MAX_FIT`] (docs/ux/toolkit-v0.6.md section 4.2).
+    pub fn fit_width(&self, rect: Rect, column: usize) -> i32 {
+        let Some(held) = self.columns().get(column) else {
+            return 0;
+        };
+        let arrow = match self.sort {
+            Some((sorted, _)) if sorted == column => TABLE_ARROW_ROOM,
+            _ => 0,
+        };
+        let first = match self.position_of(column) {
+            0 => TABLE_FIRST_TEXT_X - TABLE_CELL_PADDING,
+            _ => 0,
+        };
+        let padding = 2 * TABLE_CELL_PADDING;
+        let sample = 0..self.rows.min(TABLE_FIT_SAMPLE_ROWS);
+        let shown = self.shown_rows(rect);
+        let cells = shown
+            .filter(|row| !sample.contains(row))
+            .chain(sample.clone())
+            .map(|row| text::width(self.cell_text(row, column).as_str()) + padding + first)
+            .max()
+            .unwrap_or(0);
+        let title = text::width(held.title) + padding + arrow;
+        title
+            .max(cells)
+            .clamp(held.min_width, TABLE_MAX_FIT.max(held.min_width))
     }
 
     /// The rectangle of row `row` in a table at `rect`: the table's full width less the
@@ -321,7 +427,7 @@ impl Table {
             return None;
         }
         (0..self.column_count).find(|&column| {
-            let edge = self.column_x(rect, column + 1);
+            let edge = self.column_right(rect, column);
             (edge - TABLE_HANDLE / 2 - 1..edge + TABLE_HANDLE / 2).contains(&x)
         })
     }
@@ -332,7 +438,7 @@ impl Table {
             return None;
         }
         (0..self.column_count)
-            .find(|&column| x >= self.column_x(rect, column) && x < self.column_x(rect, column + 1))
+            .find(|&column| x >= self.column_x(rect, column) && x < self.column_right(rect, column))
     }
 
     /// The part of a table at `rect` at (`x`, `y`): a handle, a header, a bar's thumb or a row
@@ -386,7 +492,7 @@ impl Table {
     /// The column whose cells are at `x` in a table at `rect`.
     pub fn column_at_x(&self, rect: Rect, x: i32) -> Option<usize> {
         (0..self.column_count)
-            .find(|&column| x >= self.column_x(rect, column) && x < self.column_x(rect, column + 1))
+            .find(|&column| x >= self.column_x(rect, column) && x < self.column_right(rect, column))
     }
 
     /// The offset that shows column `column` whole in a table at `rect`, its left edge first.
@@ -418,7 +524,7 @@ impl Table {
         colour: u32,
     ) {
         let held = self.columns[column];
-        let start = match column {
+        let start = match self.position_of(column) {
             0 => left + TABLE_FIRST_TEXT_X,
             _ => left + TABLE_CELL_PADDING,
         };
@@ -430,6 +536,32 @@ impl Table {
             }
             _ => clipped_text(canvas, start, y, end - start, words, colour),
         }
+    }
+
+    fn paint_column_move(&self, canvas: &mut Canvas<'_>, rect: Rect, moving: ColumnMove) {
+        let palette = canvas.palette();
+        let previous = canvas.narrow(rect);
+        let view = self.view(rect);
+        if let Some(slot) = moving.slot {
+            let boundary = match self.visual_columns().nth(slot) {
+                Some(column) => self.column_x(rect, column),
+                None => rect.x - self.offset_x + self.content_width(),
+            };
+            let x = (boundary - 1).clamp(view.x, (view.right() - 2).max(view.x));
+            canvas.fill(
+                Rect::new(x, rect.y, 2, view.bottom() - rect.y),
+                palette.accent,
+            );
+        }
+        if let Some(held) = self.columns().get(moving.column) {
+            let ghost = Rect::new(moving.ghost_x, rect.y, held.width, TABLE_HEADER_HEIGHT);
+            canvas.fill(ghost, palette.menu_hover);
+            canvas.outline(ghost, &crate::canvas::SQUARE, 1, palette.menu_border);
+            let x = ghost.x + TABLE_CELL_PADDING;
+            let end = ghost.right() - TABLE_CELL_PADDING;
+            clipped_text(canvas, x, rect.y + 6, end - x, held.title, palette.text);
+        }
+        canvas.restore(previous);
     }
 
     /// Draws it at `rect` as `look` says: the header (the hovered or pressed column by its
@@ -444,7 +576,9 @@ impl Table {
             let left = self.column_x(rect, column);
             let held = self.columns[column];
             let cell = Rect::new(left, rect.y, held.width, TABLE_HEADER_HEIGHT - 1);
+            let dragged = self.moving.is_some_and(|moving| moving.column == column);
             let fill = match (look.enabled && held.sortable, look.pressed, look.hovered) {
+                _ if dragged => Some(palette.button_pressed),
                 (true, Some(pressed), _) if pressed == column => Some(palette.button_pressed),
                 (true, None, Some(hovered)) if hovered == column => Some(palette.menu_hover),
                 _ => None,
@@ -454,6 +588,7 @@ impl Table {
             }
             let sorted = self.sort.filter(|(sorted, _)| *sorted == column);
             let ink = match (look.enabled, sorted) {
+                _ if dragged => palette.text_dim,
                 (true, Some(_)) => palette.text,
                 _ => palette.text_dim,
             };
@@ -504,7 +639,7 @@ impl Table {
         let mark_y = (TABLE_ROW_HEIGHT - LINE_HEIGHT) / 2;
         if self.rows == 0 {
             canvas.text(
-                self.column_x(rect, 0) + TABLE_FIRST_TEXT_X,
+                rect.x - self.offset_x + TABLE_FIRST_TEXT_X,
                 view.y + mark_y,
                 self.empty_text,
                 palette.text_dim,
@@ -530,7 +665,7 @@ impl Table {
             };
             if chosen && look.enabled {
                 canvas.text(
-                    self.column_x(rect, 0) + TABLE_MARK_X,
+                    rect.x - self.offset_x + TABLE_MARK_X,
                     row_rect.y + mark_y,
                     ">",
                     palette.accent,
@@ -570,6 +705,9 @@ impl Table {
             }
         }
         canvas.restore(previous);
+        if let Some(moving) = self.moving {
+            self.paint_column_move(canvas, rect, moving);
+        }
         let (vertical, horizontal) = self.bars(rect);
         for (bar, part) in [(vertical, THUMB), (horizontal, THUMB_X)] {
             let Some((track, thumb)) = bar else {
@@ -606,5 +744,38 @@ mod tests {
         assert!(!set.contains(5));
         set.apply(SelectionChange::Clear, 100);
         assert_eq!(set.count(), 0);
+    }
+    fn no_cell(_: u32, _: usize, _: usize, _: &mut Text<64>) {}
+
+    #[test]
+    fn a_moved_column_keeps_its_index_and_draws_in_its_new_place() {
+        let columns = [
+            Column::new("Name", 200, Align::Start),
+            Column::new("Size", 80, Align::End),
+            Column::new("Kind", 100, Align::Start),
+        ];
+        let mut table = Table::new("Files", &columns, 0, no_cell, 0);
+        let rect = Rect::new(0, 0, 600, 300);
+        assert_eq!(table.slot_at(rect, 50), 0);
+        assert_eq!(table.slot_at(rect, 150), 1);
+        assert_eq!(table.move_column(2, 0), 0);
+        assert_eq!(&table.order[..3], &[2, 0, 1]);
+        assert_eq!(table.column_x(rect, 2), 0);
+        assert_eq!(table.column_x(rect, 0), 100);
+        assert_eq!(table.column_right(rect, 1), 380);
+        assert_eq!(table.header_at(rect, 50, 10), Some(2));
+        assert_eq!(table.move_column(0, 3), 2);
+        assert_eq!(&table.order[..3], &[0, 1, 2]);
+    }
+
+    #[test]
+    fn fit_measures_the_title_with_its_arrow_and_stays_within_bounds() {
+        let columns = [Column::new("Name", 200, Align::Start)];
+        let mut table = Table::new("Files", &columns, 0, no_cell, 0);
+        let rect = Rect::new(0, 0, 600, 300);
+        let title = text::width("Name");
+        assert_eq!(table.fit_width(rect, 0), (title + 16).max(TABLE_MIN_COLUMN));
+        table.sort = Some((0, SortOrder::Ascending));
+        assert_eq!(table.fit_width(rect, 0), (title + 36).max(TABLE_MIN_COLUMN));
     }
 }
