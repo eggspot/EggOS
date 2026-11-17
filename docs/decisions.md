@@ -27951,3 +27951,28 @@ the license, by an explicit instruction recorded here.
   then follow the new offset). Scrolling only on moves keeps the tree free of another timer;
   a still pointer at the edge stops scrolling, which the brief does not ask about.
 - **Not yet.** Building and running.
+
+
+## D634 The partitioned disk's record, its systems and EggOS's place beside them (M8; installer dual boot v0.1 section 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Where.** A new `eggos_files::partitions` module (the storage feature), next to
+  `storage`, reads through the same `WholeDisks` access and only reads: the table kind from
+  sectors 0 and 1 (`gpt` when the GPT header reads, `damaged` when a protective MBR has no
+  valid header or the entry array fails its CRC, `mbr` when sector 0 lists partitions of its
+  own, else `none`), each GPT partition's type from its type GUID (Microsoft reserved, data
+  and recovery, Apple APFS and HFS+, Linux data, swap and LVM, EFI system, EggOS data) and
+  its file system from its first 4 KiB and its bytes at 64 KiB (FAT, NTFS, BitLocker, APFS,
+  HFS+, ext4, Btrfs, XFS, LUKS, swap, EggFS), and the free runs of 1 MiB or more between
+  them, aligned to 1 MiB.
+- **Systems.** The recognition table of the brief by partition types (Windows on the largest
+  NTFS or BitLocker Microsoft data partition, macOS on an APFS or HFS+ partition, Linux on
+  the largest Linux data partition, EggOS on its data partition), joined as people say them
+  for the Storage pane's line (`Windows and Linux · 5 partitions`).
+- **Placement.** `place` follows the brief's rule: a free run of 16 GiB or more, else the
+  partition with the most shrinkable bytes joined with the run right after it, else a free
+  run of 1 GiB or more; an MBR or damaged table refuses with its code. The reserve a shrunk
+  system keeps is `min(8 GiB, free / 2)` (`reserve_of`).
+- **Not yet.** Building and running. Shrinkable sizes are none until the NTFS and ext4
+  free-tail readers exist, so every partition reports `unsupported` (or `encrypted`) and
+  placement uses free runs only; the EFI system partition's folder probes (`bootmgfw.efi`,
+  distribution names) wait for reading FAT folders here; the command, the tool, the pane
+  and the writing steps are the rest of docs/follow-ups.md's dual-boot item.

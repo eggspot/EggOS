@@ -19,6 +19,8 @@ pub mod names;
 #[cfg(all(feature = "window", eggos_user))]
 pub mod program;
 #[cfg(feature = "storage")]
+pub mod partitions;
+#[cfg(feature = "storage")]
 pub mod storage;
 pub mod trash;
 
