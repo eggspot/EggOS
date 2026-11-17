@@ -48,6 +48,23 @@ const INTERRUPT_TASK_FILE_ERROR: u32 = 1 << 30;
 const DEVICE_PRESENT_WITH_LINK: u32 = 3;
 const LINK_ACTIVE: u32 = 1;
 pub const SIGNATURE_ATA: u32 = 0x0000_0101;
+/// A port multiplier's signature (SATA 3.x, port multiplier chapter; D614).
+pub const SIGNATURE_PORT_MULTIPLIER: u32 = 0x9669_0101;
+/// The most devices behind one port: a port multiplier's fifteen fan-out ports.
+pub const MAX_DEVICES: usize = 15;
+const COMMAND_PORT_MULTIPLIER_ATTACHED: u32 = 1 << 17;
+const ATA_READ_PORT_MULTIPLIER: u8 = 0xe4;
+const ATA_WRITE_PORT_MULTIPLIER: u8 = 0xe8;
+const CONTROL_PORT: u8 = 15;
+const GSCR_PORTS: u16 = 2;
+const PSCR_STATUS: u16 = 0;
+const PSCR_ERROR: u16 = 1;
+const PSCR_CONTROL: u16 = 2;
+const CONTROL_RESET: u32 = 0x301;
+const CONTROL_RUN: u32 = 0x300;
+const RESET_HOLD_SPINS: u32 = 100_000;
+const DEVICE_TO_HOST_FIS: usize = RECEIVED_FIS + 0x40;
+const PMP_SHIFT: u32 = 12;
 
 const FIS_REGISTER_HOST_TO_DEVICE: u8 = 0x27;
 const FIS_COMMAND: u8 = 0x80;
@@ -79,12 +96,21 @@ const PRD_MAX_BYTES: usize = 0x40_0000;
 const _: () = assert!(PRDT + PRDT_ENTRIES * 16 <= IDENTIFY);
 const _: () = assert!(DATA_BYTES.div_ceil(PRD_MAX_BYTES) <= PRDT_ENTRIES);
 
-/// What the controller-wide setup found: which ports hold an ATA disk, and whether the
-/// controller reaches 64-bit addresses.
+/// What the controller-wide setup found: which ports hold an ATA disk or a port multiplier,
+/// and whether the controller reaches 64-bit addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Controller {
     pub disk_ports: u32,
     pub addresses_64_bit: bool,
+}
+
+/// One disk on a port: directly attached (fan-out port 0), or behind a port multiplier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Device {
+    pub fan_out: u8,
+    pub blocks: u64,
+    pub block_bytes: usize,
+    pub trims: bool,
 }
 
 /// Takes the controller at `regs` from the firmware (the BIOS handoff, where it has one),
@@ -112,9 +138,10 @@ pub fn take_controller<R: RegisterIo>(
         let status = regs.read32(at + PORT_SATA_STATUS);
         let detected = status & 0xf;
         let power = (status >> 8) & 0xf;
+        let signature = regs.read32(at + PORT_SIGNATURE);
         if detected == DEVICE_PRESENT_WITH_LINK
             && power == LINK_ACTIVE
-            && regs.read32(at + PORT_SIGNATURE) == SIGNATURE_ATA
+            && (signature == SIGNATURE_ATA || signature == SIGNATURE_PORT_MULTIPLIER)
         {
             disk_ports |= 1 << port;
         }
@@ -188,6 +215,9 @@ pub struct AhciDisk<R: RegisterIo, M: DmaMemory> {
     blocks: u64,
     block_bytes: usize,
     trims: bool,
+    fan_out: u8,
+    devices: [Device; MAX_DEVICES],
+    device_count: usize,
 }
 
 impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
@@ -219,6 +249,9 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             blocks: 0,
             block_bytes: SECTOR_SIZE,
             trims: false,
+            fan_out: 0,
+            devices: [Device::default(); MAX_DEVICES],
+            device_count: 0,
         };
         if !disk.stop(keep_waiting) {
             return Err((Error::TimedOut, Some(disk.memory)));
@@ -276,9 +309,34 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             }
             core::hint::spin_loop();
         }
-        let command = self.regs.read32(PORT_COMMAND);
+        let multiplied = self.regs.read32(PORT_SIGNATURE) == SIGNATURE_PORT_MULTIPLIER;
+        let mut command = self.regs.read32(PORT_COMMAND);
+        if multiplied {
+            command |= COMMAND_PORT_MULTIPLIER_ATTACHED;
+            self.regs.write32(PORT_COMMAND, command);
+        }
         self.regs.write32(PORT_COMMAND, command | COMMAND_START);
+        match multiplied {
+            false => {
+                let device = self.identify(0, keep_waiting)?;
+                self.devices[0] = device;
+                self.device_count = 1;
+            }
+            true => self.find_devices_behind_multiplier(keep_waiting)?,
+        }
+        if self.device_count == 0 {
+            return Err(Error::Unsupported("no disk answers behind the port multiplier"));
+        }
+        self.use_device(0);
+        Ok(())
+    }
 
+    fn identify(
+        &mut self,
+        fan_out: u8,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<Device, Error> {
+        self.fan_out = fan_out;
         self.issue(
             register_fis(ATA_IDENTIFY_DEVICE, 0, 0),
             IDENTIFY,
@@ -294,10 +352,103 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         }
         let (blocks, block_bytes) = identified_size(&words)
             .ok_or(Error::Unsupported("the disk has no 48-bit addressing"))?;
-        self.blocks = blocks;
-        self.block_bytes = block_bytes;
-        self.trims = words[IDENTIFY_DATA_SET_MANAGEMENT] & TRIM_SUPPORTED != 0;
+        Ok(Device {
+            fan_out,
+            blocks,
+            block_bytes,
+            trims: words[IDENTIFY_DATA_SET_MANAGEMENT] & TRIM_SUPPORTED != 0,
+        })
+    }
+
+    fn multiplier_fis(command: u8, port: u8, register: u16, value: u32) -> [u8; 20] {
+        let mut fis = [0u8; 20];
+        fis[0] = FIS_REGISTER_HOST_TO_DEVICE;
+        fis[1] = FIS_COMMAND | CONTROL_PORT;
+        fis[2] = command;
+        fis[3] = register as u8;
+        fis[4] = (value >> 8) as u8;
+        fis[5] = (value >> 16) as u8;
+        fis[6] = (value >> 24) as u8;
+        fis[7] = port;
+        fis[11] = (register >> 8) as u8;
+        fis[12] = value as u8;
+        fis
+    }
+
+    fn read_multiplier(
+        &mut self,
+        port: u8,
+        register: u16,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<u32, Error> {
+        self.fan_out = CONTROL_PORT;
+        let fis = Self::multiplier_fis(ATA_READ_PORT_MULTIPLIER, port, register, 0);
+        self.issue(fis, DATA, 0, false, keep_waiting)?;
+        let mut answer = [0u8; 20];
+        copy_out(&self.memory, DEVICE_TO_HOST_FIS, &mut answer);
+        Ok(u32::from(answer[12])
+            | (u32::from(answer[4]) << 8)
+            | (u32::from(answer[5]) << 16)
+            | (u32::from(answer[6]) << 24))
+    }
+
+    fn write_multiplier(
+        &mut self,
+        port: u8,
+        register: u16,
+        value: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        self.fan_out = CONTROL_PORT;
+        let fis = Self::multiplier_fis(ATA_WRITE_PORT_MULTIPLIER, port, register, value);
+        self.issue(fis, DATA, 0, false, keep_waiting)
+    }
+
+    fn find_devices_behind_multiplier(
+        &mut self,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        let ports = self.read_multiplier(CONTROL_PORT, GSCR_PORTS, keep_waiting)? & 0xf;
+        for port in 0..(ports as u8).min(MAX_DEVICES as u8) {
+            self.write_multiplier(port, PSCR_CONTROL, CONTROL_RESET, keep_waiting)?;
+            for _ in 0..RESET_HOLD_SPINS {
+                core::hint::spin_loop();
+            }
+            self.write_multiplier(port, PSCR_CONTROL, CONTROL_RUN, keep_waiting)?;
+            let mut linked = false;
+            while !linked {
+                let status = self.read_multiplier(port, PSCR_STATUS, keep_waiting)?;
+                linked = status & 0xf == DEVICE_PRESENT_WITH_LINK;
+                if !linked && !keep_waiting() {
+                    break;
+                }
+            }
+            self.write_multiplier(port, PSCR_ERROR, u32::MAX, keep_waiting)?;
+            if !linked {
+                continue;
+            }
+            if let Ok(device) = self.identify(port, keep_waiting) {
+                self.devices[self.device_count] = device;
+                self.device_count += 1;
+            }
+        }
         Ok(())
+    }
+
+    /// The disks on the port: one directly attached, or those behind a port multiplier (D614).
+    pub fn devices(&self) -> &[Device] {
+        &self.devices[..self.device_count]
+    }
+
+    /// Makes device `index` of [`Self::devices`] the one commands go to; nothing for an index
+    /// past them.
+    pub fn use_device(&mut self, index: usize) {
+        if let Some(device) = self.devices().get(index).copied() {
+            self.fan_out = device.fan_out;
+            self.blocks = device.blocks;
+            self.block_bytes = device.block_bytes;
+            self.trims = device.trims;
+        }
     }
 
     fn issue(
@@ -314,6 +465,8 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             COMMAND_TABLE,
             PRDT + PRDT_ENTRIES * 16 - COMMAND_TABLE,
         );
+        let mut fis = fis;
+        fis[1] |= self.fan_out & 0xf;
         copy_in(&self.memory, COMMAND_TABLE, &fis);
         let mut entries = 0;
         let mut offset = 0;
@@ -327,7 +480,10 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             entries += 1;
             offset += length;
         }
-        let flags = 5 | if write { 1 << 6 } else { 0 } | ((entries as u32) << 16);
+        let flags = 5
+            | if write { 1 << 6 } else { 0 }
+            | (u32::from(self.fan_out & 0xf) << PMP_SHIFT)
+            | ((entries as u32) << 16);
         let table = base + COMMAND_TABLE as u64;
         write32(&self.memory, COMMAND_LIST, flags);
         write32(&self.memory, COMMAND_LIST + 4, 0);

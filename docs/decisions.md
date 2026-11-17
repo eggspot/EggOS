@@ -27580,3 +27580,20 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; AHCI port multipliers (a line of its own now); names that
   stay the same across boots when disks come in another order; partitions' own nodes
   (`nvme0n1p1`, `sda1`).
+
+## D614 AHCI port multipliers (M13; D238's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Serial ATA specification's port multiplier chapter and AHCI 1.3.1)
+- **Finding them**: a port whose signature is `0x96690101` is a port multiplier; the
+  controller-wide scan now keeps such ports beside the ATA ones. The port is started with
+  `PxCMD.PMA` set, then the multiplier's `GSCR[2]` gives its fan-out ports (READ PORT
+  MULTIPLIER `0xE4` to the control port 15, the value read back from the received D2H FIS).
+  Each fan-out port is reset through its `PSCR[2]` (SControl `0x301`, held, then `0x300`, by
+  WRITE PORT MULTIPLIER `0xE8`), waited on until `PSCR[0]` says a device with a link, its
+  `PSCR[1]` cleared, and identified; every one with 48-bit addressing becomes a device.
+- **Talking to one**: `AhciDisk` keeps the port's devices (`Device`: fan-out port, size, block
+  size, TRIM) and `use_device(index)` chooses the target; every command carries its fan-out
+  port in the command header (bits 12 to 15) and in the FIS (byte 1). A directly attached
+  disk is the one device on fan-out port 0.
+- **The kernel**: a SATA port is shared (`SataPort` behind a `SleepLock`) by one `SataDisk` per
+  device, each request choosing its device first; they are named `sda`, `sdb`... in order.
+- **Not yet.** Building and running; FIS-based switching (several devices' commands in flight
+  at once); hot-plug behind a multiplier; ATAPI devices behind one.

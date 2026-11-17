@@ -135,13 +135,14 @@ impl BlockDevice for NvmeDisk {
     }
 }
 
-struct SataDisk {
+/// A SATA port: its disk, or the disks behind its port multiplier (D614), and how it signals.
+struct SataPort {
     disk: ahci::AhciDisk<Mmio, DmaRegion>,
     events: Option<&'static DeviceEvents>,
     controller: Option<(usize, usize)>,
 }
 
-impl SataDisk {
+impl SataPort {
     fn clear_interrupt(&self) {
         if let (Some((base, port)), Some(_)) = (self.controller, self.events) {
             // SAFETY: the controller's registers, mapped for good by the probe; only the
@@ -152,17 +153,44 @@ impl SataDisk {
     }
 }
 
+/// One disk of a SATA port, the port shared by the disks behind a port multiplier.
+struct SataDisk {
+    port: Arc<SleepLock<SataPort>>,
+    device: usize,
+    sectors: u64,
+    block_bytes: usize,
+}
+
+impl SataDisk {
+    fn with<R>(
+        &mut self,
+        deadline: &mut Deadline,
+        request: impl FnOnce(
+            &mut ahci::AhciDisk<Mmio, DmaRegion>,
+            &mut dyn FnMut() -> bool,
+        ) -> Result<R, storage::Error>,
+    ) -> Result<R, BlockError> {
+        let mut port = self.port.lock();
+        port.disk.use_device(self.device);
+        let events = port.events;
+        let result =
+            request(&mut port.disk, &mut waiting_for(events, deadline)).map_err(block_error);
+        port.clear_interrupt();
+        result
+    }
+}
+
 static SATA_EVENTS: DeviceEvents = DeviceEvents::new();
 
 impl BlockDevice for SataDisk {
     fn sectors(&self) -> u64 {
-        self.disk.sectors()
+        self.sectors
     }
     fn is_read_only(&self) -> bool {
         false
     }
     fn logical_block_bytes(&self) -> usize {
-        self.disk.block_bytes()
+        self.block_bytes
     }
     fn read(
         &mut self,
@@ -170,12 +198,7 @@ impl BlockDevice for SataDisk {
         buffer: &mut [u8],
         deadline: &mut Deadline,
     ) -> Result<(), BlockError> {
-        let result = self
-            .disk
-            .read(sector, buffer, &mut waiting_for(self.events, deadline))
-            .map_err(block_error);
-        self.clear_interrupt();
-        result
+        self.with(deadline, |disk, waiting| disk.read(sector, buffer, waiting))
     }
     fn write(
         &mut self,
@@ -183,20 +206,10 @@ impl BlockDevice for SataDisk {
         buffer: &[u8],
         deadline: &mut Deadline,
     ) -> Result<(), BlockError> {
-        let result = self
-            .disk
-            .write(sector, buffer, &mut waiting_for(self.events, deadline))
-            .map_err(block_error);
-        self.clear_interrupt();
-        result
+        self.with(deadline, |disk, waiting| disk.write(sector, buffer, waiting))
     }
     fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
-        let result = self
-            .disk
-            .flush(&mut waiting_for(self.events, deadline))
-            .map_err(block_error);
-        self.clear_interrupt();
-        result
+        self.with(deadline, |disk, waiting| disk.flush(waiting))
     }
     fn discard(
         &mut self,
@@ -204,12 +217,7 @@ impl BlockDevice for SataDisk {
         count: u64,
         deadline: &mut Deadline,
     ) -> Result<(), BlockError> {
-        let result = self
-            .disk
-            .trim(sector, count, &mut waiting_for(self.events, deadline))
-            .map_err(block_error);
-        self.clear_interrupt();
-        result
+        self.with(deadline, |disk, waiting| disk.trim(sector, count, waiting))
     }
 }
 
@@ -367,13 +375,28 @@ fn probe_ahci(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
                 if interrupting {
                     disk.enable_interrupts();
                 }
-                let sata = SataDisk {
-                    disk,
-                    events: interrupting.then_some(&SATA_EVENTS),
-                    controller: Some((base, port)),
-                };
-                if crate::block::install(Box::new(sata), crate::block::DiskKind::Scsi).is_ok() {
-                    installed += 1;
+                let devices: Vec<ahci::Device> = disk.devices().to_vec();
+                let shared = Arc::new(SleepLock::new(
+                    SataPort {
+                        disk,
+                        events: interrupting.then_some(&SATA_EVENTS),
+                        controller: Some((base, port)),
+                    },
+                    Sleeping::spinning(),
+                ));
+                for (index, device) in devices.iter().enumerate() {
+                    let sata = SataDisk {
+                        port: shared.clone(),
+                        device: index,
+                        sectors: device
+                            .blocks
+                            .saturating_mul((device.block_bytes / storage::SECTOR_SIZE) as u64),
+                        block_bytes: device.block_bytes,
+                    };
+                    let kind = crate::block::DiskKind::Scsi;
+                    if crate::block::install(Box::new(sata), kind).is_ok() {
+                        installed += 1;
+                    }
                 }
             }
             Err((error, memory)) => {

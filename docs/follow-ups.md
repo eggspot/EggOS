@@ -151,7 +151,7 @@ and is not listed per item.
 - [x] PAN on AArch64 (`SCTLR_EL1.SPAN` clear, `PSTATE.PAN` set, cleared only inside user-access windows) (D201) — code written, unbuilt, D611
 - [x] NVMe Deallocate (TRIM) and AHCI `DATA SET MANAGEMENT` TRIM, issued by EggFS when blocks are freed (D238) — code written, unbuilt, D612
 - [x] NVMe namespaces past the first (D238) — code written, unbuilt, D613
-- [ ] AHCI port multipliers (D238)
+- [x] AHCI port multipliers (D238) — code written, unbuilt, D614
 - [x] Linux-style disk names (`nvme0n1`, `sda`) beside `vdX`, and more than four disks (D238) — code written, unbuilt, D613
 - [ ] Ethernet: Intel igb (I210/I211), ixgbe (82599/X540/X550) and Realtek RTL8139 drivers (D240)
 - [ ] Ethernet: jumbo frames and Wake-on-LAN (D240)
