@@ -283,7 +283,7 @@ Off by default. `set_row_selection(id, Some(is_selected))` turns it on.
 
   | Input | Returns | Current | Anchor |
   |-------|---------|---------|--------|
-  | press on a row | `Only(row)` | row | row |
+  | press on a row (in a table that is a drag source: its release without a drag, as v0.5) | `Only(row)` | row | row |
   | Mod + press | `Toggle(row)` | row | row |
   | Shift + press | `Range(anchor, row)` | row | kept |
   | Mod + Shift + press | `AddRange(anchor, row)` | row | kept |
