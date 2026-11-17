@@ -294,8 +294,33 @@ impl FreeRun {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FoundSystem {
     pub system: SystemKind,
+    /// Its name as people read it: the distribution's for Linux when the EFI system
+    /// partition names one.
+    pub name: &'static str,
     pub partition: usize,
 }
+
+/// What the EFI system partition's folders say (D640): whether Windows's boot manager is
+/// there, and the Linux distribution whose folder is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EspFindings {
+    pub windows_boot_manager: bool,
+    pub distribution: Option<&'static str>,
+}
+
+/// The distributions known by their folder under `\EFI`, with the names shown.
+pub const DISTRIBUTIONS: [(&str, &str); 10] = [
+    ("ubuntu", "Ubuntu"),
+    ("fedora", "Fedora"),
+    ("debian", "Debian"),
+    ("opensuse", "openSUSE"),
+    ("arch", "Arch Linux"),
+    ("centos", "CentOS"),
+    ("rocky", "Rocky Linux"),
+    ("almalinux", "AlmaLinux"),
+    ("linuxmint", "Linux Mint"),
+    ("pop", "Pop!_OS"),
+];
 
 /// What `disk partitions` reports about a disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,10 +365,11 @@ pub fn free_runs(partitions: &[PartitionRecord], first_usable: u64, last_usable:
 /// data partition that is NTFS or BitLocker when the disk has a Microsoft reserved partition
 /// or such a data partition; macOS on an APFS or HFS+ partition; Linux on the largest Linux
 /// data partition; EggOS on its data partition.
-pub fn recognise(partitions: &mut [PartitionRecord]) -> Vec<FoundSystem> {
-    let has_reserved = partitions
-        .iter()
-        .any(|partition| partition.kind == PartitionType::MicrosoftReserved);
+pub fn recognise(partitions: &mut [PartitionRecord], esp: EspFindings) -> Vec<FoundSystem> {
+    let has_reserved = esp.windows_boot_manager
+        || partitions
+            .iter()
+            .any(|partition| partition.kind == PartitionType::MicrosoftReserved);
     let largest = |partitions: &[PartitionRecord], matches: &dyn Fn(&PartitionRecord) -> bool| {
         partitions
             .iter()
@@ -368,7 +394,12 @@ pub fn recognise(partitions: &mut [PartitionRecord]) -> Vec<FoundSystem> {
         .iter()
         .find(|partition| matches!(partition.kind, PartitionType::AppleApfs | PartitionType::AppleHfs))
         .map(|partition| partition.number);
-    let linux = largest(partitions, &|partition| partition.kind == PartitionType::LinuxData);
+    let linux = largest(partitions, &|partition| partition.kind == PartitionType::LinuxData)
+        .or_else(|| {
+            largest(partitions, &|partition| {
+                matches!(partition.kind, PartitionType::LinuxLvm | PartitionType::LinuxSwap)
+            })
+        });
     let eggos = partitions
         .iter()
         .find(|partition| partition.kind == PartitionType::EggosData)
@@ -380,7 +411,17 @@ pub fn recognise(partitions: &mut [PartitionRecord]) -> Vec<FoundSystem> {
         (SystemKind::Eggos, eggos),
     ]
     .into_iter()
-    .filter_map(|(system, partition)| Some(FoundSystem { system, partition: partition? }))
+    .filter_map(|(system, partition)| {
+        let name = match (system, esp.distribution) {
+            (SystemKind::Linux, Some(distribution)) => distribution,
+            _ => system.shown(),
+        };
+        Some(FoundSystem {
+            system,
+            name,
+            partition: partition?,
+        })
+    })
     .collect();
     for system in &found {
         if let Some(partition) = partitions
@@ -396,7 +437,7 @@ pub fn recognise(partitions: &mut [PartitionRecord]) -> Vec<FoundSystem> {
 /// The systems' names as people say them: `Windows`, `Windows and Linux`, `Windows, Linux and
 /// macOS`.
 pub fn joined_names(systems: &[FoundSystem]) -> String {
-    let names: Vec<&str> = systems.iter().map(|found| found.system.shown()).collect();
+    let names: Vec<&str> = systems.iter().map(|found| found.name).collect();
     match names.as_slice() {
         [] => String::new(),
         [only] => String::from(*only),
@@ -637,7 +678,19 @@ fn read_open_layout(
     }
     let last_usable = header.last_usable.min(disk_sectors.saturating_sub(1));
     let unallocated = free_runs(&partitions, header.first_usable, last_usable);
-    let systems = recognise(&mut partitions);
+    let mut esp = EspFindings::default();
+    for partition in partitions
+        .iter()
+        .filter(|partition| partition.kind == PartitionType::EfiSystem)
+        .filter(|partition| partition.file_system == FileSystemKind::Fat)
+    {
+        let offset = partition.first_sector * SECTOR_BYTES;
+        let read = &mut |at: u64, buffer: &mut [u8]| disks.read_at(handle, offset + at, buffer).is_ok();
+        let found = esp_findings(read).unwrap_or_default();
+        esp.windows_boot_manager |= found.windows_boot_manager;
+        esp.distribution = esp.distribution.or(found.distribution);
+    }
+    let systems = recognise(&mut partitions, esp);
     Ok(DiskLayout {
         table,
         partitions,
@@ -1032,6 +1085,187 @@ pub fn ntfs_tail(
     Some(Ok(tail.saturating_sub(reserve_of(free)) / (1 << 20) * (1 << 20)))
 }
 
+const FAT_DIRECTORY_ENTRY: usize = 32;
+const FAT_LONG_NAME: u8 = 0x0f;
+const FAT_DIRECTORY: u8 = 0x10;
+const FAT_VOLUME_LABEL: u8 = 0x08;
+const FAT_DELETED: u8 = 0xe5;
+const FAT_MOST_CLUSTERS: usize = 256;
+const FAT_LONG_NAME_UNITS: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+
+#[derive(Debug, Clone, Copy)]
+struct FatVolume {
+    sector_bytes: u64,
+    cluster_bytes: u64,
+    fat_at: u64,
+    data_at: u64,
+    root_at: u64,
+    root_bytes: u64,
+    root_cluster: u32,
+    wide: bool,
+}
+
+impl FatVolume {
+    fn read(boot: &[u8]) -> Option<Self> {
+        let sector_bytes = u64::from(le16(boot, 0x0b)?);
+        let per_cluster = u64::from(*boot.get(0x0d)?);
+        let reserved = u64::from(le16(boot, 0x0e)?);
+        let fats = u64::from(*boot.get(0x10)?);
+        let root_entries = u64::from(le16(boot, 0x11)?);
+        let small_fat = u64::from(le16(boot, 0x16)?);
+        let fat_sectors = match small_fat {
+            0 => u64::from(le32(boot, 0x24)?),
+            sectors => sectors,
+        };
+        if sector_bytes == 0 || per_cluster == 0 || fats == 0 {
+            return None;
+        }
+        let fat_at = reserved * sector_bytes;
+        let root_at = fat_at + fats * fat_sectors * sector_bytes;
+        let root_bytes = root_entries * FAT_DIRECTORY_ENTRY as u64;
+        Some(Self {
+            sector_bytes,
+            cluster_bytes: per_cluster * sector_bytes,
+            fat_at,
+            data_at: root_at + root_bytes.next_multiple_of(sector_bytes),
+            root_at,
+            root_bytes,
+            root_cluster: match root_entries {
+                0 => le32(boot, 0x2c)?,
+                _ => 0,
+            },
+            wide: root_entries == 0,
+        })
+    }
+
+    fn next_cluster(&self, cluster: u32, read: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Option<u32> {
+        let (at, bytes) = match self.wide {
+            true => (u64::from(cluster) * 4, 4),
+            false => (u64::from(cluster) * 2, 2),
+        };
+        let mut entry = [0u8; 4];
+        if !read(self.fat_at + at, &mut entry[..bytes]) {
+            return None;
+        }
+        let next = match self.wide {
+            true => u32::from_le_bytes(entry) & 0x0fff_ffff,
+            false => u32::from(u16::from_le_bytes([entry[0], entry[1]])),
+        };
+        let end = match self.wide {
+            true => 0x0fff_fff8,
+            false => 0xfff8,
+        };
+        (next >= 2 && next < end).then_some(next)
+    }
+
+    fn folder(&self, cluster: u32, read: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        if cluster == 0 {
+            bytes.resize(self.root_bytes as usize, 0);
+            return read(self.root_at, &mut bytes).then_some(bytes);
+        }
+        let mut here = Some(cluster);
+        let mut chunk = Vec::new();
+        chunk.resize(self.cluster_bytes as usize, 0);
+        for _ in 0..FAT_MOST_CLUSTERS {
+            let Some(cluster) = here else {
+                break;
+            };
+            let at = self.data_at + u64::from(cluster - 2) * self.cluster_bytes;
+            if !read(at, &mut chunk) {
+                return None;
+            }
+            bytes.extend_from_slice(&chunk);
+            here = self.next_cluster(cluster, read);
+        }
+        Some(bytes)
+    }
+}
+
+fn fat_entries(folder: &[u8]) -> Vec<(String, u8, u32)> {
+    let mut found = Vec::new();
+    let mut long: Vec<u16> = Vec::new();
+    for entry in folder.chunks_exact(FAT_DIRECTORY_ENTRY) {
+        match (entry[0], entry[11]) {
+            (0, _) => break,
+            (FAT_DELETED, _) => long.clear(),
+            (order, FAT_LONG_NAME) => {
+                let units: Vec<u16> = FAT_LONG_NAME_UNITS
+                    .iter()
+                    .map(|&at| u16::from_le_bytes([entry[at], entry[at + 1]]))
+                    .take_while(|&unit| unit != 0 && unit != 0xffff)
+                    .collect();
+                if order & 0x40 != 0 {
+                    long.clear();
+                }
+                let mut joined = units;
+                joined.extend_from_slice(&long);
+                long = joined;
+            }
+            (_, attributes) if attributes & FAT_VOLUME_LABEL != 0 => long.clear(),
+            (_, attributes) => {
+                let name = match long.is_empty() {
+                    false => char::decode_utf16(long.iter().copied())
+                        .filter_map(Result::ok)
+                        .collect(),
+                    true => {
+                        let base = core::str::from_utf8(&entry[..8]).unwrap_or("").trim_end();
+                        let extension = core::str::from_utf8(&entry[8..11]).unwrap_or("").trim_end();
+                        match extension.is_empty() {
+                            true => String::from(base),
+                            false => alloc::format!("{base}.{extension}"),
+                        }
+                    }
+                };
+                let cluster = u32::from(u16::from_le_bytes([entry[20], entry[21]])) << 16
+                    | u32::from(u16::from_le_bytes([entry[26], entry[27]]));
+                found.push((name, attributes, cluster));
+                long.clear();
+            }
+        }
+    }
+    found
+}
+
+fn fat_find<'a>(entries: &'a [(String, u8, u32)], name: &str) -> Option<&'a (String, u8, u32)> {
+    entries
+        .iter()
+        .find(|(found, _, _)| found.eq_ignore_ascii_case(name))
+}
+
+/// What the EFI system partition read through `read` (its bytes from its start) holds:
+/// `\EFI\Microsoft\Boot\bootmgfw.efi`, and a known distribution's folder under `\EFI`.
+pub fn esp_findings(read: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Option<EspFindings> {
+    let mut boot = [0u8; 512];
+    if !read(0, &mut boot) {
+        return None;
+    }
+    let volume = FatVolume::read(&boot)?;
+    if volume.sector_bytes < 512 {
+        return None;
+    }
+    let root = fat_entries(&volume.folder(volume.root_cluster, read)?);
+    let efi = fat_find(&root, "EFI").filter(|(_, attributes, _)| attributes & FAT_DIRECTORY != 0)?;
+    let efi = fat_entries(&volume.folder(efi.2, read)?);
+    let distribution = DISTRIBUTIONS.iter().find_map(|&(folder, name)| {
+        fat_find(&efi, folder)
+            .filter(|(_, attributes, _)| attributes & FAT_DIRECTORY != 0)
+            .map(|_| name)
+    });
+    let mut windows_boot_manager = false;
+    if let Some(microsoft) = fat_find(&efi, "Microsoft") {
+        let microsoft = fat_entries(&volume.folder(microsoft.2, read)?);
+        if let Some(boot_folder) = fat_find(&microsoft, "Boot") {
+            let boot_folder = fat_entries(&volume.folder(boot_folder.2, read)?);
+            windows_boot_manager = fat_find(&boot_folder, "bootmgfw.efi").is_some();
+        }
+    }
+    Some(EspFindings {
+        windows_boot_manager,
+        distribution,
+    })
+}
+
 /// A partition's name from its UTF-16 code units: up to the first zero, control characters
 /// and unpaired surrogates left out, so a terminal shows it as text.
 pub fn label_of(units: &[u16]) -> String {
@@ -1081,8 +1315,9 @@ mod tests {
         let mut linux = partition(5, 300 * (GIB / SECTOR_BYTES), 20 * (GIB / SECTOR_BYTES), PartitionType::LinuxData);
         linux.file_system = FileSystemKind::Ext4;
         partitions.push(linux);
-        let systems = recognise(&mut partitions);
-        assert_eq!(systems[0], FoundSystem { system: SystemKind::Windows, partition: 3 });
+        let systems = recognise(&mut partitions, EspFindings::default());
+        assert_eq!(systems[0].system, SystemKind::Windows);
+        assert_eq!(systems[0].partition, 3);
         assert_eq!(partitions[2].system, Some(SystemKind::Windows));
         let layout = DiskLayout {
             table: TableKind::Gpt,
@@ -1214,6 +1449,39 @@ mod tests {
         entries[0x80 + 8..0x80 + 10].copy_from_slice(&16u16.to_le_bytes());
         assert_eq!(ntfs_index_find(&entries, HIBERNATION_FILE), Some(Some(42)));
         assert_eq!(ntfs_index_find(&entries, "pagefile.sys"), Some(None));
+    }
+
+    #[test]
+    fn a_distribution_s_folder_names_linux() {
+        let mut partitions = windows_disk();
+        partitions.push(partition(5, 1 << 30, 1 << 20, PartitionType::LinuxData));
+        let esp = EspFindings {
+            windows_boot_manager: true,
+            distribution: Some("Ubuntu"),
+        };
+        let systems = recognise(&mut partitions, esp);
+        assert_eq!(joined_names(&systems), "Windows and Ubuntu");
+    }
+
+    #[test]
+    fn fat_folders_join_their_long_names() {
+        let mut folder = vec![0u8; 3 * FAT_DIRECTORY_ENTRY];
+        let long = &mut folder[..FAT_DIRECTORY_ENTRY];
+        long[0] = 0x41;
+        long[11] = FAT_LONG_NAME;
+        for (unit, &at) in "Microsoft".encode_utf16().chain([0]).zip(FAT_LONG_NAME_UNITS.iter()) {
+            long[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        for &at in &FAT_LONG_NAME_UNITS[10..] {
+            long[at..at + 2].copy_from_slice(&0xffffu16.to_le_bytes());
+        }
+        let short = &mut folder[FAT_DIRECTORY_ENTRY..2 * FAT_DIRECTORY_ENTRY];
+        short[..11].copy_from_slice(b"MICROS~1   ");
+        short[11] = FAT_DIRECTORY;
+        short[26] = 7;
+        let entries = fat_entries(&folder);
+        assert_eq!(entries.len(), 1);
+        assert!(fat_find(&entries, "microsoft").is_some_and(|entry| entry.2 == 7));
     }
 
     #[test]

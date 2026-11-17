@@ -28045,3 +28045,16 @@ the license, by an explicit instruction recorded here.
   refusal `system_hibernated` needs. No such file, or one without that signature, changes
   nothing.
 - **Not yet.** Building and running.
+
+
+## D640 The EFI system partition's folders name the systems (M8; installer dual boot v0.1 section 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the FAT file system as Microsoft's specification describes it)
+- **Decision.** `partitions::esp_findings` reads a FAT12/16/32 EFI system partition without
+  mounting it: the boot sector's geometry, the root folder (fixed or a cluster chain), and
+  each folder's entries with their long names joined (`fat_entries`, names compared without
+  case), at most 256 clusters a folder. It looks for `\EFI\Microsoft\Boot\bootmgfw.efi`
+  (Windows is then found even without a Microsoft reserved partition) and for a folder of
+  one of ten distributions under `\EFI` (`DISTRIBUTIONS`: Ubuntu, Fedora, Debian, openSUSE,
+  Arch Linux, CentOS, Rocky Linux, AlmaLinux, Linux Mint, Pop!_OS), whose name Linux is then
+  shown by (`Windows and Ubuntu`). `FoundSystem` carries that name; Linux on LVM or swap
+  alone is found on that partition.
+- **Not yet.** Building and running.

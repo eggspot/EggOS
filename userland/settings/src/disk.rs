@@ -251,6 +251,14 @@ fn optional_u64(out: &mut JsonWriter<'_>, key: &str, value: Option<u64>) {
     }
 }
 
+fn system_name(layout: &DiskLayout, partition: usize) -> Option<&'static str> {
+    layout
+        .systems
+        .iter()
+        .find(|found| found.partition == partition)
+        .map(|found| found.name)
+}
+
 fn write_layout(console: &mut impl Console, device: &str, layout: &DiskLayout) {
     let mut buffer = alloc::vec![0u8; RECORD_BYTES * (2 + layout.partitions.len())];
     let mut out = JsonWriter::new(&mut buffer);
@@ -286,8 +294,8 @@ fn write_layout(console: &mut impl Console, device: &str, layout: &DiskLayout) {
             None => out.null(),
         }
         out.key("system_name");
-        match partition.system {
-            Some(system) => out.string(system.shown()),
+        match system_name(layout, partition.number) {
+            Some(name) => out.string(name),
             None => out.null(),
         }
         optional_u64(&mut out, "used_bytes", None);
@@ -321,7 +329,7 @@ fn write_layout(console: &mut impl Console, device: &str, layout: &DiskLayout) {
         out.key("system");
         out.string(found.system.name());
         out.key("name");
-        out.string(found.system.shown());
+        out.string(found.name);
         out.key("partition");
         out.u64(found.partition as u64);
         out.end_object();
@@ -339,7 +347,7 @@ fn layout_lines(layout: &DiskLayout) -> String {
         .partitions
         .iter()
         .map(|partition| {
-            let system = partition.system.map(|system| String::from(system.shown()));
+            let system = system_name(layout, partition.number).map(String::from);
             let label = Some(&partition.label)
                 .filter(|label| !label.is_empty())
                 .map(|label| format!("\"{label}\""));
