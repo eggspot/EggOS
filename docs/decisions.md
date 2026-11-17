@@ -28020,3 +28020,17 @@ the license, by an explicit instruction recorded here.
   block; walking down from the last group reads only the empty groups' descriptors and one
   bitmap on a disk that is not full.
 - **Not yet.** Building and running; NTFS's tail (its `$Bitmap`); shrinking itself.
+
+
+## D638 An NTFS partition's free tail (M8; installer dual boot v0.1 section 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the NTFS on-disk structures as public documentation describes them)
+- **Decision.** `partitions::ntfs_tail` reads the boot sector (bytes per sector, sectors per
+  cluster with its power-of-two form above 0x80, the volume's sectors, the MFT's cluster and
+  the record size), reads MFT records 3 (`$Volume`) and 6 (`$Bitmap`) with their update
+  sequence fixed up, refuses with `needs-check` a volume whose `$VOLUME_INFORMATION` has the
+  dirty flag, decodes `$Bitmap`'s unnamed non-resident `$DATA` runs (signed offsets, at most
+  256 runs) and reads the bitmap 64 KiB at a time, counting used clusters and keeping the
+  last one. The tail is the partition's bytes after that cluster, less `reserve_of` the free
+  clusters' bytes, rounded down to 1 MiB.
+- **Not yet.** Building and running. A hibernated or Fast Startup Windows is not dirty, so it
+  is not refused here yet: telling it needs `hiberfil.sys`'s header, through the root
+  folder's index, before any shrinking is written.

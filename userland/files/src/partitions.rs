@@ -607,6 +607,12 @@ fn read_open_layout(
                 };
                 ext4_tail(&start, partition_bytes, read)
             }
+            FileSystemKind::Ntfs => {
+                let read = &mut |at: u64, buffer: &mut [u8]| {
+                    disks.read_at(handle, offset + at, buffer).is_ok()
+                };
+                ntfs_tail(&start, partition_bytes, read)
+            }
             _ => None,
         };
         let (shrinkable_bytes, shrink_blocked) = match (file_system, tail) {
@@ -736,6 +742,171 @@ pub fn ext4_tail(
     let tail = partition_bytes.saturating_sub(used_end);
     let reserve = reserve_of(free_blocks.saturating_mul(block_bytes));
     Some(Ok(tail.saturating_sub(reserve) / (1 << 20) * (1 << 20)))
+}
+
+const NTFS_VOLUME_RECORD: u64 = 3;
+const NTFS_BITMAP_RECORD: u64 = 6;
+const NTFS_VOLUME_INFORMATION: u32 = 0x70;
+const NTFS_DATA: u32 = 0x80;
+const NTFS_END: u32 = u32::MAX;
+const NTFS_VOLUME_DIRTY: u16 = 1;
+const NTFS_SECTOR: usize = 512;
+const NTFS_MOST_RECORD_BYTES: usize = 4096;
+const NTFS_CHUNK_BYTES: usize = 64 * 1024;
+const NTFS_MOST_RUNS: usize = 256;
+
+fn le64(bytes: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+}
+
+fn ntfs_record(
+    record: &mut [u8],
+    at: u64,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+) -> Option<()> {
+    if !read(at, record) || record.get(..4)? != b"FILE" {
+        return None;
+    }
+    let sequence_at = usize::from(le16(record, 4)?);
+    let sequence_count = usize::from(le16(record, 6)?);
+    let check = le16(record, sequence_at)?;
+    for sector in 1..sequence_count {
+        let end = sector * NTFS_SECTOR - 2;
+        if le16(record, end)? != check {
+            return None;
+        }
+        let fixed = le16(record, sequence_at + sector * 2)?;
+        record.get_mut(end..end + 2)?.copy_from_slice(&fixed.to_le_bytes());
+    }
+    Some(())
+}
+
+fn ntfs_attribute(record: &[u8], kind: u32) -> Option<&[u8]> {
+    let mut at = usize::from(le16(record, 0x14)?);
+    loop {
+        let found = le32(record, at)?;
+        if found == NTFS_END {
+            return None;
+        }
+        let length = le32(record, at + 4)? as usize;
+        if length == 0 {
+            return None;
+        }
+        let unnamed = *record.get(at + 9)? == 0;
+        if found == kind && unnamed {
+            return record.get(at..at + length);
+        }
+        at += length;
+    }
+}
+
+fn ntfs_runs(attribute: &[u8]) -> Option<Vec<(u64, u64)>> {
+    let mut at = usize::from(le16(attribute, 0x20)?);
+    let mut runs = Vec::new();
+    let mut cluster: i64 = 0;
+    while let Some(&header) = attribute.get(at) {
+        if header == 0 || runs.len() == NTFS_MOST_RUNS {
+            break;
+        }
+        let (length_bytes, offset_bytes) = (usize::from(header & 0xf), usize::from(header >> 4));
+        let field = |start: usize, bytes: usize, signed: bool| -> Option<i64> {
+            let raw = attribute.get(start..start + bytes)?;
+            let mut value = 0i64;
+            for (index, &byte) in raw.iter().enumerate() {
+                value |= i64::from(byte) << (8 * index);
+            }
+            if signed && bytes > 0 && bytes < 8 && raw[bytes - 1] & 0x80 != 0 {
+                value -= 1i64 << (8 * bytes);
+            }
+            Some(value)
+        };
+        let length = field(at + 1, length_bytes, false)?;
+        if offset_bytes == 0 {
+            return None;
+        }
+        cluster += field(at + 1 + length_bytes, offset_bytes, true)?;
+        runs.push((u64::try_from(cluster).ok()?, u64::try_from(length).ok()?));
+        at += 1 + length_bytes + offset_bytes;
+    }
+    Some(runs)
+}
+
+/// How much of an NTFS partition of `partition_bytes` can be taken from its end without moving
+/// a file (D638): the space after the last cluster its `$Bitmap` marks used, less the reserve
+/// its free space keeps; `needs-check` when `$Volume` says the volume is dirty; None where the
+/// volume cannot be read.
+pub fn ntfs_tail(
+    start: &[u8],
+    partition_bytes: u64,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+) -> Option<Result<u64, ShrinkBlocked>> {
+    let sector_bytes = u64::from(le16(start, 0x0b)?);
+    let raw_per_cluster = *start.get(0x0d)?;
+    let cluster_bytes = match raw_per_cluster {
+        0 => return None,
+        raw if raw > 0x80 => sector_bytes.checked_shl(256 - u32::from(raw))?,
+        raw => sector_bytes * u64::from(raw),
+    };
+    let clusters = le64(start, 0x28)?.checked_mul(sector_bytes)? / cluster_bytes.max(1);
+    let mft = le64(start, 0x30)?.checked_mul(cluster_bytes)?;
+    let raw_record = *start.get(0x40)? as i8;
+    let record_bytes = match raw_record {
+        raw if raw > 0 => u64::from(raw as u8) * cluster_bytes,
+        raw => 1u64.checked_shl(u32::from(raw.unsigned_abs()))?,
+    } as usize;
+    if record_bytes < NTFS_SECTOR || record_bytes > NTFS_MOST_RECORD_BYTES {
+        return None;
+    }
+    let mut record = [0u8; NTFS_MOST_RECORD_BYTES];
+    let record = &mut record[..record_bytes];
+    ntfs_record(record, mft + NTFS_VOLUME_RECORD * record_bytes as u64, read)?;
+    let volume = ntfs_attribute(record, NTFS_VOLUME_INFORMATION)?;
+    let content = usize::from(le16(volume, 0x14)?);
+    if le16(volume, content + 0x0a)? & NTFS_VOLUME_DIRTY != 0 {
+        return Some(Err(ShrinkBlocked::NeedsCheck));
+    }
+    ntfs_record(record, mft + NTFS_BITMAP_RECORD * record_bytes as u64, read)?;
+    let data = ntfs_attribute(record, NTFS_DATA)?;
+    if *data.get(8)? == 0 {
+        return None;
+    }
+    let runs = ntfs_runs(data)?;
+    let bitmap_bytes = clusters.div_ceil(8);
+    let mut chunk = Vec::new();
+    chunk.resize(NTFS_CHUNK_BYTES, 0);
+    let (mut used, mut last_used) = (0u64, None);
+    let mut file_at = 0u64;
+    for (first_cluster, run_clusters) in runs {
+        let run_bytes = run_clusters * cluster_bytes;
+        let mut done = 0u64;
+        while done < run_bytes && file_at + done < bitmap_bytes {
+            let length = (run_bytes - done)
+                .min(NTFS_CHUNK_BYTES as u64)
+                .min(bitmap_bytes - file_at - done) as usize;
+            let piece = &mut chunk[..length];
+            if !read(first_cluster * cluster_bytes + done, piece) {
+                return None;
+            }
+            for (index, &byte) in piece.iter().enumerate() {
+                let first_bit = (file_at + done + index as u64) * 8;
+                let byte = match clusters.saturating_sub(first_bit) {
+                    0 => 0,
+                    left if left < 8 => byte & ((1u8 << left) - 1),
+                    _ => byte,
+                };
+                if byte != 0 {
+                    used += u64::from(byte.count_ones());
+                    last_used = Some(first_bit + 7 - u64::from(byte.leading_zeros()));
+                }
+            }
+            done += length as u64;
+        }
+        file_at += run_bytes;
+    }
+    let used_end = last_used.map_or(0, |cluster| cluster + 1) * cluster_bytes;
+    let free = clusters.saturating_sub(used) * cluster_bytes;
+    let tail = partition_bytes.saturating_sub(used_end);
+    Some(Ok(tail.saturating_sub(reserve_of(free)) / (1 << 20) * (1 << 20)))
 }
 
 /// A partition's name from its UTF-16 code units: up to the first zero, control characters
@@ -895,6 +1066,14 @@ mod tests {
             ext4_tail(&dirty, partition_bytes, &mut read),
             Some(Err(ShrinkBlocked::NeedsCheck))
         );
+    }
+
+    #[test]
+    fn ntfs_data_runs_add_their_signed_offsets() {
+        let mut attribute = [0u8; 0x40];
+        attribute[0x20..0x22].copy_from_slice(&0x30u16.to_le_bytes());
+        attribute[0x30..0x3a].copy_from_slice(&[0x21, 0x10, 0x00, 0x01, 0x21, 0x08, 0xf0, 0xff, 0x00, 0x00]);
+        assert_eq!(ntfs_runs(&attribute), Some(vec![(256, 16), (240, 8)]));
     }
 
     #[test]
