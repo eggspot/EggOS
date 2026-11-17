@@ -276,7 +276,10 @@ fn write_layout(console: &mut impl Console, device: &str, layout: &DiskLayout) {
         out.key("file_system");
         out.string(partition.file_system.name());
         out.key("label");
-        out.null();
+        match partition.label.is_empty() {
+            true => out.null(),
+            false => out.string(&partition.label),
+        }
         out.key("system");
         match partition.system {
             Some(system) => out.string(system.name()),
@@ -337,6 +340,9 @@ fn layout_lines(layout: &DiskLayout) -> String {
         .iter()
         .map(|partition| {
             let system = partition.system.map(|system| String::from(system.shown()));
+            let label = Some(&partition.label)
+                .filter(|label| !label.is_empty())
+                .map(|label| format!("\"{label}\""));
             let shrink = match (partition.shrinkable_bytes, partition.shrink_blocked) {
                 (Some(bytes), _) => storage_size(bytes),
                 (None, Some(reason)) => String::from(reason.name()),
@@ -345,12 +351,13 @@ fn layout_lines(layout: &DiskLayout) -> String {
             (
                 partition.first_sector,
                 format!(
-                    "{}  {}  {}  {}  {}  -  {}  -  {shrink}\n",
+                    "{}  {}  {}  {}  {}  {}  {}  -  {shrink}\n",
                     partition.number,
                     partition.first_sector,
                     storage_size(partition.size_bytes()),
                     partition.kind.name(),
                     partition.file_system.name(),
+                    dash(label),
                     dash(system),
                 ),
             )

@@ -258,6 +258,8 @@ pub struct PartitionRecord {
     pub sectors: u64,
     pub kind: PartitionType,
     pub file_system: FileSystemKind,
+    /// Its name in the table, empty for none.
+    pub label: String,
     pub system: Option<SystemKind>,
     pub shrinkable_bytes: Option<u64>,
     pub shrink_blocked: Option<ShrinkBlocked>,
@@ -578,7 +580,7 @@ fn read_open_layout(
     let mut entries = Vec::new();
     entries.resize(array_bytes, 0);
     disks.read_at(handle, header.entries_at * SECTOR_BYTES, &mut entries)?;
-    let Some(found) = eggos_gpt::partitions(&header, &entries) else {
+    let Some(found) = eggos_gpt::named_partitions(&header, &entries) else {
         return Ok(DiskLayout {
             table: TableKind::Damaged,
             partitions: Vec::new(),
@@ -586,9 +588,9 @@ fn read_open_layout(
             systems: Vec::new(),
         });
     };
-    let found: Vec<eggos_gpt::Partition> = found.collect();
+    let found: Vec<(eggos_gpt::Partition, [u16; eggos_gpt::NAME_UNITS])> = found.collect();
     let mut partitions = Vec::new();
-    for (index, partition) in found.iter().enumerate() {
+    for (index, (partition, name)) in found.iter().enumerate() {
         let mut start = [0u8; PROBE_BYTES];
         let mut btrfs = [0u8; 72];
         let offset = partition.first * SECTOR_BYTES;
@@ -607,6 +609,7 @@ fn read_open_layout(
             sectors: partition.blocks(),
             kind: PartitionType::of(&partition.kind),
             file_system,
+            label: label_of(name),
             system: None,
             shrinkable_bytes: None,
             shrink_blocked,
@@ -621,6 +624,16 @@ fn read_open_layout(
         unallocated,
         systems,
     })
+}
+
+/// A partition's name from its UTF-16 code units: up to the first zero, control characters
+/// and unpaired surrogates left out, so a terminal shows it as text.
+pub fn label_of(units: &[u16]) -> String {
+    let length = units.iter().position(|&unit| unit == 0).unwrap_or(units.len());
+    char::decode_utf16(units[..length].iter().copied())
+        .filter_map(Result::ok)
+        .filter(|character| !character.is_control())
+        .collect()
 }
 
 #[cfg(test)]
@@ -639,6 +652,7 @@ mod tests {
                 PartitionType::LinuxData => FileSystemKind::Ext4,
                 _ => FileSystemKind::Unknown,
             },
+            label: String::new(),
             system: None,
             shrinkable_bytes: None,
             shrink_blocked: None,
@@ -725,6 +739,8 @@ mod tests {
         assert_eq!(FileSystemKind::probe(&[0u8; PROBE_BYTES], &btrfs), FileSystemKind::Btrfs);
         assert_eq!(reserve_of(40 * GIB), 8 * GIB);
         assert_eq!(reserve_of(6 * GIB), 3 * GIB);
+        let name: Vec<u16> = "Basic data\u{7}".encode_utf16().chain([0, 65]).collect();
+        assert_eq!(label_of(&name), "Basic data");
     }
 
     #[test]

@@ -27989,3 +27989,8 @@ the license, by an explicit instruction recorded here.
   other disk tools' is), and the MCP server's table its twin.
 - **Not yet.** Building and running; `label`, `used_bytes` and `free_bytes` are null until
   the GPT names and the file systems' usage are read; the Storage pane's line.
+
+- **Labels (same day).** `eggos_gpt::named_partitions` gives each partition's name with it,
+  and the record's `label` is that name up to its first zero, without control characters or
+  unpaired surrogates (`label_of`), quoted in the text form; `used_bytes` and `free_bytes`
+  stay null.

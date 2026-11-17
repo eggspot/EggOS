@@ -40,7 +40,8 @@ pub const ENTRIES: usize = 128;
 pub const ENTRY_ARRAY_BYTES: usize = ENTRY_BYTES * ENTRIES;
 const REVISION_1_0: u32 = 0x0001_0000;
 const PROTECTIVE_MBR_TYPE: u8 = 0xee;
-const NAME_UNITS: usize = 36;
+/// The UTF-16 code units of a partition's name.
+pub const NAME_UNITS: usize = 36;
 
 /// CRC-32 as GPT and zip use it (IEEE 802.3, reflected polynomial `0xEDB88320`).
 pub fn crc32(bytes: &[u8]) -> u32 {
@@ -137,6 +138,14 @@ pub fn partitions<'a>(
     header: &Header,
     entries: &'a [u8],
 ) -> Option<impl Iterator<Item = Partition> + 'a> {
+    Some(named_partitions(header, entries)?.map(|(partition, _)| partition))
+}
+
+/// [`partitions`] with each one's name, UTF-16 code units, unused ones zero.
+pub fn named_partitions<'a>(
+    header: &Header,
+    entries: &'a [u8],
+) -> Option<impl Iterator<Item = (Partition, [u16; NAME_UNITS])> + 'a> {
     let length = header.entry_count as usize * header.entry_bytes as usize;
     let array = entries.get(..length)?;
     if crc32(array) != header.entries_crc {
@@ -156,7 +165,13 @@ pub fn partitions<'a>(
             last: u64_at(entry, 40)?,
             attributes: u64_at(entry, 48)?,
         };
-        (partition.first <= partition.last && partition.last <= last_usable).then_some(partition)
+        let mut name = [0u16; NAME_UNITS];
+        for (index, unit) in name.iter_mut().enumerate() {
+            let at = 56 + index * 2;
+            *unit = u16::from_le_bytes([*entry.get(at)?, *entry.get(at + 1)?]);
+        }
+        (partition.first <= partition.last && partition.last <= last_usable)
+            .then_some((partition, name))
     }))
 }
 
