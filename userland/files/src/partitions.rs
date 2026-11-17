@@ -599,9 +599,23 @@ fn read_open_layout(
             disks.read_at(handle, offset + BTRFS_AT, &mut btrfs)?;
         }
         let file_system = FileSystemKind::probe(&start, &btrfs);
-        let shrink_blocked = match file_system {
-            FileSystemKind::Bitlocker | FileSystemKind::Luks => Some(ShrinkBlocked::Encrypted),
-            _ => Some(ShrinkBlocked::Unsupported),
+        let partition_bytes = partition.blocks() * SECTOR_BYTES;
+        let tail = match file_system {
+            FileSystemKind::Ext4 => {
+                let read = &mut |at: u64, buffer: &mut [u8]| {
+                    disks.read_at(handle, offset + at, buffer).is_ok()
+                };
+                ext4_tail(&start, partition_bytes, read)
+            }
+            _ => None,
+        };
+        let (shrinkable_bytes, shrink_blocked) = match (file_system, tail) {
+            (FileSystemKind::Bitlocker | FileSystemKind::Luks, _) => {
+                (None, Some(ShrinkBlocked::Encrypted))
+            }
+            (_, Some(Ok(bytes))) => (Some(bytes), None),
+            (_, Some(Err(reason))) => (None, Some(reason)),
+            (_, None) => (None, Some(ShrinkBlocked::Unsupported)),
         };
         partitions.push(PartitionRecord {
             number: index + 1,
@@ -611,7 +625,7 @@ fn read_open_layout(
             file_system,
             label: label_of(name),
             system: None,
-            shrinkable_bytes: None,
+            shrinkable_bytes,
             shrink_blocked,
         });
     }
@@ -624,6 +638,104 @@ fn read_open_layout(
         unallocated,
         systems,
     })
+}
+
+const EXT4_SUPERBLOCK_AT: u64 = 1024;
+const EXT4_STATE_CLEAN: u16 = 1;
+const EXT4_STATE_ERRORS: u16 = 2;
+const EXT4_INCOMPAT_64BIT: u32 = 0x80;
+const EXT4_GROUP_BLOCK_UNINIT: u16 = 2;
+const EXT4_SMALL_DESCRIPTOR: usize = 32;
+const EXT4_MOST_BLOCK_SHIFT: u32 = 6;
+
+fn le16(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn le32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// How much of an ext4 partition of `partition_bytes` can be taken from its end without moving
+/// a file (D637): the space after its last used block, less the reserve its free space keeps;
+/// `start` is its first 4 KiB and `read` reads its bytes at an offset. `needs-check` for a
+/// volume not cleanly unmounted or with errors recorded; None where the volume cannot be read.
+pub fn ext4_tail(
+    start: &[u8],
+    partition_bytes: u64,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+) -> Option<Result<u64, ShrinkBlocked>> {
+    let superblock = start.get(EXT4_SUPERBLOCK_AT as usize..)?;
+    let state = le16(superblock, 58)?;
+    if state & EXT4_STATE_CLEAN == 0 || state & EXT4_STATE_ERRORS != 0 {
+        return Some(Err(ShrinkBlocked::NeedsCheck));
+    }
+    let wide = le32(superblock, 96)? & EXT4_INCOMPAT_64BIT != 0;
+    let high = |at: usize| -> Option<u64> {
+        Some(match wide {
+            true => u64::from(le32(superblock, at)?) << 32,
+            false => 0,
+        })
+    };
+    let blocks = u64::from(le32(superblock, 4)?) | high(336)?;
+    let free_blocks = u64::from(le32(superblock, 12)?) | high(344)?;
+    let first_data_block = u64::from(le32(superblock, 20)?);
+    let shift = le32(superblock, 24)?;
+    if shift > EXT4_MOST_BLOCK_SHIFT {
+        return None;
+    }
+    let block_bytes = 1024u64 << shift;
+    let per_group = u64::from(le32(superblock, 32)?);
+    if per_group == 0 || blocks == 0 {
+        return None;
+    }
+    let descriptor_bytes = match wide {
+        true => usize::from(le16(superblock, 254)?).max(EXT4_SMALL_DESCRIPTOR),
+        false => EXT4_SMALL_DESCRIPTOR,
+    };
+    let groups = (blocks - first_data_block).div_ceil(per_group);
+    let table_at = (first_data_block + 1) * block_bytes;
+    let mut bitmap = Vec::new();
+    bitmap.resize(block_bytes as usize, 0);
+    let mut last_used = None;
+    for group in (0..groups).rev() {
+        let mut descriptor = [0u8; 64];
+        let descriptor = &mut descriptor[..descriptor_bytes.min(64)];
+        if !read(table_at + group * descriptor_bytes as u64, descriptor) {
+            return None;
+        }
+        let group_start = first_data_block + group * per_group;
+        let in_group = per_group.min(blocks - group_start);
+        let flags = le16(descriptor, 0x12)?;
+        if flags & EXT4_GROUP_BLOCK_UNINIT != 0 {
+            let free = u64::from(le16(descriptor, 0x0c)?);
+            let used = in_group.saturating_sub(free);
+            if used > 0 {
+                last_used = Some(group_start + used - 1);
+                break;
+            }
+            continue;
+        }
+        let bitmap_block = u64::from(le32(descriptor, 0)?)
+            | match descriptor_bytes > EXT4_SMALL_DESCRIPTOR {
+                true => u64::from(le32(descriptor, 0x20)?) << 32,
+                false => 0,
+            };
+        if !read(bitmap_block * block_bytes, &mut bitmap) {
+            return None;
+        }
+        let highest = (0..in_group as usize)
+            .rev()
+            .find(|&bit| bitmap[bit / 8] & (1 << (bit % 8)) != 0);
+        if let Some(bit) = highest {
+            last_used = Some(group_start + bit as u64);
+            break;
+        }
+    }
+    let used_end = last_used.map_or(first_data_block, |block| block + 1) * block_bytes;
+    let tail = partition_bytes.saturating_sub(used_end);
+    let reserve = reserve_of(free_blocks.saturating_mul(block_bytes));
+    Some(Ok(tail.saturating_sub(reserve) / (1 << 20) * (1 << 20)))
 }
 
 /// A partition's name from its UTF-16 code units: up to the first zero, control characters
@@ -741,6 +853,48 @@ mod tests {
         assert_eq!(reserve_of(6 * GIB), 3 * GIB);
         let name: Vec<u16> = "Basic data\u{7}".encode_utf16().chain([0, 65]).collect();
         assert_eq!(label_of(&name), "Basic data");
+    }
+
+    #[test]
+    fn an_ext4_tail_is_what_follows_its_last_used_block_less_the_reserve() {
+        let block = 4096u64;
+        let blocks = 4 * 32768u64;
+        let mut start = [0u8; PROBE_BYTES];
+        let superblock = &mut start[1024..];
+        superblock[4..8].copy_from_slice(&(blocks as u32).to_le_bytes());
+        superblock[12..16].copy_from_slice(&((blocks - 40000) as u32).to_le_bytes());
+        superblock[24..28].copy_from_slice(&2u32.to_le_bytes());
+        superblock[32..36].copy_from_slice(&32768u32.to_le_bytes());
+        superblock[56..58].copy_from_slice(&[0x53, 0xef]);
+        superblock[58..60].copy_from_slice(&1u16.to_le_bytes());
+        let partition_bytes = blocks * block;
+        let mut read = |at: u64, buffer: &mut [u8]| {
+            buffer.fill(0);
+            if at >= block && at < 2 * block {
+                let group = (at - block) / 32;
+                if group == 1 {
+                    buffer[0..4].copy_from_slice(&100u32.to_le_bytes());
+                }
+                if group > 1 {
+                    buffer[0x12] = 2;
+                    buffer[0x0c..0x0e].copy_from_slice(&32768u16.to_le_bytes());
+                }
+            }
+            if at == 100 * block {
+                buffer[10] = 1;
+            }
+            true
+        };
+        let tail = ext4_tail(&start, partition_bytes, &mut read).unwrap().unwrap();
+        let used_end = (32768 + 81) * block;
+        let reserve = reserve_of((blocks - 40000) * block);
+        assert_eq!(tail, (partition_bytes - used_end - reserve) / (1 << 20) * (1 << 20));
+        let mut dirty = start;
+        dirty[1024 + 58] = 0;
+        assert_eq!(
+            ext4_tail(&dirty, partition_bytes, &mut read),
+            Some(Err(ShrinkBlocked::NeedsCheck))
+        );
     }
 
     #[test]

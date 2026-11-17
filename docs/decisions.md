@@ -28005,3 +28005,18 @@ the license, by an explicit instruction recorded here.
   promises installing alongside, so it waits for that command rather than offering what
   does not exist yet.
 - **Not yet.** Building and running.
+
+
+## D637 An ext4 partition's free tail (M8; installer dual boot v0.1 section 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the ext4 on-disk format as its documentation gives it)
+- **Decision.** `partitions::ext4_tail` reads the superblock (64-bit block counts when the
+  volume has the 64-bit feature), refuses with `needs-check` a volume not cleanly unmounted
+  or with errors recorded, then walks the block groups from the last: a group whose bitmap
+  is not initialised counts its used blocks (its size less its free count) from its start,
+  others are read from their block bitmap, and the highest used block found ends the walk.
+  The tail is the partition's bytes after that block, less `reserve_of` the volume's free
+  space, rounded down to 1 MiB; `disk partitions` reports it as `shrinkable_bytes`, and the
+  placement rule (D634) can then use it.
+- **Why from the end.** A shrink that moves no file can only take what follows the last used
+  block; walking down from the last group reads only the empty groups' descriptors and one
+  bitmap on a disk that is not full.
+- **Not yet.** Building and running; NTFS's tail (its `$Bitmap`); shrinking itself.
