@@ -28364,3 +28364,14 @@ the license, by an explicit instruction recorded here.
   cleared while the value chosen stays.
 - **Not yet.** Building and running; agents setting `managed` needing the person's
   confirmation; the Components pane's `Install updates` row; automatic updates.
+
+
+## D659 Locked keys in `settings list|get --json`, and the `settings_policy` tool (M16 editions; editions-policy v0.1 sections 6 and 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** A key the policy file locks gets, in its JSON record, `settable: false`,
+  `locked: true` and `managed_by: <manager>`; every other record stays byte for byte as it
+  was, and the plain forms do not change. The policy file is read for the JSON forms only, so
+  plain `settings list` and `get` cost no more than before. The new MCP tool
+  `settings_policy` (the view grant, as section 7 says: the file names the people and tools an
+  organisation manages) runs `settings policy` and answers its text; the server's tool list
+  grows to 96.
+- **Not yet.** Building and running; `settings policy --json`; the tool's structured result.

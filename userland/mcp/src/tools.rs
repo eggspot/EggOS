@@ -136,6 +136,8 @@ pub enum Kind {
     SettingsGet,
     /// `settings_set`: sets a setting (D163).
     SettingsSet,
+    /// `settings_policy`: what the policy file locks (D659).
+    SettingsPolicy,
     /// `ln`: makes a symbolic or hard link (D170).
     Ln,
     /// `df`: how full the file system holding a path is (D171).
@@ -479,7 +481,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 95] = [
+pub const TOOLS: [Tool; 96] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -674,6 +676,11 @@ pub const TOOLS: [Tool; 95] = [
         &registry::SETTINGS_SET,
         Kind::SettingsSet,
         twin("/bin/settings", &["set"], Operand::None),
+    ),
+    tool(
+        &registry::SETTINGS_POLICY,
+        Kind::SettingsPolicy,
+        twin("/bin/settings", &["policy"], Operand::None),
     ),
     tool(
         &registry::LN,

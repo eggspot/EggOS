@@ -2282,6 +2282,26 @@ pub const SETTINGS_GET: ToolDefinition = reading(
     ToolResult::Text,
 );
 
+/// `settings_policy` (D659, editions-policy v0.1 section 7).
+pub const SETTINGS_POLICY: ToolDefinition = ToolDefinition {
+    name: "settings_policy",
+    title: "Read what is managed",
+    description: "Says who manages this computer and what /etc/eggos/policy locks, as `settings \
+                  policy` prints it: the locked settings and their values, the most any agent \
+                  may be granted, the tools no agent may call, and the lines the file has that \
+                  are ignored. Use it to tell the person why a setting is greyed and who to \
+                  ask. No agent can change a lock. Needs the view grant.",
+    command: &["settings", "policy"],
+    fixed: &[],
+    arguments: &[],
+    max_effect: Effect::Read,
+    grant: Some(Grant::View),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
 /// `settings_set` (D163).
 pub const SETTINGS_SET: ToolDefinition = ToolDefinition {
     name: "settings_set",
@@ -2868,7 +2888,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 95] = [
+pub const TOOLS: [ToolDefinition; 96] = [
     LS,
     CAT,
     PS,
@@ -2913,6 +2933,7 @@ pub const TOOLS: [ToolDefinition; 95] = [
     SETTINGS_LIST,
     SETTINGS_GET,
     SETTINGS_SET,
+    SETTINGS_POLICY,
     LN,
     DF,
     DEVICE_LIST,

@@ -435,7 +435,8 @@ fn report(machine: &mut impl Machine, json: bool, error: &ErrorDefinition, messa
     }
 }
 
-fn write_record(machine: &mut impl Machine, key: Key, facts: &Facts) {
+fn write_record(machine: &mut impl Machine, key: Key, facts: &Facts, policy: &PolicyFile) {
+    let locked = policy.locked(key.name()).is_some();
     let mut buffer = [0u8; RECORD_BYTES];
     let mut out = JsonWriter::new(&mut buffer);
     out.begin_object();
@@ -444,7 +445,13 @@ fn write_record(machine: &mut impl Machine, key: Key, facts: &Facts) {
     out.key("value");
     out.string(key.value(facts).as_str());
     out.key("settable");
-    out.bool(key.is_settable());
+    out.bool(key.is_settable() && !locked);
+    if locked {
+        out.key("locked");
+        out.bool(true);
+        out.key("managed_by");
+        out.string(policy.manager());
+    }
     out.end_object();
     out.end_line();
     if !out.overflowed() {
@@ -485,6 +492,7 @@ fn more(machine: &mut impl Machine, json: bool, last_key: &str) {
 
 fn list(machine: &mut impl Machine, json: bool, page: &Page) -> i32 {
     let facts = machine.facts();
+    let policy = if json { machine.policy() } else { PolicyFile::NotInstalled };
     let keys = Key::listed(&facts);
     let count = keys.len();
     let after = page.after();
@@ -499,7 +507,7 @@ fn list(machine: &mut impl Machine, json: bool, page: &Page) -> i32 {
             }
         }
         match json {
-            true => write_record(machine, key, &facts),
+            true => write_record(machine, key, &facts, &policy),
             false => {
                 machine.write_output(key.name().as_bytes());
                 machine.write_output(b"=");
@@ -529,8 +537,9 @@ fn get(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
     let Some(key) = Key::named(name).filter(|key| keys::present(*key, &facts)) else {
         return no_such_setting(machine, json, name);
     };
+    let policy = if json { machine.policy() } else { PolicyFile::NotInstalled };
     match json {
-        true => write_record(machine, key, &facts),
+        true => write_record(machine, key, &facts, &policy),
         false => {
             machine.write_output(key.value(&facts).as_str().as_bytes());
             machine.write_output(b"\n");
@@ -899,6 +908,22 @@ mod tests {
         fn policy(&mut self) -> PolicyFile {
             self.policy.clone()
         }
+    }
+
+    #[test]
+    fn a_locked_key_s_record_says_who_manages_it() {
+        let mut fake = Fake {
+            policy: PolicyFile::Trusted(String::from("policy.manager=Contoso IT\nshell.profile=macos\n")),
+            ..Fake::default()
+        };
+        assert_eq!(run(&mut fake, &["get", "--json", "shell.profile"]), 0);
+        assert_eq!(
+            String::from_utf8_lossy(&fake.output),
+            "{\"key\":\"shell.profile\",\"value\":\"macos\",\"settable\":false,\"locked\":true,\"managed_by\":\"Contoso IT\"}\n"
+        );
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &["get", "--json", "shell.profile"]), 0);
+        assert!(String::from_utf8_lossy(&fake.output).ends_with("\"settable\":true}\n"));
     }
 
     #[test]
