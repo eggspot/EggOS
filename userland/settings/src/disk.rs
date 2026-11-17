@@ -10,7 +10,7 @@ use eggos_commands::{ErrorDefinition, errors};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::partitions::{self, AlongsideRefusal, DiskLayout, Placement};
 use eggos_files::storage::{
-    self, DiskRecord, StorageError, WholeDisks, erased_text, headline, outcome_word,
+    self, AddPartitionError, BesideError, BootFiles, DiskRecord, StorageError, WholeDisks, erased_text, headline, outcome_word,
 };
 use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
@@ -529,7 +529,7 @@ fn install_on(
     let layout = partitions::disk_layout(disks, record.device).ok().map(|(_, layout)| layout);
     if options.alongside {
         return match layout {
-            Some(layout) => install_alongside(console, &record, &layout, options),
+            Some(layout) => install_alongside(disks, console, &record, &layout, &files, options),
             None => {
                 let message = format!("{}: its partition table cannot be read", record.device);
                 report(console, false, &errors::TABLE_DAMAGED, &message);
@@ -624,10 +624,75 @@ fn chosen_size_gib(
     }
 }
 
-fn install_alongside(
+fn beside_failure(console: &mut impl Console, device: &str, error: &BesideError) -> i32 {
+    let (definition, sentence) = match error {
+        BesideError::Storage(error) | BesideError::Partition(AddPartitionError::Storage(error)) => {
+            return refuse(console, false, device, error);
+        }
+        BesideError::SystemPartitionNotFat32 => (
+            &errors::FAILED,
+            "its EFI system partition is not FAT32 with 512-byte sectors, which sharing it needs",
+        ),
+        BesideError::SystemPartitionFull => (
+            &errors::FAILED,
+            "its EFI system partition has no room for EggOS's boot files",
+        ),
+        BesideError::LoaderNameTooLong => (
+            &errors::FAILED,
+            "the loader's name in \\EFI\\EGGOS\\ needs a long FAT name, which EggOS does not write yet",
+        ),
+        BesideError::Partition(AddPartitionError::NoTable)
+        | BesideError::Partition(AddPartitionError::Table(storage::AddRefusal::Damaged)) => {
+            (&errors::TABLE_DAMAGED, "its partition table cannot be read")
+        }
+        BesideError::Partition(AddPartitionError::Table(storage::AddRefusal::Full)) => {
+            (&errors::TABLE_FULL, "its partition table has no free entry")
+        }
+        BesideError::Partition(AddPartitionError::Table(_)) => (
+            &errors::NO_ROOM_ALONGSIDE,
+            "the room EggOS was to use is no longer free",
+        ),
+    };
+    let message = format!("{device}: {sentence}");
+    report(console, false, definition, &message);
+    FAILURE
+}
+
+fn confirmed_alongside(
     console: &mut impl Console,
     record: &DiskRecord,
     layout: &DiskLayout,
+    placement: &Placement,
+    size_gib: u64,
+) -> Result<(), i32> {
+    if !console.is_terminal() {
+        let message = format!(
+            "{}: installing alongside changes the disk's partition table: add --yes, or run it on a terminal to be asked",
+            record.device
+        );
+        report(console, false, &errors::NEEDS_CONFIRMATION, &message);
+        return Err(FAILURE);
+    }
+    let name = record.short_name();
+    let question = partitions::alongside_question(name, record.device, layout, placement, size_gib);
+    console.write_error(question.as_bytes());
+    let mut answer = [0u8; ANSWER_BYTES];
+    let length = console.read_answer(&mut answer);
+    let answer = core::str::from_utf8(answer.get(..length).unwrap_or_default()).unwrap_or("");
+    if answer.trim() != name {
+        let message = format!("{}: nothing installed", record.device);
+        report(console, false, &errors::DECLINED_BY_USER, &message);
+        return Err(FAILURE);
+    }
+    Ok(())
+}
+
+fn install_alongside(
+    disks: &mut impl WholeDisks,
+    console: &mut impl Console,
+    record: &DiskRecord,
+    layout: &DiskLayout,
+    files: &BootFiles,
     options: &Options<'_>,
 ) -> i32 {
     let placement = match partitions::place(layout) {
@@ -648,12 +713,39 @@ fn install_alongside(
         console.write_output(line.as_bytes());
         return 0;
     }
-    let message = format!(
-        "{}: installing alongside is planned but not written yet: disk install --alongside --dry-run {} shows the plan",
-        record.device, record.device
-    );
-    report(console, false, &errors::FAILED, &message);
-    FAILURE
+    let Placement::Unallocated(room) = placement else {
+        let message = format!(
+            "{}: making room by shrinking a partition is not written yet: free space on the disk first, then install alongside",
+            record.device
+        );
+        report(console, false, &errors::CANNOT_SHRINK, &message);
+        return FAILURE;
+    };
+    let Some(system_partition) = partitions::system_partition(layout) else {
+        let message = format!(
+            "{}: it has no EFI system partition to share, and writing EggOS's own one beside it is not written yet",
+            record.device
+        );
+        report(console, false, &errors::FAILED, &message);
+        return FAILURE;
+    };
+    if !options.yes {
+        if let Err(status) = confirmed_alongside(console, record, layout, &placement, size_gib) {
+            return status;
+        }
+    }
+    let sectors = (size_gib << 30) / storage::SECTOR_BYTES;
+    match storage::install_beside(disks, record.device, system_partition, room, sectors, files) {
+        Ok(installation) => {
+            let line = format!(
+                "{}\n",
+                partitions::installed_beside_text(layout, installation.device, false)
+            );
+            console.write_output(line.as_bytes());
+            0
+        }
+        Err(error) => beside_failure(console, record.device, &error),
+    }
 }
 
 fn format_disk(

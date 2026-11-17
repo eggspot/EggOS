@@ -773,6 +773,31 @@ pub fn alongside_question(short: &str, device: &str, layout: &DiskLayout, placem
     alloc::format!("Type {short} to install EggOS beside {kept} on {device} ({what}, erases nothing): ")
 }
 
+/// The EFI system partition EggOS shares on a disk (section 5), the first one in its table.
+pub fn system_partition(layout: &DiskLayout) -> Option<&PartitionRecord> {
+    layout
+        .partitions
+        .iter()
+        .find(|partition| partition.kind == PartitionType::EfiSystem)
+}
+
+/// The line `disk install --alongside` ends with (section 4's "Done"): `Installed EggOS beside
+/// Windows on /dev/vdb.`, then where to start it from; `entry_added` when the firmware took
+/// EggOS's boot entry.
+pub fn installed_beside_text(layout: &DiskLayout, device: &str, entry_added: bool) -> String {
+    let kept = joined_names(&layout.systems);
+    let beside = if kept.is_empty() {
+        alloc::format!("what is on {device}")
+    } else {
+        alloc::format!("{kept} on {device}")
+    };
+    let next = match entry_added {
+        true => "Restart: the boot menu offers both.",
+        false => "Choose EggOS in the firmware's boot menu.",
+    };
+    alloc::format!("Installed EggOS beside {beside}. {next}")
+}
+
 /// What a whole-disk install erases, naming the systems (section 7): `Windows and 3 more
 /// partitions`; `None` when no system is on the disk.
 pub fn erased_systems_text(layout: &DiskLayout) -> Option<String> {
@@ -1645,6 +1670,15 @@ mod tests {
         };
         let placement = place(&layout).unwrap();
         assert_eq!(size_range_gib(&placement), (1, 72));
+        assert_eq!(system_partition(&layout).map(|found| found.kind), Some(PartitionType::EfiSystem));
+        assert_eq!(
+            installed_beside_text(&layout, "/dev/vdb", false),
+            "Installed EggOS beside Windows on /dev/vdb. Choose EggOS in the firmware's boot menu."
+        );
+        assert_eq!(
+            installed_beside_text(&layout, "/dev/vdb", true),
+            "Installed EggOS beside Windows on /dev/vdb. Restart: the boot menu offers both."
+        );
         assert_eq!(
             alongside_dry_run_text(&layout, &placement, 36),
             "would shrink Windows (partition 3) from 100 GB to 64 GB, write an EggOS partition of 36 GB, add EggOS to the EFI system partition (partition 1) and add a boot entry"

@@ -1375,6 +1375,8 @@ pub fn install(
     })
 }
 
+pub use eggos_gpt::AddRefusal;
+
 /// Why EggOS's partition could not be added beside what a disk holds (D644).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddPartitionError {
@@ -1420,10 +1422,20 @@ pub fn add_eggos_partition(
     first_sector: u64,
     sectors: u64,
 ) -> Result<eggos_gpt::Guid, AddPartitionError> {
-    let line = unmounted(disks, device, true).map_err(AddPartitionError::Storage)?;
     let mut unique = [0u8; 16];
     disks.unique_bytes(&mut unique);
     let unique = eggos_gpt::random_guid(unique);
+    add_partition_named(disks, device, unique, first_sector, sectors)
+}
+
+fn add_partition_named(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    unique: eggos_gpt::Guid,
+    first_sector: u64,
+    sectors: u64,
+) -> Result<eggos_gpt::Guid, AddPartitionError> {
+    let line = unmounted(disks, device, true).map_err(AddPartitionError::Storage)?;
     let partition = eggos_gpt::NewPartition {
         kind: eggos_gpt::EGGOS_DATA_PARTITION,
         unique,
@@ -1460,6 +1472,173 @@ pub fn add_eggos_partition(
     let unique = result?;
     flushed.map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
     Ok(unique)
+}
+
+/// A GUID as text, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, its first three groups read
+/// little-endian as GPT stores them.
+pub fn guid_text(guid: &eggos_gpt::Guid) -> String {
+    const ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut text = String::with_capacity(36);
+    for (at, index) in ORDER.iter().enumerate() {
+        if matches!(at, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        text.push_str(&format!("{:02x}", guid[*index]));
+    }
+    text
+}
+
+/// The folder EggOS writes on an EFI system partition it shares with other systems.
+pub const SHARED_BOOT_FOLDER: &str = "EFI/EGGOS";
+
+/// The loader's name in [`SHARED_BOOT_FOLDER`]: `EGGOSX64.EFI` for `BOOTX64.EFI`.
+pub fn shared_loader_name(loader_name: &str) -> String {
+    format!("EGGOS{}", loader_name.strip_prefix("BOOT").unwrap_or(loader_name))
+}
+
+/// What installing EggOS beside the systems on a disk wrote (D648).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BesideInstallation {
+    pub device: &'static str,
+    /// EggOS's partition's unique GUID, which its `CMDLINE.TXT` names.
+    pub partition: eggos_gpt::Guid,
+    pub partition_bytes: u64,
+}
+
+/// Why EggOS could not be installed beside what a disk holds (D648).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BesideError {
+    /// Opening, reading or writing the disk failed, or it is in use or read-only.
+    Storage(StorageError),
+    /// The EFI system partition is not FAT32 with 512-byte sectors, or it is damaged.
+    SystemPartitionNotFat32,
+    /// The EFI system partition has no room for EggOS's files.
+    SystemPartitionFull,
+    /// The loader's name is not an 8.3 name, which the shared folder needs for now.
+    LoaderNameTooLong,
+    /// EggOS's partition could not be added to the table.
+    Partition(AddPartitionError),
+}
+
+fn shared_partition_error(error: eggos_fat32::Error<Fault>) -> BesideError {
+    match error {
+        eggos_fat32::Error::Read(fault) | eggos_fat32::Error::Write(fault) => {
+            BesideError::Storage(StorageError::of(fault))
+        }
+        eggos_fat32::Error::BadName => BesideError::LoaderNameTooLong,
+        eggos_fat32::Error::Full | eggos_fat32::Error::TooSmall => BesideError::SystemPartitionFull,
+        eggos_fat32::Error::NotFat32 => BesideError::SystemPartitionNotFat32,
+    }
+}
+
+fn write_shared_boot_files(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &'static str,
+    system_partition: &crate::partitions::PartitionRecord,
+    files: &[eggos_fat32::File<'_>],
+) -> Result<(), BesideError> {
+    let handle = disks
+        .open(device, true)
+        .map_err(|fault| BesideError::Storage(StorageError::of(fault)))?;
+    let base = system_partition.first_sector * SECTOR_BYTES;
+    let size = system_partition.size_bytes();
+    let within = move |offset: u64, length: usize| {
+        offset
+            .checked_add(length as u64)
+            .is_some_and(|end| end <= size)
+    };
+    let written = {
+        let shared = core::cell::RefCell::new(&mut *disks);
+        let mut read = |offset: u64, buffer: &mut [u8]| match within(offset, buffer.len()) {
+            true => shared.borrow_mut().read_at(handle, base + offset, buffer),
+            false => Err(Fault::Failed),
+        };
+        let mut write = |offset: u64, bytes: &[u8]| match within(offset, bytes.len()) {
+            true => shared.borrow_mut().write_at(handle, base + offset, bytes),
+            false => Err(Fault::Failed),
+        };
+        eggos_fat32::add_files(files, &mut read, &mut write)
+    };
+    let flushed = disks.flush(handle);
+    disks.close(handle);
+    written.map_err(shared_partition_error)?;
+    flushed.map_err(|fault| BesideError::Storage(StorageError::of(fault)))
+}
+
+fn clear_data_start(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &'static str,
+    first_sector: u64,
+) -> Result<(), StorageError> {
+    let handle = disks.open(device, true).map_err(StorageError::of)?;
+    let zero = [0u8; ZERO_CHUNK];
+    let mut offset = 0;
+    let mut written = Ok(());
+    while offset < DATA_START_ZEROED && written.is_ok() {
+        written = disks.write_at(handle, first_sector * SECTOR_BYTES + offset, &zero);
+        offset += ZERO_CHUNK as u64;
+    }
+    let flushed = disks.flush(handle);
+    disks.close(handle);
+    written.map_err(StorageError::of)?;
+    flushed.map_err(StorageError::of)
+}
+
+/// Installs EggOS beside what the unmounted disk `device` holds (D648), in the free `room`:
+/// writes the loader, the kernel and a `CMDLINE.TXT` naming EggOS's partition into
+/// `\EFI\EGGOS\` on the disk's own EFI system partition, touching no other file there; then
+/// adds EggOS's partition of `sectors` sectors at the room's start to the table, keeping every
+/// partition (D644); then clears that partition's first MiB, so EggOS makes its file system
+/// there on its first start, as a whole-disk install does.
+///
+/// # Errors
+///
+/// A missing, mounted or read-only disk, an EFI system partition that is not FAT32, is full or
+/// is damaged, a table that refuses the partition, or a failed read or write. Files already
+/// written to `\EFI\EGGOS\` stay when a later step fails; installing again replaces them.
+pub fn install_beside(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    system_partition: &crate::partitions::PartitionRecord,
+    room: crate::partitions::FreeRun,
+    sectors: u64,
+    files: &BootFiles,
+) -> Result<BesideInstallation, BesideError> {
+    let line = unmounted(disks, device, true).map_err(BesideError::Storage)?;
+    let sectors = sectors.min(room.sectors);
+    let mut unique = [0u8; 16];
+    disks.unique_bytes(&mut unique);
+    let unique = eggos_gpt::random_guid(unique);
+    let loader_path = format!(
+        "{SHARED_BOOT_FOLDER}/{}",
+        shared_loader_name(files.loader_name)
+    );
+    let kernel_path = format!("{SHARED_BOOT_FOLDER}/KERNEL.ELF");
+    let command_line_path = format!("{SHARED_BOOT_FOLDER}/CMDLINE.TXT");
+    let command_line = format!("eggos.data={}\n", guid_text(&unique));
+    let shared_files = [
+        eggos_fat32::File {
+            path: &loader_path,
+            bytes: &files.loader,
+        },
+        eggos_fat32::File {
+            path: &kernel_path,
+            bytes: &files.kernel,
+        },
+        eggos_fat32::File {
+            path: &command_line_path,
+            bytes: command_line.as_bytes(),
+        },
+    ];
+    write_shared_boot_files(disks, line.device, system_partition, &shared_files)?;
+    add_partition_named(disks, line.device, unique, room.first_sector, sectors)
+        .map_err(BesideError::Partition)?;
+    clear_data_start(disks, line.device, room.first_sector).map_err(BesideError::Storage)?;
+    Ok(BesideInstallation {
+        device: line.device,
+        partition: unique,
+        partition_bytes: sectors * SECTOR_BYTES,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1694,6 +1873,98 @@ mod install_tests {
         }
         let mut blank = MemoryDisks::of(alloc::vec![MemoryWholeDisk::blank("vdb", 1024)]);
         assert_eq!(add_eggos_partition(&mut blank, "/dev/vdb", start, 2048), Err(AddPartitionError::NoTable));
+    }
+
+    #[test]
+    fn installing_beside_writes_the_shared_folder_the_partition_and_its_cleared_start() {
+        use crate::partitions::{FileSystemKind, FreeRun, PartitionRecord, PartitionType};
+        use crate::storage::memory::{MemoryDisks, MemoryWholeDisk};
+        let mut disk = MemoryWholeDisk::blank("vdb", 12_000);
+        let sectors = disk.image.len() as u64 / SECTOR_BYTES;
+        let layout = eggos_gpt::Layout::new(sectors, SECTOR_BYTES).expect("a layout");
+        let first = layout.aligned(layout.first_usable);
+        let system_sectors = 70_000u64;
+        let existing = [eggos_gpt::NewPartition {
+            kind: eggos_gpt::EFI_SYSTEM_PARTITION,
+            unique: [1; 16],
+            first,
+            last: first + system_sectors - 1,
+            name: "EFI system partition",
+        }];
+        let table = eggos_gpt::NewTable::new(layout, [9; 16], &existing).expect("a table");
+        let places = table.places();
+        {
+            let mut put = |block: u64, bytes: &[u8]| {
+                let at = (block * SECTOR_BYTES) as usize;
+                disk.image[at..at + bytes.len()].copy_from_slice(bytes);
+            };
+            put(0, &table.mbr);
+            put(places[0], &table.primary_header);
+            put(places[1], &table.entries);
+            put(places[2], &table.entries);
+            put(places[3], &table.backup_header);
+        }
+        let base = (first * SECTOR_BYTES) as usize;
+        let other = [eggos_fat32::File {
+            path: "EFI/BOOT/BOOTX64.EFI",
+            bytes: b"another system's loader",
+        }];
+        eggos_fat32::write_volume(system_sectors as u32, first as u32, 7, &other, &mut |offset: u64, bytes: &[u8]| {
+            let at = base + offset as usize;
+            disk.image[at..at + bytes.len()].copy_from_slice(bytes);
+            Ok::<(), Fault>(())
+        })
+        .expect("a volume");
+        let room_first = first + system_sectors.next_multiple_of(2048);
+        disk.image[(room_first * SECTOR_BYTES) as usize] = 0xAB;
+        let system_partition = PartitionRecord {
+            number: 1,
+            first_sector: first,
+            sectors: system_sectors,
+            kind: PartitionType::EfiSystem,
+            file_system: FileSystemKind::Fat,
+            label: String::from("EFI system partition"),
+            system: None,
+            shrinkable_bytes: None,
+            shrink_blocked: None,
+        };
+        let room = FreeRun {
+            first_sector: room_first,
+            sectors: 8192,
+        };
+        let mut disks = MemoryDisks::of(alloc::vec![disk]);
+        let files = BootFiles {
+            loader: b"EggOS loader".to_vec(),
+            kernel: b"EggOS kernel".to_vec(),
+            loader_name: "BOOTX64.EFI",
+        };
+        let installed = install_beside(&mut disks, "/dev/vdb", &system_partition, room, 4096, &files).expect("installed");
+        assert_eq!(installed.device, "/dev/vdb");
+        assert_eq!(installed.partition_bytes, 4096 * SECTOR_BYTES);
+        let image = &disks.disk("vdb").image;
+        let holds = |wanted: &[u8]| image.windows(wanted.len()).any(|window| window == wanted);
+        assert!(holds(b"EGGOSX64EFI"));
+        assert!(holds(b"EggOS loader"));
+        assert!(holds(b"another system's loader"));
+        assert!(holds(format!("eggos.data={}", guid_text(&installed.partition)).as_bytes()));
+        assert_eq!(image[(room_first * SECTOR_BYTES) as usize], 0);
+        let at = (places[0] * SECTOR_BYTES) as usize;
+        let header = eggos_gpt::read_header(&image[at..at + SECTOR_BYTES as usize]).expect("a header");
+        let entries_at = (header.entries_at * SECTOR_BYTES) as usize;
+        let found: Vec<_> = eggos_gpt::partitions(&header, &image[entries_at..entries_at + eggos_gpt::ENTRY_ARRAY_BYTES])
+            .expect("entries")
+            .collect();
+        assert_eq!(found.len(), 2);
+        assert_eq!((found[1].unique, found[1].first, found[1].blocks()), (installed.partition, room_first, 4096));
+    }
+
+    #[test]
+    fn a_guid_reads_as_gpt_writes_its_groups() {
+        let guid = [
+            0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+        ];
+        assert_eq!(guid_text(&guid), "c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
+        assert_eq!(shared_loader_name("BOOTAA64.EFI"), "EGGOSAA64.EFI");
     }
 
     #[test]

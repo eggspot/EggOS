@@ -28178,3 +28178,24 @@ the license, by an explicit instruction recorded here.
   erases it.
 - **Not yet.** Building and running; the install sheet's choice between keeping and using the
   whole disk, which needs `disk install --alongside` to write (D644 to D646).
+
+
+## D648 `disk install --alongside` writes EggOS into unallocated space and the shared EFI system partition (M8; installer dual boot v0.1 sections 4, 5 and 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** When the plan places EggOS in an unallocated run, `disk install --alongside`
+  asks section 7's question on a terminal (or takes `--yes`), then
+  `storage::install_beside` writes, in this order: `EGGOSX64.EFI` (the kept loader, renamed),
+  `KERNEL.ELF` and `CMDLINE.TXT` into `\EFI\EGGOS\` on the disk's first EFI system partition,
+  through D645, never touching another file there and refusing any read or write outside that
+  partition even when its boot sector claims more; then EggOS's partition in the table, through
+  D644; then the partition's first MiB cleared, so the first start makes its EggFS volume as a
+  whole-disk install does. Files come first because a failure after them leaves only a folder
+  that installing again replaces, while a failure after the partition would leave no room to
+  try again. `CMDLINE.TXT` reads `eggos.data=<the partition's GUID>` (section 5). The line it
+  ends with is section 4's `Installed EggOS beside Windows on /dev/vdb. Choose EggOS in the
+  firmware's boot menu.`, since no firmware entry is written yet.
+- **Refused, for now.** A plan that shrinks a partition (`cannot_shrink`: shrinking NTFS and
+  ext4 is not written), a disk with no EFI system partition (EggOS's own 256 MB one is not
+  written), and AArch64, whose `EGGOSAA64.EFI` needs a long FAT name D645 does not write.
+- **Not yet.** Building and running; the kernel choosing the data partition `eggos.data`
+  names (it takes the first EggOS partition today, D238); `\EFI\BOOT\BOOT<ARCH>.EFI` when no
+  file is there; the firmware entry and boot menu (section 6); the Storage pane's plan panel.

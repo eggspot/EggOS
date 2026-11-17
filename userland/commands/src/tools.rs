@@ -2552,8 +2552,9 @@ pub const DISK_INSTALL: ToolDefinition = ToolDefinition {
     title: "Install EggOS on a disk",
     description: "Erases everything on an unmounted disk of 1 GiB or more and installs EggOS on it \
                   from the USB stick or disk it was started from, as `disk install --yes` does; \
-                  with alongside: true it keeps the systems on the disk instead (the dry run says \
-                  what would be shrunk and written; the writing itself is not built yet). A \
+                  with alongside: true it keeps the systems on the disk instead, writing EggOS \
+                  into unallocated space and its boot files into the disk's own EFI system \
+                  partition (making room by shrinking a partition is not built yet). A \
                   mounted or read-only disk is refused. Needs the write grant. Asks the user first, \
                   or needs confirm: true when the client cannot ask. dry_run: true says what would \
                   be erased, and writes nothing.",
