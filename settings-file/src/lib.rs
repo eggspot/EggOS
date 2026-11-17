@@ -10,6 +10,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod clock_sync;
+pub mod policy;
 
 /// Where the file is: under `/home`, so on the persistent disk when one is attached (D131), in
 /// the home of `root`, the account every process runs as until there are accounts.

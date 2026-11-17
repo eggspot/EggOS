@@ -28278,3 +28278,18 @@ the license, by an explicit instruction recorded here.
   whose prompt is now section 6's serial line (`Starts 1 in 5 s. Press a number.`). The loader
   now depends on `eggos-font`.
 - **Not yet.** Building and running.
+
+
+## D654 The policy file is read by `eggos-settings-file`, shared by Settings and the MCP server (M16 editions; editions-policy v0.1 section 4; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `eggos_settings_file::policy` reads `/etc/eggos/policy` without allocating:
+  each line's meaning (`policy.manager` at most 32 bytes, `policy.contact` at most 64,
+  `agents.grants`, `agents.deny`, a note, or a setting it locks), the last line of a key
+  winning and the earlier ones reported as given again, the manager, contact, locked value,
+  agent ceiling and denied tools, and whether the file can be trusted: a regular file owned by
+  root that group and others cannot write, in a folder with the same three properties, at most
+  16 KiB and 256 lines of UTF-8, each failure with the Management pane's sentence. Checking a
+  setting line's key and value stays with the Settings program, which knows the keys; the MCP
+  server needs only the agent lines, so both depend on this one reader.
+- **Not yet.** Building and running; the `management` component and `update.policy`;
+  `settings policy`, the `managed` refusal of `settings set`, the MCP ceiling and denied tools,
+  the locks drawn in the panes and the Management pane (sections 1 to 9).
