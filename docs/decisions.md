@@ -28101,3 +28101,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the pane's plan panel; the confirmation sentence with
   the BitLocker recovery-key warning.
 
+
+## D643 Adding a partition to an existing GPT (M8; installer dual boot v0.1 section 4; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `eggos_gpt::add_partition` writes a new partition into the first unused
+  entry of a table's entry array as read, after checking the array against its header's CRC,
+  the usable range and every listed partition for overlap, and answers the array's new CRC;
+  `rewritten_header` rebuilds a primary or backup header from what was read (its own and its
+  partner's places, the usable range, the disk GUID and the entry geometry, including tables
+  of other entry counts and sizes) with that CRC. The installer writes the primary array and
+  header and the backup array and header from these, as UEFI's rules for updating a table ask:
+  the backup first, then the primary.
+- **Why here.** Installing alongside (D642) adds EggOS's partition to the other system's
+  table instead of writing a new one; the GPT crate already owns the entry and header
+  formats, so the change is a primitive there, and the installer's storage code calls it.
+- **Not yet.** Building and running; the storage code that writes it to a disk with the
+  shrink and the EFI system partition.
+

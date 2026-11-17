@@ -1,5 +1,6 @@
-//! GUID partition tables (UEFI 2.10, chapter 5): reading a disk's partitions, and writing a new
-//! table with a protective MBR, for the kernel, the installer and `cargo xtask` (D238).
+//! GUID partition tables (UEFI 2.10, chapter 5): reading a disk's partitions, writing a new
+//! table with a protective MBR, and adding a partition to an existing table, for the kernel,
+//! the installer and `cargo xtask` (D238, D643).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -216,6 +217,17 @@ impl Layout {
     }
 }
 
+fn write_entry(entry: &mut [u8], partition: &NewPartition<'_>) {
+    entry.fill(0);
+    entry[..16].copy_from_slice(&partition.kind);
+    entry[16..32].copy_from_slice(&partition.unique);
+    entry[32..40].copy_from_slice(&partition.first.to_le_bytes());
+    entry[40..48].copy_from_slice(&partition.last.to_le_bytes());
+    for (index, unit) in partition.name.encode_utf16().take(NAME_UNITS).enumerate() {
+        entry[56 + index * 2..58 + index * 2].copy_from_slice(&unit.to_le_bytes());
+    }
+}
+
 /// The entry array for `partitions`.
 pub fn entry_array(partitions: &[NewPartition<'_>]) -> [u8; ENTRY_ARRAY_BYTES] {
     let mut array = [0u8; ENTRY_ARRAY_BYTES];
@@ -225,15 +237,76 @@ pub fn entry_array(partitions: &[NewPartition<'_>]) -> [u8; ENTRY_ARRAY_BYTES] {
         .iter_mut()
         .zip(partitions)
     {
-        entry[..16].copy_from_slice(&partition.kind);
-        entry[16..32].copy_from_slice(&partition.unique);
-        entry[32..40].copy_from_slice(&partition.first.to_le_bytes());
-        entry[40..48].copy_from_slice(&partition.last.to_le_bytes());
-        for (index, unit) in partition.name.encode_utf16().take(NAME_UNITS).enumerate() {
-            entry[56 + index * 2..58 + index * 2].copy_from_slice(&unit.to_le_bytes());
-        }
+        write_entry(entry, partition);
     }
     array
+}
+
+/// Why a partition cannot be added to an existing table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddRefusal {
+    /// The entry array does not match its header's CRC.
+    Damaged,
+    /// Every entry is used.
+    Full,
+    /// It reaches outside the table's usable blocks, or ends before it starts.
+    OutsideUsable,
+    /// It overlaps a partition already listed.
+    Overlaps,
+}
+
+/// Writes `partition` into the first unused entry of an existing table's entry array
+/// (`entries`, as read, at least `entry_count * entry_bytes` long) and answers the array's new
+/// CRC, for [`rewritten_header`]. Nothing is changed when it is refused.
+///
+/// # Errors
+///
+/// An array that does not match its header, a full table, blocks outside the usable range,
+/// or an overlap with a listed partition.
+pub fn add_partition(header: &Header, entries: &mut [u8], partition: &NewPartition<'_>) -> Result<u32, AddRefusal> {
+    let length = header.entry_count as usize * header.entry_bytes as usize;
+    let array = entries.get_mut(..length).ok_or(AddRefusal::Damaged)?;
+    if crc32(array) != header.entries_crc {
+        return Err(AddRefusal::Damaged);
+    }
+    if partition.first < header.first_usable || partition.last > header.last_usable || partition.first > partition.last {
+        return Err(AddRefusal::OutsideUsable);
+    }
+    let overlaps = partitions(header, array)
+        .ok_or(AddRefusal::Damaged)?
+        .any(|listed| listed.first <= partition.last && partition.first <= listed.last);
+    if overlaps {
+        return Err(AddRefusal::Overlaps);
+    }
+    let stride = header.entry_bytes as usize;
+    let free = array
+        .chunks_exact_mut(stride)
+        .find(|entry| entry.get(..16).is_some_and(|kind| kind.iter().all(|byte| *byte == 0)))
+        .ok_or(AddRefusal::Full)?;
+    write_entry(free, partition);
+    Ok(crc32(array))
+}
+
+/// A header like `header` (its places, usable range, disk and entry geometry kept) over an
+/// entry array whose CRC is `entries_crc`: the primary or backup header to write back after
+/// [`add_partition`].
+pub fn rewritten_header(header: &Header, entries_crc: u32) -> [u8; HEADER_BYTES] {
+    let mut bytes = [0u8; HEADER_BYTES];
+    bytes[..8].copy_from_slice(SIGNATURE);
+    bytes[8..12].copy_from_slice(&REVISION_1_0.to_le_bytes());
+    bytes[12..16].copy_from_slice(&(HEADER_BYTES as u32).to_le_bytes());
+    bytes[24..32].copy_from_slice(&header.current.to_le_bytes());
+    bytes[32..40].copy_from_slice(&header.backup.to_le_bytes());
+    bytes[40..48].copy_from_slice(&header.first_usable.to_le_bytes());
+    bytes[48..56].copy_from_slice(&header.last_usable.to_le_bytes());
+    bytes[56..72].copy_from_slice(&header.disk);
+    bytes[72..80].copy_from_slice(&header.entries_at.to_le_bytes());
+    bytes[80..84].copy_from_slice(&header.entry_count.to_le_bytes());
+    bytes[84..88].copy_from_slice(&header.entry_bytes.to_le_bytes());
+    bytes[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+    let crc = crc32(&bytes);
+    bytes[16..20].copy_from_slice(&crc.to_le_bytes());
+    bytes
 }
 
 /// A header for `layout`, the primary when `primary`, over the entry array whose CRC is
@@ -374,6 +447,49 @@ mod tests {
         backup[..HEADER_BYTES].copy_from_slice(&table.backup_header);
         assert_eq!(read_header(&backup).unwrap().current, (1 << 21) - 1);
         assert_eq!(table.mbr[450], 0xee);
+    }
+
+    #[test]
+    fn a_partition_is_added_to_an_existing_table_and_both_headers_read_back() {
+        let layout = Layout::new(1 << 21, 512).unwrap();
+        let first = layout.aligned(layout.first_usable);
+        let existing = [NewPartition {
+            kind: EFI_SYSTEM_PARTITION,
+            unique: [1; 16],
+            first,
+            last: first + 2047,
+            name: "EFI system partition",
+        }];
+        let table = NewTable::new(layout, [9; 16], &existing).unwrap();
+        let mut block = [0u8; 512];
+        block[..HEADER_BYTES].copy_from_slice(&table.primary_header);
+        let primary = read_header(&block).unwrap();
+        block[..HEADER_BYTES].copy_from_slice(&table.backup_header);
+        let backup = read_header(&block).unwrap();
+        let mut entries = table.entries;
+        let added = NewPartition {
+            kind: EGGOS_DATA_PARTITION,
+            unique: [2; 16],
+            first: first + 4096,
+            last: first + 8191,
+            name: "EggOS",
+        };
+        let overlapping = NewPartition { first: first + 1024, ..added };
+        assert_eq!(add_partition(&primary, &mut entries, &overlapping), Err(AddRefusal::Overlaps));
+        let outside = NewPartition { last: layout.last_usable + 1, ..added };
+        assert_eq!(add_partition(&primary, &mut entries, &outside), Err(AddRefusal::OutsideUsable));
+        let crc = add_partition(&primary, &mut entries, &added).unwrap();
+        for header in [primary, backup] {
+            block[..HEADER_BYTES].copy_from_slice(&rewritten_header(&header, crc));
+            let reread = read_header(&block).unwrap();
+            assert_eq!(reread.current, header.current);
+            assert_eq!(reread.entries_at, header.entries_at);
+            let found = partitions_of(&reread, &entries);
+            assert_eq!(found.len(), 2);
+            assert_eq!(found[1].kind, EGGOS_DATA_PARTITION);
+            assert_eq!(found[1].blocks(), 4096);
+        }
+        assert_eq!(add_partition(&primary, &mut entries, &added), Err(AddRefusal::Damaged));
     }
 
     fn partitions_of(header: &Header, entries: &[u8]) -> Vec<Partition> {
