@@ -205,6 +205,7 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     stores: [Store; A],
     area_histories: [AreaHistory; A],
     field_history: FieldHistory,
+    menu_marks: [Option<(WidgetId, u8, bool)>; widget::MENU_MARKS],
     field_edit_kind: EditKind,
     replaying_field: bool,
 }
@@ -269,6 +270,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             stores: [Store::EMPTY; A],
             area_histories: [const { AreaHistory::EMPTY }; A],
             field_history: FieldHistory::EMPTY,
+            menu_marks: [None; widget::MENU_MARKS],
             field_edit_kind: EditKind::Alone,
             replaying_field: false,
         }

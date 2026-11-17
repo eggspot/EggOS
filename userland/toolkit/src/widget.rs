@@ -94,6 +94,8 @@ pub const MENU_TITLE_PADDING: i32 = 12;
 pub const MENU_KEY_GAP: i32 = 24;
 /// The most menus a menu bar holds: what `SET_MENU` takes.
 pub const MAX_MENUS: usize = 6;
+/// How many check and radio marks a tree keeps apart from its menus' entries.
+pub const MENU_MARKS: usize = 32;
 /// A table's header height (docs/ux/toolkit-v0.5.md section 4).
 pub const TABLE_HEADER_HEIGHT: i32 = 28;
 /// A table row's height.

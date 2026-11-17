@@ -27801,3 +27801,23 @@ the license, by an explicit instruction recorded here.
   nothing.
 - **Not yet.** Building and running; the acceptance cases of the brief's section 9 as host
   tests of the tree (the module's own tests cover grouping, redo and the budget).
+
+
+## D626 Check and radio menu items with program-owned marks (M7; toolkit v0.6 section 2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Entries.** `menu::Entry` gains `Check` (with `checked`) and `Radio` (with `selected`);
+  `Entry::item` gives every chooseable entry's parts (`ItemParts`, with its `Mark`), so the
+  menu, the tree, the agent view and the pool treat the three item kinds alike. Choosing one
+  returns `Invoked` as an item does; the menu never flips a mark.
+- **Marks.** The program's state lives in the tree, apart from the static entries: a table of
+  `MENU_MARKS` (32) overrides keyed by widget and entry id, set by `set_entry_checked` and
+  `set_entry_selected` (which clears the rest of the radio group, the run of radio items found
+  by `menu::radio_group`). Every built menu applies them (`Menu::with_marks`): the open menu,
+  the agent's view (flags `checked` and `selected`) and the macOS pool
+  (`Bar::pool_with_marks`). A full table ignores a new mark rather than dropping one in use.
+- **Drawing.** A menu with any mark keeps a 20 px column for every row (labels at 32), the
+  tick and the dot drawn pixel by pixel as the brief gives them, in `text` or `text.dim`.
+  The window server's top bar reads the pool's third field (`c1`, `c0`, `r1`, `r0`; any other
+  value refuses the pool), keeps the same column and draws the same marks; a pool without
+  marks parses and draws as before.
+- **Not yet.** Building and running; submenus and the shared `menu::Stack`, the `wm menu`
+  listing of marks, and the brief's acceptance cases as tree tests.

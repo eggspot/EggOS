@@ -6,7 +6,8 @@ use super::{Kind, Response, WidgetId, WidgetTree};
 use crate::canvas::Canvas;
 use crate::geometry::Rect;
 use crate::input::key;
-use crate::menu::{Entry, Menu, MenuKey, POOL_CAPACITY};
+use crate::menu::{self, Entry, Menu, MenuKey, POOL_CAPACITY};
+use crate::widget::MAX_MENUS;
 
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// The window's menu bar: the first shown one.
@@ -36,8 +37,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     /// Writes the menu bar as `SET_MENU`'s pool into `out`: its length, `None` without a bar.
     pub fn main_menu(&self, out: &mut [u8; POOL_CAPACITY]) -> Option<usize> {
-        match self.kind(self.menu_bar()?) {
-            Some(Kind::MenuBar(bar)) => Some(bar.pool(out)),
+        let id = self.menu_bar()?;
+        match self.kind(id) {
+            Some(Kind::MenuBar(bar)) => {
+                Some(bar.pool_with_marks(out, |entry| self.mark_of(id, entry)))
+            }
             _ => None,
         }
     }
@@ -54,14 +58,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if menu >= bar.count || !self.is_enabled(id) {
             return Response::Nothing;
         }
-        match bar.menus[menu].get(entry) {
-            Some(Entry::Item {
-                enabled: true,
-                id: item,
-                ..
-            }) => {
+        match bar.menus[menu].get(entry).and_then(Entry::item) {
+            Some(item) if item.enabled => {
                 self.close_menu();
-                Response::Invoked(id, *item)
+                Response::Invoked(id, item.id)
             }
             _ => Response::Nothing,
         }
@@ -89,11 +89,68 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let id = self.menu?;
         let rect = self.rect(id)?;
         let window = self.window_rect();
-        match self.kind(id)? {
-            Kind::MenuBar(bar) => Some((id, bar.menu(rect, window)?)),
-            Kind::MenuButton(button) if button.open => Some((id, button.menu(rect, window))),
-            _ => None,
+        let menu = match self.kind(id)? {
+            Kind::MenuBar(bar) => bar.menu(rect, window)?,
+            Kind::MenuButton(button) if button.open => button.menu(rect, window),
+            _ => return None,
+        };
+        Some((id, menu.with_marks(|entry| self.mark_of(id, entry))))
+    }
+
+    /// The program's mark for check or radio item `entry` of menu bar or menu button `widget`,
+    /// once set; None while the entry's own stands.
+    pub(super) fn mark_of(&self, widget: WidgetId, entry: u8) -> Option<bool> {
+        self.menu_marks
+            .iter()
+            .flatten()
+            .find(|&&(owner, id, _)| owner == widget && id == entry)
+            .map(|&(_, _, on)| on)
+    }
+
+    fn put_mark(&mut self, widget: WidgetId, entry: u8, on: bool) {
+        let slot = self
+            .menu_marks
+            .iter()
+            .position(|slot| matches!(slot, Some((owner, id, _)) if *owner == widget && *id == entry))
+            .or_else(|| self.menu_marks.iter().position(Option::is_none));
+        if let Some(slot) = slot {
+            self.menu_marks[slot] = Some((widget, entry, on));
         }
+    }
+
+    fn menu_entries_of(&self, widget: WidgetId) -> [&'static [Entry]; MAX_MENUS] {
+        let mut lists: [&'static [Entry]; MAX_MENUS] = [&[]; MAX_MENUS];
+        match self.kind(widget) {
+            Some(Kind::MenuBar(bar)) => lists[..bar.count].copy_from_slice(&bar.menus[..bar.count]),
+            Some(Kind::MenuButton(button)) => lists[0] = button.entries,
+            _ => {}
+        }
+        lists
+    }
+
+    /// Ticks or clears check item `entry` of menu bar or menu button `widget`: the program's
+    /// state, which the menu shows and never changes itself (docs/ux/toolkit-v0.6.md section
+    /// 2.1).
+    pub fn set_entry_checked(&mut self, widget: WidgetId, entry: u8, checked: bool) {
+        if self.mark_of(widget, entry) == Some(checked) {
+            return;
+        }
+        self.put_mark(widget, entry, checked);
+        self.damage_menu();
+    }
+
+    /// Selects radio item `entry` of menu bar or menu button `widget` and clears the rest of
+    /// its radio group (the run of radio items it is in).
+    pub fn set_entry_selected(&mut self, widget: WidgetId, entry: u8) {
+        let lists = self.menu_entries_of(widget);
+        let Some(group) = lists.iter().find_map(|entries| menu::radio_group(entries, entry))
+        else {
+            return;
+        };
+        for item in group.iter().filter_map(Entry::item) {
+            self.put_mark(widget, item.id, item.id == entry);
+        }
+        self.damage_menu();
     }
 
     fn damage_menu(&mut self) {
@@ -453,13 +510,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Some(Kind::MenuButton(button)) => button.entries,
             _ => return Response::Nothing,
         };
-        match entries.get(index) {
-            Some(Entry::Item {
-                enabled: true,
-                id: item,
-                ..
-            }) => {
-                let item = *item;
+        match entries.get(index).and_then(Entry::item) {
+            Some(parts) if parts.enabled => {
+                let item = parts.id;
                 if self.menu == Some(id) {
                     self.close_menu();
                 }

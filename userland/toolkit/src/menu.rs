@@ -28,6 +28,14 @@ const SEPARATOR_LINE: i32 = 4;
 const UNDERLINE_ROW: i32 = 14;
 const TITLE_TEXT_TOP: i32 = 6;
 const MENU_BUTTON_GAP: i32 = 4;
+/// The column a menu with a check or radio item keeps for the marks (docs/ux/toolkit-v0.6.md
+/// section 2.2).
+pub const MARK_COLUMN: i32 = 20;
+const MARK_X: i32 = 12;
+const TICK_TOP: i32 = 12;
+const TICK_ROWS: [i32; 8] = [4, 5, 6, 5, 4, 3, 2, 1];
+const DOT_OFFSET: i32 = 13;
+const DOT_INSETS: [i32; 6] = [2, 1, 0, 0, 1, 2];
 
 /// One line of a menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +50,134 @@ pub enum Entry {
     },
     /// A thin line between groups.
     Separator,
+    /// An item with a tick, `checked` its starting state: the program's, which the menu shows
+    /// and never flips.
+    Check {
+        label: &'static str,
+        key: &'static str,
+        enabled: bool,
+        id: u8,
+        checked: bool,
+    },
+    /// An item of a radio group (a run of radio items), with a dot when `selected`.
+    Radio {
+        label: &'static str,
+        key: &'static str,
+        enabled: bool,
+        id: u8,
+        selected: bool,
+    },
+}
+
+/// The mark of a check or radio item, and whether it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Check(bool),
+    Radio(bool),
+}
+
+/// What every chooseable entry has, whatever its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemParts {
+    pub label: &'static str,
+    pub key: &'static str,
+    pub enabled: bool,
+    pub id: u8,
+    pub mark: Option<Mark>,
+}
+
+impl Entry {
+    /// Its parts when it is an item of any kind; None for a separator.
+    pub fn item(&self) -> Option<ItemParts> {
+        let (label, key, enabled, id, mark) = match *self {
+            Entry::Item {
+                label,
+                key,
+                enabled,
+                id,
+            } => (label, key, enabled, id, None),
+            Entry::Check {
+                label,
+                key,
+                enabled,
+                id,
+                checked,
+            } => (label, key, enabled, id, Some(Mark::Check(checked))),
+            Entry::Radio {
+                label,
+                key,
+                enabled,
+                id,
+                selected,
+            } => (label, key, enabled, id, Some(Mark::Radio(selected))),
+            Entry::Separator => return None,
+        };
+        Some(ItemParts {
+            label,
+            key,
+            enabled,
+            id,
+            mark,
+        })
+    }
+
+    /// The same entry with its mark shown when `on`; other kinds unchanged.
+    pub fn with_mark(self, on: bool) -> Self {
+        match self {
+            Entry::Check {
+                label,
+                key,
+                enabled,
+                id,
+                ..
+            } => Entry::Check {
+                label,
+                key,
+                enabled,
+                id,
+                checked: on,
+            },
+            Entry::Radio {
+                label,
+                key,
+                enabled,
+                id,
+                ..
+            } => Entry::Radio {
+                label,
+                key,
+                enabled,
+                id,
+                selected: on,
+            },
+            other => other,
+        }
+    }
+
+    fn height(&self) -> i32 {
+        match self {
+            Entry::Separator => SEPARATOR_HEIGHT,
+            _ => ITEM_HEIGHT,
+        }
+    }
+}
+
+/// The ids of the radio group (the run of radio items) that holds the radio item `id` in
+/// `entries`, if one does.
+pub fn radio_group(entries: &[Entry], id: u8) -> Option<&[Entry]> {
+    let at = entries.iter().position(|entry| {
+        matches!(entry, Entry::Radio { id: found, .. } if *found == id)
+    })?;
+    let is_radio = |entry: &Entry| matches!(entry, Entry::Radio { .. });
+    let start = entries[..at]
+        .iter()
+        .rposition(|entry| !is_radio(entry))
+        .map_or(0, |index| index + 1);
+    let end = entries[at..]
+        .iter()
+        .position(|entry| !is_radio(entry))
+        .map_or(entries.len(), |index| at + index);
+    Some(&entries[start..end])
 }
 
 /// `label` as it is drawn: each `&` that marks a mnemonic dropped, `&&` kept as one `&`.
@@ -103,10 +239,7 @@ pub enum MenuKey {
 pub fn height_of(entries: &[Entry]) -> i32 {
     2 + entries[..entries.len().min(MAX_ENTRIES)]
         .iter()
-        .map(|entry| match entry {
-            Entry::Item { .. } => ITEM_HEIGHT,
-            Entry::Separator => SEPARATOR_HEIGHT,
-        })
+        .map(Entry::height)
         .sum::<i32>()
 }
 
@@ -131,18 +264,24 @@ impl Menu {
         let (widest_label, widest_key) =
             held[..count]
                 .iter()
-                .fold((0, 0), |(labels, keys), entry| match entry {
-                    Entry::Item { label, key, .. } => (
-                        labels.max(text::width(plain_label(label).as_str())),
-                        keys.max(text::width(key)),
+                .fold((0, 0), |(labels, keys), entry| match entry.item() {
+                    Some(item) => (
+                        labels.max(text::width(plain_label(item.label).as_str())),
+                        keys.max(text::width(item.key)),
                     ),
-                    Entry::Separator => (labels, keys),
+                    None => (labels, keys),
                 });
+        let marks = match held[..count].iter().any(|entry| {
+            entry.item().is_some_and(|item| item.mark.is_some())
+        }) {
+            true => MARK_COLUMN,
+            false => 0,
+        };
         let keys = match widest_key {
             0 => 0,
             widest => MENU_KEY_GAP + widest,
         };
-        let widest = 2 * TEXT_X + widest_label + keys;
+        let widest = 2 * TEXT_X + marks + widest_label + keys;
         let width = ((widest + WIDTH_STEP - 1) / WIDTH_STEP * WIDTH_STEP).max(MIN_WIDTH);
         let height = height_of(&held[..count]);
         let x = x.min(bounds.right() - CLEAR_OF_EDGE - width).max(bounds.x);
@@ -170,6 +309,26 @@ impl Menu {
         self
     }
 
+    /// The same menu with each check or radio item's mark as `mark` says by the item's id
+    /// (None leaves the entry's own): the program's state, kept apart from the entries.
+    pub fn with_marks(mut self, mark: impl Fn(u8) -> Option<bool>) -> Self {
+        for entry in &mut self.entries[..self.count] {
+            if let Some(item) = entry.item().filter(|item| item.mark.is_some())
+                && let Some(on) = mark(item.id)
+            {
+                *entry = entry.with_mark(on);
+            }
+        }
+        self
+    }
+
+    /// Whether it keeps a column for marks: it holds a check or radio item.
+    pub fn has_marks(&self) -> bool {
+        self.entries[..self.count]
+            .iter()
+            .any(|entry| entry.item().is_some_and(|item| item.mark.is_some()))
+    }
+
     /// The entry shown chosen.
     pub fn chosen(&self) -> Option<usize> {
         self.chosen
@@ -189,26 +348,22 @@ impl Menu {
     pub fn entry_rect(&self, index: usize) -> Rect {
         let mut y = self.rect.y + 1;
         for entry in &self.entries[..index.min(self.count)] {
-            y += match entry {
-                Entry::Item { .. } => ITEM_HEIGHT,
-                Entry::Separator => SEPARATOR_HEIGHT,
-            };
+            y += entry.height();
         }
-        let height = match self.entries.get(index) {
-            Some(Entry::Item { .. }) => ITEM_HEIGHT,
-            _ => SEPARATOR_HEIGHT,
+        let height = match self.entries[..self.count].get(index) {
+            Some(entry) => entry.height(),
+            None => SEPARATOR_HEIGHT,
         };
         Rect::new(self.rect.x + 1, y, self.rect.width - 2, height)
     }
 
     /// The id of entry `index` when it is an enabled item.
     pub fn enabled(&self, index: usize) -> Option<u8> {
-        match self.entries[..self.count].get(index) {
-            Some(Entry::Item {
-                enabled: true, id, ..
-            }) => Some(*id),
-            _ => None,
-        }
+        self.entries[..self.count]
+            .get(index)
+            .and_then(Entry::item)
+            .filter(|item| item.enabled)
+            .map(|item| item.id)
     }
 
     /// The first enabled item, by index.
@@ -220,13 +375,13 @@ impl Menu {
     /// and how many there are.
     pub fn with_mnemonic(&self, letter: char) -> (Option<usize>, usize) {
         let letter = letter.to_ascii_lowercase();
-        let matches = |index: usize| match self.entries[index] {
-            Entry::Item {
-                label,
-                enabled: true,
-                ..
-            } => mnemonic(label).is_some_and(|(found, _, _)| found == letter),
-            _ => false,
+        let matches = |index: usize| {
+            self.entries[index]
+                .item()
+                .filter(|item| item.enabled)
+                .is_some_and(|item| {
+                    mnemonic(item.label).is_some_and(|(found, _, _)| found == letter)
+                })
         };
         let count = (0..self.count).filter(|&index| matches(index)).count();
         let start = self.chosen.map_or(0, |chosen| chosen + 1);
@@ -291,10 +446,14 @@ impl Menu {
         let palette = canvas.palette();
         canvas.rounded(self.rect, &INSET_R6, palette.menu);
         canvas.outline(self.rect, &INSET_R6, 1, palette.menu_border);
+        let text_x = match self.has_marks() {
+            true => TEXT_X + MARK_COLUMN,
+            false => TEXT_X,
+        };
         for (index, entry) in self.entries[..self.count].iter().enumerate() {
             let rect = self.entry_rect(index);
-            match entry {
-                Entry::Separator => canvas.fill(
+            match entry.item() {
+                None => canvas.fill(
                     Rect::new(
                         self.rect.x + CLEAR_OF_EDGE,
                         rect.y + SEPARATOR_LINE,
@@ -303,12 +462,13 @@ impl Menu {
                     ),
                     palette.menu_border,
                 ),
-                Entry::Item {
+                Some(ItemParts {
                     label,
                     key,
                     enabled,
+                    mark,
                     ..
-                } => {
+                }) => {
                     if self.chosen == Some(index) {
                         canvas.fill(rect, palette.menu_hover);
                     }
@@ -316,8 +476,13 @@ impl Menu {
                         true => palette.text,
                         false => palette.text_dim,
                     };
+                    match mark {
+                        Some(Mark::Check(true)) => paint_tick(canvas, self.rect.x, rect.y, ink),
+                        Some(Mark::Radio(true)) => paint_dot(canvas, self.rect.x, rect.y, ink),
+                        _ => {}
+                    }
                     let y = rect.y + (ITEM_HEIGHT - LINE_HEIGHT) / 2;
-                    let x = self.rect.x + TEXT_X;
+                    let x = self.rect.x + text_x;
                     canvas.text(x, y, plain_label(label).as_str(), ink, 1);
                     if self.mnemonics {
                         underline(canvas, label, x, y, ink);
@@ -329,6 +494,21 @@ impl Menu {
                 }
             }
         }
+    }
+}
+
+fn paint_tick(canvas: &mut Canvas<'_>, menu_x: i32, row_y: i32, ink: u32) {
+    let (x, y) = (menu_x + MARK_X, row_y + TICK_TOP);
+    for (column, row) in TICK_ROWS.iter().enumerate() {
+        canvas.fill(Rect::new(x + column as i32, y + row, 1, 2), ink);
+    }
+}
+
+fn paint_dot(canvas: &mut Canvas<'_>, menu_x: i32, row_y: i32, ink: u32) {
+    let (x, y) = (menu_x + DOT_OFFSET, row_y + DOT_OFFSET);
+    let size = DOT_INSETS.len() as i32;
+    for (row, inset) in DOT_INSETS.iter().enumerate() {
+        canvas.fill(Rect::new(x + inset, y + row as i32, size - 2 * inset, 1), ink);
     }
 }
 
@@ -425,6 +605,17 @@ impl Bar {
     /// `D<label>\t<key>`, `-`, each ending with a line break, `&` dropped); the pool's length,
     /// cut at the last whole entry that fits [`POOL_CAPACITY`].
     pub fn pool(&self, out: &mut [u8; POOL_CAPACITY]) -> usize {
+        self.pool_with_marks(out, |_| None)
+    }
+
+    /// [`Self::pool`] with each check or radio item's mark as `mark` says by its id (None
+    /// leaves the entry's own), as a third field: `c1` or `c0` for a check, `r1` or `r0` for a
+    /// radio (docs/ux/toolkit-v0.6.md section 2.5).
+    pub fn pool_with_marks(
+        &self,
+        out: &mut [u8; POOL_CAPACITY],
+        mark: impl Fn(u8) -> Option<bool>,
+    ) -> usize {
         let mut length = 0;
         let mut put = |parts: &[&[u8]], length: &mut usize| -> bool {
             let needed: usize = parts.iter().map(|part| part.len()).sum();
@@ -443,22 +634,26 @@ impl Bar {
                 return length;
             }
             for entry in self.menus[index].iter().take(MAX_ENTRIES) {
-                let fits = match entry {
-                    Entry::Separator => put(&[b"-\n"], &mut length),
-                    Entry::Item {
-                        label,
-                        key,
-                        enabled,
-                        ..
-                    } => {
-                        let label = plain_label(label);
-                        let mark: &[u8] = if *enabled { b"I" } else { b"D" };
+                let fits = match entry.item() {
+                    None => put(&[b"-\n"], &mut length),
+                    Some(item) => {
+                        let label = plain_label(item.label);
+                        let kind: &[u8] = if item.enabled { b"I" } else { b"D" };
+                        let shown = |own: bool| mark(item.id).unwrap_or(own);
+                        let marked: &[u8] = match item.mark {
+                            None => b"",
+                            Some(Mark::Check(own)) if shown(own) => b"\tc1",
+                            Some(Mark::Check(_)) => b"\tc0",
+                            Some(Mark::Radio(own)) if shown(own) => b"\tr1",
+                            Some(Mark::Radio(_)) => b"\tr0",
+                        };
                         put(
                             &[
-                                mark,
+                                kind,
                                 label.as_str().as_bytes(),
                                 b"\t",
-                                key.as_bytes(),
+                                item.key.as_bytes(),
+                                marked,
                                 b"\n",
                             ],
                             &mut length,
@@ -603,5 +798,63 @@ mod tests {
         assert!(menu.hover(delete.x + 4, delete.y + 4));
         assert!(!menu.hover(delete.x + 5, delete.y + 5));
         assert!(menu.leave());
+    }
+
+    const VIEW: [Entry; 5] = [
+        Entry::Check {
+            label: "&Wrap",
+            key: "",
+            enabled: true,
+            id: 1,
+            checked: false,
+        },
+        Entry::Separator,
+        Entry::Radio {
+            label: "&Small",
+            key: "",
+            enabled: true,
+            id: 2,
+            selected: true,
+        },
+        Entry::Radio {
+            label: "&Large",
+            key: "",
+            enabled: true,
+            id: 3,
+            selected: false,
+        },
+        Entry::Item {
+            label: "&Zoom",
+            key: "",
+            enabled: true,
+            id: 4,
+        },
+    ];
+
+    #[test]
+    fn marks_come_from_the_program_and_a_radio_group_is_a_run() {
+        let group = radio_group(&VIEW, 3).unwrap();
+        assert_eq!(group.len(), 2);
+        assert!(radio_group(&VIEW, 1).is_none());
+        let menu = Menu::new(&VIEW, 0, 0, Rect::new(0, 0, 720, 480))
+            .with_marks(|id| (id == 1 || id == 3).then_some(true));
+        assert!(menu.has_marks());
+        assert_eq!(menu.entries()[0].item().unwrap().mark, Some(Mark::Check(true)));
+        assert_eq!(menu.entries()[3].item().unwrap().mark, Some(Mark::Radio(true)));
+        assert_eq!(menu.enabled(0), Some(1));
+        let plain = Menu::new(&ENTRIES, 0, 0, Rect::new(0, 0, 720, 480));
+        assert!(!plain.has_marks());
+    }
+
+    #[test]
+    fn the_pool_carries_each_mark_as_a_third_field() {
+        let menus: [(&'static str, &'static [Entry]); 1] = [("&View", &VIEW)];
+        let bar = Bar::new(&menus);
+        let mut out = [0u8; POOL_CAPACITY];
+        let length = bar.pool_with_marks(&mut out, |id| (id == 1).then_some(true));
+        assert_eq!(
+            &out[..length],
+            b"MView\nIWrap\t\tc1\n-\nISmall\t\tr1\nILarge\t\tr0\nIZoom\t\n"
+        );
     }
 }

@@ -146,7 +146,8 @@ and is not listed per item.
 - [x] Light theme and high contrast in what draws itself: the shell's panels, the terminal's grid and the light high-contrast ANSI table, Files' and the Text Editor's own drawing (D219, D224) — code written, unbuilt, D610
 - [x] Toolkit: word moves and word deletion in text fields and areas, per profile (D219, docs/ux/toolkit-v0.6.md section 5.2) — code written, unbuilt, D624
 - [x] Toolkit: undo and redo in text fields and areas (docs/ux/toolkit-v0.6.md section 5.1) — code written, unbuilt, D625
-- [ ] Toolkit: submenus, check and radio items, the macOS top bar's marks (docs/ux/toolkit-v0.6.md section 2)
+- [x] Toolkit: check and radio items with program-owned marks, in the window's menus and the macOS top bar (docs/ux/toolkit-v0.6.md sections 2.1, 2.2, 2.5) — code written, unbuilt, D626
+- [ ] Toolkit: submenus and `menu::Stack` (docs/ux/toolkit-v0.6.md sections 2.1 to 2.5), with `wm menu` listing marks and nested entries
 - [ ] Toolkit: the menu bar's `...` overflow (docs/ux/toolkit-v0.6.md section 3)
 - [ ] Toolkit: table column reordering, fit-to-content, multi-selection and cell focus (docs/ux/toolkit-v0.6.md section 4)
 

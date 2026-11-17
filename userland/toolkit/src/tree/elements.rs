@@ -6,7 +6,7 @@
 
 use super::{ROOT_ELEMENT, Response, WidgetId, WidgetTree};
 use crate::geometry::Rect;
-use crate::menu::{Entry, Menu, plain_label};
+use crate::menu::{ItemParts, Mark, Menu, plain_label};
 use crate::table::ROW_PART;
 use crate::text::Text;
 use crate::widget::{Kind, MAX_COLUMNS, MAX_MENUS, card_rect, radio_rect};
@@ -49,12 +49,13 @@ fn describe_entries(
     tree: &mut TreeWriter<'_>,
 ) -> bool {
     menu.entries().iter().enumerate().all(|(index, entry)| {
-        let Entry::Item {
+        let Some(ItemParts {
             label,
             key,
             enabled,
+            mark,
             ..
-        } = entry
+        }) = entry.item()
         else {
             return true;
         };
@@ -62,7 +63,12 @@ fn describe_entries(
             return true;
         };
         let name = plain_label(label);
-        let flags = disabled | if *enabled { 0 } else { flags::DISABLED };
+        let marked = match mark {
+            Some(Mark::Check(true)) => flags::CHECKED,
+            Some(Mark::Radio(true)) => flags::SELECTED,
+            _ => 0,
+        };
+        let flags = disabled | marked | if enabled { 0 } else { flags::DISABLED };
         tree.push(
             &Element::new(id, parent, Role::MenuItem, bounds(menu.entry_rect(index)))
                 .named(name.as_str().as_bytes())
@@ -342,7 +348,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             )
             .named(name.as_str().as_bytes())
             .flagged(disabled | if open { flags::EXPANDED } else { 0 });
-            let menu = Menu::new(bar.menus[title], title_rect.x, rect.bottom() + 1, window);
+            let menu = Menu::new(bar.menus[title], title_rect.x, rect.bottom() + 1, window)
+                .with_marks(|entry| self.mark_of(id, entry));
             let parent = part_element(id, title);
             tree.push(&element)
                 && describe_entries(
@@ -407,7 +414,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Kind::MenuBar(bar) => self.describe_bar(id, bar, node.rect, disabled, tree),
             Kind::MenuButton(button) => {
                 let window = Rect::new(0, 0, self.size.0, self.size.1);
-                let menu = button.menu(node.rect, window);
+                let menu = button
+                    .menu(node.rect, window)
+                    .with_marks(|entry| self.mark_of(id, entry));
                 describe_entries(
                     &menu,
                     element_of(id),

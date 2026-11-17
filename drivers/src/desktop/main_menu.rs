@@ -35,6 +35,12 @@ const ITEM_START: u8 = b'I';
 const DISABLED_ITEM_START: u8 = b'D';
 const SEPARATOR_START: u8 = b'-';
 const ENTRY_END: u8 = b'\n';
+const MARK_COLUMN: u32 = 20;
+const MARK_X: u32 = 12;
+const TICK_TOP: u32 = 12;
+const TICK_ROWS: [u32; 8] = [4, 5, 6, 5, 4, 3, 2, 1];
+const DOT_OFFSET: u32 = 13;
+const DOT_INSETS: [u32; 6] = [2, 1, 0, 0, 1, 2];
 const KEY_LABEL_START: u8 = b'\t';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,17 +66,40 @@ impl EntryKind {
     }
 }
 
+/// The mark of a check or radio item, the pool's third field (`c1`, `c0`, `r1`, `r0`;
+/// docs/ux/toolkit-v0.6.md section 2.5), and whether it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EntryMark {
+    None,
+    Check(bool),
+    Radio(bool),
+}
+
+impl EntryMark {
+    fn parse(field: &[u8]) -> Result<Self, WindowError> {
+        Ok(match field {
+            b"c1" => Self::Check(true),
+            b"c0" => Self::Check(false),
+            b"r1" => Self::Radio(true),
+            b"r0" => Self::Radio(false),
+            _ => return Err(WindowError::Invalid),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Entry {
     kind: EntryKind,
     label: Span,
     key_label: Span,
+    mark: EntryMark,
 }
 
 const SEPARATOR: Entry = Entry {
     kind: EntryKind::Separator,
     label: Span { start: 0, end: 0 },
     key_label: Span { start: 0, end: 0 },
+    mark: EntryMark::None,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -149,7 +178,17 @@ impl MainMenu {
                     .map(|at| text + at)
                     .ok_or(WindowError::Invalid)?;
                 let label = self.label_span(text, tab)?;
-                let key_label = self.label_span(tab + 1, end)?;
+                let mark_tab = self.pool[tab + 1..end]
+                    .iter()
+                    .position(|&byte| byte == KEY_LABEL_START)
+                    .map(|at| tab + 1 + at);
+                let (key_label, mark) = match mark_tab {
+                    Some(mark_tab) => (
+                        self.label_span(tab + 1, mark_tab)?,
+                        EntryMark::parse(&self.pool[mark_tab + 1..end])?,
+                    ),
+                    None => (self.label_span(tab + 1, end)?, EntryMark::None),
+                };
                 let kind = match kind {
                     ITEM_START => EntryKind::Item,
                     _ => EntryKind::DisabledItem,
@@ -158,6 +197,7 @@ impl MainMenu {
                     kind,
                     label,
                     key_label,
+                    mark,
                 })
             }
             SEPARATOR_START if end == text => self.push(SEPARATOR),
@@ -228,6 +268,24 @@ impl MainMenu {
         self.text(self.entry(menu, entry).label)
     }
 
+    /// The mark of entry `entry` of menu `menu`.
+    pub fn entry_mark(&self, menu: usize, entry: usize) -> EntryMark {
+        self.entry(menu, entry).mark
+    }
+
+    /// Whether menu `menu` keeps a column for marks: it holds a check or radio item.
+    pub fn has_marks(&self, menu: usize) -> bool {
+        (0..self.entry_count(menu)).any(|entry| self.entry_mark(menu, entry) != EntryMark::None)
+    }
+
+    /// Where menu `menu`'s labels start from its left edge.
+    pub fn text_x(&self, menu: usize) -> u32 {
+        match self.has_marks(menu) {
+            true => MENU_TEXT_X + MARK_COLUMN,
+            false => MENU_TEXT_X,
+        }
+    }
+
     /// The key label of entry `entry` of menu `menu`, empty when it has none.
     pub fn entry_key_label(&self, menu: usize, entry: usize) -> &str {
         self.text(self.entry(menu, entry).key_label)
@@ -244,7 +302,7 @@ impl MainMenu {
         let widest = (0..self.entry_count(menu))
             .filter(|&entry| self.entry_kind(menu, entry) != EntryKind::Separator)
             .map(|entry| {
-                MENU_TEXT_X
+                self.text_x(menu)
                     + text_width(self.entry_label(menu, entry))
                     + KEY_LABEL_GAP
                     + text_width(self.entry_key_label(menu, entry))
@@ -880,9 +938,39 @@ impl Desktop {
                         EntryKind::Item => colour::current().text,
                         _ => colour::current().text_dim,
                     };
+                    match menu.entry_mark(open.menu, entry) {
+                        EntryMark::Check(true) => {
+                            for (column, row) in TICK_ROWS.iter().enumerate() {
+                                canvas.fill(
+                                    Rect::new(
+                                        rect.x + MARK_X + column as u32,
+                                        top + TICK_TOP + row,
+                                        1,
+                                        2,
+                                    ),
+                                    label_colour,
+                                );
+                            }
+                        }
+                        EntryMark::Radio(true) => {
+                            let size = DOT_INSETS.len() as u32;
+                            for (row, inset) in DOT_INSETS.iter().enumerate() {
+                                canvas.fill(
+                                    Rect::new(
+                                        rect.x + DOT_OFFSET + inset,
+                                        top + DOT_OFFSET + row as u32,
+                                        size - 2 * inset,
+                                        1,
+                                    ),
+                                    label_colour,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                     let y = top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
                     canvas.text(
-                        rect.x + MENU_TEXT_X,
+                        rect.x + menu.text_x(open.menu),
                         y,
                         menu.entry_label(open.menu, entry),
                         label_colour,

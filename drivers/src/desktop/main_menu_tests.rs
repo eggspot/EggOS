@@ -917,3 +917,18 @@ fn a_command_s_choice_is_refused_while_the_app_has_a_dialog_open() {
         [(OTHER, other, 0, 0), (CLIENT, second, 1, 0)]
     );
 }
+
+#[test]
+fn a_third_field_marks_a_check_or_radio_item_and_widens_the_menu() {
+    let menu = MainMenu::parse(b"MView\nIWrap\t\tc1\nDRuler\tCmd+R\tc0\n-\nISmall\t\tr0\nILarge\t\tr1\n")
+        .unwrap();
+    assert_eq!(menu.entry_mark(0, 0), EntryMark::Check(true));
+    assert_eq!(menu.entry_key_label(0, 1), "Cmd+R");
+    assert_eq!(menu.entry_mark(0, 1), EntryMark::Check(false));
+    assert_eq!(menu.entry_mark(0, 4), EntryMark::Radio(true));
+    assert!(menu.has_marks(0));
+    assert_eq!(menu.text_x(0), MENU_TEXT_X + MARK_COLUMN);
+    let plain = MainMenu::parse(b"MView\nIWrap\t\n").unwrap();
+    assert!(!plain.has_marks(0));
+    assert!(MainMenu::parse(b"MView\nIWrap\t\tx1\n").is_err());
+}
