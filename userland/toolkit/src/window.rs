@@ -50,6 +50,9 @@ const FOCUS_NAVIGABLE: u32 = 32;
 const SET_FORM: usize = 0x4004_772d;
 const SET_TEXT_FOCUS: usize = 0x4010_7730;
 const REPORT_ELEMENT: usize = 0x4030_7742;
+const SHOW_NOTICE: usize = 0x4048_773e;
+const NOTICE_TEXT: usize = 8;
+const NOTICE_CAPACITY: usize = 64;
 const ON_SCREEN_KEYBOARD: usize = 0xc014_7731;
 const ON_SCREEN_KEYBOARD_SET_MODE: u32 = 3;
 const SET_ROTATION: usize = 0x4004_7732;
@@ -212,6 +215,20 @@ impl WindowServer {
     pub fn set_lid_action(&self, action: u32) -> Result<(), Errno> {
         let mut bytes = action.to_ne_bytes();
         self.ioctl(SET_LID_ACTION, &mut bytes)
+    }
+
+    /// Shows `text` (cut at 64 bytes, on a character) as the desktop's notice for
+    /// `duration_ms` (`SHOW_NOTICE`, D590): `Count notes: done` for a quiet action (D609).
+    pub fn show_notice(&self, text: &str, duration_ms: u32) -> Result<(), Errno> {
+        let mut length = text.len().min(NOTICE_CAPACITY);
+        while !text.is_char_boundary(length) {
+            length -= 1;
+        }
+        let mut request = [0u8; NOTICE_TEXT + NOTICE_CAPACITY];
+        request[..4].copy_from_slice(&(length as u32).to_ne_bytes());
+        request[4..8].copy_from_slice(&duration_ms.to_ne_bytes());
+        request[NOTICE_TEXT..NOTICE_TEXT + length].copy_from_slice(&text.as_bytes()[..length]);
+        self.ioctl(SHOW_NOTICE, &mut request)
     }
 
     /// Makes `text` the clipboard every app shares (`SET_CLIPBOARD`, D197).

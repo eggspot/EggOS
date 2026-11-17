@@ -280,6 +280,10 @@ impl Desktop {
                 self.icons.menu = Some(menu);
                 damage.add(self.icon_menu_rect(&menu));
             }
+            _ if menu.jump_to(self.typed) => {
+                self.icons.menu = Some(menu);
+                damage.add(self.icon_menu_rect(&menu));
+            }
             key::ENTER | key::KEYPAD_ENTER => match menu.enter() {
                 MenuChoice::Open(app) => {
                     self.close_icon_menu(damage, events);

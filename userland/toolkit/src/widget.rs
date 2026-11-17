@@ -616,6 +616,14 @@ impl Kind {
         Self::TextArea(TextArea::new(store, placeholder))
     }
 
+    /// A text area the person can select in, copy from and scroll, but not change (D609):
+    /// a program's output.
+    pub const fn read_only_text_area(store: usize) -> Self {
+        let mut area = TextArea::new(store, "");
+        area.read_only = true;
+        Self::TextArea(area)
+    }
+
     /// Whether text is typed into it: a text field or a text area.
     pub fn is_text(&self) -> bool {
         matches!(self, Self::TextField(_) | Self::TextArea(_))

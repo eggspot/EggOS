@@ -221,6 +221,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// Puts `text` in text area `id` in place of its selection, as [`Response::PasteWanted`]
     /// asked.
     pub(super) fn area_paste(&mut self, id: WidgetId, text: &str, now_ms: u32) -> Response {
+        if matches!(self.kind(id), Some(Kind::TextArea(area)) if area.read_only) {
+            return Response::Nothing;
+        }
         let changed = self.edit_area(id, now_ms, |area, store| {
             Self::replace_selection(area, store, text)
         });
@@ -266,7 +269,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         .and_then(|store| store.text().get(start..end))
                         .unwrap_or("");
                     self.copied = Text::from(copied);
-                    if code == key::X {
+                    if code == key::X && !area.read_only {
                         self.edit_area(id, now_ms, |area, store| {
                             Self::replace_selection(area, store, "")
                         });
@@ -275,6 +278,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     return Response::Copied(id);
                 }
                 key::C | key::X => return Response::Nothing,
+                key::V if area.read_only => return Response::Nothing,
                 key::V => return Response::PasteWanted(id),
                 key::ENTER => return unused,
                 _ => {}
@@ -317,6 +321,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 false
             });
             return Response::Nothing;
+        }
+        if area.read_only {
+            return match code {
+                key::ENTER | key::TAB | key::ESC => unused,
+                _ => Response::Nothing,
+            };
         }
         let edited = match code {
             key::ENTER => self.edit_area(id, now_ms, |area, store| {

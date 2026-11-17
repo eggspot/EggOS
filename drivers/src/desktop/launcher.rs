@@ -251,6 +251,31 @@ impl AppMenu {
         }
     }
 
+    /// A letter typed with the menu open (D609): the next item after the hovered one whose
+    /// label starts with it, ignoring case, wrapping; `false` when none does.
+    pub fn jump_to(&mut self, typed: u32) -> bool {
+        let Some(letter) = char::from_u32(typed).filter(|letter| letter.is_alphanumeric()) else {
+            return false;
+        };
+        let count = self.items().len();
+        let start = self.hover.map_or(0, |item| item + 1);
+        let found = (0..count).map(|step| (start + step) % count).find(|&item| {
+            let words = self.items()[item].label();
+            self.items()[item] != MenuItem::Separator
+                && words
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.to_lowercase().eq(letter.to_lowercase()))
+        });
+        match found {
+            Some(item) => {
+                self.hover = Some(item);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Up or Down: the item above or below, skipping separators, wrapping, or the first.
     pub fn step(&mut self, back: bool) {
         let count = self.items().len();
@@ -713,6 +738,7 @@ impl Desktop {
                     menu.step(code == key::UP);
                     launcher.menu = Some(menu);
                 }
+                _ if menu.jump_to(self.typed) => launcher.menu = Some(menu),
                 key::ENTER | key::KEYPAD_ENTER => match menu.enter() {
                     MenuChoice::Open(app) => return self.launch_from_launcher(app, damage, events),
                     MenuChoice::Uninstall(app) => {

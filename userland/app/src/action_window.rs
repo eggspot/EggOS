@@ -23,7 +23,7 @@ use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Align, Column, Escape, Kind, Length, Place};
-use eggos_toolkit::window::Window;
+use eggos_toolkit::window::{Window, WindowServer, now_ms};
 
 /// The window's size: one height for every screen.
 pub const SIZE: (u32, u32) = (480, 400);
@@ -70,6 +70,12 @@ const APP_PROGRAM: &core::ffi::CStr = c"/bin/app";
 const REQUIRED_BOOLEAN: [&str; 2] = ["No", "Yes"];
 const OPTIONAL_BOOLEAN: [&str; 3] = ["Not set", "No", "Yes"];
 const OUTPUT_CUT: &str = "Output cut. See all of it in the Terminal: app do";
+const COPY_OUTPUT_WIDTH: i32 = 112;
+const QUIET_WAIT_MS: u32 = 1000;
+const QUIET_NOTICE_MS: u32 = 3000;
+const QUIET_NOTICE_GLYPHS: usize = 36;
+const CLOCK_MONOTONIC: usize = 1;
+const NANOSECONDS_PER_MS: u64 = 1_000_000;
 
 static mut STACK: ChildStack = ChildStack::new();
 static mut LIST_CELLS: [[(usize, [u8; 64]); 3]; actions::MAX_ACTIONS] =
@@ -98,6 +104,7 @@ struct Ids {
     status: Option<WidgetId>,
     table: Option<WidgetId>,
     area: Option<WidgetId>,
+    copy: Option<WidgetId>,
     fields: Vec<FieldIds>,
 }
 
@@ -121,6 +128,7 @@ struct ActionWindow {
     from_list: bool,
     run: Option<Run>,
     output: Vec<u8>,
+    ended_quietly: bool,
 }
 
 fn close() -> ! {
@@ -262,6 +270,7 @@ impl ActionWindow {
             from_list: action.is_none(),
             run: None,
             output: Vec::new(),
+            ended_quietly: false,
         };
         match action {
             Some(name) => match actions::actions(file).find(|each| each.name == name) {
@@ -792,6 +801,7 @@ impl ActionWindow {
         self.run = None;
         let exited = status & 0x7f == 0;
         let code = (status >> 8) & 0xff;
+        self.ended_quietly = !run.stopped && exited && code == 0 && self.output.is_empty();
         let sentence = match (run.stopped, exited, code, self.output.is_empty()) {
             (true, _, _, _) => String::from("Stopped."),
             (false, true, 0, false) => String::from("Done."),
@@ -831,7 +841,7 @@ impl ActionWindow {
             let area = self.add(
                 root,
                 at(AREA.0, AREA.1, AREA.2, AREA.3),
-                Kind::text_area(0, ""),
+                Kind::read_only_text_area(0),
             );
             let mut shown = lossy(&self.output);
             if self.output.len() >= OUTPUT_LIMIT {
@@ -844,12 +854,47 @@ impl ActionWindow {
             self.ids.area = Some(area);
         }
         self.buttons(root, "Run again", "Close");
+        if !self.output.is_empty() {
+            let copy = self.add(
+                root,
+                at(PADDING, BUTTONS_TOP, COPY_OUTPUT_WIDTH, CONTROL_HEIGHT),
+                Kind::button("Copy output", false),
+            );
+            self.ids.copy = Some(copy);
+        }
         if let Some(second) = self.ids.second {
             self.tree.set_shown(second, again && self.chosen.is_some());
         }
         if let Some(main) = self.ids.main {
             self.tree.set_focus(Some(main), 0);
         }
+    }
+
+    fn copy_output(&self) {
+        if let Ok(server) = WindowServer::open() {
+            let _ = server.set_clipboard(&lossy(&self.output));
+        }
+    }
+
+    /// Waits up to [`QUIET_WAIT_MS`] for a run that began without a window (section 6);
+    /// `true` when it ended with status 0 and printed nothing, and the desktop's notice said
+    /// so: no window is needed then.
+    fn ended_quietly_within_a_second(&mut self) -> bool {
+        let started = now_ms();
+        while self.run.is_some() && now_ms().wrapping_sub(started) < QUIET_WAIT_MS {
+            pause(POLL_MS);
+            self.poll();
+        }
+        if self.run.is_some() || !self.ended_quietly {
+            return false;
+        }
+        let title = self
+            .chosen
+            .map_or_else(|| self.app_title.clone(), |action| title_of(&action));
+        let notice = format!("{}: done", shortened(&title, QUIET_NOTICE_GLYPHS));
+        WindowServer::open()
+            .and_then(|server| server.show_notice(&notice, QUIET_NOTICE_MS))
+            .is_ok()
     }
 
     fn run_again(&mut self) {
@@ -912,15 +957,12 @@ impl Application<CAPACITY, 1> for ActionWindow {
             Response::Activated(id) if Some(id) == ids.main => self.press_main(),
             Response::Activated(id) if Some(id) == ids.second => self.press_second(),
             Response::Activated(id) if Some(id) == ids.back => self.show_form(),
+            Response::Activated(id) if Some(id) == ids.copy => self.copy_output(),
             Response::Chosen(id, _) if Some(id) == ids.table => self.follow_selection(),
             Response::Opened(id, row) if Some(id) == ids.table => {
                 if let Some(action) = actions::actions(self.file).nth(row) {
                     self.choose(action);
                 }
-            }
-            Response::Edited(id) if Some(id) == ids.area => {
-                let shown = lossy(&self.output);
-                self.tree.set_text(id, &shown);
             }
             Response::Edited(id) => {
                 let Some(action) = self.chosen else {
@@ -961,15 +1003,38 @@ impl Application<CAPACITY, 1> for ActionWindow {
 /// Runs the window for `app`'s actions, or for its `action`; returns the program's status.
 pub fn run(app: &'static [u8], action: Option<&[u8]>) -> i32 {
     let title = lossy(app);
+    let mut actions_window = ActionWindow::new(app, action);
+    let began_without_a_window = action.is_some() && actions_window.run.is_some();
+    if began_without_a_window && actions_window.ended_quietly_within_a_second() {
+        return 0;
+    }
     let mut window = match Window::create(&title, SIZE.0, SIZE.1, SIZE) {
         Ok(window) => window,
-        Err(_) => return 1,
+        Err(_) => {
+            actions_window.stop();
+            return 1;
+        }
     };
-    let mut actions_window = ActionWindow::new(app, action);
     let ended = application::run(&mut window, &mut actions_window);
     actions_window.stop();
     match ended {
         Ok(()) => 0,
         Err(_) => 1,
     }
+}
+
+fn pause(milliseconds: u32) {
+    let nanoseconds = u64::from(milliseconds) * NANOSECONDS_PER_MS;
+    let request = [
+        (nanoseconds / 1_000_000_000) as i64,
+        (nanoseconds % 1_000_000_000) as i64,
+    ];
+    // SAFETY: `clock_nanosleep` reads the two-word time `request`, which this function owns,
+    // and writes nothing, its remainder pointer being null.
+    let _ = unsafe {
+        syscall::call(
+            number::CLOCK_NANOSLEEP,
+            [CLOCK_MONOTONIC, 0, request.as_ptr() as usize, 0, 0, 0],
+        )
+    };
 }

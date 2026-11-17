@@ -27479,3 +27479,20 @@ the license, by an explicit instruction recorded here.
   opens Settings as a click does (`run_shell_action` opens Settings panes for the shell).
 - **Not yet.** Building and running; the desktop form's other panels in the shell's tree; the
   phone, tablet and TV layouts of the pane (section 10); the edition confirmation's plan.
+
+## D609 The app actions window's deviations: a quiet success as a notice, `Copy output`, type-to-jump in the app menu, and a read-only output area (M15; D301's deviations; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/app-actions-v0.5.md sections 3, 6 and 7, by Claude Fable)
+- **A quiet success** (`app do --window <app> <action>` for an action with no arguments that is
+  not `destroy`): the run starts before any window exists; within 1000 ms, ended with status 0
+  and nothing printed, the desktop's notice says `<title>: done` (cut at 36 glyphs, 3 s,
+  `WindowServer::show_notice` over `SHOW_NOTICE`) and no window is made. Output, another
+  status, a run still going after a second, or a refused notice open the window as before.
+- **`Copy output`** (112x28 at the buttons' row, only with output) puts the output on the shared
+  clipboard.
+- **Type-to-jump**: a letter typed in an app's menu (the desktop icon's and the launcher's)
+  hovers the next item whose label starts with it, wrapping (`AppMenu::jump_to`).
+- **A read-only text area** in the toolkit (`TextArea::read_only`,
+  `Kind::read_only_text_area`): selection, copy and scrolling work; typing, Backspace, Delete,
+  cut and paste do nothing; Enter, Tab and Esc go to the window. The result screen uses it, so
+  the old undo of edits is gone.
+- **Not yet.** Building and running; one window height for every screen; the phone, tablet and
+  TV layouts; the notice's rate limit (ask 3).

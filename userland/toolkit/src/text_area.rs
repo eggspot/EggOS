@@ -26,6 +26,9 @@ pub struct TextArea {
     pub placeholder: &'static str,
     /// Its visual lines.
     pub lines: usize,
+    /// Whether the person may only read it: selection, copy and scrolling work; typing, cut
+    /// and paste do nothing (D609).
+    pub read_only: bool,
 }
 
 impl TextArea {
@@ -39,6 +42,7 @@ impl TextArea {
             wanted_x: None,
             placeholder,
             lines: 1,
+            read_only: false,
         }
     }
 
