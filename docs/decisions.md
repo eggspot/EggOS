@@ -27619,3 +27619,23 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running (QEMU has `igb` and `rtl8139`); interrupts for these
   three; the X550's and X540's own PHY set-up beyond what the firmware leaves; SFP+ modules on
   the 82599; several queues.
+
+## D616 x86_64: the paranoid GS check on the IST exceptions, and NMIs handled by the kernel (M13; D248's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Intel SDM and the approach Linux's `paranoid_entry` documents)
+- **Paranoid GS.** The four exceptions on IST stacks (debug, NMI, double fault, machine check)
+  can arrive from ring 0 while the program's GS base is loaded: between `syscall` and its
+  `swapgs`, or between the exit's `swapgs` and `sysretq`/`iretq`. On those four, the kernel
+  path reads `IA32_GS_BASE`; a value in the user half (sign bit clear) means the program's is
+  loaded, so the entry runs `swapgs` and marks it in a third IST slot, and the exit swaps back
+  before `iretq`. The kernel's own per-CPU base is in the kernel half, so it is never swapped
+  away. `IST_SLOT_BYTES` grows from 16 to 24: the slots are the saved CR3, the GS mark and the
+  kernel CR3 (still the last word, so KPTI's set-up is unchanged; its offset in the frame is
+  now 80).
+- **NMIs.** `interrupt` takes vector 2: it counts it (`nmi_count`) and clears a system-board
+  source (port `0x61` bits 7 and 6, `SERR#` and the I/O channel check, by turning their checks
+  off and on), then the interrupted code carries on. From ring 3 that makes `run_user` return
+  `UserExit::Interrupt`, so the program resumes instead of getting a signal; from the kernel it
+  no longer ends in the fatal exception path.
+- **Comment cleanup** (its own commit): the 40 trailing notes in this file's assembly text are
+  in docs/hal-assembly.md now.
+- **Not yet.** Building and running; reporting NMIs to the kernel log and to
+  `/proc/interrupts`; the NMI watchdog; machine-check decoding (MCA banks).

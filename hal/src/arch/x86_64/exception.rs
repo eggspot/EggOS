@@ -119,11 +119,21 @@ exception_common:
     je      8f
     cmpq    $8, %rax
     jne     9f
-8:  movq    %cr3, %rax
+8:  pushq   %rcx
+    pushq   %rdx
+    movl    ${ia32_gs_base}, %ecx
+    rdmsr
+    testl   %edx, %edx
+    js      16f
+    swapgs
+    movq    $1, 88(%rsp)
+16: popq    %rdx
+    popq    %rcx
+    movq    %cr3, %rax
     testq   ${user_view_marker}, %rax
     jz      9f
     movq    %rax, 64(%rsp)
-    movq    72(%rsp), %rax
+    movq    80(%rsp), %rax
     movq    %rax, %cr3
 9:  popq    %rax
     lfence
@@ -164,9 +174,13 @@ exception_common:
     jne     9f
 8:  movq    64(%rsp), %rax
     testq   %rax, %rax
-    jz      9f
+    jz      17f
     movq    $0, 64(%rsp)
     movq    %rax, %cr3
+17: cmpq    $0, 72(%rsp)
+    je      9f
+    movq    $0, 72(%rsp)
+    swapgs
 9:  popq    %rax
     addq    $16, %rsp
     iretq
@@ -1285,6 +1299,7 @@ x86_64_user_test_linux_move_and_discard:
 x86_64_user_test_end:
     .popsection
 "#,
+    ia32_gs_base = const IA32_GS_BASE,
     handler = sym x86_64_exception,
     kernel_rsp = const core::mem::offset_of!(Registers, kernel_rsp),
     vector = const core::mem::offset_of!(Registers, vector),
@@ -1369,6 +1384,40 @@ const _: () = assert!(TIMER_VECTOR < WAKEUP_VECTOR && WAKEUP_VECTOR < CONSOLE_IN
 const _: () = assert!(CONSOLE_INPUT_VECTOR == 50 && FIRST_DEVICE_VECTOR == 51);
 const _: () = assert!(LAST_DEVICE_VECTOR == 82);
 const FIRST_INTERRUPT_VECTOR: u64 = 32;
+const NMI_VECTOR: u64 = 2;
+const IA32_GS_BASE: u32 = 0xc000_0101;
+const SYSTEM_CONTROL_PORT_B: u16 = 0x61;
+const NMI_SOURCES: u8 = 0xc0;
+const NMI_CHECKS_OFF: u8 = 0x0c;
+const NMI_CHECKS_KEPT: u8 = 0x03;
+
+static NMI_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// How many NMIs the kernel took since boot (D616).
+pub fn nmi_count() -> u64 {
+    NMI_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// An NMI, from the kernel or from a program (D616): counted, and a system-board source
+/// (`SERR#` or an I/O channel check, port `0x61`'s bits 7 and 6) cleared by turning its check
+/// off and on again, as the PC/AT defines. The interrupted code then carries on.
+fn nmi() {
+    NMI_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    // SAFETY: port `0x61` is system control port B on every PC; reading it has no side effect.
+    let status = unsafe { super::port::in8(SYSTEM_CONTROL_PORT_B) };
+    if status & NMI_SOURCES == 0 {
+        return;
+    }
+    // SAFETY: setting bits 2 and 3 masks and clears the two NMI sources, clearing them again
+    // re-arms them; bits 0 and 1 (the speaker's gate and data) keep their value.
+    unsafe {
+        super::port::out8(
+            SYSTEM_CONTROL_PORT_B,
+            (status & NMI_CHECKS_KEPT) | NMI_CHECKS_OFF,
+        );
+        super::port::out8(SYSTEM_CONTROL_PORT_B, status & NMI_CHECKS_KEPT);
+    }
+}
 const STUB_SIZE: usize = 16;
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
@@ -1473,7 +1522,7 @@ static VERW_SELECTOR: u16 = 0x10;
 static USER_VIEW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 const ARCH_CAPABILITIES_RDCL_NO: u64 = 1;
 const USER_VIEW_MARKER: u64 = 1 << 11;
-const IST_SLOT_BYTES: u64 = 16;
+const IST_SLOT_BYTES: u64 = 24;
 const CR3_ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 const CR4_GLOBAL_PAGES: u64 = 1 << 7;
 const USER_HALF_ENTRIES: usize = 256;
@@ -1669,6 +1718,10 @@ fn interrupt(vector: u64) -> bool {
     match vector {
         vector if vector == u64::from(TIMER_VECTOR) => {
             timer::interrupt();
+            true
+        }
+        NMI_VECTOR => {
+            nmi();
             true
         }
         vector if vector < FIRST_INTERRUPT_VECTOR => false,
