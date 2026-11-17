@@ -1546,11 +1546,22 @@ fn grants_read(on_disk: bool) -> GrantsRead {
         Ok(length) => grants::from_command_line(&line[..length]).0,
         Err(_) => grants::Grants::NONE,
     };
+    let mut policy = alloc::vec![0u8; eggos_settings_file::policy::LARGEST];
+    let read = match policy_file() {
+        PolicyFile::NotInstalled | PolicyFile::Absent => eggos_mcp::managed::PolicyRead::NotManaged,
+        PolicyFile::Untrusted(_) => eggos_mcp::managed::PolicyRead::Untrusted,
+        PolicyFile::Trusted(text) => {
+            let length = text.len().min(policy.len());
+            policy[..length].copy_from_slice(&text.as_bytes()[..length]);
+            eggos_mcp::managed::PolicyRead::Trusted(length)
+        }
+    };
     GrantsRead {
         store: grant_files::load(&mut LinuxGrantFiles),
         boot,
         now: wall_clock().0,
         on_disk,
+        ceiling: eggos_mcp::managed::Limits::of(read, &policy).ceiling,
     }
 }
 

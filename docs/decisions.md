@@ -28478,3 +28478,14 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; a control a pane had disabled for its own reason comes
   back enabled when a lock is lifted, until that pane refreshes; the owner tooltip; the
   per-device mouse keys.
+
+
+## D667 The Agents pane shows the policy's ceiling (M16 editions; editions-policy v0.1 sections 5.2 and 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** The Agents pane reads the policy file with the grants (through D656's
+  `Limits`, from Settings' own trusted read) and keeps the ceiling in `GrantsRead`. A class
+  above it shows `Deny`, locked (D663), with the note `managed` on its line, whatever the
+  agent's own grant says, and the status line reads `Managed: no agent gets install or run.`
+  (the withheld classes joined, `or` before the last) unless an error line comes first. The
+  grant prompt needs no change: the MCP server refuses a call above the ceiling before it would
+  ask (D656), so the prompt never offers such a class.
+- **Not yet.** Building and running; `agent grant` above the ceiling answering `managed`.

@@ -89,6 +89,8 @@ pub struct GrantsRead {
     pub now: u64,
     /// Whether `/var` is on a disk; without one a change lasts until power-off.
     pub on_disk: bool,
+    /// The most the policy file lets any agent hold (D667).
+    pub ceiling: eggos_mcp::managed::Ceiling,
 }
 
 impl Default for GrantsRead {
@@ -98,8 +100,25 @@ impl Default for GrantsRead {
             boot: Grants::NONE,
             now: 0,
             on_disk: true,
+            ceiling: eggos_mcp::managed::Ceiling::EVERY,
         }
     }
+}
+
+/// The status line while the policy keeps classes from every agent (D667): `Managed: no agent
+/// gets install or run.`; `None` when it keeps none.
+pub fn managed_line(ceiling: eggos_mcp::managed::Ceiling) -> Option<String> {
+    let withheld: Vec<&str> = Grant::ALL
+        .into_iter()
+        .filter(|grant| !ceiling.allows(*grant))
+        .map(Grant::name)
+        .collect();
+    let (last, rest) = withheld.split_last()?;
+    let joined = match rest {
+        [] => String::from(*last),
+        _ => alloc::format!("{} or {last}", rest.join(", ")),
+    };
+    Some(alloc::format!("Managed: no agent gets {joined}."))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,7 +314,9 @@ pub fn class_text(agent: &AgentGrants, grant: Grant, read: &GrantsRead) -> Strin
         .class(Grant::Run)
         .at(read.now)
         .unwrap_or(Permission::Deny);
-    let note = if !read.boot.allows(grant) {
+    let note = if !read.ceiling.allows(grant) {
+        Some(String::from("managed"))
+    } else if !read.boot.allows(grant) {
         Some(String::from("started without it"))
     } else if matches!(read.store, StoreState::Unreadable(_)) {
         Some(String::from("file untrusted"))
@@ -923,6 +944,9 @@ impl AgentsPane {
         if let Err(problem) = self.id_typed(tree) {
             return (String::from(problem), Token::TextDim);
         }
+        if let Some(line) = managed_line(self.read.ceiling) {
+            return (line, Token::TextDim);
+        }
         let local = self
             .selected(tree)
             .is_none_or(|agent| agent.id().is_local());
@@ -960,8 +984,13 @@ impl AgentsPane {
                 None => (String::from(CLASS_TITLES[index]), Permission::Deny),
             };
             show_line(tree, widgets.class_lines[index], &text, Token::Text);
-            tree.set_selected(widgets.class_radios[index], permission_index(choice));
-            tree.set_enabled(widgets.class_radios[index], writable && selected.is_some());
+            let managed = !self.read.ceiling.allows(grant);
+            let shown = if managed { Permission::Deny } else { choice };
+            tree.set_selected(widgets.class_radios[index], permission_index(shown));
+            tree.set_locked(widgets.class_radios[index], managed);
+            if !managed {
+                tree.set_enabled(widgets.class_radios[index], writable && selected.is_some());
+            }
         }
         let local = selected.is_none_or(|agent| agent.id().is_local());
         let id_ok = matches!(self.id_typed(tree), Ok(Some(_)));

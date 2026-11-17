@@ -24,6 +24,7 @@ fn grants() -> GrantsRead {
         boot: Grants::NONE,
         now: NOW,
         on_disk: true,
+        ceiling: eggos_mcp::managed::Ceiling::EVERY,
     }
 }
 

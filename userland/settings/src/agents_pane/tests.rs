@@ -37,6 +37,7 @@ fn machine() -> GrantsRead {
         boot: Grants::NONE.with(Grant::View).with(Grant::Write),
         now: NOW,
         on_disk: true,
+        ceiling: eggos_mcp::managed::Ceiling::EVERY,
     }
 }
 
@@ -651,4 +652,22 @@ fn an_agent_can_switch_views_and_filter_the_activity() {
     let request = window.respond(response, 0);
     served(&mut window, &mut read, request);
     assert_eq!(count(&window), Some("2 of 2"));
+}
+
+#[test]
+fn a_class_above_the_policy_ceiling_shows_deny_locked_and_the_status_says_so() {
+    let mut read = GrantsRead {
+        ceiling: eggos_mcp::managed::Ceiling::of_classes("view write"),
+        ..machine()
+    };
+    let window = opened(&mut read);
+    assert_eq!(status(&window), "Managed: no agent gets install or run.");
+    assert_eq!(
+        managed_line(eggos_mcp::managed::Ceiling::EVERY),
+        None
+    );
+    assert_eq!(
+        managed_line(eggos_mcp::managed::Ceiling::of_classes("")).as_deref(),
+        Some("Managed: no agent gets view, write, install or run.")
+    );
 }
