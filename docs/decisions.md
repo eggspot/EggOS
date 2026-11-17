@@ -27419,3 +27419,31 @@ the license, by an explicit instruction recorded here.
   - The shell's tree in the desktop and TV forms (the desktop's panels, the TV's rows).
   - The `Back` glyph at 2x drawn from rectangles (D303).
   - Coming back from the console when a larger display appears.
+
+## D606 The tablet form's deviations closed: window cards in the chooser, the dock's icon menu, the tablet's keys, the pair as one switcher card, and `wm move`/`wm size` (M12; D306's deviations; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/adaptive-shell-tablet-v0.5.md sections 3, 7, 8, 9 and 12, by Claude Fable)
+- **The chooser** shows a card per other normal window, shown or minimised, most recently shown
+  first (`chooser_cards`): 144x128 in `(side - 16) / 160` columns, the window scaled into a
+  128x80 box and its title under it. A tap puts that window on the side. The app cells start
+  16 px under the last row of cards.
+- **The dock** holds a press like the phone's grid: a tap opens the app on release; resting
+  500 ms opens the icon menu (200 wide, rows 44, 4 px above the dock, centred on the app,
+  8 px inside the screen): `Open`; `Split left` and `Split right` (the app's latest window
+  goes to that side, or, without one, the app is launched onto it beside the shown window);
+  `Close` (dimmed without a window).
+- **Keys** (`tablet_key`): Super+Left and Super+Right split the focused window, Super+Up
+  makes it full, Super+Down sends it home, Super+Shift+Left and Super+Shift+Right move the
+  divider one place (never closing a side).
+- **The switcher** shows the pair as one card titled `<left> + <right>`, both windows scaled
+  side by side; a tap brings both back, `Close` and `Close all` ask both to close.
+  `draw_window_scaled` now draws any window into any box, for both.
+- **`wm move` and `wm size`** (`tablet_manage`): a move takes the side its x falls on
+  (swapping, replacing the shown side's window, or splitting); a size snaps to the nearest of
+  a third, a half, two thirds and the full width for the window's side. A dialog is refused
+  with `fixed_by_form`.
+- **Not yet.**
+  - Building and running.
+  - The keyboard focus stops of section 9 (title buttons, bar, dock, divider) and Menu or
+    Shift+F10 on a dock app; F6; the switcher's columns.
+  - `wm move` and `wm size` answering with the rect the window got.
+  - The tablet's own entries in the shell's tree (window menus, `Dock`, `Divider`, the chooser).
+  - The notice's place and dialogs centred on a wide side.

@@ -42,6 +42,7 @@ const POWER_ROW_HEIGHT: u32 = 48;
 const APP_SHEET_ROWS: [&str; 2] = ["Open", "Uninstall..."];
 const NOTICE_GLYPHS: usize = 40;
 const SHADE_WIDTH: u32 = 390;
+const DIVIDER_IN_CARD: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tile {
@@ -95,10 +96,30 @@ impl Desktop {
     fn phone_switcher_entries(&self) -> Vec<usize> {
         let mut order = [0u8; MAX_WINDOWS];
         let count = self.switcher_order(&mut order);
-        order[..count]
+        let pair = self.switcher_pair();
+        let mut entries: Vec<usize> = order[..count]
             .iter()
             .map(|&slot| usize::from(slot))
-            .collect()
+            .filter(|&slot| pair.is_none_or(|(_, right)| slot != right))
+            .collect();
+        if let Some((left, _)) = pair
+            && !entries.contains(&left)
+        {
+            entries.insert(0, left);
+        }
+        entries
+    }
+
+    fn close_switcher_entry(&mut self, slot: usize, events: &mut dyn EventSink) {
+        let partner = self
+            .switcher_pair()
+            .filter(|&(left, _)| left == slot)
+            .map(|(_, right)| right);
+        for slot in core::iter::once(slot).chain(partner) {
+            if self.window_at(slot).closable {
+                self.request_close(slot, events);
+            }
+        }
     }
 
     fn card(&self, index: usize) -> Rect {
@@ -144,9 +165,7 @@ impl Desktop {
         let entries = self.phone_switcher_entries();
         if !entries.is_empty() && contains(self.close_all_button(entries.len()), x, y) {
             for slot in entries {
-                if self.window_at(slot).closable {
-                    self.request_close(slot, events);
-                }
+                self.close_switcher_entry(slot, events);
             }
             self.phone.switcher = false;
             return Action::None;
@@ -154,13 +173,22 @@ impl Desktop {
         for (index, &slot) in entries.iter().enumerate() {
             let card = self.card(index);
             if contains(Self::card_close(card), x, y) {
-                if self.window_at(slot).closable {
-                    self.request_close(slot, events);
-                }
+                self.close_switcher_entry(slot, events);
                 return Action::None;
             }
             if contains(card, x, y) {
                 self.phone.switcher = false;
+                if let Some((left, right)) = self.switcher_pair().filter(|&(left, _)| left == slot)
+                {
+                    let focused_right = self.live_pair().is_some_and(|pair| pair.right_focused);
+                    let (first, last) = match focused_right {
+                        true => (left, right),
+                        false => (right, left),
+                    };
+                    self.activate(first, damage, events);
+                    self.activate(last, damage, events);
+                    return Action::None;
+                }
                 self.activate(slot, damage, events);
                 return Action::None;
             }
@@ -397,7 +425,7 @@ impl Desktop {
         }
         self.draw_apps_glyph(canvas);
         if self.form == super::Form::Tablet {
-            self.draw_pair(canvas);
+            self.draw_pair(canvas, contents);
             self.draw_tablet_menu(canvas);
         }
         if self.phone.switcher {
@@ -477,8 +505,17 @@ impl Desktop {
             }
             canvas.rounded(card, &paint::INSET_R4, true, true, colour::MENU);
             let window = self.window_at(slot);
+            let joined;
+            let full_title = match self.switcher_pair().filter(|&(left, _)| left == slot) {
+                Some((_, right)) => {
+                    joined =
+                        alloc::format!("{} + {}", window.title(), self.window_at(right).title());
+                    joined.as_str()
+                }
+                None => window.title(),
+            };
             let room = ((card.width - CARD_TITLE.0 - CLOSE_TARGET) / GLYPH_WIDTH as u32) as usize;
-            let (title, cut) = windows::cut_title(window.title(), room.saturating_sub(3));
+            let (title, cut) = windows::cut_title(full_title, room.saturating_sub(3));
             canvas.text(
                 card.x + CARD_TITLE.0,
                 card.y + CARD_TITLE.1,
@@ -524,27 +561,56 @@ impl Desktop {
         slot: usize,
         card: Rect,
     ) {
-        let window = self.window_at(slot);
-        let (width, height) = (window.content_width.max(1), window.content_height.max(1));
         let area = Rect::new(
             card.x + (card.width - THUMBNAIL.1) / 2,
             card.y + THUMBNAIL.0,
             THUMBNAIL.1,
             THUMBNAIL.2,
         );
+        match self.switcher_pair().filter(|&(left, _)| left == slot) {
+            Some((left, right)) => {
+                let half = area.width.saturating_sub(DIVIDER_IN_CARD) / 2;
+                let left_area = Rect::new(area.x, area.y, half, area.height);
+                let right_area = Rect::new(area.right() - half, area.y, half, area.height);
+                self.draw_window_scaled(canvas, contents, left, left_area);
+                self.draw_window_scaled(canvas, contents, right, right_area);
+            }
+            None => self.draw_window_scaled(canvas, contents, slot, area),
+        }
+    }
+
+    /// Draws window `slot`'s content scaled to fill `area`, nearest neighbour.
+    pub(super) fn draw_window_scaled(
+        &self,
+        canvas: &mut Canvas<'_>,
+        contents: &dyn Contents,
+        slot: usize,
+        area: Rect,
+    ) {
+        let window = self.window_at(slot);
+        let (width, height) = (window.content_width.max(1), window.content_height.max(1));
         let clip = canvas.clip();
-        if !area.overlaps(&clip) {
+        if !area.overlaps(&clip) || area.width == 0 || area.height == 0 {
             return;
         }
         let mut row = alloc::vec![0u32; width as usize];
         for y in area.y.max(clip.y)..area.bottom().min(clip.bottom()) {
-            let source_y = (y - area.y) * height / THUMBNAIL.2;
+            let source_y = (y - area.y) * height / area.height;
             contents.copy_row(window.id, 0, source_y, &mut row);
             for x in area.x.max(clip.x)..area.right().min(clip.right()) {
-                let source_x = ((x - area.x) * width / THUMBNAIL.1) as usize;
+                let source_x = ((x - area.x) * width / area.width) as usize;
                 canvas.pixel(x, y, row[source_x.min(row.len() - 1)]);
             }
         }
+    }
+
+    /// The tablet's pair shown as one switcher card (section 8.2): its left and right windows.
+    fn switcher_pair(&self) -> Option<(usize, usize)> {
+        if self.form != super::Form::Tablet {
+            return None;
+        }
+        let pair = self.live_pair()?;
+        Some((usize::from(pair.left?), usize::from(pair.right?)))
     }
 
     fn draw_shade(&self, canvas: &mut Canvas<'_>) {

@@ -13,6 +13,8 @@ use super::windows::{self, Geometry};
 use super::{Action, Desktop, MAX_WINDOWS, colour, contains};
 use crate::display::{Damage, Rect};
 use crate::font::GLYPH_WIDTH;
+use crate::input::key;
+use crate::input::keymap::Modifiers;
 use alloc::vec::Vec;
 
 /// The left side's share of a pair (section 5.1).
@@ -39,12 +41,30 @@ pub(super) struct WindowMenu {
     hover: Option<usize>,
 }
 
-/// The tablet's own state: the pair, the open window menu, a divider being dragged.
+/// A press held on an app of the dock: a tap opens the app, a long press its icon menu.
+#[derive(Debug, Clone, Copy)]
+struct DockPress {
+    app: AppId,
+    target: Rect,
+    since_ms: u32,
+}
+
+/// The dock's icon menu (section 3): `Open`, `Split left`, `Split right`, `Close`.
+#[derive(Debug, Clone, Copy)]
+struct DockMenu {
+    app: AppId,
+    target: Rect,
+}
+
+/// The tablet's own state: the pair, the open window menu, a divider being dragged, a press
+/// held on the dock and the dock's icon menu.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct TabletState {
     pub(super) pair: Option<Pair>,
     menu: Option<WindowMenu>,
     dragging: Option<u32>,
+    dock_press: Option<DockPress>,
+    dock_menu: Option<DockMenu>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +108,15 @@ const CHOOSER_HEADING: (u32, u32) = (16, 16);
 const CHOOSER_TOP: u32 = 48;
 const CELL: (u32, u32) = (112, 104);
 const CELL_ICON: (u32, u32) = (32, 8);
+const CARD: (u32, u32) = (144, 128);
+const CARD_STEP: (u32, u32) = (160, 144);
+const CARD_BOX: (u32, u32, u32, u32) = (8, 8, 128, 80);
+const CARD_TITLE: (u32, u32) = (8, 100);
+const CARD_GLYPHS: usize = 16;
+const CARDS_GAP: u32 = 16;
+const DOCK_MENU_ENTRIES: [&str; 4] = ["Open", "Split left", "Split right", "Close"];
+const DOCK_MENU_ABOVE: u32 = 4;
+const DOCK_MENU_INSIDE: u32 = 8;
 
 impl Desktop {
     /// Whether the shell has one of the touch forms, whose windows have no chrome.
@@ -486,7 +515,7 @@ impl Desktop {
     }
 
     /// Draws the divider and, on a side waiting for its app, the chooser.
-    pub(super) fn draw_pair(&self, canvas: &mut Canvas<'_>) {
+    pub(super) fn draw_pair(&self, canvas: &mut Canvas<'_>, contents: &dyn super::Contents) {
         let Some(pair) = self.live_pair().filter(|_| self.pair_shown()) else {
             return;
         };
@@ -529,6 +558,21 @@ impl Desktop {
             "Choose an app for this side",
             colour::TEXT_DIM,
         );
+        for (slot, card) in self.chooser_cards(side) {
+            if !card.overlaps(&canvas.clip()) {
+                continue;
+            }
+            canvas.rounded(card, &paint::INSET_R4, true, true, colour::BUTTON);
+            let area = Rect::new(
+                card.x + CARD_BOX.0,
+                card.y + CARD_BOX.1,
+                CARD_BOX.2,
+                CARD_BOX.3,
+            );
+            self.draw_window_scaled(canvas, contents, slot, area);
+            let (title, _) = windows::cut_title(self.window_at(slot).title(), CARD_GLYPHS);
+            canvas.text(card.x + CARD_TITLE.0, card.y + CARD_TITLE.1, title, colour::TEXT);
+        }
         for (app, cell) in self.chooser_cells(side) {
             draw_icon(
                 canvas,
@@ -542,9 +586,41 @@ impl Desktop {
         }
     }
 
+    /// The chooser's window cards (section 7): every other normal window, shown or
+    /// minimised, most recently shown first.
+    fn chooser_cards(&self, side: Rect) -> Vec<(usize, Rect)> {
+        let mut order = [0u8; MAX_WINDOWS];
+        let count = self.switcher_order(&mut order);
+        let columns = (side.width.saturating_sub(16) / CARD_STEP.0).max(1);
+        let left = side.x + side.width.saturating_sub(columns * CARD_STEP.0) / 2;
+        order[..count]
+            .iter()
+            .map(|&slot| usize::from(slot))
+            .filter(|&slot| self.pair_side(slot).is_none())
+            .enumerate()
+            .map(|(index, slot)| {
+                let (column, row) = (index as u32 % columns, index as u32 / columns);
+                (
+                    slot,
+                    Rect::new(
+                        left + CARD_STEP.0 * column + (CARD_STEP.0 - CARD.0) / 2,
+                        side.y + CHOOSER_TOP + CARD_STEP.1 * row,
+                        CARD.0,
+                        CARD.1,
+                    ),
+                )
+            })
+            .filter(|(_, card)| card.bottom() <= side.bottom())
+            .collect()
+    }
+
     fn chooser_cells(&self, side: Rect) -> Vec<(AppId, Rect)> {
         let columns = (side.width.saturating_sub(32) / CELL.0).max(1);
         let left = side.x + (side.width - columns * CELL.0) / 2;
+        let top = self
+            .chooser_cards(side)
+            .last()
+            .map_or(side.y + CHOOSER_TOP, |(_, card)| card.bottom() + CARDS_GAP);
         self.catalogue
             .desktop_apps()
             .enumerate()
@@ -552,12 +628,7 @@ impl Desktop {
                 let (column, row) = (index as u32 % columns, index as u32 / columns);
                 (
                     app,
-                    Rect::new(
-                        left + CELL.0 * column,
-                        side.y + CHOOSER_TOP + CELL.1 * row,
-                        CELL.0,
-                        CELL.1,
-                    ),
+                    Rect::new(left + CELL.0 * column, top + CELL.1 * row, CELL.0, CELL.1),
                 )
             })
             .filter(|(_, cell)| cell.bottom() <= side.bottom())
@@ -618,8 +689,9 @@ impl Desktop {
         )
     }
 
-    /// Draws the open window menu.
+    /// Draws the open window menu, or the dock's icon menu.
     pub(super) fn draw_tablet_menu(&self, canvas: &mut Canvas<'_>) {
+        self.draw_dock_menu(canvas);
         let Some(menu) = self.tablet.menu else {
             return;
         };
@@ -673,6 +745,10 @@ impl Desktop {
         events: &mut dyn EventSink,
     ) -> Option<Action> {
         self.tidy_pair(damage, events);
+        if let Some(menu) = self.tablet.dock_menu.take() {
+            damage.add(self.screen());
+            return Some(self.dock_menu_press(menu, x, y, damage, events));
+        }
         if let Some(menu) = self.tablet.menu.take() {
             damage.add(self.screen());
             let entries = self.menu_entries(usize::from(menu.slot));
@@ -713,12 +789,18 @@ impl Desktop {
             .navigation_bar
             .is_some_and(|bar| contains(bar, x, y))
         {
-            if let Some((app, _)) = self
+            if let Some((app, target)) = self
                 .dock_targets()
                 .into_iter()
                 .find(|(_, target)| contains(*target, x, y))
             {
-                return Some(self.phone_open_app(app, damage, events));
+                self.tablet.dock_press = Some(DockPress {
+                    app,
+                    target,
+                    since_ms: self.now_ms,
+                });
+                damage.add(target);
+                return Some(Action::None);
             }
             return None;
         }
@@ -726,6 +808,14 @@ impl Desktop {
         if pair.left.is_none() || pair.right.is_none() {
             let side = self.side_rect(pair.right.is_none(), pair.share);
             if contains(side, x, y) {
+                if let Some((slot, _)) = self
+                    .chooser_cards(side)
+                    .into_iter()
+                    .find(|(_, card)| contains(*card, x, y))
+                {
+                    self.activate(slot, damage, events);
+                    return Some(Action::None);
+                }
                 let chosen = self
                     .chooser_cells(side)
                     .into_iter()
@@ -896,5 +986,308 @@ impl Desktop {
             );
         }
         let _ = Role::Normal;
+    }
+}
+
+impl Desktop {
+    fn dock_menu_rect(&self, menu: DockMenu) -> Rect {
+        let height = MENU_ROW * DOCK_MENU_ENTRIES.len() as u32 + 2 * MENU_PAD;
+        let dock_top = self
+            .layout
+            .navigation_bar
+            .map_or(self.layout.work_area.bottom(), |bar| bar.y);
+        let centre = menu.target.x + menu.target.width / 2;
+        let x = centre
+            .saturating_sub(MENU_WIDTH / 2)
+            .max(DOCK_MENU_INSIDE)
+            .min(self.width.saturating_sub(MENU_WIDTH + DOCK_MENU_INSIDE));
+        let y = dock_top.saturating_sub(DOCK_MENU_ABOVE + height);
+        Rect::new(x, y, MENU_WIDTH, height)
+    }
+
+    fn dock_menu_row(&self, menu: DockMenu, index: usize) -> Rect {
+        let rect = self.dock_menu_rect(menu);
+        Rect::new(
+            rect.x,
+            rect.y + MENU_PAD + MENU_ROW * index as u32,
+            MENU_WIDTH,
+            MENU_ROW,
+        )
+    }
+
+    fn latest_window_of(&self, app: AppId) -> Option<usize> {
+        let mut windows = [0u8; MAX_WINDOWS];
+        match self.app_windows(app, &mut windows) {
+            0 => None,
+            _ => Some(usize::from(windows[0])),
+        }
+    }
+
+    fn draw_dock_menu(&self, canvas: &mut Canvas<'_>) {
+        let Some(menu) = self.tablet.dock_menu else {
+            return;
+        };
+        let rect = self.dock_menu_rect(menu);
+        canvas.shadow(rect);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(
+            Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
+            &paint::INSET_R6,
+            true,
+            true,
+            colour::MENU,
+        );
+        let has_window = self.latest_window_of(menu.app).is_some();
+        for (index, label) in DOCK_MENU_ENTRIES.iter().enumerate() {
+            let row = self.dock_menu_row(menu, index);
+            let ink = match index == DOCK_MENU_ENTRIES.len() - 1 && !has_window {
+                true => colour::TEXT_DIM,
+                false => colour::TEXT,
+            };
+            canvas.text(row.x + MENU_TEXT.0, row.y + MENU_TEXT.1, label, ink);
+        }
+    }
+
+    fn dock_menu_press(
+        &mut self,
+        menu: DockMenu,
+        x: u32,
+        y: u32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Action {
+        let Some(index) = (0..DOCK_MENU_ENTRIES.len())
+            .find(|&index| contains(self.dock_menu_row(menu, index), x, y))
+        else {
+            return Action::None;
+        };
+        let latest = self.latest_window_of(menu.app);
+        match (index, latest) {
+            (0, _) => self.phone_open_app(menu.app, damage, events),
+            (1 | 2, Some(slot)) => {
+                self.activate(slot, damage, events);
+                let entry = match index {
+                    1 => Entry::SplitLeft,
+                    _ => Entry::SplitRight,
+                };
+                self.choose_entry(slot, entry, damage, events);
+                Action::None
+            }
+            (1 | 2, None) => {
+                let right = index == 2;
+                if let Some(shown) = self.phone_shown_window()
+                    && self.live_pair().is_none()
+                {
+                    let shown = Some(shown as u8);
+                    self.tablet.pair = Some(Pair {
+                        left: if right { shown } else { None },
+                        right: if right { None } else { shown },
+                        share: Share::Half,
+                        right_focused: right,
+                    });
+                    self.refit_pair(damage, events);
+                }
+                self.phone_open_app(menu.app, damage, events)
+            }
+            (_, Some(slot)) => {
+                self.request_close(slot, events);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// The button went up after a press on a dock app: a tap that stayed on its target opens
+    /// the app; once the long press opened the icon menu it does nothing.
+    pub(super) fn tablet_dock_release(
+        &mut self,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
+        let press = self.tablet.dock_press.take()?;
+        damage.add(press.target);
+        let (x, y) = self.pointer;
+        if !contains(press.target, x, y) {
+            return None;
+        }
+        Some(self.phone_open_app(press.app, damage, events))
+    }
+
+    /// A press resting on a dock app for the long press opens its icon menu.
+    pub(super) fn tick_dock_hold(&mut self, damage: &mut Damage) {
+        let Some(press) = self.tablet.dock_press else {
+            return;
+        };
+        if self.now_ms.wrapping_sub(press.since_ms) < super::phone::LONG_PRESS_MS {
+            return;
+        }
+        self.tablet.dock_press = None;
+        self.tablet.dock_menu = Some(DockMenu {
+            app: press.app,
+            target: press.target,
+        });
+        damage.add(self.screen());
+    }
+
+    /// How long until a press resting on the dock becomes a long press.
+    pub(super) fn dock_hold_change_after(&self) -> Option<u32> {
+        let press = self.tablet.dock_press?;
+        Some(super::phone::LONG_PRESS_MS.saturating_sub(self.now_ms.wrapping_sub(press.since_ms)))
+    }
+
+    /// The tablet's keys (section 9): Super+Left and Super+Right split the focused window,
+    /// Super+Up makes it full, Super+Down sends it home, Super+Shift+Left and Super+Shift+Right
+    /// move the divider one place.
+    pub(super) fn tablet_key(
+        &mut self,
+        code: u16,
+        modifiers: Modifiers,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Option<Action> {
+        let held = modifiers.bits() & !Modifiers::CAPS_LOCK.bits();
+        let super_only = held == Modifiers::SUPER.bits();
+        let super_shift = held == Modifiers::SUPER.bits() | Modifiers::SHIFT.bits();
+        if !super_only && !super_shift {
+            return None;
+        }
+        if super_shift {
+            let narrower_left = match code {
+                key::LEFT => true,
+                key::RIGHT => false,
+                _ => return None,
+            };
+            self.step_divider(narrower_left, damage, events);
+            return Some(Action::None);
+        }
+        let slot = self.focused_normal()?;
+        let entry = match code {
+            key::LEFT => Entry::SplitLeft,
+            key::RIGHT => Entry::SplitRight,
+            key::UP if self.pair_side(slot).is_some() => Entry::FullScreen,
+            key::DOWN => {
+                self.minimise(slot, damage, events);
+                return Some(Action::None);
+            }
+            _ => return None,
+        };
+        self.choose_entry(slot, entry, damage, events);
+        Some(Action::None)
+    }
+
+    fn step_divider(
+        &mut self,
+        narrower_left: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
+        let Some(mut pair) = self.live_pair().filter(|_| self.pair_shown()) else {
+            return;
+        };
+        let thirds = self.thirds_exist();
+        pair.share = match (pair.share, narrower_left, thirds) {
+            (Share::TwoThirds, true, _) => Share::Half,
+            (Share::Half, true, true) => Share::Third,
+            (Share::Third, false, _) => Share::Half,
+            (Share::Half, false, true) => Share::TwoThirds,
+            (share, _, _) => share,
+        };
+        self.tablet.pair = Some(pair);
+        self.refit_pair(damage, events);
+    }
+
+    /// `wm move` and `wm size` in the tablet form (section 12): a move picks the side its x
+    /// falls on, a size snaps to the nearest of a third, a half, two thirds and the full
+    /// width. A dialog is refused.
+    pub(super) fn tablet_manage(
+        &mut self,
+        slot: usize,
+        size: bool,
+        a: i32,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) -> Result<(), super::protocol::WindowError> {
+        if self.window_at(slot).role != Role::Normal {
+            return Err(super::protocol::WindowError::FixedByForm);
+        }
+        let work = self.layout.work_area;
+        if !size {
+            let right = i64::from(a) >= i64::from(work.x + work.width / 2);
+            self.tablet_move_to_side(slot, right, damage, events);
+            return Ok(());
+        }
+        let wanted = a.max(0) as u32;
+        let side = self.pair_side(slot);
+        let shares = [Share::Third, Share::Half, Share::TwoThirds];
+        let nearest = shares
+            .into_iter()
+            .filter(|&share| self.thirds_exist() || share == Share::Half)
+            .map(|share| {
+                let left = self.left_width(share);
+                let own = match side {
+                    Some(true) => work.width.saturating_sub(DIVIDER + left),
+                    _ => left,
+                };
+                (Some(share), own)
+            })
+            .chain(core::iter::once((None, work.width)))
+            .min_by_key(|&(_, own)| own.abs_diff(wanted))
+            .and_then(|(share, _)| share);
+        match (nearest, side) {
+            (None, Some(_)) => self.choose_entry(slot, Entry::FullScreen, damage, events),
+            (None, None) => self.activate(slot, damage, events),
+            (Some(share), _) => {
+                if side.is_none() {
+                    self.choose_entry(slot, Entry::SplitLeft, damage, events);
+                }
+                if let Some(mut pair) = self.live_pair() {
+                    let left_side = self.pair_side(slot) != Some(true);
+                    pair.share = match (left_side, share) {
+                        (true, share) => share,
+                        (false, Share::Third) => Share::TwoThirds,
+                        (false, Share::TwoThirds) => Share::Third,
+                        (false, Share::Half) => Share::Half,
+                    };
+                    self.tablet.pair = Some(pair);
+                    self.refit_pair(damage, events);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn tablet_move_to_side(
+        &mut self,
+        slot: usize,
+        right: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
+        match (self.pair_side(slot), self.live_pair()) {
+            (Some(side), Some(_)) if side == right => {}
+            (Some(_), Some(_)) => self.choose_entry(slot, Entry::SwapSides, damage, events),
+            (None, Some(mut pair))
+                if self.pair_shown() && pair.left.is_some() && pair.right.is_some() =>
+            {
+                let replaced = match right {
+                    true => pair.right.replace(slot as u8),
+                    false => pair.left.replace(slot as u8),
+                };
+                pair.right_focused = right;
+                self.tablet.pair = Some(pair);
+                if let Some(old) = replaced {
+                    self.minimise(usize::from(old), damage, events);
+                }
+                self.activate(slot, damage, events);
+                self.refit_pair(damage, events);
+            }
+            _ => {
+                let entry = match right {
+                    true => Entry::SplitRight,
+                    false => Entry::SplitLeft,
+                };
+                self.choose_entry(slot, entry, damage, events);
+            }
+        }
     }
 }

@@ -2089,7 +2089,10 @@ impl Desktop {
                 return Action::None;
             }
             if code == button::LEFT {
-                let opened = self.phone_grid_release(damage, events);
+                let mut opened = self.phone_grid_release(damage, events);
+                if opened.is_none() {
+                    opened = self.tablet_dock_release(damage, events);
+                }
                 self.phone_release(damage, events);
                 self.tablet_release(damage, events);
                 self.drag = None;
@@ -2419,6 +2422,12 @@ impl Desktop {
             return Action::None;
         }
         if pressed && let Some(action) = self.tv_key(code, damage, events) {
+            return action;
+        }
+        if self.form == Form::Tablet
+            && pressed
+            && let Some(action) = self.tablet_key(code, modifiers, damage, events)
+        {
             return action;
         }
         if self.touch_form()

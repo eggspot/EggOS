@@ -158,6 +158,12 @@ impl Desktop {
             .ok_or(WindowError::Invalid)?;
         let action = WindowAction::from_value(action).ok_or(WindowError::Invalid)?;
         let window = *self.window_at(slot);
+        if self.form == super::Form::Tablet
+            && matches!(action, WindowAction::Move | WindowAction::Size)
+        {
+            let size = action == WindowAction::Size;
+            return self.tablet_manage(slot, size, a, damage, events);
+        }
         if self.form.fixes_windows() {
             return match action {
                 WindowAction::Move | WindowAction::Size => Err(WindowError::FixedByForm),
@@ -703,6 +709,7 @@ impl Desktop {
         self.tick_sticky_notice(damage);
         self.tick_screen_reader(damage);
         self.tick_phone_hold(damage);
+        self.tick_dock_hold(damage);
         destroyed
     }
 
