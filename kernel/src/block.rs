@@ -60,6 +60,17 @@ pub trait BlockDevice: Send {
     fn flush(&mut self, _deadline: &mut Deadline) -> Result<(), BlockError> {
         Ok(())
     }
+    /// Tells the device the sectors from `sector` on, `count` of them, hold nothing worth
+    /// keeping (NVMe's deallocate, ATA's TRIM; D612), polling until `deadline`; a device without
+    /// such a command does nothing.
+    fn discard(
+        &mut self,
+        _sector: u64,
+        _count: u64,
+        _deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
+        Ok(())
+    }
     /// Reads every one of `reads`, each the sectors from its first one into its buffer, with as
     /// many requests in flight at once as the device takes (D220); one after the other by
     /// default.
@@ -444,5 +455,17 @@ impl BlockDevice for Partition {
     }
     fn flush(&mut self, deadline: &mut Deadline) -> Result<(), BlockError> {
         self.disk.flush(deadline)
+    }
+    fn discard(
+        &mut self,
+        sector: u64,
+        count: u64,
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
+        sector
+            .checked_add(count)
+            .filter(|&end| end <= self.sectors)
+            .ok_or(BlockError::OutOfRange)?;
+        self.disk.discard(self.first + sector, count, deadline)
     }
 }

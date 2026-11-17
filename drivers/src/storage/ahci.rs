@@ -2,7 +2,7 @@
 //! each port with an ATA disk set up, and one command at a time per disk, polled: IDENTIFY
 //! DEVICE, READ and WRITE DMA EXT, FLUSH CACHE EXT.
 
-use super::{Covering, Error, SECTOR_SIZE, copy_in, copy_out, covering, write32, zero};
+use super::{Covering, Error, SECTOR_SIZE, copy_in, copy_out, covering, write32, write64, zero};
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
 use core::sync::atomic::{Ordering, fence};
@@ -56,6 +56,13 @@ const ATA_IDENTIFY_DEVICE: u8 = 0xec;
 const ATA_READ_DMA_EXT: u8 = 0x25;
 const ATA_WRITE_DMA_EXT: u8 = 0x35;
 const ATA_FLUSH_CACHE_EXT: u8 = 0xea;
+const ATA_DATA_SET_MANAGEMENT: u8 = 0x06;
+const FEATURE_TRIM: u8 = 1;
+const IDENTIFY_DATA_SET_MANAGEMENT: usize = 169;
+const TRIM_SUPPORTED: u16 = 1;
+const TRIM_ENTRY_BYTES: usize = 8;
+const TRIM_ENTRIES_PER_BLOCK: usize = SECTOR_SIZE / TRIM_ENTRY_BYTES;
+const TRIM_MOST_BLOCKS: u64 = 0xffff;
 
 const COMMAND_LIST: usize = 0x0000;
 const RECEIVED_FIS: usize = 0x0400;
@@ -180,6 +187,7 @@ pub struct AhciDisk<R: RegisterIo, M: DmaMemory> {
     memory: M,
     blocks: u64,
     block_bytes: usize,
+    trims: bool,
 }
 
 impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
@@ -210,6 +218,7 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             memory,
             blocks: 0,
             block_bytes: SECTOR_SIZE,
+            trims: false,
         };
         if !disk.stop(keep_waiting) {
             return Err((Error::TimedOut, Some(disk.memory)));
@@ -271,9 +280,7 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         self.regs.write32(PORT_COMMAND, command | COMMAND_START);
 
         self.issue(
-            ATA_IDENTIFY_DEVICE,
-            0,
-            0,
+            register_fis(ATA_IDENTIFY_DEVICE, 0, 0),
             IDENTIFY,
             SECTOR_SIZE,
             false,
@@ -289,15 +296,13 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             .ok_or(Error::Unsupported("the disk has no 48-bit addressing"))?;
         self.blocks = blocks;
         self.block_bytes = block_bytes;
+        self.trims = words[IDENTIFY_DATA_SET_MANAGEMENT] & TRIM_SUPPORTED != 0;
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn issue(
         &mut self,
-        command: u8,
-        lba: u64,
-        count: u16,
+        fis: [u8; 20],
         data_offset: usize,
         data_bytes: usize,
         write: bool,
@@ -309,11 +314,7 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
             COMMAND_TABLE,
             PRDT + PRDT_ENTRIES * 16 - COMMAND_TABLE,
         );
-        copy_in(
-            &self.memory,
-            COMMAND_TABLE,
-            &register_fis(command, lba, count),
-        );
+        copy_in(&self.memory, COMMAND_TABLE, &fis);
         let mut entries = 0;
         let mut offset = 0;
         while offset < data_bytes {
@@ -401,9 +402,7 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
         };
         let bytes = covering.blocks as usize * self.block_bytes;
         self.issue(
-            command,
-            covering.first_block,
-            covering.blocks as u16,
+            register_fis(command, covering.first_block, covering.blocks as u16),
             DATA,
             bytes,
             write,
@@ -465,7 +464,54 @@ impl<R: RegisterIo, M: DmaMemory> AhciDisk<R, M> {
     }
 
     pub fn flush(&mut self, keep_waiting: &mut dyn FnMut() -> bool) -> Result<(), Error> {
-        self.issue(ATA_FLUSH_CACHE_EXT, 0, 0, DATA, 0, false, keep_waiting)
+        self.issue(
+            register_fis(ATA_FLUSH_CACHE_EXT, 0, 0),
+            DATA,
+            0,
+            false,
+            keep_waiting,
+        )
+    }
+
+    /// Whether the disk takes DATA SET MANAGEMENT's TRIM (IDENTIFY word 169, D612).
+    pub fn trims(&self) -> bool {
+        self.trims
+    }
+
+    /// Tells the disk the sectors from `sector` on, `count` of them, hold nothing worth keeping
+    /// (DATA SET MANAGEMENT with TRIM, D612), in whole logical blocks: one 512-byte range block of
+    /// up to 64 entries a command, each at most 65,535 blocks. Nothing without TRIM.
+    pub fn trim(
+        &mut self,
+        sector: u64,
+        count: u64,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        if !self.trims || count == 0 {
+            return Ok(());
+        }
+        sector
+            .checked_add(count)
+            .filter(|&end| end <= self.sectors())
+            .ok_or(Error::OutOfRange)?;
+        let per_block = (self.block_bytes / SECTOR_SIZE) as u64;
+        let mut at = sector.div_ceil(per_block);
+        let end = (sector + count) / per_block;
+        while at < end {
+            zero(&self.memory, DATA, SECTOR_SIZE);
+            let mut entries = 0;
+            while at < end && entries < TRIM_ENTRIES_PER_BLOCK {
+                let length = (end - at).min(TRIM_MOST_BLOCKS);
+                write64(&self.memory, DATA + entries * TRIM_ENTRY_BYTES, at | (length << 48));
+                at += length;
+                entries += 1;
+            }
+            let mut fis = register_fis(ATA_DATA_SET_MANAGEMENT, 0, 1);
+            fis[3] = FEATURE_TRIM;
+            fence(Ordering::SeqCst);
+            self.issue(fis, DATA, SECTOR_SIZE, true, keep_waiting)?;
+        }
+        Ok(())
     }
 }
 

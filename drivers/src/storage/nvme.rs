@@ -33,6 +33,12 @@ const ADMIN_IDENTIFY: u8 = 0x06;
 const IO_FLUSH: u8 = 0x00;
 const IO_WRITE: u8 = 0x01;
 const IO_READ: u8 = 0x02;
+const IO_DATASET_MANAGEMENT: u8 = 0x09;
+const ONCS_DATASET_MANAGEMENT: u16 = 1 << 2;
+const DEALLOCATE: u32 = 1 << 2;
+const RANGE_BYTES: usize = 16;
+/// The most ranges one Dataset Management command carries (the specification's 256).
+pub const MAX_DEALLOCATE_RANGES: usize = 256;
 
 const COMPLETION_INTERRUPTS_ON_VECTOR_0: u32 = 1 << 1;
 const IDENTIFY_NAMESPACE: u32 = 0;
@@ -142,6 +148,7 @@ pub struct Nvme<R: RegisterIo, M: DmaMemory> {
     blocks: u64,
     max_transfer: usize,
     volatile_write_cache: bool,
+    deallocates: bool,
 }
 
 fn read64<R: RegisterIo>(regs: &R, offset: usize) -> u64 {
@@ -186,6 +193,7 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
             blocks: 0,
             max_transfer: DATA_BYTES,
             volatile_write_cache: false,
+            deallocates: false,
         };
         match controller.start(keep_waiting) {
             Ok(()) => Ok(controller),
@@ -262,6 +270,8 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
             self.max_transfer = DATA_BYTES.min(limit);
         }
         self.volatile_write_cache = controller[525] & 1 != 0;
+        let optional_commands = u16::from_le_bytes([controller[520], controller[521]]);
+        self.deallocates = optional_commands & ONCS_DATASET_MANAGEMENT != 0;
 
         self.admin_command(
             Command::new(ADMIN_IDENTIFY)
@@ -502,6 +512,56 @@ impl<R: RegisterIo, M: DmaMemory> Nvme<R, M> {
             return Ok(());
         }
         let command = Command::new(IO_FLUSH).namespace(self.namespace);
+        self.submit(true, command, keep_waiting).map(|_| ())
+    }
+
+    /// Whether the controller takes Dataset Management's deallocate (D612).
+    pub fn deallocates(&self) -> bool {
+        self.deallocates
+    }
+
+    /// Tells the controller the sectors from `sector` on, `count` of them, hold nothing worth
+    /// keeping (Dataset Management with the deallocate attribute, D612), in ranges of whole
+    /// logical blocks: a partial block at either end is left as it is. Nothing without
+    /// Dataset Management.
+    pub fn deallocate(
+        &mut self,
+        sector: u64,
+        count: u64,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Error> {
+        if !self.deallocates || count == 0 {
+            return Ok(());
+        }
+        sector
+            .checked_add(count)
+            .filter(|&end| end <= self.sectors())
+            .ok_or(Error::OutOfRange)?;
+        let per_block = (self.block_bytes / SECTOR_SIZE) as u64;
+        let first = sector.div_ceil(per_block);
+        let end = (sector + count) / per_block;
+        if end <= first {
+            return Ok(());
+        }
+        let most = u64::from(u32::MAX);
+        let mut ranges = 0usize;
+        let mut at = first;
+        while at < end && ranges < MAX_DEALLOCATE_RANGES {
+            let length = (end - at).min(most);
+            let entry = DATA + ranges * RANGE_BYTES;
+            write32(&self.memory, entry, 0);
+            write32(&self.memory, entry + 4, length as u32);
+            write64(&self.memory, entry + 8, at);
+            at += length;
+            ranges += 1;
+        }
+        fence(Ordering::SeqCst);
+        let data = self.memory.dma_addr().get() + DATA as u64;
+        let command = Command::new(IO_DATASET_MANAGEMENT)
+            .namespace(self.namespace)
+            .data(data, 0)
+            .dword(10, (ranges - 1) as u32)
+            .dword(11, DEALLOCATE);
         self.submit(true, command, keep_waiting).map(|_| ())
     }
 

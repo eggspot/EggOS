@@ -129,6 +129,17 @@ impl Disk for BlockDisk {
         let mut deadline = self.deadline();
         self.device.flush(&mut deadline).map_err(|_| DiskError)
     }
+
+    fn discard(&mut self, block: u64, count: u64) -> Result<(), DiskError> {
+        let mut deadline = self.deadline();
+        self.device
+            .discard(
+                block * SECTORS_PER_BLOCK,
+                count * SECTORS_PER_BLOCK,
+                &mut deadline,
+            )
+            .map_err(|_| DiskError)
+    }
 }
 
 /// A mounted EggFS volume on disk `D`: see the module documentation.

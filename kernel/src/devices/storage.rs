@@ -101,6 +101,16 @@ impl BlockDevice for NvmeDisk {
             .flush(&mut waiting_for(self.1, deadline))
             .map_err(block_error)
     }
+    fn discard(
+        &mut self,
+        sector: u64,
+        count: u64,
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
+        self.0
+            .deallocate(sector, count, &mut waiting_for(self.1, deadline))
+            .map_err(block_error)
+    }
 }
 
 struct SataDisk {
@@ -162,6 +172,19 @@ impl BlockDevice for SataDisk {
         let result = self
             .disk
             .flush(&mut waiting_for(self.events, deadline))
+            .map_err(block_error);
+        self.clear_interrupt();
+        result
+    }
+    fn discard(
+        &mut self,
+        sector: u64,
+        count: u64,
+        deadline: &mut Deadline,
+    ) -> Result<(), BlockError> {
+        let result = self
+            .disk
+            .trim(sector, count, &mut waiting_for(self.events, deadline))
             .map_err(block_error);
         self.clear_interrupt();
         result

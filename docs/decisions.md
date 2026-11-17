@@ -27540,3 +27540,24 @@ the license, by an explicit instruction recorded here.
   from `SPSR_EL1`. Without PAN nothing changes. The 32-bit Arm port has done the same since D570.
 - **Not yet.** Building and running (QEMU's `-cpu max` has PAN); EPAN and `PSTATE.UAO` with
   `ldtr`/`sttr` user accesses instead of the window.
+
+## D612 TRIM: NVMe deallocate and ATA DATA SET MANAGEMENT, issued by EggFS after each commit (M13; D238's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the NVM Express base specification and ACS-4)
+- **NVMe** (`drivers/src/storage/nvme.rs`): Identify Controller's ONCS bit 2 says Dataset
+  Management exists; `Nvme::deallocate(sector, count)` sends opcode `0x09` with the deallocate
+  attribute (CDW11 bit 2) and up to 256 ranges of 16 bytes (attributes, length in blocks,
+  first block) in the data page, in whole logical blocks (a partial block at either end is
+  kept).
+- **AHCI** (`drivers/src/storage/ahci.rs`): IDENTIFY word 169 bit 0 says TRIM exists;
+  `AhciDisk::trim(sector, count)` sends DATA SET MANAGEMENT (`0x06`, feature TRIM) with one
+  512-byte block of up to 64 entries (48-bit LBA and a 16-bit count, at most 65,535 blocks
+  each) a command. `issue` now takes the whole register FIS, so a command can set its
+  features.
+- **The block layer**: `BlockDevice::discard(sector, count, deadline)`, nothing by default;
+  the NVMe and SATA disks implement it; a partition checks the range and shifts it.
+- **EggFS**: `Disk::discard(block, count)`, nothing by default; the kernel's `BlockDisk`
+  turns it into sectors. `free_block` remembers each freed block (at most 4096 a
+  transaction); once a commit is on the disk, the blocks still free in the committed bitmap
+  are merged into runs and discarded, best effort (a refusal changes nothing). Discarding only
+  after the commit keeps a crash from leaving metadata that points at discarded blocks.
+- **Not yet.** Building and running; virtio-blk's `VIRTIO_BLK_T_DISCARD`; USB disks
+  (UNMAP); a periodic `fstrim` of free space; queued TRIM (NCQ's `SEND FPDMA QUEUED`).

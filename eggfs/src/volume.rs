@@ -25,6 +25,7 @@ const RELEASE_RESERVE: usize = 8;
 const LOW_SPACE_BLOCKS: u64 = 64;
 
 const MAX_RUN_BLOCKS: u64 = 64;
+const MAX_DISCARDS_WAITING: usize = 4096;
 
 pub(crate) const TREE_SPANS: [u64; 3] = [
     POINTERS_PER_BLOCK,
@@ -114,6 +115,8 @@ pub struct Volume<D: Disk> {
     pub(crate) broken: bool,
     pub(crate) commits: u64,
     pub(crate) freed_waiting: u64,
+    /// The blocks freed since the last commit, discarded on the disk once it commits (D612).
+    pub(crate) freed_to_discard: Vec<u32>,
     pub(crate) root_generation: u32,
     block_cursor: u32,
     inode_cursor: u32,
@@ -194,6 +197,7 @@ impl<D: Disk> Volume<D> {
             broken: false,
             commits: 0,
             freed_waiting: 0,
+            freed_to_discard: Vec::new(),
             root_generation: 0,
             block_cursor: geometry.data_start,
             inode_cursor: 0,
@@ -342,7 +346,7 @@ impl<D: Disk> Volume<D> {
         Ok(())
     }
 
-    fn is_fresh(&self, block: u32) -> bool {
+    pub(crate) fn is_fresh(&self, block: u32) -> bool {
         let (bitmap, byte, mask) = Self::bit_location(self.geometry.block_bitmap, block);
         self.cache
             .committed(bitmap)
@@ -408,6 +412,9 @@ impl<D: Disk> Volume<D> {
         self.free_blocks += 1;
         self.cache.forget(block);
         self.forget_data(block);
+        if self.freed_to_discard.len() < MAX_DISCARDS_WAITING {
+            self.freed_to_discard.push(block);
+        }
         Ok(())
     }
 

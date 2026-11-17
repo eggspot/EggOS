@@ -344,7 +344,33 @@ impl<D: Disk> Volume<D> {
         self.freed_waiting = 0;
         self.sequence = self.sequence.wrapping_add(1);
         self.commits += 1;
+        self.discard_freed();
         Ok(())
+    }
+
+    fn discard_freed(&mut self) {
+        let mut freed = core::mem::take(&mut self.freed_to_discard);
+        freed.sort_unstable();
+        freed.dedup();
+        let mut runs = freed.iter().peekable();
+        while let Some(&first) = runs.next() {
+            let mut last = first;
+            while let Some(&&next) = runs.peek() {
+                if next != last + 1 || !self.is_fresh(next) {
+                    break;
+                }
+                last = next;
+                runs.next();
+            }
+            if !self.is_fresh(first) {
+                continue;
+            }
+            let _ = self
+                .disk
+                .discard(u64::from(first), u64::from(last - first + 1));
+        }
+        freed.clear();
+        self.freed_to_discard = freed;
     }
 
     fn write_run(

@@ -126,6 +126,11 @@ pub trait Disk {
     fn write(&mut self, block: u64, buffer: &[u8]) -> Result<(), DiskError>;
     /// Returns once every write before it is on stable storage.
     fn flush(&mut self) -> Result<(), DiskError>;
+    /// Tells the disk blocks `block` to `block + count` hold nothing worth keeping (D612): an
+    /// SSD's TRIM. A disk without one does nothing.
+    fn discard(&mut self, _block: u64, _count: u64) -> Result<(), DiskError> {
+        Ok(())
+    }
 }
 
 /// Why an operation failed.
