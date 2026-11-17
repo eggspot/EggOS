@@ -26,6 +26,10 @@ const NO_PIN: u32 = u32::MAX;
 static TAKEN: AtomicU32 = AtomicU32::new(0);
 static PINS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(NO_PIN) }; DeviceLine::COUNT];
 static PIN_SIGNALS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(0) }; DeviceLine::COUNT];
+
+/// How many more drivers share each level-triggered I/O APIC input's line beyond the first
+/// (D622): the line is given back only when the last lets it go.
+static PIN_SHARERS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(0) }; DeviceLine::COUNT];
 static PIN_CPUS: [AtomicU32; DeviceLine::COUNT] = [const { AtomicU32::new(0) }; DeviceLine::COUNT];
 const SIGNAL_ACTIVE_LOW: u32 = 1;
 const SIGNAL_LEVEL: u32 = 2;
@@ -122,6 +126,16 @@ pub(super) fn with_input<R>(global: u32, work: impl FnOnce(u32, &Controller) -> 
 /// Takes a free device line for the I/O APIC input `global` (a global system interrupt, a PCI
 /// INTx pin's), signalling as `signal` says, and routes it to the boot CPU.
 pub(super) fn take_pin(global: u32, signal: LineSignal) -> Result<DeviceLine, &'static str> {
+    if signal.level_triggered
+        && let Some(index) = PINS
+            .iter()
+            .position(|pin| pin.load(Ordering::Acquire) == global)
+        && PIN_SIGNALS[index].load(Ordering::Acquire) & SIGNAL_LEVEL != 0
+        && let Some(shared) = DeviceLine::from_index(index)
+    {
+        PIN_SHARERS[index].fetch_add(1, Ordering::AcqRel);
+        return Ok(shared);
+    }
     let line = take_line()?;
     let routed = with_input(global, |input, controller| {
         controller.route(input, signal, vector_of(line), timer::boot_apic_id());
@@ -170,6 +184,13 @@ pub(super) fn restore_pins() {
 
 /// Gives `line` back: an I/O APIC input is masked first, so the line raises nothing more.
 pub(super) fn release(line: DeviceLine) {
+    let sharers = &PIN_SHARERS[line.index()];
+    if sharers
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1))
+        .is_ok()
+    {
+        return;
+    }
     let global = PINS[line.index()].swap(NO_PIN, Ordering::AcqRel);
     if global != NO_PIN {
         with_input(global, |input, controller| {

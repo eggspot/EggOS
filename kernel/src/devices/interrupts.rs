@@ -51,6 +51,17 @@ static HANDLERS: [AtomicPtr<Handler>; DeviceLine::COUNT] =
 static MESSAGE_TABLES: [AtomicPtr<MessageTable>; DeviceLine::COUNT] =
     [const { AtomicPtr::new(core::ptr::null_mut()) }; DeviceLine::COUNT];
 
+/// A handler beyond the first of a shared legacy line (D622), and the next.
+struct SharedHandler {
+    handler: Handler,
+    next: *mut SharedHandler,
+}
+
+/// Each line's handlers beyond the first, newest first: the drivers whose functions share a
+/// level-triggered INTx input with the first's (D622).
+static SHARED: [AtomicPtr<SharedHandler>; DeviceLine::COUNT] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; DeviceLine::COUNT];
+
 /// A PCI function whose plain MSI capability carries a line (D555): moving the line rewrites
 /// the capability's address and data through the configuration space kept after probing.
 #[derive(Debug, Clone, Copy)]
@@ -236,8 +247,26 @@ fn connect_with(
         .is_err();
     if taken {
         // SAFETY: made just above by `Box::into_raw` and never shared.
-        drop(unsafe { Box::from_raw(handler) });
-        return Err("the device interrupt line is in use");
+        let handler = *unsafe { Box::from_raw(handler) };
+        let shareable = table.is_none()
+            && MESSAGE_TABLES[line.index()].load(Ordering::Acquire).is_null();
+        if !shareable {
+            return Err("the device interrupt line is in use");
+        }
+        let chain = &SHARED[line.index()];
+        let shared = Box::into_raw(Box::new(SharedHandler {
+            handler,
+            next: chain.load(Ordering::Acquire),
+        }));
+        loop {
+            // SAFETY: made just above and not yet shared with any other CPU.
+            let next = unsafe { (*shared).next };
+            match chain.compare_exchange(next, shared, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Ok(()),
+                // SAFETY: as above.
+                Err(current) => unsafe { (*shared).next = current },
+            }
+        }
     }
     let table = table.map_or(core::ptr::null_mut(), |table| {
         Box::into_raw(Box::new(table))
@@ -258,6 +287,21 @@ pub fn follow<P: Platform>(line: DeviceLine) {
 /// connecting failed after the line was routed. The handler's few words stay allocated, so an
 /// interrupt already in flight on another CPU never reads freed memory.
 pub fn disconnect<P: Platform>(line: DeviceLine) {
+    if let Some(chain) = SHARED.get(line.index()) {
+        let newest = chain.load(Ordering::Acquire);
+        if !newest.is_null() {
+            // SAFETY: a chained handler is a leaked box, never freed, whose `next` is set before
+            // it is published.
+            let next = unsafe { (*newest).next };
+            if chain
+                .compare_exchange(newest, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                P::release_device_interrupt(line);
+                return;
+            }
+        }
+    }
     if let Some(slot) = HANDLERS.get(line.index()) {
         slot.store(core::ptr::null_mut(), Ordering::Release);
     }
@@ -385,6 +429,14 @@ pub fn handle<P: Platform>(line: DeviceLine) {
     let handler = unsafe { &*handler };
     (handler.acknowledge)(handler.context);
     handler.events.raise::<P>();
+    let mut shared = SHARED[line.index()].load(Ordering::Acquire);
+    // SAFETY: each chained handler is a leaked box, never freed, whose `next` was set before it
+    // was published; a handler unlinked meanwhile is still valid to read.
+    while let Some(entry) = unsafe { shared.as_ref() } {
+        (entry.handler.acknowledge)(entry.handler.context);
+        entry.handler.events.raise::<P>();
+        shared = entry.next;
+    }
 }
 
 /// Events a device's interrupts raise, and the one thread that waits for them: a count of the

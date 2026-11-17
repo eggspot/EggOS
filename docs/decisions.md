@@ -27717,3 +27717,17 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; devices behind PCI-to-PCI bridges (the pin swizzle up to
   the root bus); `_SRS` to change a link's routing; the routes after `_PIC` changes; and the two
   lines now of their own: `interrupt-map` on device-tree hosts and shared INTx lines.
+
+## D622 Shared INTx lines (M8; D413's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, how PCI's level-triggered, active-low INTx is meant to be shared)
+- **HAL (x86_64).** Taking an I/O APIC input that a level-triggered line already holds gives
+  back that line and counts one more sharer (`PIN_SHARERS`); giving it back only counts one
+  fewer until the last sharer lets it go, which masks the input as before. Edge-triggered and
+  message lines are never shared.
+- **Kernel.** Connecting a handler to a line that holds one, when neither is a message line,
+  chains it (`SHARED`, newest first, linked without a lock). The interrupt runs every handler
+  in turn: each quiets its device and raises its own events, so each driver looks at its own
+  device; the input stays masked until the drivers wait again, as D413's level lines do.
+  Disconnecting a shared line unlinks the newest sharer and gives back one share.
+- **Not yet.** Building and running; unlinking a given sharer rather than the newest (a
+  driver that lets its device go while another, connected after it, keeps its own); sharing
+  on aarch64 and riscv64, which have no INTx yet (`interrupt-map`, its own line).

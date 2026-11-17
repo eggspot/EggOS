@@ -169,7 +169,7 @@ and is not listed per item.
 - [ ] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465)
 - [x] ACPI `_PRT` legacy PCI interrupt routing through the AML interpreter (D413) — code written, unbuilt, D621
 - [ ] INTx through `interrupt-map` on device-tree PCI hosts, with level lines masked on arrival on aarch64 and riscv64 (D413)
-- [ ] Shared INTx lines: several functions on one input, each handler asked in turn (D413)
+- [x] Shared INTx lines: several functions on one input, each handler asked in turn (D413) — code written, unbuilt, D622
 - [ ] GPIO controllers (Intel and AMD pin controllers) and GPIO interrupts for I2C-HID devices (D462)
 - [x] `simple-framebuffer`: 16-bit `r5g6b5` formats (D542) — code written, unbuilt, D620
 - [ ] AMD DCN: DMCUB commands through the inbox, the other DCN versions' register places, link training and higher rates, HDMI, the scaler, the second pipe, AUX and EDID, watermarks from the mode equations, vertical-blank interrupts, and DCE for older cards (D496, D514, D521)
