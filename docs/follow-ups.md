@@ -144,7 +144,11 @@ and is not listed per item.
 - [x] Components pane (D300's deviations): per-cause failure lines from the command's failure codes, check times in the local time zone, tooltips on disabled buttons, focus on `Update all` from the chip, the chip in the shell's element tree — code written, unbuilt, D608 (failure lines and local times were already there)
 - [x] App actions window (D301's deviations): a quiet success shown as a desktop notice, `Copy output`, type-to-jump in the menu, the read-only output area — code written, unbuilt, D609
 - [x] Light theme and high contrast in what draws itself: the shell's panels, the terminal's grid and the light high-contrast ANSI table, Files' and the Text Editor's own drawing (D219, D224) — code written, unbuilt, D610
-- [ ] Toolkit: submenus and checkable menu items, a menu bar's overflow, table column reordering and fit-to-content, multi-selection and cell focus, the text area's undo and word moves (D219)
+- [x] Toolkit: word moves and word deletion in text fields and areas, per profile (D219, docs/ux/toolkit-v0.6.md section 5.2) — code written, unbuilt, D624
+- [ ] Toolkit: undo and redo in text fields and areas (docs/ux/toolkit-v0.6.md section 5.1)
+- [ ] Toolkit: submenus, check and radio items, the macOS top bar's marks (docs/ux/toolkit-v0.6.md section 2)
+- [ ] Toolkit: the menu bar's `...` overflow (docs/ux/toolkit-v0.6.md section 3)
+- [ ] Toolkit: table column reordering, fit-to-content, multi-selection and cell focus (docs/ux/toolkit-v0.6.md section 4)
 
 ## M13 Real hardware, vendor drivers and mitigations
 

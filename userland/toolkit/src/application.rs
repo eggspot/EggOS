@@ -420,6 +420,7 @@ impl<P: Application<N, A>, const N: usize, const A: usize> View for Tree<'_, P, 
 
     fn set_global_menu(&mut self, global: bool) {
         self.0.tree().set_global_menu(global);
+        self.0.tree().set_mac_text_keys(global);
     }
 
     fn main_menu(&mut self, pool: &mut [u8; POOL_CAPACITY]) -> Option<usize> {

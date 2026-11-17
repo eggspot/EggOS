@@ -27757,3 +27757,22 @@ the license, by an explicit instruction recorded here.
   back to polling) and functions behind bridges (their pin has to be swizzled bridge by
   bridge to the root bus first), both in docs/follow-ups.md; sharing a masked SPI between
   functions (D622's chain is x86's).
+
+
+## D624 Toolkit v0.6's design, and its word moves first (M7; D219's list; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design by Claude Fable, D16)
+- **Design.** `docs/ux/toolkit-v0.6.md` (Claude Fable) covers submenus, check and radio items,
+  the menu bar's overflow, table column reordering, fit-to-content, multi-selection, cell
+  focus, and undo and word moves in text; its own "Decisions for the engineer" list stands.
+  The items land one section at a time, each its own follow-up.
+- **Word moves (section 5.2).** A new `text_keys` module holds the profile table
+  (`text_key`, `left_to_program`) and the word rule (`word_class`, `word_start`,
+  `word_end`): a move to the right skips space, then runs to the end of one run of word
+  characters or of signs, the left move mirrors it, in every profile. The double-click's
+  `Field::word_at` now uses the same `word_class`, so a tab or line break is space there too.
+  `WidgetTree::set_mac_text_keys` picks the macOS column (Alt or Ctrl for words, Cmd for the
+  line's and the text's ends, Cmd+Backspace to the line's start); the application sets it with
+  the global menu, from the desktop profile. Outside the macOS profile Alt with an arrow and
+  Mod with Up or Down return `Unused` to the program. A word deletion with a selection deletes
+  the selection; a read-only area moves but deletes nothing; a masked field is one word.
+- **Not yet.** Building and running; the word deletion as its own undo step waits for the
+  undo item (section 5.1); the rest of the brief, in docs/follow-ups.md.

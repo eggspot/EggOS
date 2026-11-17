@@ -9,6 +9,7 @@ use crate::geometry::Rect;
 use crate::input::{Input, Modifiers, MouseButton, key};
 use crate::text::Text;
 use crate::text_area::Store;
+use crate::text_keys;
 use crate::theme::{self, Palette};
 use crate::widget::{
     self, DropMode, Field, FieldKey, FormFactor, Horizontal, Kind, Length, List, Look, Place,
@@ -178,6 +179,8 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     shift_held: bool,
     shortcut_held: bool,
     alt_held: bool,
+    held_keys: text_keys::HeldKeys,
+    mac_text_keys: bool,
     copied: Text<COPIED_BYTES>,
     window_focused: bool,
     caret_epoch_ms: u32,
@@ -232,6 +235,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             shift_held: false,
             shortcut_held: false,
             alt_held: false,
+            held_keys: text_keys::HeldKeys {
+                control: false,
+                alt: false,
+                command: false,
+            },
+            mac_text_keys: false,
             copied: Text::new(),
             window_focused: true,
             caret_epoch_ms: 0,
@@ -1525,6 +1534,11 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     self.shortcut_held = modifiers.control_or_super();
                     self.alt_held = modifiers.0 & Modifiers::ALT != 0
                         || matches!(code, key::LEFT_ALT | key::RIGHT_ALT);
+                    self.held_keys = text_keys::HeldKeys {
+                        control: modifiers.0 & Modifiers::CTRL != 0,
+                        alt: modifiers.0 & Modifiers::ALT != 0,
+                        command: modifiers.0 & Modifiers::SUPER != 0,
+                    };
                     self.tooltip_key();
                     self.key_down(
                         code,
@@ -2392,8 +2406,22 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let Some(Kind::TextField(mut edited)) = self.kind(id).copied() else {
             return unused;
         };
+        if text_keys::left_to_program(code, self.held_keys, self.mac_text_keys) {
+            return unused;
+        }
         let before = self.text_before_focus;
         let selected = Text::<255>::from(edited.selected());
+        if let Some(text_key) = text_keys::text_key(code, self.held_keys, self.mac_text_keys) {
+            let key = widget::field_text_key(&mut edited, text_key, self.shift_held);
+            self.edit_field(id, now_ms, |field| {
+                *field = edited;
+                false
+            });
+            return match key {
+                FieldKey::Changed => Response::Edited(id),
+                _ => Response::Nothing,
+            };
+        }
         let key = widget::field_key_with(
             &mut edited,
             code,

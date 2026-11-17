@@ -6,6 +6,7 @@ use crate::geometry::Rect;
 use crate::input::key;
 use crate::menu;
 use crate::text::{self, Text};
+use crate::text_keys::{self, TextKey};
 use crate::theme::{Palette, Token};
 
 /// Height of push buttons, text fields, checkboxes and radio rows.
@@ -1099,16 +1100,11 @@ impl Field {
         self.caret = self.text.len();
     }
 
-    /// The word around byte `at` as a double-click selects it: a run of ASCII letters,
-    /// digits and `_`, or of characters beyond ASCII; a run of spaces; or one other character.
+    /// The word around byte `at` as a double-click selects it: a run of word characters or
+    /// of space ([`text_keys::word_class`]), or one sign.
     pub fn word_at(&self, at: usize) -> (usize, usize) {
         let words = self.text.as_str();
-        let class = |character: char| match character {
-            ' ' => 0,
-            character if character.is_ascii_alphanumeric() || character == '_' => 1,
-            character if !character.is_ascii() => 1,
-            _ => 2,
-        };
+        let class = text_keys::word_class;
         let Some(here) = words[at.min(words.len())..]
             .chars()
             .next()
@@ -1121,7 +1117,7 @@ impl Field {
             None => at.min(words.len()) - here.len_utf8(),
         };
         let kind = class(here);
-        if kind == 2 {
+        if kind == text_keys::WordClass::Sign {
             return (start_at, start_at + here.len_utf8());
         }
         let start = words[..start_at]
@@ -1139,6 +1135,37 @@ impl Field {
             });
         (start, end)
     }
+}
+
+/// Applies word or line key `text_key` to `field` (docs/ux/toolkit-v0.6.md section 5.2): a
+/// move, extending the selection when `extend`, or a deletion of the selection or up to where
+/// the move would stop. A masked field is one word, so its words are not given away.
+pub fn field_text_key(field: &mut Field, text_key: TextKey, extend: bool) -> FieldKey {
+    let words = field.text.as_str();
+    let target = match text_key {
+        TextKey::WordStart | TextKey::DeleteToWordStart if field.masked => 0,
+        TextKey::WordEnd | TextKey::DeleteToWordEnd if field.masked => words.len(),
+        TextKey::WordStart | TextKey::DeleteToWordStart => {
+            text_keys::word_start(words, field.caret)
+        }
+        TextKey::WordEnd | TextKey::DeleteToWordEnd => text_keys::word_end(words, field.caret),
+        TextKey::LineStart | TextKey::TextStart | TextKey::DeleteToLineStart => 0,
+        TextKey::LineEnd | TextKey::TextEnd => words.len(),
+    };
+    if text_key.deletes() {
+        if field.anchor == field.caret {
+            field.anchor = target;
+        }
+        return match field.remove_selection() {
+            true => FieldKey::Changed,
+            false => FieldKey::Moved,
+        };
+    }
+    field.caret = target;
+    if !extend {
+        field.anchor = target;
+    }
+    FieldKey::Moved
 }
 
 /// Applies key `code` (typing `character`, with Ctrl, Alt or Super held when `command`) to

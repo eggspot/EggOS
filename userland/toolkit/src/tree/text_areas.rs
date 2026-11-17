@@ -5,6 +5,7 @@ use super::{Kind, Response, WidgetId, WidgetTree};
 use crate::input::key;
 use crate::text::Text;
 use crate::text_area::{self, Store, TextArea};
+use crate::text_keys::{self, TextKey};
 use crate::widget::TEXT_AREA_LINE_PITCH;
 
 /// The word of `text` around byte `at`, as a field's double click finds it, within the line
@@ -252,6 +253,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return unused;
         };
         let (start, end) = area.selection();
+        if text_keys::left_to_program(code, self.held_keys, self.mac_text_keys) {
+            return unused;
+        }
+        if let Some(text_key) = text_keys::text_key(code, self.held_keys, self.mac_text_keys) {
+            return self.area_text_key(id, text_key, extend, now_ms);
+        }
         if shortcut {
             match code {
                 key::A => {
@@ -355,6 +362,53 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 })
             }
         };
+        match edited {
+            true => Response::Edited(id),
+            false => Response::Nothing,
+        }
+    }
+
+    fn area_text_key(
+        &mut self,
+        id: WidgetId,
+        text_key: TextKey,
+        extend: bool,
+        now_ms: u32,
+    ) -> Response {
+        let Some(Kind::TextArea(area)) = self.kind(id).copied() else {
+            return Response::Nothing;
+        };
+        if text_key.deletes() && area.read_only {
+            return Response::Nothing;
+        }
+        let edited = self.edit_area(id, now_ms, |area, store| {
+            let words = store.text();
+            let line = store.line_of(area.caret);
+            let target = match text_key {
+                TextKey::WordStart | TextKey::DeleteToWordStart => {
+                    text_keys::word_start(words, area.caret)
+                }
+                TextKey::WordEnd | TextKey::DeleteToWordEnd => {
+                    text_keys::word_end(words, area.caret)
+                }
+                TextKey::LineStart | TextKey::DeleteToLineStart => store.line_range(line).0,
+                TextKey::LineEnd => store.end_of_line(line),
+                TextKey::TextStart => 0,
+                TextKey::TextEnd => store.len(),
+            };
+            area.wanted_x = None;
+            if text_key.deletes() {
+                if area.caret == area.anchor {
+                    area.anchor = target;
+                }
+                return Self::replace_selection(area, store, "");
+            }
+            area.caret = target;
+            if !extend {
+                area.anchor = target;
+            }
+            false
+        });
         match edited {
             true => Response::Edited(id),
             false => Response::Nothing,

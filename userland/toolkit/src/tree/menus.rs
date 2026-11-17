@@ -27,6 +27,13 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.damage_all();
     }
 
+    /// Whether text fields and areas take the macOS profile's word and line keys (Alt or Ctrl
+    /// with an arrow for words, Cmd for the line's and the text's ends) rather than Mod for
+    /// words (docs/ux/toolkit-v0.6.md section 5.2).
+    pub fn set_mac_text_keys(&mut self, mac: bool) {
+        self.mac_text_keys = mac;
+    }
+
     /// Writes the menu bar as `SET_MENU`'s pool into `out`: its length, `None` without a bar.
     pub fn main_menu(&self, out: &mut [u8; POOL_CAPACITY]) -> Option<usize> {
         match self.kind(self.menu_bar()?) {

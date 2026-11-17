@@ -27,6 +27,7 @@ pub mod panel;
 pub mod table;
 pub mod text;
 pub mod text_area;
+pub mod text_keys;
 pub mod theme;
 pub mod tooltip;
 pub mod tree;
