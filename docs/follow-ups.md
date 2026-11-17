@@ -209,7 +209,7 @@ and is not listed per item.
 - [ ] Windows GUI: `WM_DRAWITEM`/`WM_MEASUREITEM` owner-drawn buttons, list boxes, combo boxes and menus (D145)
 - [ ] Android: `__system_property_set` through the `property_service` socket and `persist.` properties kept across boots (D188)
 - [x] Windows: `CopyFileExW`, `GetFinalPathNameByHandleW`, `CreateSymbolicLinkW`, `CreateHardLinkW`, `LockFileEx`/`UnlockFileEx` (D189; code written, unbuilt: D675)
-- [ ] Windows: `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList` and `STARTUPINFOEXW` (D189)
+- [x] Windows: `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList` and `STARTUPINFOEXW` (D189; code written, unbuilt: D676)
 - [ ] Windows: `MapViewOfFileExNuma` and `SEC_IMAGE` mappings (D189)
 - [ ] Translation: x87 transcendentals and the rest (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`, `fprem`, `fprem1`, `fscale`, `fxtract`, `fxam`, `ftst`, `fi*` integer forms, `fnstenv`/`fldenv`/`fnsave`/`frstor`) (D191)
 - [ ] Translation: SSSE3 (`pshufb`, `palignr`, `phadd*`, `pmaddubsw`, `pabs*`, `psign*`, `pmulhrsw`) and the rest of SSE4.1/4.2 (Windows 11 24H2's baseline) (D191)

@@ -25,6 +25,12 @@ const CREATE_SUSPENDED: u32 = 0x4;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x200;
 const CREATE_UNICODE_ENVIRONMENT: u32 = 0x400;
 const STARTF_USESTDHANDLES: u32 = 0x100;
+const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
+const STARTUP_INFO_SIZE: usize = 104;
+const STARTUP_INFO_EX_SIZE: usize = STARTUP_INFO_SIZE + POINTER;
+const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
+const ATTRIBUTE_LIST_HEADER: usize = 16;
+const ATTRIBUTE_ENTRY: usize = 3 * POINTER;
 const STARTUP_INFO_FLAGS: usize = 60;
 const STARTUP_INFO_STANDARD_HANDLES: usize = 80;
 const NORMAL_PRIORITY_CLASS: u32 = 0x20;
@@ -649,7 +655,116 @@ pub(super) fn launch(launch: &Launch<'_>) -> Result<(usize, u32), u32> {
     }
 }
 
-unsafe fn standard_streams(startup: *const u8, inherit: bool) -> [usize; 3] {
+/// The space a list of `count` attributes needs: a header (its room, then how many are set),
+/// then each attribute's number, value address and value size.
+fn attribute_list_size(count: u32) -> usize {
+    ATTRIBUTE_LIST_HEADER + count as usize * ATTRIBUTE_ENTRY
+}
+
+unsafe extern "efiapi" fn initialize_proc_thread_attribute_list(
+    list: *mut u8,
+    count: u32,
+    flags: u32,
+    size: *mut usize,
+) -> Bool {
+    if size.is_null() || flags != 0 {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let needed = attribute_list_size(count);
+    // SAFETY: `InitializeProcThreadAttributeList`'s contract: `size` holds the buffer's size.
+    let given = unsafe { size.read_unaligned() };
+    if list.is_null() || given < needed {
+        // SAFETY: as above.
+        unsafe { size.write_unaligned(needed) };
+        return fail(error::INSUFFICIENT_BUFFER, FALSE);
+    }
+    // SAFETY: the caller's buffer holds at least `needed` bytes.
+    unsafe {
+        list.cast::<u64>().write_unaligned(u64::from(count));
+        list.wrapping_add(8).cast::<u64>().write_unaligned(0);
+    }
+    TRUE
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "efiapi" fn update_proc_thread_attribute(
+    list: *mut u8,
+    _flags: u32,
+    attribute: usize,
+    value: *const u8,
+    size: usize,
+    _previous: *mut u8,
+    _return_size: *mut usize,
+) -> Bool {
+    if list.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    // SAFETY: a list `InitializeProcThreadAttributeList` set up: its room, then how many are set.
+    let (room, used) = unsafe {
+        (
+            list.cast::<u64>().read_unaligned(),
+            list.wrapping_add(8).cast::<u64>().read_unaligned(),
+        )
+    };
+    if used >= room {
+        return fail(error::INSUFFICIENT_BUFFER, FALSE);
+    }
+    let entry = list.wrapping_add(ATTRIBUTE_LIST_HEADER + used as usize * ATTRIBUTE_ENTRY);
+    // SAFETY: entry `used` lies inside the room the list was made with.
+    unsafe {
+        entry.cast::<usize>().write_unaligned(attribute);
+        entry.wrapping_add(POINTER).cast::<usize>().write_unaligned(value as usize);
+        entry.wrapping_add(2 * POINTER).cast::<usize>().write_unaligned(size);
+        list.wrapping_add(8).cast::<u64>().write_unaligned(used + 1);
+    }
+    TRUE
+}
+
+extern "efiapi" fn delete_proc_thread_attribute_list(_list: *mut u8) {}
+
+/// The handles a `STARTUPINFOEXW`'s attribute list says the child inherits
+/// (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), as an address and a count; `None` without one.
+unsafe fn handle_list(startup: *const u8, flags: u32) -> Option<(*const usize, usize)> {
+    if startup.is_null() || flags & EXTENDED_STARTUPINFO_PRESENT == 0 {
+        return None;
+    }
+    // SAFETY: the caller's duty: a `STARTUPINFO` whose first field is its size.
+    let size = unsafe { startup.cast::<u32>().read_unaligned() } as usize;
+    if size < STARTUP_INFO_EX_SIZE {
+        return None;
+    }
+    // SAFETY: a `STARTUPINFOEXW`: the attribute list's address follows the `STARTUPINFOW`.
+    let list = unsafe { startup.wrapping_add(STARTUP_INFO_SIZE).cast::<*const u8>().read_unaligned() };
+    if list.is_null() {
+        return None;
+    }
+    // SAFETY: a list the attribute functions above filled.
+    let used = unsafe { list.wrapping_add(8).cast::<u64>().read_unaligned() } as usize;
+    (0..used).find_map(|index| {
+        let entry = list.wrapping_add(ATTRIBUTE_LIST_HEADER + index * ATTRIBUTE_ENTRY);
+        // SAFETY: entry `index` is one the list holds.
+        let (attribute, value, bytes) = unsafe {
+            (
+                entry.cast::<usize>().read_unaligned(),
+                entry.wrapping_add(POINTER).cast::<*const usize>().read_unaligned(),
+                entry.wrapping_add(2 * POINTER).cast::<usize>().read_unaligned(),
+            )
+        };
+        (attribute == PROC_THREAD_ATTRIBUTE_HANDLE_LIST).then_some((value, bytes / POINTER))
+    })
+}
+
+fn listed(list: Option<(*const usize, usize)>, handle: usize) -> bool {
+    let Some((handles, count)) = list else {
+        return true;
+    };
+    (0..count).any(|index| {
+        // SAFETY: the program's handle list holds `count` handles.
+        unsafe { handles.add(index).read_unaligned() } == handle
+    })
+}
+
+unsafe fn standard_streams(startup: *const u8, inherit: bool, creation_flags: u32) -> [usize; 3] {
     let mut streams = [0, 1, 2];
     if startup.is_null() || !inherit {
         return streams;
@@ -664,6 +779,8 @@ unsafe fn standard_streams(startup: *const u8, inherit: bool) -> [usize; 3] {
     if flags & STARTF_USESTDHANDLES == 0 {
         return streams;
     }
+    // SAFETY: the caller's duty, as above.
+    let inherited = unsafe { handle_list(startup, creation_flags) };
     for (index, stream) in streams.iter_mut().enumerate() {
         // SAFETY: as above.
         let handle = unsafe {
@@ -672,7 +789,7 @@ unsafe fn standard_streams(startup: *const u8, inherit: bool) -> [usize; 3] {
                 .cast::<usize>()
                 .read_unaligned()
         };
-        if let Some(fd) = super::file::fd_of(handle) {
+        if let Some(fd) = super::file::fd_of(handle).filter(|_| listed(inherited, handle)) {
             *stream = fd;
         }
     }
@@ -714,7 +831,9 @@ unsafe fn create_process(creation: &Creation<'_>) -> Bool {
         directory: creation.directory,
         environment,
         // SAFETY: the caller's duty: null or a readable `STARTUPINFO`.
-        streams: unsafe { standard_streams(creation.startup, creation.inherit_handles) },
+        streams: unsafe {
+            standard_streams(creation.startup, creation.inherit_handles, creation.flags)
+        },
         own_group: flags & CREATE_NEW_PROCESS_GROUP != 0,
         inherit_handles: creation.inherit_handles,
         suspended: flags & CREATE_SUSPENDED != 0,
@@ -858,6 +977,9 @@ unsafe extern "efiapi" fn create_process_a(
 
 pub(super) const EXPORTS: &[Export] = exports![
     b"CreateProcessW" => create_process_w [two_stack_arguments],
+    b"InitializeProcThreadAttributeList" => initialize_proc_thread_attribute_list,
+    b"UpdateProcThreadAttribute" => update_proc_thread_attribute,
+    b"DeleteProcThreadAttributeList" => delete_proc_thread_attribute_list,
     b"CreateProcessA" => create_process_a [two_stack_arguments],
     b"OpenProcess" => open_process,
     b"GetProcessId" => get_process_id,

@@ -28596,3 +28596,17 @@ the license, by an explicit instruction recorded here.
   advisory and belong to the process, which is what Windows programs that lock to coordinate
   with each other need. An overlapped `LockFileEx` completes before it returns.
 - **Not yet.** Building and running; the copy progress routine; a guest test program.
+
+
+## D676 Proc-thread attribute lists and `STARTUPINFOEXW` (M15 Windows; follow-up of D189; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `InitializeProcThreadAttributeList` lays a list out as a 16-byte header (its
+  room, then how many attributes are set) and three pointer-sized words an attribute (its
+  number, its value's address, its size), answering the size needed with
+  `ERROR_INSUFFICIENT_BUFFER` first, as Windows does; `UpdateProcThreadAttribute` appends one
+  (the value stays the program's, as on Windows, which also keeps only its address);
+  `DeleteProcThreadAttributeList` has nothing to free. `CreateProcessW` with
+  `EXTENDED_STARTUPINFO_PRESENT` reads the list from a `STARTUPINFOEXW` and honours
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` for the standard handles: one not in the list is not
+  inherited. Other attributes (the parent process, a pseudoconsole) are accepted and ignored.
+- **Not yet.** Building and running; pseudoconsoles; inheriting handles other than the three
+  standard ones.
