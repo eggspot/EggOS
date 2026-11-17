@@ -246,7 +246,7 @@ user_exception_save:
     cmpb    $0, {ibrs_on_entry}(%rip)
     je      .Lx86_64_entry_predictions_set
     movl    ${ia32_spec_ctrl}, %ecx
-    movl    ${spec_ctrl_ibrs}, %eax
+    movl    {spec_ctrl_kernel}(%rip), %eax
     xorl    %edx, %edx
     wrmsr
 .Lx86_64_entry_predictions_set:
@@ -307,7 +307,7 @@ x86_64_enter_user:
 3:  cmpb    $0, {ibrs_on_entry}(%rip)
     je      .Lx86_64_exit_predictions_cleared
     movl    ${ia32_spec_ctrl}, %ecx
-    xorl    %eax, %eax
+    movl    {spec_ctrl_user}(%rip), %eax
     xorl    %edx, %edx
     wrmsr
 .Lx86_64_exit_predictions_cleared:
@@ -1334,7 +1334,8 @@ x86_64_user_test_end:
     clear_buffers = sym CLEAR_CPU_BUFFERS,
     ibrs_on_entry = sym IBRS_ON_ENTRY,
     ia32_spec_ctrl = const IA32_SPEC_CTRL,
-    spec_ctrl_ibrs = const SPEC_CTRL_IBRS,
+    spec_ctrl_kernel = sym SPEC_CTRL_KERNEL,
+    spec_ctrl_user = sym SPEC_CTRL_USER,
     ibpb_on_entry = sym IBPB_ON_ENTRY,
     ia32_pred_cmd = const IA32_PRED_CMD,
     pred_cmd_ibpb = const PRED_CMD_IBPB,
@@ -1814,6 +1815,14 @@ static PREDICTION_BARRIER: core::sync::atomic::AtomicU8 = core::sync::atomic::At
 
 static IBRS_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// `IA32_SPEC_CTRL` while the kernel runs, where the entry code writes it (D267, D619): IBRS,
+/// and STIBP where it is wanted.
+static SPEC_CTRL_KERNEL: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(SPEC_CTRL_IBRS);
+
+/// `IA32_SPEC_CTRL` while a program runs: STIBP where it is wanted (D619), else 0.
+static SPEC_CTRL_USER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 static IBPB_ON_ENTRY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 const CPUID_EXTENDED_IBPB: u32 = 1 << 12;
 const CPUID_EXTENDED_IBPB_BRTYPE: u32 = 1 << 28;
@@ -1830,6 +1839,10 @@ pub(super) static RSB_FILL_ON_SWITCH: core::sync::atomic::AtomicU8 =
 const IA32_SPEC_CTRL: u32 = 0x48;
 const IA32_PRED_CMD: u32 = 0x49;
 const SPEC_CTRL_IBRS: u64 = 1;
+const SPEC_CTRL_STIBP: u64 = 1 << 1;
+const CPUID_7_EDX_STIBP: u32 = 1 << 27;
+const CPUID_TOPOLOGY: u32 = 0x0b;
+const TOPOLOGY_THREADS_MASK: u32 = 0xffff;
 const PRED_CMD_IBPB: u64 = 1;
 const CPUID_7_EDX_IBRS_IBPB: u32 = 1 << 26;
 const ARCH_CAPABILITIES_ENHANCED_IBRS: u64 = 1 << 1;
@@ -1849,17 +1862,36 @@ fn set_up_branch_predictions() {
         RSB_FILL_ON_SWITCH.store(1, core::sync::atomic::Ordering::Relaxed);
     }
     let on_entry = !enhanced && is_intel();
-    if !enhanced && !on_entry {
+    let stibp = match !enhanced && edx & CPUID_7_EDX_STIBP != 0 && smt_active() {
+        true => SPEC_CTRL_STIBP,
+        false => 0,
+    };
+    let ibrs = match enhanced || on_entry {
+        true => SPEC_CTRL_IBRS,
+        false => 0,
+    };
+    SPEC_CTRL_KERNEL.store(ibrs | stibp, core::sync::atomic::Ordering::Relaxed);
+    SPEC_CTRL_USER.store(stibp, core::sync::atomic::Ordering::Relaxed);
+    if ibrs | stibp == 0 {
         return;
     }
     if on_entry {
         IBRS_ON_ENTRY.store(1, core::sync::atomic::Ordering::Relaxed);
     }
-    // SAFETY: `IA32_SPEC_CTRL` exists when CPUID 7 EDX[26] says so (checked); setting IBRS keeps
-    // lower-privilege predictions from steering the kernel's indirect branches and changes
-    // nothing else. With enhanced IBRS it stays set; without it the kernel runs with it set and
-    // the entry code clears it only while a program runs.
-    unsafe { super::write_msr(IA32_SPEC_CTRL, SPEC_CTRL_IBRS) };
+    // SAFETY: `IA32_SPEC_CTRL` exists when CPUID 7 EDX[26] says so (checked), and STIBP is set
+    // only where CPUID 7 EDX[27] reports it; IBRS keeps lower-privilege predictions from steering
+    // the kernel's indirect branches, STIBP keeps the other hardware thread's from steering this
+    // one's, and neither changes anything else. With enhanced IBRS it stays set; without it the
+    // kernel runs with it set and the entry code leaves only STIBP while a program runs.
+    unsafe { super::write_msr(IA32_SPEC_CTRL, ibrs | stibp) };
+}
+
+/// Whether this CPU's core runs more than one hardware thread (CPUID leaf 0Bh's SMT level).
+fn smt_active() -> bool {
+    if super::timer::cpuid(0, 0)[0] < CPUID_TOPOLOGY {
+        return false;
+    }
+    super::timer::cpuid(CPUID_TOPOLOGY, 0)[1] & TOPOLOGY_THREADS_MASK > 1
 }
 
 fn set_up_return_predictions() {

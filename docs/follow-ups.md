@@ -161,7 +161,7 @@ and is not listed per item.
 - [x] AArch64: GICv3 ITS for PCI MSIs (D237) — code written, unbuilt, D618
 - [ ] UEFI runtime services: `GetTime`/`SetTime` as a clock and `GetVariable`/`SetVariable` for a boot entry written at install (D236, D241)
 - [ ] Installer: keep other operating systems' partitions (dual boot) (D241)
-- [ ] x86_64: STIBP for SMT siblings where the CPU needs it (D260, D267)
+- [x] x86_64: STIBP for SMT siblings where the CPU needs it (D260, D267) — code written, unbuilt, D619
 - [ ] Wi-Fi: power saving (the firmware's power tables and PS-Poll/U-APSD off by default), and HT/VHT/HE rates and widths in the link setup (D277, D279)
 - [ ] Wi-Fi: PMKSA caching, answering SA Query, and BIP on group management frames (D285)
 - [ ] Wi-Fi: 6 GHz channels and SAE hash-to-element (D275, D285)

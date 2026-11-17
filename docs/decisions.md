@@ -27680,3 +27680,16 @@ the license, by an explicit instruction recorded here.
   translation of requester ids (QEMU's is the identity); a second PCI segment; LPIs at the
   other CPUs (steering moves only SPIs today); freeing an LPI and its event; GICv4 virtual
   LPIs.
+
+## D619 x86_64: STIBP for SMT siblings (M13; D260's and D267's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, Intel's and AMD's guidance on single-thread indirect branch predictors)
+- **Decision.** Where the CPU reports STIBP (CPUID 7 EDX[27]), has no enhanced IBRS (which
+  includes STIBP's effect) and its core runs more than one hardware thread (CPUID leaf 0Bh's SMT
+  level counts more than one), `IA32_SPEC_CTRL.STIBP` is kept on at all times, so a program on
+  one hardware thread cannot train the indirect branches of the other. The entry code now
+  writes two values instead of constants: `SPEC_CTRL_KERNEL` (IBRS and STIBP) on entry and
+  `SPEC_CTRL_USER` (STIBP or 0) before returning to a program, so D267's per-entry IBRS no
+  longer clears STIBP. A CPU that writes no IBRS per entry (AMD, or enhanced IBRS) gets the
+  value once.
+- **Not yet.** Building and running; turning STIBP on only for processes that ask
+  (`PR_SET_SPECULATION_CTRL`) or that are not trusted, as Linux's conditional mode does;
+  following SMT being turned off at run time.
