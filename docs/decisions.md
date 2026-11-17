@@ -27872,3 +27872,30 @@ the license, by an explicit instruction recorded here.
   `fit` and `move <position>` as `set-text`, next to the width it already took.
 - **Not yet.** Building and running; scrolling the table while a header drag is near its
   edges (`DRAG_EDGE`, `DRAG_SCROLL_MS`); Files saving its order.
+
+
+## D629 Submenus on `menu::Stack` (M7; toolkit v0.6 sections 2.1 to 2.4; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Entry.** `Entry::Submenu { label, enabled, entries }` has no id and only opens; `Entry::row`
+  gives any row's label and state, `Menu::selectable` says which rows the arrows and the
+  pointer may highlight (enabled items and submenus that open), and `Menu::submenu` gives the
+  entries a row opens, none at the third level (`DEPTH` 3), where the row is drawn disabled.
+  A submenu row draws the right-pointing arrow of nine 2x2 squares at its right, and a menu
+  with one reserves 6 px of key room.
+- **Stack.** The tree keeps the path of open rows (`submenu_path`, `submenu_depth`), the
+  innermost level's highlighted row and a pending open or close; `menu::Stack::build` makes
+  the levels from the first menu and that path each time they are needed, as the first menu
+  already was, so nothing holds a stale copy. `Menu::beside` puts a submenu on its parent's
+  right border, its first row level with the row, or to the left where the right has no
+  room, then clamps it as every menu.
+- **Pointer.** Resting on a submenu row for `SUBMENU_OPEN_MS` (150) opens it; moving to
+  another row of a parent closes the submenus after the same delay unless the pointer comes
+  back or reaches them first; the delays run on `tick` and `next_deadline`. A press on a
+  submenu row opens it at once; a release on an item at any level chooses it and closes all.
+- **Keys.** Right, Enter and Space on a submenu row open it with its first row highlighted;
+  Left and Esc close the innermost level only, its row highlighted in the parent; arrows,
+  Enter and mnemonics act on the innermost level; Right on an item switches the bar's title
+  from any level. Agents see a submenu row as a `menuitem` flagged `expandable`.
+- **Not yet.** Building and running; the top bar's pool still carries a submenu as a
+  disabled row (its `S`/`E` lines and nested numbering wait for the window server's
+  submenus); nested entries in the element tree with their own ids; Files' and the Text
+  Editor's own context menus moving onto the stack.

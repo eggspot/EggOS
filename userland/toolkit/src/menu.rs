@@ -36,6 +36,25 @@ const TICK_TOP: i32 = 12;
 const TICK_ROWS: [i32; 8] = [4, 5, 6, 5, 4, 3, 2, 1];
 const DOT_OFFSET: i32 = 13;
 const DOT_INSETS: [i32; 6] = [2, 1, 0, 0, 1, 2];
+const ARROW_RIGHT: i32 = 12;
+const ARROW_TOP: i32 = 11;
+const ARROW_ROOM: i32 = 6;
+const ARROW_SQUARES: [(i32, i32); 9] = [
+    (0, 0),
+    (0, 2),
+    (0, 4),
+    (0, 6),
+    (0, 8),
+    (2, 2),
+    (2, 4),
+    (2, 6),
+    (4, 4),
+];
+/// The most levels open at once: a title's menu, a submenu and a submenu of that.
+pub const DEPTH: usize = 3;
+/// How long the pointer rests on a submenu's row before it opens, or on another row before an
+/// open submenu closes.
+pub const SUBMENU_OPEN_MS: u32 = 150;
 
 /// One line of a menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +77,12 @@ pub enum Entry {
         enabled: bool,
         id: u8,
         checked: bool,
+    },
+    /// A row that opens `entries` to its side; it has no id and is never chosen itself.
+    Submenu {
+        label: &'static str,
+        enabled: bool,
+        entries: &'static [Entry],
     },
     /// An item of a radio group (a run of radio items), with a dot when `selected`.
     Radio {
@@ -110,7 +135,7 @@ impl Entry {
                 id,
                 selected,
             } => (label, key, enabled, id, Some(Mark::Radio(selected))),
-            Entry::Separator => return None,
+            Entry::Separator | Entry::Submenu { .. } => return None,
         };
         Some(ItemParts {
             label,
@@ -151,6 +176,14 @@ impl Entry {
                 selected: on,
             },
             other => other,
+        }
+    }
+
+    /// Its label and whether it is enabled, for an item of any kind or a submenu's row.
+    pub fn row(&self) -> Option<(&'static str, bool)> {
+        match *self {
+            Entry::Submenu { label, enabled, .. } => Some((label, enabled)),
+            _ => self.item().map(|item| (item.label, item.enabled)),
         }
     }
 
@@ -251,6 +284,7 @@ pub struct Menu {
     rect: Rect,
     chosen: Option<usize>,
     mnemonics: bool,
+    level: usize,
 }
 
 impl Menu {
@@ -264,12 +298,16 @@ impl Menu {
         let (widest_label, widest_key) =
             held[..count]
                 .iter()
-                .fold((0, 0), |(labels, keys), entry| match entry.item() {
-                    Some(item) => (
+                .fold((0, 0), |(labels, keys), entry| match (entry.item(), entry) {
+                    (Some(item), _) => (
                         labels.max(text::width(plain_label(item.label).as_str())),
                         keys.max(text::width(item.key)),
                     ),
-                    None => (labels, keys),
+                    (None, Entry::Submenu { label, .. }) => (
+                        labels.max(text::width(plain_label(label).as_str())),
+                        keys.max(ARROW_ROOM),
+                    ),
+                    (None, _) => (labels, keys),
                 });
         let marks = match held[..count].iter().any(|entry| {
             entry.item().is_some_and(|item| item.mark.is_some())
@@ -294,7 +332,46 @@ impl Menu {
             rect: Rect::new(x, y, width, height),
             chosen: None,
             mnemonics: false,
+            level: 0,
         }
+    }
+
+    /// The submenu of `entries` that row `row` of `parent` opens, inside `bounds`: its left
+    /// edge on the parent's right border and its first row level with `row`, or opening to the
+    /// left where the right has no room (docs/ux/toolkit-v0.6.md section 2.2).
+    pub fn beside(parent: &Menu, row: usize, entries: &[Entry], bounds: Rect) -> Self {
+        let row_rect = parent.entry_rect(row);
+        let x = parent.rect.right() - 1;
+        let y = row_rect.y - 1;
+        let mut menu = Self::new(entries, x, y, bounds);
+        if menu.rect.x < x {
+            let left = parent.rect.x + 1 - menu.rect.width;
+            menu = Self::new(entries, left.max(bounds.x), y, bounds);
+        }
+        menu.level = parent.level + 1;
+        menu
+    }
+
+    /// Which level it is: 0 for a title's or a button's menu, 1 for its submenus, and so on.
+    pub fn level(&self) -> usize {
+        self.level
+    }
+
+    /// The entries row `index` opens when it is an enabled submenu's row this level may open.
+    pub fn submenu(&self, index: usize) -> Option<&'static [Entry]> {
+        match self.entries[..self.count].get(index) {
+            Some(Entry::Submenu {
+                enabled: true,
+                entries,
+                ..
+            }) if self.level + 1 < DEPTH => Some(entries),
+            _ => None,
+        }
+    }
+
+    /// Whether row `index` may be highlighted: an enabled item or a submenu that opens.
+    pub fn selectable(&self, index: usize) -> bool {
+        self.enabled(index).is_some() || self.submenu(index).is_some()
     }
 
     /// The same menu with entry `chosen` shown chosen.
@@ -366,9 +443,9 @@ impl Menu {
             .map(|item| item.id)
     }
 
-    /// The first enabled item, by index.
+    /// The first row that may be highlighted, by index.
     pub fn first_enabled(&self) -> Option<usize> {
-        (0..self.count).find(|&index| self.enabled(index).is_some())
+        (0..self.count).find(|&index| self.selectable(index))
     }
 
     /// The enabled items whose mnemonic is `letter`: the first after the chosen one (cycling),
@@ -376,11 +453,9 @@ impl Menu {
     pub fn with_mnemonic(&self, letter: char) -> (Option<usize>, usize) {
         let letter = letter.to_ascii_lowercase();
         let matches = |index: usize| {
-            self.entries[index]
-                .item()
-                .filter(|item| item.enabled)
-                .is_some_and(|item| {
-                    mnemonic(item.label).is_some_and(|(found, _, _)| found == letter)
+            self.selectable(index)
+                && self.entries[index].row().is_some_and(|(label, _)| {
+                    mnemonic(label).is_some_and(|(found, _, _)| found == letter)
                 })
         };
         let count = (0..self.count).filter(|&index| matches(index)).count();
@@ -395,7 +470,7 @@ impl Menu {
     pub fn item_at(&self, x: i32, y: i32) -> Option<usize> {
         (0..self.count)
             .find(|&index| self.entry_rect(index).contains(x, y))
-            .filter(|&index| self.enabled(index).is_some())
+            .filter(|&index| self.selectable(index))
     }
 
     /// The id of the enabled item at (`x`, `y`).
@@ -425,7 +500,7 @@ impl Menu {
                 None => MenuKey::Nothing,
             },
             key::UP | key::DOWN | key::HOME | key::END => {
-                let mut enabled = (0..self.count).filter(|&index| self.enabled(index).is_some());
+                let mut enabled = (0..self.count).filter(|&index| self.selectable(index));
                 let next = match (code, self.chosen) {
                     (key::HOME, _) => enabled.next(),
                     (key::END, _) => enabled.next_back(),
@@ -452,6 +527,10 @@ impl Menu {
         };
         for (index, entry) in self.entries[..self.count].iter().enumerate() {
             let rect = self.entry_rect(index);
+            if let Entry::Submenu { label, .. } = entry {
+                self.paint_submenu_row(canvas, index, label, text_x);
+                continue;
+            }
             match entry.item() {
                 None => canvas.fill(
                     Rect::new(
@@ -493,6 +572,98 @@ impl Menu {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Menu {
+    fn paint_submenu_row(&self, canvas: &mut Canvas<'_>, index: usize, label: &str, text_x: i32) {
+        let palette = canvas.palette();
+        let rect = self.entry_rect(index);
+        if self.chosen == Some(index) {
+            canvas.fill(rect, palette.menu_hover);
+        }
+        let ink = match self.submenu(index).is_some() {
+            true => palette.text,
+            false => palette.text_dim,
+        };
+        let y = rect.y + (ITEM_HEIGHT - LINE_HEIGHT) / 2;
+        let x = self.rect.x + text_x;
+        canvas.text(x, y, plain_label(label).as_str(), ink, 1);
+        if self.mnemonics {
+            underline(canvas, label, x, y, ink);
+        }
+        let left = self.rect.right() - ARROW_RIGHT - ARROW_ROOM;
+        for (column, row) in ARROW_SQUARES {
+            canvas.fill(Rect::new(left + column, rect.y + ARROW_TOP + row, 2, 2), ink);
+        }
+    }
+}
+
+/// The open levels of a menu (docs/ux/toolkit-v0.6.md section 2.1): its first level and the
+/// submenus open from it, each opened from its parent's row on the path.
+#[derive(Debug, Clone, Copy)]
+pub struct Stack {
+    levels: [Menu; DEPTH],
+    depth: usize,
+}
+
+impl Stack {
+    /// The levels of `first` with the submenus of `path` open inside `bounds`, each level's
+    /// row on the path shown highlighted, the innermost's `chosen`, and each submenu's marks as
+    /// `mark` says by item id.
+    pub fn build(
+        first: Menu,
+        path: &[usize],
+        chosen: Option<usize>,
+        bounds: Rect,
+        mark: &dyn Fn(u8) -> Option<bool>,
+    ) -> Self {
+        let mut levels = [first; DEPTH];
+        let mut depth = 0;
+        for &row in path.iter().take(DEPTH - 1) {
+            let parent = levels[depth];
+            let Some(entries) = parent.submenu(row) else {
+                break;
+            };
+            levels[depth] = parent.with_chosen(Some(row));
+            depth += 1;
+            levels[depth] = Menu::beside(&parent, row, entries, bounds)
+                .with_mnemonics(parent.mnemonics)
+                .with_marks(mark);
+        }
+        if depth > 0 {
+            levels[depth] = levels[depth].with_chosen(chosen);
+        }
+        Self { levels, depth }
+    }
+
+    /// How many submenus are open.
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Level `level`, 0 the first, while it is open.
+    pub fn level(&self, level: usize) -> Option<&Menu> {
+        self.levels[..=self.depth].get(level)
+    }
+
+    /// The innermost open level.
+    pub fn innermost(&self) -> &Menu {
+        &self.levels[self.depth]
+    }
+
+    /// The innermost level whose rectangle holds (`x`, `y`).
+    pub fn level_at(&self, x: i32, y: i32) -> Option<usize> {
+        (0..=self.depth)
+            .rev()
+            .find(|&level| self.levels[level].rect().contains(x, y))
+    }
+
+    /// Draws every open level, the first beneath.
+    pub fn paint(&self, canvas: &mut Canvas<'_>) {
+        for menu in &self.levels[..=self.depth] {
+            menu.paint(canvas);
         }
     }
 }
@@ -634,9 +805,13 @@ impl Bar {
                 return length;
             }
             for entry in self.menus[index].iter().take(MAX_ENTRIES) {
-                let fits = match entry.item() {
-                    None => put(&[b"-\n"], &mut length),
-                    Some(item) => {
+                let fits = match (entry.item(), entry) {
+                    (None, Entry::Submenu { label, .. }) => {
+                        let label = plain_label(label);
+                        put(&[b"D", label.as_str().as_bytes(), b"\t\n"], &mut length)
+                    }
+                    (None, _) => put(&[b"-\n"], &mut length),
+                    (Some(item), _) => {
                         let label = plain_label(item.label);
                         let kind: &[u8] = if item.enabled { b"I" } else { b"D" };
                         let shown = |own: bool| mark(item.id).unwrap_or(own);
@@ -856,5 +1031,54 @@ mod tests {
             &out[..length],
             b"MView\nIWrap\t\tc1\n-\nISmall\t\tr1\nILarge\t\tr0\nIZoom\t\n"
         );
+    }
+
+    const ZOOM: [Entry; 2] = [
+        Entry::Item {
+            label: "&In",
+            key: "",
+            enabled: true,
+            id: 7,
+        },
+        Entry::Item {
+            label: "&Out",
+            key: "",
+            enabled: true,
+            id: 8,
+        },
+    ];
+
+    const WITH_SUBMENU: [Entry; 2] = [
+        Entry::Item {
+            label: "&Wrap",
+            key: "",
+            enabled: true,
+            id: 1,
+        },
+        Entry::Submenu {
+            label: "&Zoom",
+            enabled: true,
+            entries: &ZOOM,
+        },
+    ];
+
+    #[test]
+    fn a_submenu_opens_beside_its_row_and_to_the_left_without_room() {
+        let bounds = Rect::new(0, 0, 720, 480);
+        let first = Menu::new(&WITH_SUBMENU, 10, 10, bounds);
+        assert!(first.selectable(1) && first.enabled(1).is_none());
+        let stack = Stack::build(first, &[1], Some(0), bounds, &|_| None);
+        assert_eq!(stack.depth(), 1);
+        let submenu = stack.innermost();
+        assert_eq!(submenu.rect().x, first.rect().right() - 1);
+        assert_eq!(submenu.rect().y, first.entry_rect(1).y - 1);
+        assert_eq!(submenu.chosen(), Some(0));
+        assert_eq!(stack.level(0).unwrap().chosen(), Some(1));
+        let narrow = Rect::new(0, 0, first.rect().right() + 40, 480);
+        let crowded = Stack::build(first, &[1], None, narrow, &|_| None);
+        assert!(crowded.innermost().rect().right() <= first.rect().x + 1);
+        let deepest = Menu::new(&WITH_SUBMENU, 0, 0, bounds);
+        let third = Stack::build(deepest, &[1, 0], None, bounds, &|_| None);
+        assert_eq!(third.depth(), 1);
     }
 }

@@ -209,6 +209,10 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     tip: tooltips::Tip,
     column: Option<tables::ColumnDrag>,
     header_move: Option<tables::HeaderMove>,
+    submenu_path: [usize; crate::menu::DEPTH - 1],
+    submenu_depth: usize,
+    submenu_chosen: Option<usize>,
+    submenu_pending: Option<menus::SubmenuPending>,
     pick: Option<drags::Pick>,
     foreign: Option<drags::Foreign>,
     stores: [Store; A],
@@ -275,6 +279,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             tip: tooltips::Tip::NONE,
             column: None,
             header_move: None,
+            submenu_path: [0; crate::menu::DEPTH - 1],
+            submenu_depth: 0,
+            submenu_chosen: None,
+            submenu_pending: None,
             pick: None,
             foreign: None,
             stores: [Store::EMPTY; A],
@@ -1413,6 +1421,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
         }
         self.tooltip_tick(now_ms);
+        self.submenu_tick(now_ms);
         self.handles_tick(now_ms);
         self.pick_tick(now_ms)
     }
@@ -1428,6 +1437,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             self.tooltip_deadline(),
             self.pick_deadline(),
             self.handles_deadline(),
+            self.submenu_pending.map(|pending| pending.due_ms),
         ]
         .into_iter()
         .flatten()
@@ -1471,7 +1481,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     return self.pick_moved(x, y, time_ms);
                 }
                 if self.menu_open() {
-                    self.menu_pointer_moved(x, y);
+                    self.menu_pointer_moved(x, y, time_ms);
                     return Response::Nothing;
                 }
                 if self.popup.is_some() {

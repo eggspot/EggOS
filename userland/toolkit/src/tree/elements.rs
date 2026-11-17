@@ -6,7 +6,7 @@
 
 use super::{ROOT_ELEMENT, Response, WidgetId, WidgetTree};
 use crate::geometry::Rect;
-use crate::menu::{ItemParts, Mark, Menu, plain_label};
+use crate::menu::{Entry, ItemParts, Mark, Menu, plain_label};
 use crate::table::ROW_PART;
 use crate::text::Text;
 use crate::widget::{Kind, MAX_COLUMNS, MAX_MENUS, card_rect, radio_rect};
@@ -49,6 +49,19 @@ fn describe_entries(
     tree: &mut TreeWriter<'_>,
 ) -> bool {
     menu.entries().iter().enumerate().all(|(index, entry)| {
+        if let Entry::Submenu { label, .. } = entry {
+            let Some(id) = element(index) else {
+                return true;
+            };
+            let name = plain_label(label);
+            let opens = menu.submenu(index).is_some();
+            let flags = disabled | flags::EXPANDABLE | if opens { 0 } else { flags::DISABLED };
+            return tree.push(
+                &Element::new(id, parent, Role::MenuItem, bounds(menu.entry_rect(index)))
+                    .named(name.as_str().as_bytes())
+                    .flagged(flags),
+            );
+        }
         let Some(ItemParts {
             label,
             key,

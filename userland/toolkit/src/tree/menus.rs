@@ -6,8 +6,19 @@ use super::{Kind, Response, WidgetId, WidgetTree};
 use crate::canvas::Canvas;
 use crate::geometry::Rect;
 use crate::input::key;
-use crate::menu::{self, Entry, Menu, MenuKey, POOL_CAPACITY};
+use crate::menu::{self, Entry, Menu, MenuKey, POOL_CAPACITY, Stack, SUBMENU_OPEN_MS};
 use crate::widget::MAX_MENUS;
+
+/// A submenu's open or close waiting for the pointer to rest (docs/ux/toolkit-v0.6.md section
+/// 2.3): at `due_ms`, open row `row`'s submenu of level `level`, or close the submenus below
+/// `level` and highlight `row` there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SubmenuPending {
+    level: usize,
+    row: Option<usize>,
+    opens: bool,
+    pub(super) due_ms: u32,
+}
 
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// The window's menu bar: the first shown one.
@@ -85,6 +96,164 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         Rect::new(0, 0, self.size.0, self.size.1)
     }
 
+    /// The open menu's levels: its first and the submenus open from it.
+    pub(super) fn open_stack(&self) -> Option<(WidgetId, Stack)> {
+        let (id, first) = self.open_menu()?;
+        let path = &self.submenu_path[..self.submenu_depth];
+        let mark = |entry| self.mark_of(id, entry);
+        Some((
+            id,
+            Stack::build(first, path, self.submenu_chosen, self.window_rect(), &mark),
+        ))
+    }
+
+    fn reset_submenus(&mut self) {
+        self.submenu_depth = 0;
+        self.submenu_chosen = None;
+        self.submenu_pending = None;
+    }
+
+    fn open_submenu(&mut self, level: usize, row: usize, highlight_first: bool) {
+        let Some((_, stack)) = self.open_stack() else {
+            return;
+        };
+        let Some(parent) = stack.level(level).copied() else {
+            return;
+        };
+        let Some(entries) = parent.submenu(row) else {
+            return;
+        };
+        self.damage_menu();
+        self.submenu_path[level] = row;
+        self.submenu_depth = level + 1;
+        self.submenu_pending = None;
+        self.submenu_chosen = match highlight_first {
+            true => Menu::beside(&parent, row, entries, self.window_rect()).first_enabled(),
+            false => None,
+        };
+        self.damage_menu();
+    }
+
+    fn close_submenus_to(&mut self, level: usize) {
+        if level >= self.submenu_depth {
+            return;
+        }
+        self.damage_menu();
+        self.submenu_depth = level;
+        self.submenu_pending = None;
+        let row = self.submenu_path[level];
+        match level {
+            0 => {
+                self.submenu_chosen = None;
+                if let Some(id) = self.menu {
+                    self.set_highlighted(id, Some(row));
+                }
+            }
+            _ => self.submenu_chosen = Some(row),
+        }
+        self.damage_menu();
+    }
+
+    fn highlight_in_level(&mut self, id: WidgetId, level: usize, row: Option<usize>) {
+        match level {
+            0 if self.submenu_depth == 0 => self.set_highlighted(id, row),
+            _ if level == self.submenu_depth => {
+                self.damage_menu();
+                self.submenu_chosen = row;
+                self.damage_menu();
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn submenu_tick(&mut self, now_ms: u32) {
+        let Some(pending) = self.submenu_pending else {
+            return;
+        };
+        if (now_ms.wrapping_sub(pending.due_ms) as i32) < 0 {
+            return;
+        }
+        self.submenu_pending = None;
+        let Some(id) = self.menu else {
+            return;
+        };
+        match (pending.opens, pending.row) {
+            (true, Some(row)) => self.open_submenu(pending.level, row, false),
+            (true, None) => {}
+            (false, row) => {
+                self.close_submenus_to(pending.level);
+                self.highlight_in_level(id, pending.level, row);
+                let opens = self
+                    .open_stack()
+                    .and_then(|(_, stack)| stack.level(pending.level).copied())
+                    .zip(row)
+                    .is_some_and(|(menu, row)| menu.submenu(row).is_some());
+                if opens {
+                    self.submenu_pending = Some(SubmenuPending {
+                        level: pending.level,
+                        row,
+                        opens: true,
+                        due_ms: now_ms.wrapping_add(SUBMENU_OPEN_MS),
+                    });
+                }
+            }
+        }
+    }
+
+    fn submenu_key(&mut self, id: WidgetId, code: u16, letter: Option<char>) -> Option<Response> {
+        let (_, stack) = self.open_stack()?;
+        let depth = stack.depth();
+        let mut menu = *stack.innermost();
+        let chosen_opens = menu.chosen().filter(|&row| menu.submenu(row).is_some());
+        match code {
+            key::RIGHT | key::ENTER | key::SPACE if chosen_opens.is_some() => {
+                self.open_submenu(depth, chosen_opens.unwrap_or(0), true);
+                return Some(Response::Nothing);
+            }
+            key::LEFT | key::ESC if depth > 0 => {
+                self.close_submenus_to(depth - 1);
+                return Some(Response::Nothing);
+            }
+            _ => {}
+        }
+        if let Some(letter) = letter {
+            let (next, count) = menu.with_mnemonic(letter);
+            if let (Some(row), 1) = (next, count)
+                && menu.submenu(row).is_some()
+            {
+                self.open_submenu(depth, row, true);
+                return Some(Response::Nothing);
+            }
+            if depth > 0 {
+                match (next, count) {
+                    (Some(index), 1) => return Some(self.choose_entry(id, &menu, index)),
+                    (Some(index), _) => self.highlight_in_level(id, depth, Some(index)),
+                    _ => {}
+                }
+                return Some(Response::Nothing);
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        match code {
+            key::UP | key::DOWN | key::HOME | key::END => {
+                menu.key(code);
+                self.highlight_in_level(id, depth, menu.chosen());
+            }
+            key::ENTER | key::SPACE => {
+                if let Some(index) = menu.chosen() {
+                    return Some(self.choose_entry(id, &menu, index));
+                }
+            }
+            key::RIGHT if matches!(self.kind(id), Some(Kind::MenuBar(_))) => {
+                self.switch_title(id, true);
+            }
+            _ => {}
+        }
+        Some(Response::Nothing)
+    }
+
     pub(super) fn open_menu(&self) -> Option<(WidgetId, Menu)> {
         let id = self.menu?;
         let rect = self.rect(id)?;
@@ -154,8 +323,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     fn damage_menu(&mut self) {
-        if let Some((id, menu)) = self.open_menu() {
-            self.damage.add(menu.rect());
+        if let Some((id, stack)) = self.open_stack() {
+            for level in 0..=stack.depth() {
+                if let Some(menu) = stack.level(level) {
+                    self.damage.add(menu.rect());
+                }
+            }
             self.damage_widget(id);
         } else if let Some(id) = self.menu {
             self.damage_widget(id);
@@ -187,6 +360,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
             _ => {}
         });
+        self.reset_submenus();
         self.menu = None;
         self.menu_pressed = false;
     }
@@ -197,6 +371,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if self.menu != Some(id) {
             self.close_menu();
         }
+        self.reset_submenus();
         self.menu = Some(id);
         let window = self.window_rect();
         let rect = self.rect(id).unwrap_or_default();
@@ -266,10 +441,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         });
     }
 
-    pub(super) fn menu_pointer_moved(&mut self, x: i32, y: i32) {
-        let Some((id, menu)) = self.open_menu() else {
+    pub(super) fn menu_pointer_moved(&mut self, x: i32, y: i32, now_ms: u32) {
+        let Some((id, stack)) = self.open_stack() else {
             return;
         };
+        if let Some(level) = stack.level_at(x, y).filter(|&level| level > 0 || stack.depth() > 0) {
+            self.submenu_hovered(id, &stack, level, x, y, now_ms);
+            return;
+        }
+        let menu = *stack.innermost();
         if let (Some(Kind::MenuBar(bar)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
             && let Some(title) = bar.title_at(rect, x, y)
         {
@@ -282,15 +462,81 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if menu.rect().contains(x, y) && item != menu.chosen() {
             self.set_highlighted(id, item);
         }
+        if menu.rect().contains(x, y) {
+            self.submenu_pending = item.filter(|&row| menu.submenu(row).is_some()).map(|row| {
+                SubmenuPending {
+                    level: 0,
+                    row: Some(row),
+                    opens: true,
+                    due_ms: now_ms.wrapping_add(SUBMENU_OPEN_MS),
+                }
+            });
+        }
+    }
+
+    fn submenu_hovered(
+        &mut self,
+        id: WidgetId,
+        stack: &Stack,
+        level: usize,
+        x: i32,
+        y: i32,
+        now_ms: u32,
+    ) {
+        let Some(menu) = stack.level(level).copied() else {
+            return;
+        };
+        let item = menu.item_at(x, y);
+        let due_ms = now_ms.wrapping_add(SUBMENU_OPEN_MS);
+        if level < stack.depth() {
+            let pending = match item == Some(self.submenu_path[level]) {
+                true => None,
+                false => Some(SubmenuPending {
+                    level,
+                    row: item,
+                    opens: false,
+                    due_ms,
+                }),
+            };
+            let same = self.submenu_pending.is_some_and(|waiting| {
+                pending.is_some_and(|new| new.level == waiting.level && new.row == waiting.row)
+            });
+            if !same {
+                self.submenu_pending = pending;
+            }
+            return;
+        }
+        if item != menu.chosen() {
+            self.highlight_in_level(id, level, item);
+        }
+        let opens = item.filter(|&row| menu.submenu(row).is_some());
+        let same = self
+            .submenu_pending
+            .is_some_and(|waiting| waiting.opens && waiting.level == level && waiting.row == opens);
+        if !same {
+            self.submenu_pending = opens.map(|row| SubmenuPending {
+                level,
+                row: Some(row),
+                opens: true,
+                due_ms,
+            });
+        }
     }
 
     pub(super) fn menu_pressed_at(&mut self, x: i32, y: i32) -> Response {
-        let Some((id, menu)) = self.open_menu() else {
+        let Some((id, stack)) = self.open_stack() else {
             return Response::Nothing;
         };
-        if menu.rect().contains(x, y) {
+        if let Some(level) = stack.level_at(x, y) {
             self.menu_pressed = true;
-            self.set_highlighted(id, menu.item_at(x, y));
+            let menu = stack.level(level).copied().unwrap_or(*stack.innermost());
+            let item = menu.item_at(x, y);
+            if let Some(row) = item.filter(|&row| menu.submenu(row).is_some()) {
+                self.open_submenu(level, row, false);
+                return Response::Nothing;
+            }
+            self.close_submenus_to(level);
+            self.highlight_in_level(id, level, item);
             return Response::Nothing;
         }
         if let (Some(Kind::MenuBar(bar)), Some(rect)) = (self.kind(id).copied(), self.rect(id))
@@ -314,10 +560,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     pub(super) fn menu_released_at(&mut self, x: i32, y: i32) -> Response {
         self.menu_pressed = false;
-        let Some((id, menu)) = self.open_menu() else {
+        let Some((id, stack)) = self.open_stack() else {
+            return Response::Nothing;
+        };
+        let Some(level) = stack.level_at(x, y) else {
+            return Response::Nothing;
+        };
+        let Some(menu) = stack.level(level).copied() else {
             return Response::Nothing;
         };
         match menu.item_at(x, y) {
+            Some(row) if menu.submenu(row).is_some() => {
+                let open = level < stack.depth() && self.submenu_path[level] == row;
+                if !open {
+                    self.open_submenu(level, row, false);
+                }
+                Response::Nothing
+            }
             Some(index) => self.choose_entry(id, &menu, index),
             None => Response::Nothing,
         }
@@ -393,6 +652,14 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return Some(Response::Nothing);
         }
         let id = self.menu?;
+        let open = match self.kind(id).copied()? {
+            Kind::MenuBar(bar) => bar.has_keyboard() && bar.open.is_some(),
+            Kind::MenuButton(button) => button.open,
+            _ => false,
+        };
+        if open && let Some(response) = self.submenu_key(id, code, letter) {
+            return Some(response);
+        }
         match self.kind(id).copied()? {
             Kind::MenuBar(bar) if bar.has_keyboard() => Some(self.bar_key(id, bar, code, letter)),
             Kind::MenuButton(button) if button.open => self.button_menu_key(id, code),
@@ -535,10 +802,15 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     pub(super) fn paint_menu(&self, canvas: &mut Canvas<'_>, clip: Rect) {
-        if let Some((_, menu)) = self.open_menu() {
-            let previous = canvas.narrow(menu.rect().intersection(&clip));
-            menu.paint(canvas);
-            canvas.restore(previous);
+        if let Some((_, stack)) = self.open_stack() {
+            for level in 0..=stack.depth() {
+                let Some(menu) = stack.level(level) else {
+                    continue;
+                };
+                let previous = canvas.narrow(menu.rect().intersection(&clip));
+                menu.paint(canvas);
+                canvas.restore(previous);
+            }
         }
     }
 }
