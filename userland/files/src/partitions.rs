@@ -754,6 +754,14 @@ const NTFS_SECTOR: usize = 512;
 const NTFS_MOST_RECORD_BYTES: usize = 4096;
 const NTFS_CHUNK_BYTES: usize = 64 * 1024;
 const NTFS_MOST_RUNS: usize = 256;
+const NTFS_ROOT_RECORD: u64 = 5;
+const NTFS_INDEX_ROOT: u32 = 0x90;
+const NTFS_INDEX_ALLOCATION: u32 = 0xa0;
+const NTFS_LAST_ENTRY: u16 = 2;
+const NTFS_RECORD_NUMBER: u64 = (1 << 48) - 1;
+const NTFS_MOST_INDEX_BLOCKS: u64 = 4096;
+const NTFS_MOST_INDEX_BYTES: usize = 64 * 1024;
+const HIBERNATION_FILE: &str = "hiberfil.sys";
 
 fn le64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
@@ -767,21 +775,14 @@ fn ntfs_record(
     if !read(at, record) || record.get(..4)? != b"FILE" {
         return None;
     }
-    let sequence_at = usize::from(le16(record, 4)?);
-    let sequence_count = usize::from(le16(record, 6)?);
-    let check = le16(record, sequence_at)?;
-    for sector in 1..sequence_count {
-        let end = sector * NTFS_SECTOR - 2;
-        if le16(record, end)? != check {
-            return None;
-        }
-        let fixed = le16(record, sequence_at + sector * 2)?;
-        record.get_mut(end..end + 2)?.copy_from_slice(&fixed.to_le_bytes());
-    }
-    Some(())
+    ntfs_fix_up(record)
 }
 
 fn ntfs_attribute(record: &[u8], kind: u32) -> Option<&[u8]> {
+    ntfs_attribute_named(record, kind, false)
+}
+
+fn ntfs_attribute_named(record: &[u8], kind: u32, named: bool) -> Option<&[u8]> {
     let mut at = usize::from(le16(record, 0x14)?);
     loop {
         let found = le32(record, at)?;
@@ -793,7 +794,7 @@ fn ntfs_attribute(record: &[u8], kind: u32) -> Option<&[u8]> {
             return None;
         }
         let unnamed = *record.get(at + 9)? == 0;
-        if found == kind && unnamed {
+        if found == kind && unnamed != named {
             return record.get(at..at + length);
         }
         at += length;
@@ -831,6 +832,125 @@ fn ntfs_runs(attribute: &[u8]) -> Option<Vec<(u64, u64)>> {
     Some(runs)
 }
 
+fn ntfs_index_find(entries: &[u8], wanted: &str) -> Option<Option<u64>> {
+    let mut at = 0;
+    while at + 16 <= entries.len() {
+        let length = usize::from(le16(entries, at + 8)?);
+        let flags = le16(entries, at + 12)?;
+        if flags & NTFS_LAST_ENTRY != 0 || length == 0 {
+            return Some(None);
+        }
+        let key = at + 16;
+        let name_units = usize::from(*entries.get(key + 0x40)?);
+        let name: Vec<u16> = (0..name_units)
+            .filter_map(|index| le16(entries, key + 0x42 + index * 2))
+            .collect();
+        let matches = char::decode_utf16(name.iter().copied())
+            .map(|character| character.map(|character| character.to_ascii_lowercase()))
+            .eq(wanted.chars().map(Ok::<char, core::char::DecodeUtf16Error>));
+        if matches {
+            return Some(Some(le64(entries, at)? & NTFS_RECORD_NUMBER));
+        }
+        at += length;
+    }
+    Some(None)
+}
+
+fn ntfs_root_entry(
+    mft: u64,
+    record_bytes: usize,
+    cluster_bytes: u64,
+    wanted: &str,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+) -> Option<Option<u64>> {
+    let mut record = [0u8; NTFS_MOST_RECORD_BYTES];
+    let record = &mut record[..record_bytes];
+    ntfs_record(record, mft + NTFS_ROOT_RECORD * record_bytes as u64, read)?;
+    let root = ntfs_attribute_named(record, NTFS_INDEX_ROOT, true)?;
+    let content = usize::from(le16(root, 0x14)?);
+    let block_bytes = le32(root, content + 0x08)? as usize;
+    let header = content + 0x10;
+    let first = header + le32(root, header)? as usize;
+    let end = header + le32(root, header + 4)? as usize;
+    if let Some(found) = ntfs_index_find(root.get(first..end.min(root.len()))?, wanted)? {
+        return Some(Some(found));
+    }
+    let Some(allocation) = ntfs_attribute_named(record, NTFS_INDEX_ALLOCATION, true) else {
+        return Some(None);
+    };
+    if *allocation.get(8)? == 0 || block_bytes < NTFS_SECTOR || block_bytes > NTFS_MOST_INDEX_BYTES
+    {
+        return None;
+    }
+    let runs = ntfs_runs(allocation)?;
+    let mut block = Vec::new();
+    block.resize(block_bytes, 0);
+    let mut blocks_read = 0;
+    for (first_cluster, clusters) in runs {
+        let run_bytes = clusters * cluster_bytes;
+        let mut done = 0;
+        while done + block_bytes as u64 <= run_bytes && blocks_read < NTFS_MOST_INDEX_BLOCKS {
+            blocks_read += 1;
+            if !read(first_cluster * cluster_bytes + done, &mut block) {
+                return None;
+            }
+            done += block_bytes as u64;
+            if block.get(..4) != Some(b"INDX") || ntfs_fix_up(&mut block).is_none() {
+                continue;
+            }
+            let header = 0x18;
+            let first = header + le32(&block, header)? as usize;
+            let end = (header + le32(&block, header + 4)? as usize).min(block.len());
+            if let Some(found) = ntfs_index_find(block.get(first..end)?, wanted)? {
+                return Some(Some(found));
+            }
+        }
+    }
+    Some(None)
+}
+
+fn ntfs_fix_up(record: &mut [u8]) -> Option<()> {
+    let sequence_at = usize::from(le16(record, 4)?);
+    let sequence_count = usize::from(le16(record, 6)?);
+    let check = le16(record, sequence_at)?;
+    for sector in 1..sequence_count {
+        let end = sector * NTFS_SECTOR - 2;
+        if le16(record, end)? != check {
+            return None;
+        }
+        let fixed = le16(record, sequence_at + sector * 2)?;
+        record.get_mut(end..end + 2)?.copy_from_slice(&fixed.to_le_bytes());
+    }
+    Some(())
+}
+
+fn ntfs_hibernated(
+    mft: u64,
+    record_bytes: usize,
+    cluster_bytes: u64,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+) -> Option<bool> {
+    let Some(number) = ntfs_root_entry(mft, record_bytes, cluster_bytes, HIBERNATION_FILE, read)?
+    else {
+        return Some(false);
+    };
+    let mut record = [0u8; NTFS_MOST_RECORD_BYTES];
+    let record = &mut record[..record_bytes];
+    ntfs_record(record, mft + number * record_bytes as u64, read)?;
+    let data = ntfs_attribute(record, NTFS_DATA)?;
+    if *data.get(8)? == 0 {
+        return Some(false);
+    }
+    let Some(&(first_cluster, _)) = ntfs_runs(data)?.first() else {
+        return Some(false);
+    };
+    let mut magic = [0u8; 4];
+    if !read(first_cluster * cluster_bytes, &mut magic) {
+        return None;
+    }
+    Some(magic.eq_ignore_ascii_case(b"hibr"))
+}
+
 /// How much of an NTFS partition of `partition_bytes` can be taken from its end without moving
 /// a file (D638): the space after the last cluster its `$Bitmap` marks used, less the reserve
 /// its free space keeps; `needs-check` when `$Volume` says the volume is dirty; None where the
@@ -864,6 +984,9 @@ pub fn ntfs_tail(
     let content = usize::from(le16(volume, 0x14)?);
     if le16(volume, content + 0x0a)? & NTFS_VOLUME_DIRTY != 0 {
         return Some(Err(ShrinkBlocked::NeedsCheck));
+    }
+    if ntfs_hibernated(mft, record_bytes, cluster_bytes, read)? {
+        return Some(Err(ShrinkBlocked::Hibernated));
     }
     ntfs_record(record, mft + NTFS_BITMAP_RECORD * record_bytes as u64, read)?;
     let data = ntfs_attribute(record, NTFS_DATA)?;
@@ -1074,6 +1197,23 @@ mod tests {
         attribute[0x20..0x22].copy_from_slice(&0x30u16.to_le_bytes());
         attribute[0x30..0x3a].copy_from_slice(&[0x21, 0x10, 0x00, 0x01, 0x21, 0x08, 0xf0, 0xff, 0x00, 0x00]);
         assert_eq!(ntfs_runs(&attribute), Some(vec![(256, 16), (240, 8)]));
+    }
+
+    #[test]
+    fn an_index_entry_is_found_by_its_name_whatever_its_case() {
+        let mut entries = vec![0u8; 0x200];
+        let name: Vec<u16> = "HiberFil.sys".encode_utf16().collect();
+        entries[0..8].copy_from_slice(&42u64.to_le_bytes());
+        entries[8..10].copy_from_slice(&0x80u16.to_le_bytes());
+        entries[16 + 0x40] = name.len() as u8;
+        for (index, unit) in name.iter().enumerate() {
+            let at = 16 + 0x42 + index * 2;
+            entries[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        entries[0x80 + 12..0x80 + 14].copy_from_slice(&NTFS_LAST_ENTRY.to_le_bytes());
+        entries[0x80 + 8..0x80 + 10].copy_from_slice(&16u16.to_le_bytes());
+        assert_eq!(ntfs_index_find(&entries, HIBERNATION_FILE), Some(Some(42)));
+        assert_eq!(ntfs_index_find(&entries, "pagefile.sys"), Some(None));
     }
 
     #[test]

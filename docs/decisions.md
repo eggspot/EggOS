@@ -28034,3 +28034,14 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running. A hibernated or Fast Startup Windows is not dirty, so it
   is not refused here yet: telling it needs `hiberfil.sys`'s header, through the root
   folder's index, before any shrinking is written.
+
+
+## D639 A hibernated or Fast Startup Windows is not shrunk (M8; installer dual boot v0.1 section 8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the NTFS index and the hibernation file's signature as public documentation describes them)
+- **Decision.** Before measuring an NTFS tail, `ntfs_tail` looks `hiberfil.sys` up in the
+  root folder's `$I30` index (its index root, then every `INDX` block of its allocation, at
+  most 4096, each fixed up; names compared without case) and reads the first four bytes of
+  its data: `hibr` in any case means Windows hibernated, or shut down with Fast Startup, and
+  the partition reports `shrink_blocked: hibernated` instead of a size, as the brief's
+  refusal `system_hibernated` needs. No such file, or one without that signature, changes
+  nothing.
+- **Not yet.** Building and running.
