@@ -157,7 +157,7 @@ and is not listed per item.
 - [ ] Ethernet: jumbo frames and Wake-on-LAN (D240)
 - [ ] Wi-Fi: WPA2/WPA3-Enterprise (802.1X with EAP-PEAP/MSCHAPv2 and EAP-TLS) and roaming between access points of one network (D246)
 - [x] x86_64: the paranoid GS check in the NMI, double-fault, machine-check and debug handlers, and NMIs from ring 3 handled by the kernel (D47, D49, D248) — code written, unbuilt, D616
-- [ ] x86_64: emulating UMIP's five instructions (`sgdt`, `sidt`, `sldt`, `smsw`, `str`) for programs that use them (D251)
+- [x] x86_64: emulating UMIP's five instructions (`sgdt`, `sidt`, `sldt`, `smsw`, `str`) for programs that use them (D251) — code written, unbuilt, D617
 - [ ] AArch64: GICv3 ITS for PCI MSIs (D237)
 - [ ] UEFI runtime services: `GetTime`/`SetTime` as a clock and `GetVariable`/`SetVariable` for a boot entry written at install (D236, D241)
 - [ ] Installer: keep other operating systems' partitions (dual boot) (D241)

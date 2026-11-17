@@ -27639,3 +27639,18 @@ the license, by an explicit instruction recorded here.
   in docs/hal-assembly.md now.
 - **Not yet.** Building and running; reporting NMIs to the kernel log and to
   `/proc/interrupts`; the NMI watchdog; machine-check decoding (MCA banks).
+
+## D617 x86_64: UMIP's five instructions done for the program (M13; D251's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the values Linux's UMIP emulation gives)
+- **Decision.** A program's `#GP` (`ExceptionKind::Other`) first goes to
+  `abi::emulate_restricted_instruction` (`kernel/src/linux/abi/x86_64_umip.rs`). It reads up to
+  15 bytes at `rip`, skips the legacy prefixes (refusing an FS or GS override), takes a REX
+  prefix, and recognises `0F 01 /0` (`SGDT`) and `/1` (`SIDT`) with a memory operand, `0F 01
+  /4` (`SMSW`), `0F 00 /0` (`SLDT`) and `/1` (`STR`). The memory operand is decoded in full
+  (ModRM, SIB, 8- and 32-bit displacements, RIP-relative, the address-size prefix). It stores
+  Linux's values: a zero limit and the bases `0xfffffffffffe0000` (GDT) and
+  `0xffffffffffff0000` (IDT), `0x33` for the machine status word, 0 for the LDT and `0x40` for
+  the task register; a register destination takes 16 bits with the operand-size prefix, else
+  the value zero-extended. The program then goes on after the instruction; anything else is
+  the signal it was.
+- **Not yet.** Building and running; 32-bit programs (compatibility mode's addressing); the
+  Windows layer's own exception path for these instructions.

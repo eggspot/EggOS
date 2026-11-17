@@ -66,6 +66,9 @@ pub use x86_64::*;
 #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
 mod riscv_misaligned;
 
+#[cfg(target_arch = "x86_64")]
+mod x86_64_umip;
+
 mod ptrace_registers;
 
 /// The block-device `ioctl` numbers whose size field follows the word width (D562).
@@ -77,6 +80,24 @@ pub use ptrace_registers::{
     PTRACE_REGISTERS_BYTES, SINGLE_STEPS, SOFTWARE_STEP_BREAKPOINT, STEPS_IN_SOFTWARE,
     next_instructions, ptrace_registers, set_ptrace_registers, set_single_step,
 };
+
+/// Does an instruction the CPU refuses programs for the kernel's privacy and Linux performs for
+/// them (x86_64's UMIP five, D617): whether it did. Never elsewhere.
+pub fn emulate_restricted_instruction(
+    registers: &mut eggos_hal::user::UserRegisters,
+    read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+    write: &mut dyn FnMut(u64, &[u8]) -> bool,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        x86_64_umip::emulate(registers, read, write)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (registers, read, write);
+        false
+    }
+}
 
 /// Does a misaligned load or store a program's instruction trapped on, where the architecture
 /// leaves that to the kernel (RISC-V, D560): whether it did. Never elsewhere.

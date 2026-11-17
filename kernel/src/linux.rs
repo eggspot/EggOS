@@ -686,6 +686,18 @@ fn signal_fault<P: Platform>(
     if first_fp_use::<P>(thread, exception.kind) {
         return ControlFlow::Continue(());
     }
+    if exception.kind == ExceptionKind::Other {
+        let mut registers = context.registers();
+        let emulated = abi::emulate_restricted_instruction(
+            &mut registers,
+            &mut |address, bytes| process.read_user_memory(address, bytes).is_ok(),
+            &mut |address, bytes| process.write_user_memory(address, bytes).is_ok(),
+        );
+        if emulated {
+            context.set_registers(&registers);
+            return ControlFlow::Continue(());
+        }
+    }
     if exception.kind == ExceptionKind::Alignment {
         let mut registers = context.registers();
         let emulated = abi::emulate_misaligned(
