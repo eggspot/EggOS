@@ -1057,3 +1057,19 @@ fn a_managed_update_policy_refuses_updates_and_automatic_keeps_the_daily_check()
         crate::state::UpdatePolicy::Notify
     );
 }
+
+#[test]
+fn an_exact_edition_removes_what_it_does_not_include_only_with_a_yes() {
+    let mut files = machine(&[WINDOWS]);
+    let mut console = FakeConsole::default();
+    assert_eq!(run(&mut files, &mut console, "install windows-apps"), 0);
+    let mut console = FakeConsole::default();
+    assert_eq!(run(&mut files, &mut console, "edition --exact --dry-run server"), 0);
+    assert!(console.output.contains("Would remove, as Server does not include them: windows-apps"));
+    let mut console = FakeConsole::default();
+    assert_eq!(run(&mut files, &mut console, "edition --exact server"), 1);
+    assert!(console.output.contains("add --yes"));
+    let mut console = FakeConsole::default();
+    assert_eq!(run(&mut files, &mut console, "edition --exact --yes server"), 0);
+    assert!(crate::manager::installed(&mut files).is_empty());
+}

@@ -17,7 +17,7 @@ use eggos_mcp::json::JsonWriter;
 /// The command's usage.
 pub const USAGE: &str = "usage: component list [--json] [--download]\n       component cancel\n       component install [--dry-run] \
                          [--json] <name>\n       component remove [--yes] [--dry-run] [--json] \
-                         <name>\n       component edition [--dry-run] [<name>]\n       \
+                         <name>\n       component edition [--dry-run] [--exact [--yes]] [<name>]\n       \
                          component update [--dry-run] [--json] [--as-manager] [<name>]\n       \
                          component update --daily on|off\n";
 /// The exit status of a command line written wrongly.
@@ -79,6 +79,8 @@ pub enum Command<'a> {
     Edition {
         name: Option<&'a str>,
         dry_run: bool,
+        exact: bool,
+        yes: bool,
     },
     /// `component update`: the installed components, or `name`, brought to the store's copy,
     /// only their changed files fetched (D293).
@@ -102,7 +104,7 @@ pub enum Command<'a> {
 pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     let (&verb, rest) = arguments.split_first()?;
     let (mut json, mut dry_run, mut yes, mut name) = (false, false, false, None);
-    let (mut download, mut daily, mut as_manager) = (false, None, false);
+    let (mut download, mut daily, mut as_manager, mut exact) = (false, None, false, false);
     let mut operands_only = false;
     let mut words = rest.iter();
     while let Some(&word) = words.next() {
@@ -116,9 +118,10 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
                 });
             }
             "--as-manager" if !operands_only && verb == "update" => as_manager = true,
+            "--exact" if !operands_only && verb == "edition" => exact = true,
             "--json" if !operands_only => json = true,
             "--dry-run" if !operands_only && verb != "list" => dry_run = true,
-            "--yes" if !operands_only && verb == "remove" => yes = true,
+            "--yes" if !operands_only && (verb == "remove" || verb == "edition") => yes = true,
             "--" if !operands_only => operands_only = true,
             _ if word.starts_with('-') && !operands_only => return None,
             _ if name.is_none() && verb != "list" => name = Some(word),
@@ -136,7 +139,12 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
             daily,
             as_manager,
         }),
-        "edition" if !json => Some(Command::Edition { name, dry_run }),
+        "edition" if !json && (name.is_some() || !exact) => Some(Command::Edition {
+            name,
+            dry_run,
+            exact,
+            yes,
+        }),
         "install" => Some(Command::Install {
             name: name?,
             dry_run,
@@ -169,7 +177,8 @@ pub fn run<F: Files, C: Console>(
         Command::Install { dry_run: false, .. }
             | Command::Edition {
                 name: Some(_),
-                dry_run: false
+                dry_run: false,
+                ..
             }
     );
     if let (
@@ -236,9 +245,21 @@ pub fn run<F: Files, C: Console>(
     match command {
         Command::List { json, .. } => list(files, &mut out, store.as_ref(), json),
         Command::Cancel => cancel(files, &mut out),
-        Command::Edition { name, dry_run } => {
-            edition(files, &mut out, store.as_ref(), context.pid, name, dry_run)
-        }
+        Command::Edition {
+            name,
+            dry_run,
+            exact,
+            yes,
+        } => edition(
+            files,
+            &mut out,
+            store.as_ref(),
+            context.pid,
+            name,
+            dry_run,
+            exact,
+            yes,
+        ),
         Command::Update {
             daily: Some(on),
             json,
@@ -932,6 +953,18 @@ fn list<F: Files, C: Console>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The installed components `--exact` removes for `edition`: those it does not list, the
+/// firmware components left alone, since the machine's hardware asks for them (D680).
+pub fn not_in_edition<'a>(installed: &'a [Component], edition: &crate::editions::Edition) -> Vec<&'a str> {
+    installed
+        .iter()
+        .map(|component| component.name.as_str())
+        .filter(|name| !edition.components.contains(name))
+        .filter(|name| !crate::firmware::COMPONENTS.iter().any(|firmware| firmware.name == *name))
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn edition<F: Files, C: Console>(
     files: &mut F,
     out: &mut Out<'_, C>,
@@ -939,6 +972,8 @@ fn edition<F: Files, C: Console>(
     pid: u32,
     name: Option<&str>,
     dry_run: bool,
+    exact: bool,
+    yes: bool,
 ) -> i32 {
     let installed = manager::installed(files);
     let names = installed.iter().map(|component| component.name.as_str());
@@ -980,7 +1015,11 @@ fn edition<F: Files, C: Console>(
             })
         })
         .collect();
-    if missing.is_empty() {
+    let extra = match exact {
+        true => not_in_edition(&installed, edition),
+        false => Vec::new(),
+    };
+    if missing.is_empty() && extra.is_empty() {
         out.say(&alloc::format!(
             "{} is installed: nothing to add.",
             edition.title
@@ -988,15 +1027,39 @@ fn edition<F: Files, C: Console>(
         return 0;
     }
     if dry_run {
-        out.say(&alloc::format!(
-            "Would install for {}: {}",
-            edition.title,
-            missing.join(", ")
-        ));
+        if !missing.is_empty() {
+            out.say(&alloc::format!(
+                "Would install for {}: {}",
+                edition.title,
+                missing.join(", ")
+            ));
+        }
+        if !extra.is_empty() {
+            out.say(&alloc::format!(
+                "Would remove, as {} does not include them: {}",
+                edition.title,
+                extra.join(", ")
+            ));
+        }
         return 0;
+    }
+    if !extra.is_empty() && !yes {
+        out.say(&alloc::format!(
+            "Making this exactly {} removes {}: add --yes.",
+            edition.title,
+            extra.join(", ")
+        ));
+        return FAILED;
     }
     for component in missing {
         let status = install(files, out, store, pid, component, false, false);
+        if status != 0 {
+            return status;
+        }
+    }
+    let extra: Vec<String> = extra.into_iter().map(String::from).collect();
+    for component in &extra {
+        let status = remove(files, out, store, pid, component, true, false, false);
         if status != 0 {
             return status;
         }

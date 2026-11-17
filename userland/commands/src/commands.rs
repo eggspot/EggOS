@@ -2269,7 +2269,25 @@ pub const COMPONENT_EDITION: CommandDefinition = CommandDefinition {
                   every component of that edition the store offers for this machine and that is \
                   not installed yet, one after the other as component install does. --dry-run \
                   says what it would install.",
-    options: &[DRY_RUN_OPTION],
+    options: &[
+        DRY_RUN_OPTION,
+        OptionDefinition {
+            short: None,
+            long: Some("exact"),
+            value: None,
+            repeatable: false,
+            default: None,
+            help: "Also remove the installed components the edition does not include (D680).",
+        },
+        OptionDefinition {
+            short: None,
+            long: Some("yes"),
+            value: None,
+            repeatable: false,
+            default: None,
+            help: "Remove them without asking.",
+        },
+    ],
     operands: &[operand("edition", ValueType::Text, Count::ZeroOrOne)],
     outputs: TEXT_ONLY,
     max_effect: Effect::Change,

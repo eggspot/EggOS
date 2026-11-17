@@ -28656,3 +28656,14 @@ the license, by an explicit instruction recorded here.
   painting are `eggos_macos_gui::slider`, tested on the host.
 - **Not yet.** Building and running; drawing tick marks; circular and vertical sliders; keys
   (arrows, Page Up/Down) and the element tree's value for agents.
+
+
+## D680 `component edition <name> --exact` (M16 editions; follow-up of D258; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** With `--exact`, choosing an edition also removes the installed components it
+  does not list, after installing the ones it is missing, so the machine ends with exactly the
+  edition's components. Firmware components stay: the machine's hardware asks for them, not
+  the edition. The removal needs `--yes` (the command otherwise says which it would remove and
+  changes nothing), as `component remove` does; each removal is `component remove`'s own, with
+  its refusals (in use, needed by another). `--dry-run` lists both halves.
+- **Not yet.** Building and running; the Components pane's edition dropdown offering it; the
+  `component_edition` tool's `exact` argument.

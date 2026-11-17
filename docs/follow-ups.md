@@ -270,7 +270,7 @@ and is not listed per item.
 
 ## M16 Editions
 
-- [ ] Editions that also remove what they do not include (`component edition <name> --exact`) (D258)
+- [x] Editions that also remove what they do not include (`component edition <name> --exact`) (D258; code written, unbuilt: D680)
 - [ ] Editions' own settings: update policy and managed policies for professional and enterprise (`/etc/eggos/policy`) (D258; design docs/ux/editions-policy-v0.1.md; code written, unbuilt: the policy reader D654, `settings policy` and the `managed` refusal D655, the MCP ceiling and denied tools D656, the `management` component and update policy record D657, `update.policy` D658, JSON locks and `settings_policy` D659, agent rules D660, init's daily loop D661, `Install updates` D662, control locks D663 and D666, the Management pane D664, the banner D665, the Agents pane D667, `--apply` and `--json` D668, `agent grant` D669; left: the owner tooltip, Enter on a Management row, the phone and TV layouts, the automatic update's band lines)
 - [ ] An edition choice in first run (D258)
 
