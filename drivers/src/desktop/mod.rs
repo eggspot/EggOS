@@ -44,6 +44,7 @@ pub mod protocol;
 mod responsiveness;
 pub mod screenshots;
 mod shell;
+mod screen_reader;
 mod shell_menu;
 pub mod shortcuts;
 mod sticky_keys;
@@ -111,6 +112,7 @@ pub use pointer::{
     set_size_halves as set_pointer_size_halves, size_halves as pointer_size_halves,
     write_cursor_image,
 };
+pub use screen_reader::{READER_LOG_ENTRIES, ReaderCommand, ReaderSettings};
 pub use zoom::{ZOOM_LEVELS, ZoomView, magnify_rows, view_size as zoom_view_size};
 pub use responsiveness::{
     APP_STARTING_MS, END_APP_OFFER_MS, END_APP_SIZE, EndAppButton, UNREAD_EVENTS_BUSY_MS,
@@ -321,6 +323,12 @@ pub enum Action {
     /// [`Desktop::sticky_keys_command`] gives: Shift was tapped [`STICKY_TOGGLE_TAPS`] times
     /// (D224).
     ToggleStickyKeys,
+    /// Run a screen reader's reading key on the focused window's tree (D603); give back the
+    /// Caps Lock toggle first when Caps Lock was held as the reader's modifier.
+    Reader {
+        command: ReaderCommand,
+        undo_caps_lock: bool,
+    },
 }
 
 /// How many taps of Shift in a row turn sticky keys on or off (D224).
@@ -420,6 +428,8 @@ pub struct Desktop {
     pointer_drawn: Option<(u32, u32, PointerShape)>,
     pointer_on_display: bool,
     zoom: zoom::Zoom,
+    reader: screen_reader::ScreenReader,
+    reader_caps: screen_reader::ReaderKeys,
     profile: Profile,
     layout: Layout,
     catalogue: Catalogue,
@@ -520,6 +530,8 @@ impl Desktop {
             pointer_drawn: None,
             pointer_on_display: false,
             zoom: zoom::Zoom::default(),
+            reader: screen_reader::ScreenReader::default(),
+            reader_caps: screen_reader::ReaderKeys::default(),
             profile: Profile::default(),
             layout: layout(width, height, 1, Profile::default()),
             catalogue: Catalogue::new(),
@@ -1740,6 +1752,7 @@ impl Desktop {
             }
         }
         self.focus = focus;
+        self.reader_focus_moved(damage);
         if let Some(new) = focus {
             self.focus_serial = self.focus_serial.wrapping_add(1);
             let top = self.owner_window(new);
@@ -1750,6 +1763,13 @@ impl Desktop {
                 self.send(
                     new,
                     EventRecord::new(event::FOCUS_IN, 0, 0, 0, 0, 0),
+                    events,
+                );
+            }
+            if self.wants_element_reports() {
+                self.send(
+                    new,
+                    EventRecord::new(event::READER_CHANGED, 0, 1, 0, 0, 0),
                     events,
                 );
             }
@@ -2392,6 +2412,9 @@ impl Desktop {
         if let Some(action) = self.mouse_keys_toggle(code, pressed, modifiers) {
             return action;
         }
+        if let Some(action) = self.reader_key(code, pressed, modifiers) {
+            return action;
+        }
         let action = self.key_change(code, pressed, modifiers, damage, events);
         self.update_control_hover(damage);
         self.update_pointer(damage);
@@ -2697,6 +2720,9 @@ impl Desktop {
         self.draw_popups(&mut canvas);
         self.draw_carry(&mut canvas);
         self.draw_tooltip(&mut canvas);
+        if self.zoom_view().is_none() {
+            self.draw_caption_panel(&mut canvas);
+        }
         self.draw_agent_pointer(&mut canvas);
         if with_pointer {
             self.draw_pointer(&mut canvas);
@@ -2739,6 +2765,7 @@ impl Desktop {
             || self.shell_menu_overlaps(clip)
             || self.carry_overlaps(clip)
             || self.popups_overlap(clip)
+            || self.caption_panel().is_some_and(|panel| panel.overlaps(&clip))
             || tooltip
             || panels
         {

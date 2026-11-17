@@ -114,6 +114,9 @@ pub enum Shortcut {
     /// Super+Alt+-, Super+= and Super+- (the keypad's + and - too), Super+Esc off, and
     /// Ctrl+Alt+arrows, in every profile.
     Zoom(super::zoom::ZoomCommand),
+    /// Turn the screen reader on or off (D603): Super+F5 (Cmd+F5), Super+Ctrl+Enter and
+    /// Super+Alt+S, in every profile.
+    ToggleScreenReader,
 }
 
 /// The shortcut key `code` pressed with `modifiers` is in `profile`, if it is one; Ctrl
@@ -166,6 +169,15 @@ pub fn shortcut(
         };
         if let Some(command) = zoom {
             return Some(Shortcut::Zoom(command));
+        }
+        let reader = match code {
+            key::F5 => only(super_key),
+            key::ENTER => only(ctrl_super),
+            key::S => only(super_alt),
+            _ => false,
+        };
+        if reader {
+            return Some(Shortcut::ToggleScreenReader);
         }
     }
     Some(match code {

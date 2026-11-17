@@ -84,6 +84,12 @@ impl Desktop {
     /// toggle keys on, a zoom level, mouse keys turned on (D602). A new notice replaces the one
     /// showing.
     pub fn show_strip_notice(&mut self, words: &'static str, lasting_ms: u32, damage: &mut Damage) {
+        self.say(
+            eggos_element_tree::reader::Source::Keys,
+            eggos_element_tree::reader::Priority::Queue,
+            words,
+            damage,
+        );
         self.damage_sticky_strip(damage);
         self.sticky.notice = Some(StripNotice {
             words,

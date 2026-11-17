@@ -114,6 +114,7 @@ mod window_menu;
 mod window_tree;
 #[cfg(any(test, eggos_user))]
 mod power_status;
+mod screen_reader;
 mod screenshot;
 mod wm;
 #[cfg(any(test, eggos_user))]

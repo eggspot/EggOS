@@ -701,6 +701,7 @@ impl Desktop {
         self.tick_tooltip(damage);
         self.tick_agent(damage);
         self.tick_sticky_notice(damage);
+        self.tick_screen_reader(damage);
         destroyed
     }
 
@@ -810,6 +811,15 @@ impl Desktop {
             Shortcut::FocusPanel => self.focus_panel(damage),
             Shortcut::Screenshot(target) => return self.screenshot(target, damage),
             Shortcut::Zoom(command) => return self.zoom_command(command, damage),
+            Shortcut::ToggleScreenReader => {
+                return super::Action::SetSetting {
+                    key: "accessibility.screen_reader",
+                    value: match self.screen_reader().on {
+                        true => "false",
+                        false => "true",
+                    },
+                };
+            }
             Shortcut::PowerMenu => {
                 self.open_menu(damage);
                 self.menu_hover = Some(0);

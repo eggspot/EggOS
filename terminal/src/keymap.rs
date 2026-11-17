@@ -390,6 +390,13 @@ impl Keyboard {
         self.caps_lock
     }
 
+    /// Turns Caps Lock on or off without its key: Caps Lock held as the screen reader's
+    /// modifier gives back the toggle its press made (D603).
+    pub fn set_caps_lock(&mut self, on: bool) {
+        self.caps_lock = on;
+        self.modifiers = self.modifiers_made();
+    }
+
     /// Applies a key event: `value` 1 pressed, 0 released. Ignores what would change nothing:
     /// a press of a key already held (a host's autorepeat), a release of a key not held, a
     /// repeat (`value` 2: repeating is the caller's, [`KeyRepeat`]) and codes above

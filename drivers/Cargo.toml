@@ -10,6 +10,7 @@ eggos-font = { path = "../font" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-calendar = { path = "../calendar" }
 eggos-terminal = { path = "../terminal" }
+eggos-element-tree = { path = "../userland/element-tree" }
 
 [lints]
 workspace = true

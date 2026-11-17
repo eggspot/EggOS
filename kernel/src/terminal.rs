@@ -187,7 +187,10 @@ fn compose(screen: &mut Screen, framebuffer: &mut display::Framebuffer<'_>, dama
         desktop.draw(source, stride, rect, &contents);
         let shown = desktop.zoomed_damage(rect);
         eggos_drivers::desktop::magnify_rows(source, framebuffer.pixels(), mode.width, view, shown);
-        framebuffer.damage(shown);
+        for drawn in [shown, rect] {
+            desktop.draw_caption_panel_over(framebuffer.pixels(), stride, drawn);
+            framebuffer.damage(drawn);
+        }
     }
 }
 
@@ -594,6 +597,15 @@ pub fn load_saved_settings<P: Platform>() {
         keys.mouse_keys.then_some(keys.mouse_keys_speed),
     );
     set_toggle_keys(keys.toggle_keys);
+    let reader = eggos_settings_file::screen_reader_settings(&file[..length]);
+    let reader = eggos_drivers::desktop::ReaderSettings {
+        on: reader.on,
+        captions: reader.captions,
+        rate: reader.rate,
+        echo_characters: reader.echo_characters,
+    };
+    *READER_AT_BOOT.lock() = reader;
+    crate::screen_reader::set_settings::<P>(reader);
     let input = eggos_settings_file::input_preferences(&file[..length]);
     crate::input::set_preferences(crate::input::Preferences {
         left_handed: input.left_handed,
@@ -674,6 +686,7 @@ pub fn start<P: Platform>(session: Session) -> Option<TextArea> {
             let zoom = ZOOM_ON.load(Ordering::Relaxed).then_some(zoom_level);
             desktop.set_zoom(zoom, zoom_level, &mut Damage::new());
             desktop.set_mouse_keys_on(input::mouse_keys());
+            desktop.set_screen_reader(*READER_AT_BOOT.lock(), &mut Damage::new());
             if session == Session::Interactive {
                 desktop.set_catalogue(
                     crate::apps::catalogue(),
@@ -1377,6 +1390,8 @@ const BUTTON_CHIPS: [[Option<&str>; 2]; 3] = [
 
 static TOGGLE_KEYS: AtomicBool = AtomicBool::new(false);
 static ZOOM_ON: AtomicBool = AtomicBool::new(false);
+static READER_AT_BOOT: LeafSpinLock<eggos_drivers::desktop::ReaderSettings> =
+    LeafSpinLock::new_leaf(eggos_drivers::desktop::ReaderSettings::DEFAULT);
 static ZOOM_LEVEL: AtomicU32 = AtomicU32::new(2);
 static LOCKS_SHOWN: AtomicU32 = AtomicU32::new(u32::MAX);
 
@@ -1693,6 +1708,15 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
         }
         Some(Action::OpenSettingsPane(pane)) => open_settings_pane::<P>(pane),
         Some(Action::ToggleStickyKeys) => toggle_sticky_keys::<P>(),
+        Some(Action::Reader {
+            command,
+            undo_caps_lock,
+        }) => {
+            if undo_caps_lock {
+                input::undo_caps_lock_toggle();
+            }
+            crate::screen_reader::command::<P>(command);
+        }
         Some(Action::SetSetting { key, value }) => {
             let command = SCREEN
                 .lock()

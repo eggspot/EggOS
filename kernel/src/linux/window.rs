@@ -44,6 +44,11 @@ use eggos_hal::user::UserContext;
 const TRAY_PIXELS: usize = protocol::TRAY_ICON_SIDE * protocol::TRAY_ICON_SIDE;
 
 const READ_RECORDS: usize = 16;
+const REPORTED_ELEMENT_BYTES: usize =
+    eggos_element_tree::HEADER_BYTES + 2 * eggos_element_tree::MAX_LABEL_BYTES;
+const READER_LOG_BYTES: usize = eggos_drivers::desktop::READER_LOG_ENTRIES
+    * (eggos_element_tree::reader::UTTERANCE_HEADER_BYTES
+        + eggos_element_tree::reader::MAX_UTTERANCE_BYTES);
 
 const SCALE: u32 = 1;
 
@@ -126,6 +131,8 @@ pub fn ioctl<P: Platform>(
             | Request::ManageWindow { .. }
             | Request::GetMenu { .. }
             | Request::DesktopAction { .. }
+            | Request::ReadReaderLog { .. }
+            | Request::Say { .. }
     );
     if manages && !is_privileged(process) {
         return Err(Errno::EPERM);
@@ -414,6 +421,126 @@ pub fn ioctl<P: Platform>(
                 zoom_level,
                 pointer_size_halves,
             );
+            crate::screen_reader::set_settings::<P>(eggos_drivers::desktop::ReaderSettings {
+                on: screen_reader != 0,
+                captions: captions != 0,
+                rate: reader_rate,
+                echo_characters: reader_echo != 0,
+            });
+        }
+        Request::ReportElement {
+            window,
+            kind,
+            character,
+            index,
+            count,
+            container: _,
+            caret,
+            length,
+            buffer,
+        } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| length <= 2 * REPORTED_ELEMENT_BYTES)
+                .ok_or(Errno::EINVAL)?;
+            let owned = on_windows::<P, _>(|desktop, _, _, _| {
+                Ok(desktop.owner_of(window).ok() == Some(client))
+            })?;
+            if !owned {
+                return Err(Errno::EPERM);
+            }
+            let reported = match kind {
+                0 => crate::screen_reader::Reported::Focus,
+                1 => crate::screen_reader::Reported::Change,
+                2 => crate::screen_reader::Reported::Echo(
+                    char::from_u32(character).ok_or(Errno::EINVAL)?,
+                ),
+                _ => return Err(Errno::EINVAL),
+            };
+            let mut element = Vec::new();
+            element.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+            element.resize(length, 0);
+            process
+                .read_user_memory(buffer, &mut element)
+                .map_err(|_| Errno::EFAULT)?;
+            let position = (count > 1).then_some(eggos_element_tree::reader::Position {
+                index: index as u16,
+                count: count as u16,
+            });
+            let caret = (caret.2 > 0 && caret.3 > 0).then(|| {
+                eggos_drivers::display::Rect::new(
+                    caret.0.max(0) as u32,
+                    caret.1.max(0) as u32,
+                    caret.2,
+                    caret.3,
+                )
+            });
+            crate::screen_reader::report_element::<P>(window, &element, position, caret, reported);
+        }
+        Request::ReadReaderLog {
+            since,
+            buffer,
+            length,
+        } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| length <= READER_LOG_BYTES)
+                .ok_or(Errno::EINVAL)?;
+            let mut records = Vec::new();
+            records.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+            records.resize(length, 0);
+            let (written, count, logged, on, focused) = on_windows::<P, _>(|desktop, _, _, _| {
+                let (written, count) = desktop.read_reader_log(since, &mut records);
+                Ok((
+                    written,
+                    count,
+                    desktop.reader_logged().0,
+                    desktop.screen_reader().on,
+                    desktop.focused_window().map_or(0, u32::from),
+                ))
+            })?;
+            if written > 0 {
+                process
+                    .write_user_memory(buffer, &records[..written])
+                    .map_err(|_| Errno::EFAULT)?;
+            }
+            bytes.fill(0);
+            put_word(bytes, protocol::reader_log_reply::WRITTEN, written as u32);
+            put_word(bytes, protocol::reader_log_reply::RECORDS, count);
+            put_word(bytes, protocol::reader_log_reply::LOGGED, logged);
+            put_word(bytes, protocol::reader_log_reply::ON, u32::from(on));
+            put_word(bytes, protocol::reader_log_reply::FOCUSED, focused);
+            process
+                .write_user_memory(argument, bytes)
+                .map_err(|_| Errno::EFAULT)?;
+        }
+        Request::Say {
+            buffer,
+            length,
+            queue,
+        } => {
+            let length = usize::try_from(length)
+                .ok()
+                .filter(|&length| {
+                    length > 0 && length <= eggos_element_tree::reader::MAX_UTTERANCE_BYTES
+                })
+                .ok_or(Errno::EINVAL)?;
+            let mut text = [0u8; eggos_element_tree::reader::MAX_UTTERANCE_BYTES];
+            process
+                .read_user_memory(buffer, &mut text[..length])
+                .map_err(|_| Errno::EFAULT)?;
+            let text = core::str::from_utf8(&text[..length]).map_err(|_| Errno::EINVAL)?;
+            let priority = match queue {
+                0 => eggos_element_tree::reader::Priority::Interrupt,
+                _ => eggos_element_tree::reader::Priority::Queue,
+            };
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                if !desktop.screen_reader().on {
+                    return Err(WindowError::Unsupported);
+                }
+                desktop.say(eggos_element_tree::reader::Source::Say, priority, text, damage);
+                Ok(())
+            })?;
         }
         Request::ListDesktops => {
             let (count, current, windows) =

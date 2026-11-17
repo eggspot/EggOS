@@ -22,6 +22,8 @@ pub const ANSWER_TIMEOUT_MS: u32 = 500;
 /// The kind of the event record that brings a query to the app.
 pub const QUERY_EVENT: u16 = 15;
 
+pub mod reader;
+
 /// The requests of `/dev/window` an element tree takes (docs/windows.md).
 pub mod request {
     /// Reads any window's tree (root only).

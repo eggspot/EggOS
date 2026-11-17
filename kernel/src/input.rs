@@ -950,6 +950,11 @@ impl InputState {
         self.keyboard.caps_lock()
     }
 
+    /// Turns Caps Lock on or off without its key (D603).
+    pub fn set_caps_lock(&mut self, on: bool) {
+        self.keyboard.set_caps_lock(on);
+    }
+
     /// Whether Num Lock is on: from power-on, until its key is pressed.
     pub fn num_lock(&self) -> bool {
         !self.num_lock_off
@@ -1875,6 +1880,18 @@ pub fn layout_number() -> usize {
 /// Whether Caps Lock is on, as the last poll left it.
 pub fn caps_lock() -> bool {
     CAPS_LOCK.load(Ordering::Relaxed)
+}
+
+/// Gives back the Caps Lock toggle a press made when Caps Lock was held as the screen reader's
+/// modifier with another key (D603): the reader's chords never change the lock.
+pub fn undo_caps_lock_toggle() {
+    let mut input = INPUT.lock();
+    let Some(input) = input.as_mut() else {
+        return;
+    };
+    let on = input.state.caps_lock();
+    input.state.set_caps_lock(!on);
+    input.show_lock_lights();
 }
 
 /// Whether Num Lock is on, as the last poll left it: on from power-on (D221).

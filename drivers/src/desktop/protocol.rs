@@ -105,6 +105,9 @@ pub mod size {
     pub const PICK_REGION: usize = 4;
     pub const SET_LID_ACTION: usize = 4;
     pub const SET_ACCESSIBILITY: usize = 28;
+    pub const REPORT_ELEMENT: usize = 48;
+    pub const READ_READER_LOG: usize = 24;
+    pub const SAY: usize = 24;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
@@ -206,6 +209,9 @@ pub mod request {
     pub const PICK_REGION: u32 = encode(WRITE, 63, size::PICK_REGION);
     pub const SET_LID_ACTION: u32 = encode(WRITE, 64, size::SET_LID_ACTION);
     pub const SET_ACCESSIBILITY: u32 = encode(WRITE, 65, size::SET_ACCESSIBILITY);
+    pub const REPORT_ELEMENT: u32 = encode(WRITE, 66, size::REPORT_ELEMENT);
+    pub const READ_READER_LOG: u32 = encode(READ | WRITE, 67, size::READ_READER_LOG);
+    pub const SAY: u32 = encode(WRITE, 68, size::SAY);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -395,6 +401,19 @@ pub mod event {
     /// A hot key of the window was pressed (D398): `a` its id, `c` the key, `d` the
     /// modifiers held.
     pub const HOT_KEY: u16 = 23;
+    /// Whether the window server wants the focused element reported (D603): `a` 1 while the
+    /// screen reader or zoom is on, 0 else. The app then sends `REPORT_ELEMENT` on every focus
+    /// move and every change of the focused element's value or state.
+    pub const READER_CHANGED: u16 = 24;
+}
+
+/// `READ_READER_LOG`'s answer, written over its argument (D603).
+pub mod reader_log_reply {
+    pub const WRITTEN: usize = 0;
+    pub const RECORDS: usize = 4;
+    pub const LOGGED: usize = 8;
+    pub const ON: usize = 12;
+    pub const FOCUSED: usize = 16;
 }
 
 /// `REGISTER_HOT_KEY`'s flag in its modifiers word: give the hot key up.
@@ -706,6 +725,28 @@ pub enum Request {
     /// The screen reader's settings (D603: on, captions, words a minute, 1 to echo characters)
     /// and how the screen is magnified and the pointer sized (D602: zoom on, its level, the
     /// pointer's size in halves).
+    /// The app's focused element for the screen reader and zoom (D603): window `window`;
+    /// `kind` 0 the focus moved, 1 its value or state changed, 2 `character` was typed into
+    /// it; its place `index` of `count` among the siblings that share its role (0 when none);
+    /// `container` its nearest container's id; the caret's rect in content pixels (all 0
+    /// without one); the element in an element tree's layout, `length` bytes at `buffer`.
+    ReportElement {
+        window: u32,
+        kind: u32,
+        character: u32,
+        index: u32,
+        count: u32,
+        container: u32,
+        caret: (i32, i32, u32, u32),
+        length: u32,
+        buffer: u64,
+    },
+    /// The screen reader's utterances after serial `since`, as records into `length` bytes at
+    /// `buffer` (D603); answers the bytes written, the records and the last serial.
+    ReadReaderLog { since: u32, buffer: u64, length: u64 },
+    /// An utterance of `length` bytes of UTF-8 at `buffer`, queued after what is said when
+    /// `queue` is 1 (D603).
+    Say { buffer: u64, length: u32, queue: u32 },
     SetAccessibility {
         screen_reader: u32,
         captions: u32,
@@ -1013,6 +1054,9 @@ impl Request {
             request::PICK_REGION => size::PICK_REGION,
             request::SET_LID_ACTION => size::SET_LID_ACTION,
             request::SET_ACCESSIBILITY => size::SET_ACCESSIBILITY,
+            request::REPORT_ELEMENT => size::REPORT_ELEMENT,
+            request::READ_READER_LOG => size::READ_READER_LOG,
+            request::SAY => size::SAY,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1356,6 +1400,27 @@ impl Request {
             },
             request::PICK_REGION => Self::PickRegion,
             request::SET_LID_ACTION => Self::SetLidAction { action: at(0) },
+            request::REPORT_ELEMENT => Self::ReportElement {
+                window: at(0),
+                kind: at(4),
+                character: at(8),
+                index: at(12) & 0xffff,
+                count: at(12) >> 16,
+                container: at(16),
+                caret: (at(20) as i32, at(24) as i32, at(28), at(32)),
+                length: at(36),
+                buffer: double_word(bytes, 40),
+            },
+            request::READ_READER_LOG => Self::ReadReaderLog {
+                since: at(0),
+                buffer: double_word(bytes, 8),
+                length: double_word(bytes, 16),
+            },
+            request::SAY => Self::Say {
+                buffer: double_word(bytes, 0),
+                length: at(8),
+                queue: at(12),
+            },
             request::SET_ACCESSIBILITY => Self::SetAccessibility {
                 screen_reader: at(0),
                 captions: at(4),

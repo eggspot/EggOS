@@ -24,6 +24,7 @@ use crate::output::{FAILURE, Output};
 use crate::ping::ping;
 use crate::power::{HALT, POWER_OFF, RESTART, power, shutdown, sync, wall};
 use crate::power_status::power as power_status;
+use crate::screen_reader::screen_reader;
 use crate::processes::{free, ps, uptime};
 use crate::screenshot::screenshot;
 use crate::properties::{getprop, setprop};
@@ -82,6 +83,7 @@ pub enum Utility {
     Readlink,
     Reboot,
     Rm,
+    ScreenReader,
     Screenshot,
     Setprop,
     Shutdown,
@@ -103,7 +105,7 @@ pub enum Utility {
 }
 
 impl Utility {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 54] = [
         Self::Agent,
         Self::Agentlog,
         Self::Cat,
@@ -139,6 +141,7 @@ impl Utility {
         Self::Readlink,
         Self::Reboot,
         Self::Rm,
+        Self::ScreenReader,
         Self::Screenshot,
         Self::Setprop,
         Self::Shutdown,
@@ -196,6 +199,7 @@ impl Utility {
             Self::Readlink => b"readlink",
             Self::Reboot => b"reboot",
             Self::Rm => b"rm",
+            Self::ScreenReader => b"screen-reader",
             Self::Screenshot => b"screenshot",
             Self::Setprop => b"setprop",
             Self::Shutdown => b"shutdown",
@@ -258,6 +262,7 @@ impl Utility {
             Self::Readlink => readlink(output, arguments),
             Self::Reboot => power(output, arguments, RESTART),
             Self::Rm => rm(output, arguments),
+            Self::ScreenReader => screen_reader(output, arguments),
             Self::Screenshot => screenshot(output, arguments),
             Self::Setprop => setprop(output, arguments),
             Self::Shutdown => shutdown(output, arguments),

@@ -41,6 +41,7 @@ pub mod process;
 pub mod random;
 pub mod regions;
 pub mod rendering;
+pub mod screen_reader;
 pub mod selftest;
 pub mod shared_frames;
 pub mod suspend;

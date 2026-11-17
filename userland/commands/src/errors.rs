@@ -111,6 +111,14 @@ pub const FAILED: ErrorDefinition = error(
     None,
 );
 
+/// `screen-reader say`: the screen reader is off, so nothing would show the words (D603).
+pub const SCREEN_READER_OFF: ErrorDefinition = error(
+    "screen_reader_off",
+    Category::Refused,
+    "Turn the screen reader on first.",
+    Some("screen-reader on"),
+);
+
 /// `ls`: a folder holds more entries than `ls` lists at once.
 pub const TOO_MANY_ENTRIES: ErrorDefinition = error(
     "too_many_entries",
@@ -607,7 +615,7 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 82] = [
+pub const ALL: [&ErrorDefinition; 83] = [
     &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
@@ -690,4 +698,5 @@ pub const ALL: [&ErrorDefinition; 82] = [
     &STORE_DETACHED,
     &INSTALL_FAILED,
     &REMOVE_FAILED,
+    &SCREEN_READER_OFF,
 ];
