@@ -8,8 +8,48 @@
 use super::abi::{ClassObject, Id, Imp, Sel};
 use super::class;
 
-extern "C" fn lookup_for_send(_receiver: Id, sel: Sel, class: *mut ClassObject) -> Imp {
-    class::lookup(class, sel).unwrap_or(eggos_guarded_not_recognized as *const () as Imp)
+fn resolved_by_class(class: *mut ClassObject, sel: Sel) -> bool {
+    let Some(record) = class::record_of(class) else {
+        return false;
+    };
+    let (owner, resolver) = match record.is_meta() {
+        true => (record.pair().class, sel!("resolveClassMethod:")),
+        false => (record.class, sel!("resolveInstanceMethod:")),
+    };
+    if sel == resolver || owner.is_null() {
+        return false;
+    }
+    // SAFETY: a class object the runtime knows; its isa is its metaclass.
+    let meta = unsafe { &*owner }.isa.load(core::sync::atomic::Ordering::Relaxed);
+    super::root::responds(meta, resolver) && super::send_bool(owner.cast(), resolver, sel as usize)
+}
+
+fn forwarding_target(receiver: Id, sel: Sel) -> Option<Id> {
+    let asks = sel!("forwardingTargetForSelector:");
+    if receiver.is_null() || sel == asks || !super::root::responds(class::class_of(receiver), asks) {
+        return None;
+    }
+    let target = super::send1(receiver, asks, sel as usize);
+    (!target.is_null() && target != receiver).then_some(target)
+}
+
+extern "C" fn lookup_for_send(receiver: Id, sel: Sel, class: *mut ClassObject, saved_receiver: *mut Id) -> Imp {
+    if let Some(imp) = class::lookup(class, sel) {
+        return imp;
+    }
+    if resolved_by_class(class, sel)
+        && let Some(imp) = class::lookup(class, sel)
+    {
+        return imp;
+    }
+    if !saved_receiver.is_null()
+        && let Some(target) = forwarding_target(receiver, sel)
+    {
+        // SAFETY: the miss path passes the stack slot it restores the receiver register from.
+        unsafe { saved_receiver.write(target) };
+        return eggos_objc_msg_send as *const () as Imp;
+    }
+    eggos_guarded_not_recognized as *const () as Imp
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -71,6 +111,7 @@ core::arch::global_asm!(
     "stp q4, q5, [sp, #160]",
     "stp q6, q7, [sp, #192]",
     "mov x2, x16",
+    "add x3, sp, #16",
     "bl {lookup}",
     "mov x17, x0",
     "ldp q6, q7, [sp, #192]",
@@ -149,6 +190,7 @@ core::arch::global_asm!(
     "movaps [rsp + 160], xmm6",
     "movaps [rsp + 176], xmm7",
     "mov rdx, [rdi]",
+    "mov rcx, rsp",
     "call {lookup}",
     "mov r11, rax",
     "movaps xmm7, [rsp + 176]",
@@ -221,6 +263,7 @@ core::arch::global_asm!(
     "mov rdx, [rdi + 8]",
     "mov rdx, [rdx + 8]",
     "mov rdi, [rdi]",
+    "xor ecx, ecx",
     "call {lookup}",
     "mov r11, rax",
     "movaps xmm7, [rsp + 176]",

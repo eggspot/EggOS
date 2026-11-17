@@ -28564,3 +28564,16 @@ the license, by an explicit instruction recorded here.
   is under the lock.
 - **Not yet.** Building and running; `objc_getAssociatedObject` retaining and autoreleasing
   for the atomic retain policy, as Apple's does; a guest test program.
+
+
+## D674 Method resolution and fast forwarding in `objc_msgSend` (M15 macOS; follow-up of D142; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** When a send finds no method, the slow path first sends `+resolveInstanceMethod:`
+  (or `+resolveClassMethod:` for a class method) to the class when it implements it, and looks
+  again if it answers YES, so `class_addMethod` inside it works as on macOS. Then it asks the
+  receiver's `forwardingTargetForSelector:`; a target other than nil and the receiver itself
+  replaces the receiver in the miss path's saved registers (the assembly now passes that
+  slot's address as a fourth argument, null for x86_64's super sends) and the send starts
+  again through `objc_msgSend`, so the target's own lookup, resolution and forwarding apply.
+  Only then does `doesNotRecognizeSelector:` run. The `_stret` sends keep their old path.
+- **Not yet.** Building and running; `methodSignatureForSelector:` and `forwardInvocation:` with
+  `NSInvocation` (marshalling arguments by their type encoding); forwarding `_stret` sends.
