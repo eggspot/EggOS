@@ -52,6 +52,11 @@ const ARROW_SQUARES: [(i32, i32); 9] = [
 ];
 /// The most levels open at once: a title's menu, a submenu and a submenu of that.
 pub const DEPTH: usize = 3;
+/// The overflow title's width at a bar's right end, its text and its name for agents
+/// (docs/ux/toolkit-v0.6.md section 3).
+pub const OVERFLOW_WIDTH: i32 = 33;
+pub const OVERFLOW_TITLE: &str = "...";
+pub const OVERFLOW_NAME: &str = "More";
 /// How long the pointer rests on a submenu's row before it opens, or on another row before an
 /// open submenu closes.
 pub const SUBMENU_OPEN_MS: u32 = 150;
@@ -734,8 +739,55 @@ impl Bar {
             .sum()
     }
 
-    /// Where title `index` is in a bar at `rect`: its hit rectangle, the bar's full height.
+    /// How many titles a bar at `rect` shows from the left: all when they fit its width, else
+    /// those that end before the overflow title.
+    pub fn shown(&self, rect: Rect) -> usize {
+        if self.content_width() <= rect.width {
+            return self.count;
+        }
+        let room = rect.width - OVERFLOW_WIDTH;
+        let mut end = 0;
+        self.titles[..self.count]
+            .iter()
+            .take_while(|title| {
+                end += Self::title_width(title);
+                end <= room
+            })
+            .count()
+    }
+
+    /// Whether a bar at `rect` hides titles behind its overflow title.
+    pub fn overflows(&self, rect: Rect) -> bool {
+        self.shown(rect) < self.count
+    }
+
+    /// The overflow title's index, after the last title: what `open` and `highlighted` hold
+    /// for it.
+    pub fn overflow_index(&self) -> usize {
+        self.count
+    }
+
+    /// How many titles the arrows move between in a bar at `rect`: the shown ones and the
+    /// overflow title when there is one.
+    pub fn stops(&self, rect: Rect) -> usize {
+        self.shown(rect) + usize::from(self.overflows(rect))
+    }
+
+    fn overflow_rect(rect: Rect) -> Rect {
+        Rect::new(
+            rect.right() - OVERFLOW_WIDTH,
+            rect.y,
+            OVERFLOW_WIDTH,
+            rect.height,
+        )
+    }
+
+    /// Where title `index` is in a bar at `rect`: its hit rectangle, the bar's full height; a
+    /// hidden title and the overflow title are at the overflow title's place.
     pub fn title_rect(&self, rect: Rect, index: usize) -> Rect {
+        if index >= self.shown(rect) && (index == self.count || self.overflows(rect)) {
+            return Self::overflow_rect(rect);
+        }
         let x = self.titles[..index.min(self.count)]
             .iter()
             .map(|title| Self::title_width(title))
@@ -750,7 +802,14 @@ impl Bar {
 
     /// The title at (`x`, `y`) in a bar at `rect`.
     pub fn title_at(&self, rect: Rect, x: i32, y: i32) -> Option<usize> {
-        (0..self.count).find(|&index| self.title_rect(rect, index).contains(x, y))
+        let shown = (0..self.shown(rect)).find(|&index| self.title_rect(rect, index).contains(x, y));
+        match shown {
+            Some(index) => Some(index),
+            None if self.overflows(rect) && Self::overflow_rect(rect).contains(x, y) => {
+                Some(self.count)
+            }
+            None => None,
+        }
     }
 
     /// The title whose mnemonic is `letter`.
@@ -764,9 +823,33 @@ impl Bar {
     /// Its open menu, for a bar at `rect` in a window whose content is `window`.
     pub fn menu(&self, rect: Rect, window: Rect) -> Option<Menu> {
         let open = self.open?;
-        let title = self.title_rect(rect, open);
+        let y = rect.bottom() + 1;
+        if open < self.shown(rect) {
+            let title = self.title_rect(rect, open);
+            return Some(
+                Menu::new(self.menus[open], title.x, y, window)
+                    .with_chosen(self.highlighted)
+                    .with_mnemonics(self.mnemonics),
+            );
+        }
+        let mut overflow = [Entry::Separator; MAX_MENUS];
+        let entries: &[Entry] = match open == self.count {
+            true => {
+                let shown = self.shown(rect);
+                for (place, index) in overflow.iter_mut().zip(shown..self.count) {
+                    *place = Entry::Submenu {
+                        label: self.titles[index],
+                        enabled: true,
+                        entries: self.menus[index],
+                    };
+                }
+                &overflow[..self.count - shown]
+            }
+            false => self.menus.get(open).copied().unwrap_or(&[]),
+        };
+        let width = Menu::new(entries, 0, y, window).rect().width;
         Some(
-            Menu::new(self.menus[open], title.x, rect.bottom() + 1, window)
+            Menu::new(entries, rect.right() - width, y, window)
                 .with_chosen(self.highlighted)
                 .with_mnemonics(self.mnemonics),
         )
@@ -859,7 +942,32 @@ impl Bar {
             None if self.mnemonics => self.highlighted,
             None => None,
         };
-        for index in 0..self.count {
+        let shown = self.shown(rect);
+        if shown < self.count {
+            let title = Self::overflow_rect(rect);
+            let open_behind = self.open.is_some_and(|open| open >= shown);
+            let lit = open_behind
+                || armed_title == Some(self.count)
+                || (self.open.is_none() && look.enabled && look.hovered == Some(self.count));
+            if lit {
+                canvas.fill(
+                    Rect::new(title.x, title.y, title.width, title.height - 1),
+                    palette.menu_hover,
+                );
+            }
+            let ink = match look.enabled {
+                true => palette.text,
+                false => palette.text_dim,
+            };
+            canvas.text(
+                title.x + MENU_TITLE_PADDING,
+                rect.y + TITLE_TEXT_TOP,
+                OVERFLOW_TITLE,
+                ink,
+                1,
+            );
+        }
+        for index in 0..shown {
             let title = self.title_rect(rect, index);
             let lit = self.open == Some(index)
                 || armed_title == Some(index)
@@ -1080,5 +1188,31 @@ mod tests {
         let deepest = Menu::new(&WITH_SUBMENU, 0, 0, bounds);
         let third = Stack::build(deepest, &[1, 0], None, bounds, &|_| None);
         assert_eq!(third.depth(), 1);
+    }
+
+    #[test]
+    fn a_narrow_bar_hides_the_titles_that_do_not_fit_behind_its_overflow_title() {
+        let menus: [(&'static str, &'static [Entry]); 3] = [
+            ("&File", &ENTRIES),
+            ("&Edit", &ENTRIES),
+            ("&Tools", &ZOOM),
+        ];
+        let mut bar = Bar::new(&menus);
+        let wide = Rect::new(0, 0, bar.content_width(), 28);
+        assert_eq!(bar.shown(wide), 3);
+        assert!(!bar.overflows(wide));
+        let first_two = Bar::title_width("&File") + Bar::title_width("&Edit");
+        let narrow = Rect::new(0, 0, first_two + OVERFLOW_WIDTH, 28);
+        assert_eq!(bar.shown(narrow), 2);
+        assert_eq!(bar.stops(narrow), 3);
+        assert_eq!(bar.title_at(narrow, narrow.right() - 4, 4), Some(3));
+        assert_eq!(bar.title_rect(narrow, 2), bar.title_rect(narrow, 3));
+        bar.open = Some(bar.overflow_index());
+        let window = Rect::new(0, 0, 720, 480);
+        let menu = bar.menu(narrow, window).unwrap();
+        assert_eq!(menu.entries().len(), 1);
+        assert_eq!(menu.submenu(0), Some(&ZOOM[..]));
+        bar.open = Some(2);
+        assert_eq!(bar.menu(narrow, window).unwrap().entries().len(), ZOOM.len());
     }
 }

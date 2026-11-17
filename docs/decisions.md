@@ -27899,3 +27899,19 @@ the license, by an explicit instruction recorded here.
   disabled row (its `S`/`E` lines and nested numbering wait for the window server's
   submenus); nested entries in the element tree with their own ids; Files' and the Text
   Editor's own context menus moving onto the stack.
+
+
+## D630 The menu bar's overflow title (M7; toolkit v0.6 section 3; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Which titles show.** `Bar::shown` keeps every title when they all fit the bar's width;
+  otherwise the titles that end before the 33 px overflow title at the bar's right end, and
+  hides the rest. Nothing is stored: the bar's width decides it each time, so a resize needs
+  no layout step.
+- **The overflow title.** Drawn `...` at `bar.right - 33`, lit like a title when its menu or a
+  hidden title's menu is open, armed or hovered; it is index `count` (`overflow_index`) for
+  `open`, `highlighted` and hit tests, and hidden titles share its rectangle. Its menu is one
+  `Submenu` row per hidden title (D629), right-aligned under the bar and clamped as every
+  menu; a hidden title's mnemonic opens that title's own menu there directly.
+- **Keys.** Left and Right wrap over the shown titles and the overflow title
+  (`Bar::stops`); Down, Enter and Space open it like any title.
+- **Not yet.** Building and running; the agent's `More` element; closing an open menu whose
+  title becomes hidden or shown on a resize.

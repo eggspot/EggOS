@@ -594,11 +594,17 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let Some(Kind::MenuBar(bar)) = self.kind(id).copied() else {
             return;
         };
-        let count = bar.count.max(1);
-        let here = bar.open.or(bar.highlighted).unwrap_or(0);
+        let rect = self.rect(id).unwrap_or_default();
+        let shown = bar.shown(rect);
+        let count = bar.stops(rect).max(1);
+        let here = bar.open.or(bar.highlighted).unwrap_or(0).min(shown);
         let next = match forward {
             true => (here + 1) % count,
             false => (here + count - 1) % count,
+        };
+        let next = match next == shown && bar.overflows(rect) {
+            true => bar.overflow_index(),
+            false => next,
         };
         match bar.open {
             Some(_) => {

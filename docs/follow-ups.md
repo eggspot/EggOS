@@ -149,7 +149,8 @@ and is not listed per item.
 - [x] Toolkit: check and radio items with program-owned marks, in the window's menus and the macOS top bar (docs/ux/toolkit-v0.6.md sections 2.1, 2.2, 2.5) — code written, unbuilt, D626
 - [x] Toolkit: submenus and `menu::Stack` in the window's menu bar and menu buttons (docs/ux/toolkit-v0.6.md sections 2.1 to 2.4) — code written, unbuilt, D629
 - [ ] Toolkit: submenus in the macOS top bar's pool (`S`, `s`, `E` lines and depth-first numbering), agents invoking nested entries by their own element ids, the programs' own context menus (Files, Text Editor) on `menu::Stack`, and `wm menu` listing marks and nested entries (docs/ux/toolkit-v0.6.md sections 2.5, 6)
-- [ ] Toolkit: the menu bar's `...` overflow (docs/ux/toolkit-v0.6.md section 3)
+- [x] Toolkit: the menu bar's `...` overflow (docs/ux/toolkit-v0.6.md section 3) — code written, unbuilt, D630
+- [ ] Toolkit: the overflow title as an agent's `More` element, and an open menu closing when its title becomes hidden or shown (docs/ux/toolkit-v0.6.md sections 3, 6)
 - [x] Toolkit: table multi-selection and cell focus (docs/ux/toolkit-v0.6.md sections 4.3, 4.4) — code written, unbuilt, D627
 - [x] Toolkit: table column reordering by drag and fit-to-content (docs/ux/toolkit-v0.6.md sections 4.1, 4.2) — code written, unbuilt, D628
 - [ ] Toolkit: a table header drag scrolling the table near its edges, and Files using `RowSet` and saving its column order (docs/ux/toolkit-v0.6.md section 4)
