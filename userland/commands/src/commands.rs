@@ -4213,6 +4213,18 @@ pub const SETTINGS_GET: CommandDefinition = CommandDefinition {
     surface: Surface::Gui("Settings' panes"),
 };
 
+const POLICY_FIELDS: [Field; 9] = [
+    field("managed", FieldType::Boolean),
+    field("trusted", FieldType::Boolean),
+    field("reason", FieldType::Text),
+    field("manager", FieldType::Text),
+    field("contact", FieldType::Text),
+    field("path", FieldType::Text),
+    field("locked", FieldType::List),
+    field("agents", FieldType::Object),
+    field("ignored", FieldType::List),
+];
+
 /// `settings policy` (D655, docs/ux/editions-policy-v0.1.md section 6).
 pub const SETTINGS_POLICY: CommandDefinition = CommandDefinition {
     words: &["settings", "policy"],
@@ -4222,12 +4234,27 @@ pub const SETTINGS_POLICY: CommandDefinition = CommandDefinition {
                   what agents may be granted and which tools they may not call, and each line \
                   the file has that is ignored, with its reason. Without the management \
                   component, without a file, or with a file that cannot be trusted it says so; \
-                  the view succeeds in every case.",
-    options: &[],
+                  the view succeeds in every case. --json writes the same as one record; \
+                  --apply sets every locked value the running system does not have yet and \
+                  says how many.",
+    options: &[
+        JSON_OPTION,
+        OptionDefinition {
+            short: None,
+            long: Some("apply"),
+            value: None,
+            repeatable: false,
+            default: None,
+            help: "Apply every locked value the running system does not have yet (D668).",
+        },
+    ],
     operands: &[],
-    outputs: TEXT_ONLY,
-    max_effect: Effect::Read,
-    errors: &[exits(&USAGE, 2)],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&POLICY_FIELDS),
+    },
+    max_effect: Effect::Change,
+    errors: &[exits(&USAGE, 2), exits(&NOT_APPLIED, 1), exits(&FAILED, 1)],
     examples: &[example(
         "settings policy",
         "Not managed: the management component is not installed.\n",

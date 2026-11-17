@@ -10,6 +10,8 @@ use crate::keys::{
     self, Change, DeviceChange, DisplayChange, InputChange, Key, KeyboardChoice, KeysChange,
     ReaderChange, Refusal,
 };
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 use eggos_commands::commands::LIST_PAGE_LIMIT;
 use eggos_commands::page::{self, MAX_CURSOR_BYTES, MAX_KEY_BYTES, MORE_PREFIX};
@@ -269,6 +271,7 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
         .take_while(|&&argument| argument != "--")
         .any(|&argument| argument == "--json");
     let mut dry_run = false;
+    let mut apply = false;
     let mut page = Page {
         limit: None,
         after: [0; MAX_KEY_BYTES],
@@ -311,6 +314,10 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
             dry_run = true;
             continue;
         }
+        if !options_end && argument == "--apply" {
+            apply = true;
+            continue;
+        }
         if !options_end && argument.len() > 1 && argument.starts_with('-') {
             let mut message = Message::new();
             let _ = write!(message, "unrecognized option '{argument}'");
@@ -324,9 +331,17 @@ pub fn run(machine: &mut impl Machine, arguments: &[&str]) -> i32 {
         count += 1;
     }
     match words[..count] {
+        _ if apply && words[..count] != ["policy"] => usage(machine, json),
         ["list"] if !dry_run => list(machine, json, &page),
         _ if page.is_paged() => usage(machine, json),
-        ["policy"] if !dry_run && !json => {
+        ["policy"] if apply && !dry_run && !json => apply_policy(machine),
+        ["policy"] if !dry_run && json => {
+            let file = machine.policy();
+            let facts = machine.facts();
+            machine.write_output(crate::managed::json_report(&file, &facts).as_bytes());
+            0
+        }
+        ["policy"] if !dry_run => {
             let file = machine.policy();
             let facts = machine.facts();
             machine.write_output(crate::managed::report(&file, &facts).as_bytes());
@@ -589,6 +604,10 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         machine.write_output(message.as_str().as_bytes());
         return 0;
     }
+    save_and_apply(machine, name, change)
+}
+
+fn save_and_apply(machine: &mut impl Machine, name: &str, change: Change) -> i32 {
     let keyboard = change.keyboard_choice(&machine.facts());
     let saved = match change {
         Change::Profile(index) => machine.save_profile(index),
@@ -669,6 +688,37 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
         true => 0,
         false => FAILURE,
     }
+}
+
+fn apply_policy(machine: &mut impl Machine) -> i32 {
+    let file = machine.policy();
+    let facts = machine.facts();
+    let pending: Vec<(String, String)> = file
+        .locks()
+        .into_iter()
+        .filter(|(key, value)| {
+            Key::named(key).is_some_and(|own| own.value(&facts).as_str() != *value)
+        })
+        .map(|(key, value)| (String::from(key), String::from(value)))
+        .collect();
+    let mut applied = 0;
+    let mut status = 0;
+    for (key, value) in &pending {
+        let Ok((_, change)) = keys::change(key, value) else {
+            continue;
+        };
+        match save_and_apply(machine, key, change) {
+            0 => applied += 1,
+            failed => status = failed,
+        }
+    }
+    let line = match applied {
+        0 if pending.is_empty() => String::from("nothing to apply\n"),
+        1 => String::from("applied 1 setting\n"),
+        count => alloc::format!("applied {count} settings\n"),
+    };
+    machine.write_output(line.as_bytes());
+    status
 }
 
 fn invalid_value(machine: &mut impl Machine, name: &str, value: &str, choices: &str) -> i32 {
@@ -908,6 +958,21 @@ mod tests {
         fn policy(&mut self) -> PolicyFile {
             self.policy.clone()
         }
+    }
+
+    #[test]
+    fn policy_apply_sets_the_locked_values_the_machine_does_not_have() {
+        let mut fake = Fake {
+            policy: PolicyFile::Trusted(String::from("shell.profile=linux\n")),
+            ..Fake::default()
+        };
+        assert_eq!(run(&mut fake, &["policy", "--apply"]), 0);
+        assert_eq!(String::from_utf8_lossy(&fake.output), "applied 1 setting\n");
+        assert_eq!(fake.saved, Some(2));
+        let mut fake = Fake::default();
+        assert_eq!(run(&mut fake, &["policy", "--apply"]), 0);
+        assert_eq!(String::from_utf8_lossy(&fake.output), "nothing to apply\n");
+        assert_eq!(run(&mut Fake::default(), &["list", "--apply"]), USAGE_STATUS);
     }
 
     #[test]

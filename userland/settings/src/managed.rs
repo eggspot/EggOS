@@ -167,6 +167,99 @@ pub fn report(file: &PolicyFile, facts: &Facts) -> String {
     out
 }
 
+fn json_lines(text: &str, out: &mut eggos_mcp::json::JsonWriter<'_>) {
+    out.key("ignored");
+    out.begin_array();
+    for (number, line, said) in policy::lines(text) {
+        if let Some(reason) = ignored_reason(text, number, said) {
+            out.begin_object();
+            out.key("line");
+            out.u64(number as u64);
+            out.key("text");
+            out.string(line);
+            out.key("reason");
+            out.string(&reason);
+            out.end_object();
+        }
+    }
+    out.end_array();
+}
+
+/// `settings policy --json`'s record (section 6): `managed`, `trusted`, `reason`, `manager`,
+/// `contact`, `path`, `locked`, `agents` and `ignored`.
+pub fn json_report(file: &PolicyFile, facts: &Facts) -> String {
+    let mut buffer = alloc::vec![0u8; policy::LARGEST * 2];
+    let mut out = eggos_mcp::json::JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("managed");
+    out.bool(file.text().is_some());
+    out.key("trusted");
+    out.bool(!matches!(file, PolicyFile::Untrusted(_)));
+    out.key("reason");
+    match file {
+        PolicyFile::NotInstalled => out.string("the management component is not installed"),
+        PolicyFile::Absent => out.string("no policy file"),
+        PolicyFile::Untrusted(why) => out.string(why.sentence()),
+        PolicyFile::Trusted(_) => out.null(),
+    }
+    out.key("manager");
+    out.string(file.manager());
+    out.key("contact");
+    match file.text().and_then(policy::contact) {
+        Some(contact) => out.string(contact),
+        None => out.null(),
+    }
+    out.key("path");
+    out.string(policy::PATH);
+    out.key("locked");
+    out.begin_array();
+    for (key, value) in file.locks() {
+        let pending = Key::named(key).is_some_and(|own| own.value(facts).as_str() != value);
+        out.begin_object();
+        out.key("key");
+        out.string(key);
+        out.key("value");
+        out.string(value);
+        out.key("pane");
+        out.string(crate::management_pane::pane_of(key));
+        out.key("pending");
+        out.bool(pending);
+        out.end_object();
+    }
+    out.end_array();
+    out.key("agents");
+    out.begin_object();
+    out.key("grants");
+    match file.text().and_then(policy::agent_ceiling) {
+        Some(classes) => {
+            out.begin_array();
+            for class in classes.split_ascii_whitespace() {
+                out.string(class);
+            }
+            out.end_array();
+        }
+        None => out.null(),
+    }
+    out.key("deny");
+    out.begin_array();
+    for tool in file.text().into_iter().flat_map(policy::denied_tools) {
+        out.string(tool);
+    }
+    out.end_array();
+    out.end_object();
+    match file.text() {
+        Some(text) => json_lines(text, &mut out),
+        None => {
+            out.key("ignored");
+            out.begin_array();
+            out.end_array();
+        }
+    }
+    out.end_object();
+    out.end_line();
+    String::from_utf8_lossy(out.as_bytes()).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +294,16 @@ mod tests {
         assert!(lines.next().is_some_and(|line| line.starts_with("ignored line 4: mouse.buttons: invalid value 'sideways'")));
         assert_eq!(lines.next(), Some("ignored line 5: apperance.theme: no such setting"));
         assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn the_json_record_names_the_locks_the_agents_and_the_ignored_lines() {
+        let json = json_report(&contoso(), &Facts::example());
+        assert!(json.starts_with("{\"managed\":true,\"trusted\":true,\"reason\":null,\"manager\":\"Contoso IT\""));
+        assert!(json.contains("\"locked\":[{\"key\":\"shell.profile\",\"value\":\"linux\",\"pane\":\"Appearance\",\"pending\":true}]"));
+        assert!(json.contains("\"agents\":{\"grants\":[\"view\",\"write\"],\"deny\":[\"disk_format\",\"disk_install\"]}"));
+        assert!(json.contains("{\"line\":5,\"text\":\"apperance.theme=dark\",\"reason\":\"apperance.theme: no such setting\"}"));
+        assert!(json.ends_with("}\n"));
     }
 
     #[test]

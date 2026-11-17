@@ -28489,3 +28489,18 @@ the license, by an explicit instruction recorded here.
   grant prompt needs no change: the MCP server refuses a call above the ceiling before it would
   ask (D656), so the prompt never offers such a class.
 - **Not yet.** Building and running; `agent grant` above the ceiling answering `managed`.
+
+
+## D668 `settings policy --apply` and `--json` (M16 editions; editions-policy v0.1 section 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `settings policy --apply` saves and applies, through the same path as
+  `settings set`, every locked value the running system does not have yet, and prints
+  `applied 2 settings` (`applied 1 setting`, `nothing to apply`); a value that fails to save or
+  apply is reported as `settings set` reports it and makes the status 1. `--apply` with any
+  other verb is a usage error. `settings policy --json` writes section 6's record: `managed`,
+  `trusted`, `reason` (null when trusted), `manager`, `contact` (or null), `path`, `locked`
+  (`key`, `value`, `pane`, `pending`), `agents` (`grants`, null without the line, and
+  `deny`) and `ignored` (`line`, `text`, `reason`). The registry's `SETTINGS_POLICY` takes both
+  options and its effect becomes `change`; the `settings_policy` tool still runs the plain,
+  read-only form.
+- **Not yet.** Building and running; refusing `--apply` to anyone but root once there are
+  accounts.
