@@ -72,7 +72,25 @@ pub(super) fn discover_device_tree<P: Platform>(
     // SAFETY: `map_window` mapped the host's window for the buses it serves as device memory, and
     // windows stay mapped for as long as the kernel runs.
     let ecam = unsafe { Ecam::new(mapped, start_bus, end_bus) };
-    add_host_functions(&ecam, start_bus, end_bus, &host, probe.table);
+    let parents: alloc::vec::Vec<(u32, u32, u32)> = tree
+        .nodes()
+        .flatten()
+        .filter_map(|node| {
+            Some((
+                node.phandle?,
+                node.own_address_cells.unwrap_or(0),
+                node.interrupt_cells?,
+            ))
+        })
+        .collect();
+    let intx = |address: pci::Address, pin: u8| {
+        host.pci_interrupt(address.bus, address.device, address.function, pin, |phandle| {
+            parents
+                .iter()
+                .find_map(|&(p, address, interrupt)| (p == phandle).then_some((address, interrupt)))
+        })
+    };
+    add_host_functions(&ecam, start_bus, end_bus, &host, &intx, probe.table);
     probe.ecam = Some(ecam);
     Ok(())
 }
@@ -82,6 +100,7 @@ fn add_host_functions<C: ConfigSpace + ?Sized>(
     start_bus: u8,
     end_bus: u8,
     host: &eggos_hal::fdt::Node<'_>,
+    intx: &dyn Fn(pci::Address, u8) -> Option<eggos_hal::fdt::InterruptSpecifier>,
     table: &mut DeviceTable,
 ) {
     let cell = |bytes: &[u8], at: usize| {
@@ -119,6 +138,9 @@ fn add_host_functions<C: ConfigSpace + ?Sized>(
     pci::enumerate(config, start_bus, end_bus, &mut |function| {
         let mut device = DeviceNode::new(Identity::Pci(function));
         device.dma = DmaCoherence::Coherent;
+        if function.address.bus == start_bus && function.interrupt_pin != 0 {
+            device.interrupts[0] = intx(function.address, function.interrupt_pin);
+        }
         for bar in pci::bars(config, function.address, function.header_type)
             .into_iter()
             .flatten()
@@ -176,7 +198,7 @@ pub(super) fn discover_firmware<P: Platform>(
         (Some(first), Some(last)) => (first.min(255) as u8, last.min(255) as u8),
         _ => (0, 255),
     };
-    add_host_functions(config, start_bus, end_bus, &host, probe.table);
+    add_host_functions(config, start_bus, end_bus, &host, &|_, _| None, probe.table);
     probe.firmware = Some(config);
     super::dma::set_device_offset(P::dma_device_offset());
     Ok(())

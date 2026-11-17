@@ -27731,3 +27731,29 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; unlinking a given sharer rather than the newest (a
   driver that lets its device go while another, connected after it, keeps its own); sharing
   on aarch64 and riscv64, which have no INTx yet (`interrupt-map`, its own line).
+
+
+## D623 PCI INTx through the device tree's `interrupt-map`, masked on arrival on aarch64 (M8; D413's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the device-tree PCI binding's interrupt mapping)
+
+- **Context.** A device-tree PCI host (`pci-host-ecam-generic`, QEMU `virt` and most Arm
+  boards) says where each function's INTx pin arrives in its `interrupt-map` and
+  `interrupt-map-mask`, not in the function's interrupt line register. Without it, a function
+  with no MSI-X, MSI or ITS (D618) had no interrupt on aarch64 and riscv64 and was polled.
+- **Decision.** The FDT reader keeps a node's `interrupt-map`, `interrupt-map-mask` and own
+  `#address-cells`, and `Node::pci_interrupt` looks a function's unit address (bus, device,
+  function) and pin up as the binding says: each entry is the child unit (3 cells) and pin
+  (1 cell), the parent's phandle, the parent's unit (its `#address-cells`, 0 when absent) and
+  the parent's specifier (its `#interrupt-cells`); the child and the entry are both masked
+  before comparing, and a missing mask counts as all ones. ECAM discovery stores the result
+  as the function's first interrupt, for functions on the host's first bus only.
+  `connect_pin` uses it when ACPI routes nothing (D621), through a new
+  `Platform::route_masked_device_interrupt`: on aarch64 it routes the shared peripheral
+  interrupt as before and marks it in a 1024-bit table; the IRQ path disables a marked SPI at
+  the distributor (GICv2 `ICENABLER`, GICv3 `GICD_ICENABLER`) before its end of interrupt,
+  and `unmask_device_interrupt`, called by each wait (D413), enables it again (new
+  `Gicv3Distributor::enable_shared_interrupt`). Lines routed the old way are never masked,
+  so existing level SPIs of device-tree devices keep their behaviour.
+- **Not yet.** Building and running; riscv64 (the default refuses, so INTx there still falls
+  back to polling) and functions behind bridges (their pin has to be swizzled bridge by
+  bridge to the root bus first), both in docs/follow-ups.md; sharing a masked SPI between
+  functions (D622's chain is x86's).

@@ -142,6 +142,13 @@ fn connect_pin(
     let pin = pin_and_line >> 8 & 0xff;
     let routed = super::acpi_namespace::pci_interrupt(address.bus, address.device, pin as u8)
         .map(|(global, _)| global);
+    let mapped = probe.table().get(id).and_then(|node| node.interrupts[0]);
+    if let (None, Some(specifier), true) = (routed, mapped, pin != 0) {
+        let line = probe.route_masked_interrupt(&specifier)?;
+        enable_intx(probe, address)?;
+        events.set_masked_line(line);
+        return finish(probe, id, line, events, None);
+    }
     let input = match routed {
         Some(global) => global,
         None => line_register,
@@ -152,13 +159,21 @@ fn connect_pin(
         ));
     }
     let line = probe.legacy_interrupt(input)?;
+    enable_intx(probe, address)?;
+    events.set_masked_line(line);
+    finish(probe, id, line, events, None)
+}
+
+fn enable_intx(
+    probe: &mut dyn Probe,
+    address: eggos_drivers::pci::Address,
+) -> Result<(), ProbeError> {
     let config = probe
         .pci_config()
         .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let command = config.read32(address, COMMAND);
     config.write32(address, COMMAND, command & !COMMAND_INTX_DISABLE);
-    events.set_masked_line(line);
-    finish(probe, id, line, events, None)
+    Ok(())
 }
 
 fn finish(

@@ -6,7 +6,7 @@ use super::DIRECT_MAP_OFFSET;
 use crate::atomic::AtomicU64;
 use crate::interrupt::SourceLines;
 use crate::memory::PhysicalRange;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use eggos_drivers::interrupt::gicv2::{self, Gicv2CpuInterface, Gicv2Distributor, Trigger};
 use eggos_drivers::interrupt::gicv3::{
     self, CpuInterfaceRegisters, Gicv3CpuInterface, Gicv3Distributor, Gicv3Redistributor,
@@ -229,6 +229,22 @@ pub(super) const FIRST_SHARED_INTERRUPT: u32 = 32;
 const DEVICE_PRIORITY: u8 = 0xc0;
 /// The shared peripheral interrupts routed for devices, by line.
 pub(super) static DEVICE_LINES: SourceLines = SourceLines::new();
+const SHARED_INTERRUPT_WORDS: usize = 32;
+static MASKED_ON_ARRIVAL: [AtomicU32; SHARED_INTERRUPT_WORDS] =
+    [const { AtomicU32::new(0) }; SHARED_INTERRUPT_WORDS];
+
+fn masks_on_arrival(id: u32) -> bool {
+    MASKED_ON_ARRIVAL
+        .get((id / 32) as usize)
+        .is_some_and(|word| word.load(Ordering::Acquire) & 1 << (id % 32) != 0)
+}
+
+fn disable_shared(id: u32) {
+    match is_gicv3() {
+        true => gicv3_distributor().disable_shared_interrupt(id),
+        false => distributor().disable_interrupt(id),
+    }
+}
 
 const GIC_CPU_INTERFACES: usize = 8;
 static GIC_CPUS: [AtomicU64; GIC_CPU_INTERFACES] =
@@ -344,6 +360,41 @@ pub(super) fn route_device_interrupt(
     Ok(line)
 }
 
+/// Routes shared interrupt `id` as [`route_device_interrupt`] does, as a level line masked
+/// each time it fires until [`unmask_device_interrupt`] (a PCI function's INTx, D623).
+pub(super) fn route_masked_device_interrupt(
+    id: u32,
+    trigger: Trigger,
+) -> Result<crate::DeviceLine, &'static str> {
+    let word = MASKED_ON_ARRIVAL
+        .get((id / 32) as usize)
+        .ok_or("the interrupt is not a shared peripheral interrupt")?;
+    let line = route_device_interrupt(id, trigger)?;
+    word.fetch_or(1 << (id % 32), Ordering::AcqRel);
+    Ok(line)
+}
+
+/// Masks shared interrupt `id` as it arrives when it is a line masked on arrival.
+pub(super) fn mask_on_arrival(id: u32) {
+    if masks_on_arrival(id) {
+        disable_shared(id);
+    }
+}
+
+/// Enables `line`'s shared interrupt again when it is masked on arrival.
+pub(super) fn unmask_device_interrupt(line: crate::DeviceLine) {
+    let Some(id) = DEVICE_LINES.source_of(line) else {
+        return;
+    };
+    if !masks_on_arrival(id) {
+        return;
+    }
+    match is_gicv3() {
+        true => gicv3_distributor().enable_shared_interrupt(id),
+        false => distributor().enable_interrupt(id, DEVICE_PRIORITY),
+    }
+}
+
 /// Turns LPIs on at this CPU's redistributor (D618): its processor number and physical address.
 pub(super) fn enable_lpis(
     properties: u64,
@@ -383,10 +434,10 @@ pub(super) fn release_device_interrupt(line: crate::DeviceLine) {
     if id >= gicv3::FIRST_LPI_ID {
         return;
     }
-    match is_gicv3() {
-        true => gicv3_distributor().disable_shared_interrupt(id),
-        false => distributor().disable_interrupt(id),
+    if let Some(word) = MASKED_ON_ARRIVAL.get((id / 32) as usize) {
+        word.fetch_and(!(1 << (id % 32)), Ordering::AcqRel);
     }
+    disable_shared(id);
 }
 
 /// Sends `line`'s shared interrupt to the CPU whose MPIDR affinity is `cpu` (D536): through

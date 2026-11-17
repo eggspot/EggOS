@@ -168,7 +168,9 @@ and is not listed per item.
 - [ ] Intel HDMI: HDMI 2.0 scrambling above 340 MHz, AVI and audio infoframes, deep colour, HDMI on display 11 and later (D466)
 - [ ] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465)
 - [x] ACPI `_PRT` legacy PCI interrupt routing through the AML interpreter (D413) — code written, unbuilt, D621
-- [ ] INTx through `interrupt-map` on device-tree PCI hosts, with level lines masked on arrival on aarch64 and riscv64 (D413)
+- [x] INTx through `interrupt-map` on device-tree PCI hosts, with level lines masked on arrival on aarch64 (D413) — code written, unbuilt, D623
+- [ ] INTx on riscv64 device-tree PCI hosts: a PLIC or APLIC source masked on arrival (D623)
+- [ ] INTx of functions behind PCI bridges on device-tree hosts: the pin swizzled bridge by bridge to the root bus (D623)
 - [x] Shared INTx lines: several functions on one input, each handler asked in turn (D413) — code written, unbuilt, D622
 - [ ] GPIO controllers (Intel and AMD pin controllers) and GPIO interrupts for I2C-HID devices (D462)
 - [x] `simple-framebuffer`: 16-bit `r5g6b5` formats (D542) — code written, unbuilt, D620

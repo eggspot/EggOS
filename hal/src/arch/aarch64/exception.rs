@@ -1288,7 +1288,10 @@ fn shared_interrupt(interrupt: timer::Acknowledged, pc: u64) {
     let delivered = if id == timer::UART0_INTERRUPT {
         Some(Interrupt::ConsoleInput)
     } else {
-        timer::DEVICE_LINES.line_of(id).map(Interrupt::Device)
+        timer::DEVICE_LINES.line_of(id).map(|line| {
+            timer::mask_on_arrival(id);
+            Interrupt::Device(line)
+        })
     };
     if let Some(delivered) = delivered {
         crate::interrupt::deliver(delivered);

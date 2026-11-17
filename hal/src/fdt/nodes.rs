@@ -11,6 +11,7 @@ pub const MAX_NODE_DEPTH: usize = 16;
 
 /// The most cells an interrupt specifier may have here (GICv3 with PPI partitions uses 4).
 pub const MAX_INTERRUPT_CELLS: usize = 4;
+const PCI_CHILD_CELLS: usize = 4;
 
 /// The most ancestors with a translating `ranges` a node's `reg` is translated through.
 pub const MAX_TRANSLATIONS: usize = 4;
@@ -131,6 +132,13 @@ pub struct Node<'a> {
     /// `dma-ranges` of its ancestors (first range of each, wrapping): 0 where they are absent
     /// or empty (D554).
     pub dma_offset: u64,
+    /// A PCI host's `interrupt-map` and `interrupt-map-mask` (D623): how its functions' INTx
+    /// pins reach the interrupt controller.
+    pub interrupt_map: &'a [u8],
+    pub interrupt_map_mask: &'a [u8],
+    /// The node's own `#address-cells`, which an `interrupt-map` entry naming it as the parent
+    /// counts (none when absent).
+    pub own_address_cells: Option<u32>,
 }
 
 impl<'a> Node<'a> {
@@ -170,6 +178,9 @@ impl<'a> Node<'a> {
             mboxes: &[],
             iommus: &[],
             iommu_map: &[],
+            interrupt_map: &[],
+            interrupt_map_mask: &[],
+            own_address_cells: None,
         }
     }
 
@@ -239,6 +250,55 @@ impl<'a> Node<'a> {
             },
             cells_of,
         }
+    }
+
+    /// The interrupt this PCI host's `interrupt-map` gives INTx `pin` (1 for INTA to 4 for
+    /// INTD) of the function at `bus`, `device`, `function` (D623): `cells_of` gives an interrupt
+    /// parent's `#address-cells` and `#interrupt-cells` by phandle. None without a map or a
+    /// matching entry, or for a parent it does not know.
+    pub fn pci_interrupt<F: Fn(u32) -> Option<(u32, u32)>>(
+        &self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        pin: u8,
+        cells_of: F,
+    ) -> Option<InterruptSpecifier> {
+        let unit = u32::from(bus) << 16 | u32::from(device) << 11 | u32::from(function) << 8;
+        let child = [unit, 0, 0, u32::from(pin)];
+        let mask: [u32; PCI_CHILD_CELLS] = core::array::from_fn(|index| {
+            be32(self.interrupt_map_mask, index * 4).unwrap_or(u32::MAX)
+        });
+        let wanted: [u32; PCI_CHILD_CELLS] =
+            core::array::from_fn(|index| child[index] & mask[index]);
+        let map = self.interrupt_map;
+        let mut at = 0;
+        while at < map.len() {
+            let mut entry = [0u32; PCI_CHILD_CELLS];
+            for (index, cell) in entry.iter_mut().enumerate() {
+                *cell = be32(map, at + index * 4)? & mask[index];
+            }
+            let parent = be32(map, at + PCI_CHILD_CELLS * 4)?;
+            let (address_cells, interrupt_cells) = cells_of(parent)?;
+            let count = interrupt_cells as usize;
+            if count > MAX_INTERRUPT_CELLS {
+                return None;
+            }
+            let cells_at = at + (PCI_CHILD_CELLS + 1 + address_cells as usize) * 4;
+            if entry == wanted {
+                let mut cells = [0; MAX_INTERRUPT_CELLS];
+                for (index, cell) in cells.iter_mut().take(count).enumerate() {
+                    *cell = be32(map, cells_at + index * 4)?;
+                }
+                return Some(InterruptSpecifier {
+                    controller: parent,
+                    cells,
+                    count: count as u8,
+                });
+            }
+            at = cells_at + count * 4;
+        }
+        None
     }
 }
 
@@ -483,6 +543,8 @@ enum Property {
     Mboxes,
     Iommus,
     IommuMap,
+    InterruptMap,
+    InterruptMapMask,
 }
 
 fn property(name: &[u8]) -> Option<Property> {
@@ -517,6 +579,8 @@ fn property(name: &[u8]) -> Option<Property> {
         b"mboxes" => Mboxes,
         b"iommus" => Iommus,
         b"iommu-map" => IommuMap,
+        b"interrupt-map" => InterruptMap,
+        b"interrupt-map-mask" => InterruptMapMask,
         _ => return None,
     })
 }
@@ -537,7 +601,10 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::InterruptParent => node.interrupt_parent = cell,
         Property::Phandle => node.phandle = cell,
         Property::InterruptCells => node.interrupt_cells = cell,
-        Property::AddressCells => own.address_cells = cell.unwrap_or(2),
+        Property::AddressCells => {
+            own.address_cells = cell.unwrap_or(2);
+            node.own_address_cells = cell;
+        }
         Property::SizeCells => own.size_cells = cell.unwrap_or(1),
         Property::Status => node.enabled = value == b"okay\0" || value == b"ok\0",
         Property::DmaCoherent => node.dma_coherent = true,
@@ -556,6 +623,8 @@ fn apply<'a>(node: &mut Node<'a>, own: &mut Level<'a>, name: &[u8], value: &'a [
         Property::Mboxes => node.mboxes = value,
         Property::Iommus => node.iommus = value,
         Property::IommuMap => node.iommu_map = value,
+        Property::InterruptMap => node.interrupt_map = value,
+        Property::InterruptMapMask => node.interrupt_map_mask = value,
     }
 }
 
@@ -585,6 +654,37 @@ mod tests {
                 .iter()
                 .find_map(|&(p, cells)| (p == phandle).then_some(cells))
         }
+    }
+
+    #[test]
+    fn qemu_aarch64_virt_maps_pci_intx_pins_to_swizzled_gic_lines() {
+        let nodes = nodes_of(QEMU_AARCH64_VIRT);
+        let parents: Vec<(u32, u32, u32)> = nodes
+            .iter()
+            .filter_map(|node| {
+                Some((
+                    node.phandle?,
+                    node.own_address_cells.unwrap_or(0),
+                    node.interrupt_cells?,
+                ))
+            })
+            .collect();
+        let cells_of = |phandle| {
+            parents
+                .iter()
+                .find_map(|&(p, address, interrupt)| (p == phandle).then_some((address, interrupt)))
+        };
+        let host = nodes
+            .iter()
+            .find(|node| node.is_compatible(b"pci-host-ecam-generic"))
+            .unwrap();
+        let first = host.pci_interrupt(0, 0, 0, 1, cells_of).unwrap();
+        assert_eq!(first.cells(), [0, 3, 4]);
+        let swizzled = host.pci_interrupt(0, 1, 0, 1, cells_of).unwrap();
+        assert_eq!(swizzled.cells(), [0, 4, 4]);
+        let wrapped = host.pci_interrupt(0, 3, 0, 2, cells_of).unwrap();
+        assert_eq!(wrapped.cells(), [0, 3, 4]);
+        assert_eq!(host.pci_interrupt(0, 0, 0, 5, cells_of), None);
     }
 
     #[test]

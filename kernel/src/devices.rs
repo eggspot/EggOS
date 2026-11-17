@@ -208,6 +208,14 @@ pub trait Probe {
     ) -> Result<DeviceLine, ProbeError> {
         Err(ProbeError::Refused("no device interrupts"))
     }
+    /// Routes the device-tree interrupt `specifier` as a level line masked each time it fires
+    /// ([`Platform::route_masked_device_interrupt`], D623). None by default.
+    fn route_masked_interrupt(
+        &mut self,
+        _specifier: &InterruptSpecifier,
+    ) -> Result<DeviceLine, ProbeError> {
+        Err(ProbeError::Refused("no masked device interrupts"))
+    }
     /// Takes a message-signalled interrupt for a device ([`Platform::message_interrupt`]). None
     /// by default.
     fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {
@@ -700,6 +708,13 @@ impl<P: Platform> Probe for BootProbe<'_, P> {
         specifier: &InterruptSpecifier,
     ) -> Result<DeviceLine, ProbeError> {
         P::route_device_interrupt(specifier).map_err(ProbeError::Refused)
+    }
+
+    fn route_masked_interrupt(
+        &mut self,
+        specifier: &InterruptSpecifier,
+    ) -> Result<DeviceLine, ProbeError> {
+        P::route_masked_device_interrupt(specifier).map_err(ProbeError::Refused)
     }
 
     fn message_interrupt(&mut self) -> Result<(DeviceLine, InterruptMessage), ProbeError> {

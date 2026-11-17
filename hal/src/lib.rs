@@ -157,6 +157,17 @@ pub trait Platform: 'static {
         Err("this machine routes no legacy interrupts")
     }
 
+    /// Routes the device interrupt `specifier` names as [`Self::route_device_interrupt`] does,
+    /// for a level-triggered line shared the PCI way (a function's INTx found through a
+    /// device-tree `interrupt-map`, D623): the HAL masks it each time it fires, until
+    /// [`Self::unmask_device_interrupt`]. Fails on a machine that cannot mask such lines (the
+    /// default).
+    fn route_masked_device_interrupt(
+        _specifier: &fdt::InterruptSpecifier,
+    ) -> Result<DeviceLine, &'static str> {
+        Err("this machine masks no device-tree lines on arrival")
+    }
+
     /// Unmasks `line` after its driver looked at the device: a level-triggered input masked by
     /// its interrupt; nothing for other lines (D413).
     fn unmask_device_interrupt(_line: DeviceLine) {}

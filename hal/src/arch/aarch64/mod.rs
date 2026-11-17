@@ -604,6 +604,18 @@ impl Platform for Aarch64 {
         timer::route_device_interrupt(id, trigger)
     }
 
+    fn route_masked_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        let (id, trigger) =
+            eggos_drivers::interrupt::gicv2::shared_interrupt_of_specifier(specifier.cells())?;
+        timer::route_masked_device_interrupt(id, trigger)
+    }
+
+    fn unmask_device_interrupt(line: crate::DeviceLine) {
+        timer::unmask_device_interrupt(line);
+    }
+
     fn release_device_interrupt(line: crate::DeviceLine) {
         timer::release_device_interrupt(line);
     }
