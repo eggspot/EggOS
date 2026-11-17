@@ -448,6 +448,10 @@ fn windows_layer_installed() -> bool {
 }
 
 fn components_read() -> ComponentsRead {
+    let update_policy = management_installed().then(|| {
+        record_update_policy_lock(&policy_file());
+        component_state::update_policy(&mut LinuxFiles::new())
+    });
     let mut files = LinuxFiles::new();
     let arch = eggos_app::linux::machine().name();
     let store = component_manager::find_store(&mut files, arch);
@@ -472,7 +476,22 @@ fn components_read() -> ComponentsRead {
         network_up: network_adapter()
             .is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
             || wifi_status().joined.is_some(),
+        update_policy,
     }
+}
+
+fn save_update_policy(policy: component_state::UpdatePolicy) -> bool {
+    if policy_file()
+        .locked(eggos_settings::keys::UPDATE_POLICY)
+        .is_some()
+    {
+        return false;
+    }
+    let record = component_state::UpdatePolicyRecord {
+        policy,
+        locked_by: None,
+    };
+    component_state::set_update_policy(&mut LinuxFiles::new(), &record)
 }
 
 const FIRST_PLAUSIBLE_CLOCK_S: u64 = 1_577_836_800;
@@ -1172,11 +1191,7 @@ impl command::Machine for Machine {
         &mut self,
         policy: component_state::UpdatePolicy,
     ) -> Result<(), &'static [u8]> {
-        let record = component_state::UpdatePolicyRecord {
-            policy,
-            locked_by: None,
-        };
-        match component_state::set_update_policy(&mut LinuxFiles::new(), &record) {
+        match save_update_policy(policy) {
             true => Ok(()),
             false => Err(b"could not record the update policy"),
         }
@@ -1800,6 +1815,10 @@ impl Application<CAPACITY> for Settings {
             Some(Request::InstallComponent) => self.component_work = Some(ComponentWork::Install),
             Some(Request::RemoveComponent) => self.component_work = Some(ComponentWork::Remove),
             Some(Request::StartComponentJob) => self.start_component_job(),
+            Some(Request::SetUpdatePolicy(policy)) => {
+                let _ = save_update_policy(policy);
+                self.window.show_components(components_read());
+            }
             Some(Request::WifiJoin(join)) => {
                 let crate::settings_window::WifiJoin {
                     name,

@@ -684,6 +684,8 @@ pub enum Request {
     /// the window, and read the components every 100 ms while one the pane waits for runs;
     /// then [`SettingsWindow::show_component_job_ended`] (D300).
     StartComponentJob,
+    /// Record how component updates are installed, then read the components again (D662).
+    SetUpdatePolicy(eggos_components::state::UpdatePolicy),
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.

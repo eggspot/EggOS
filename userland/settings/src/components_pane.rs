@@ -29,7 +29,7 @@ pub const ROWS: usize = MAX_COMPONENTS;
 pub const WIDGETS: usize = 4 + 7 * ROWS + 5 + EDITION_WIDGETS + UPDATES_WIDGETS + 1 + PLAN_LINES;
 const PLAN_LINES: usize = 6;
 const PLAN_LINE_PITCH: i32 = 20;
-const UPDATES_WIDGETS: usize = 5;
+const UPDATES_WIDGETS: usize = 7;
 const UPDATES_BAND: (i32, i32, i32, i32) = (16, 124, 432, 48);
 const UPDATES_LINE: (i32, i32, i32) = (24, 6, 296);
 const DAILY_BOX: (i32, i32) = (24, 24);
@@ -41,6 +41,11 @@ const STORE_NOTE_TOP: i32 = 116;
 const OFFLINE: &str = "The network is offline.";
 const OFFLINE_RETRY: &str = "Connect or attach the store disk, then try again.";
 const UPDATING: &str = "updating";
+const POLICY_EXTRA: i32 = 36;
+const POLICY_LABEL: (i32, i32) = (24, 54);
+const POLICY_DROPDOWN: (i32, i32, i32, i32) = (272, 48, 160, 28);
+const POLICY_TITLES: [&str; 3] = ["Automatic", "Notify only", "Managed"];
+const MANAGED_HERE: &str = "Managed: EggOS installs no updates by itself";
 const EDITION_WIDGETS: usize = 4;
 const EDITION_BAND: (i32, i32, i32, i32) = (16, 180, 432, 64);
 const EDITION_LABEL: (i32, i32) = (24, 10);
@@ -114,6 +119,8 @@ pub struct ComponentsRead {
     pub network_up: bool,
     /// The component the last update job failed on and why (D421).
     pub failure: Option<(String, Failure)>,
+    /// How updates are installed and who locked it, while `management` is installed (D662).
+    pub update_policy: Option<eggos_components::state::UpdatePolicyRecord>,
 }
 
 /// A job the pane asks the program to start as `component ...` outside its window (D300).
@@ -206,6 +213,8 @@ struct Widgets {
     daily: WidgetId,
     updates_button: WidgetId,
     updates_tip: WidgetId,
+    policy_label: WidgetId,
+    policy: WidgetId,
     download: WidgetId,
     plan_lines: [WidgetId; PLAN_LINES],
 }
@@ -340,6 +349,9 @@ struct Metrics {
     updates_line: (i32, i32, i32),
     daily: (i32, i32),
     updates_button: Box4,
+    policy_extra: i32,
+    policy_label: (i32, i32),
+    policy_dropdown: Box4,
     edition_band: Box4,
     edition_label: (i32, i32),
     edition_dropdown: Box4,
@@ -370,6 +382,9 @@ impl Metrics {
                 updates_line: UPDATES_LINE,
                 daily: DAILY_BOX,
                 updates_button: UPDATES_BUTTON,
+                policy_extra: POLICY_EXTRA,
+                policy_label: POLICY_LABEL,
+                policy_dropdown: POLICY_DROPDOWN,
                 edition_band: EDITION_BAND,
                 edition_label: EDITION_LABEL,
                 edition_dropdown: EDITION_DROPDOWN,
@@ -390,6 +405,9 @@ impl Metrics {
                 updates_line: (24, 8, 296),
                 daily: (24, 28),
                 updates_button: (336, 8, 96, 40),
+                policy_extra: 48,
+                policy_label: (24, 68),
+                policy_dropdown: (272, 56, 160, 40),
                 edition_band: (16, 188, ROW_WIDTH, 72),
                 edition_label: (24, 14),
                 edition_dropdown: (272, 8, 160, 40),
@@ -413,6 +431,9 @@ impl Metrics {
                     updates_line: (8, 8, inner),
                     daily: (8, 28),
                     updates_button: (8, 76, inner, 48),
+                    policy_extra: 76,
+                    policy_label: (8, 132),
+                    policy_dropdown: (8, 152, inner, 48),
                     edition_band: (PADDING, 264, band, 116),
                     edition_label: (8, 8),
                     edition_dropdown: (8, 28, inner, 48),
@@ -503,6 +524,25 @@ impl ComponentsPane {
             Kind::tooltip("", ""),
         );
         tree.set_shown(updates_tip, false);
+        let policy_label = add(
+            tree,
+            updates_band,
+            line_at(POLICY_LABEL.0, POLICY_LABEL.1, 0),
+            Kind::label("Install updates", Token::Text),
+        );
+        let policy = add(
+            tree,
+            updates_band,
+            at(
+                POLICY_DROPDOWN.0,
+                POLICY_DROPDOWN.1,
+                POLICY_DROPDOWN.2,
+                POLICY_DROPDOWN.3,
+            ),
+            Kind::dropdown("Install updates", &POLICY_TITLES, 1),
+        );
+        tree.set_shown(policy_label, false);
+        tree.set_shown(policy, false);
         let band = add(
             tree,
             pane,
@@ -639,6 +679,8 @@ impl ComponentsPane {
                 daily,
                 updates_button,
                 updates_tip,
+                policy_label,
+                policy,
                 download,
                 plan_lines,
             },
@@ -681,6 +723,11 @@ impl ComponentsPane {
             ),
         );
         place(tree, widgets.updates_button, metrics.updates_button);
+        tree.set_place(
+            widgets.policy_label,
+            line_at(metrics.policy_label.0, metrics.policy_label.1, 0),
+        );
+        place(tree, widgets.policy, metrics.policy_dropdown);
         tree.set_place(
             widgets.edition_label,
             line_at(metrics.edition_label.0, metrics.edition_label.1, 0),
@@ -1059,6 +1106,17 @@ impl ComponentsPane {
             Response::Chosen(id, option) if id == widgets.edition => {
                 self.choose_edition(tree, option, now_ms)
             }
+            Response::Chosen(id, option) if id == widgets.policy => {
+                let chosen = eggos_components::state::UpdatePolicy::ALL
+                    .get(option)
+                    .copied()
+                    .unwrap_or_default();
+                if let Some(record) = self.read.update_policy.as_mut() {
+                    record.policy = chosen;
+                }
+                self.refresh(tree);
+                Some(Request::SetUpdatePolicy(chosen))
+            }
             Response::Activated(id) if id == widgets.updates_button => self.press_updates(tree),
             Response::Toggled(id, on) if id == widgets.daily => {
                 self.read.daily = on;
@@ -1365,6 +1423,47 @@ impl ComponentsPane {
         Some(Request::StartComponentJob)
     }
 
+    fn policy_extra(&self) -> i32 {
+        match self.read.update_policy {
+            Some(_) => self.metrics.policy_extra,
+            None => 0,
+        }
+    }
+
+    fn show_update_policy(&self, tree: &mut WidgetTree<CAPACITY>) {
+        use eggos_components::state::UpdatePolicy;
+        let widgets = self.widgets;
+        let record = self.read.update_policy.as_ref();
+        tree.set_shown(widgets.policy_label, record.is_some());
+        tree.set_shown(widgets.policy, record.is_some());
+        let Some(record) = record else {
+            return;
+        };
+        let index = UpdatePolicy::ALL
+            .iter()
+            .position(|policy| *policy == record.policy)
+            .unwrap_or(1);
+        tree.set_selected(widgets.policy, index);
+        tree.set_enabled(widgets.policy, record.locked_by.is_none() && !self.awaits_job());
+        match record.policy {
+            UpdatePolicy::Notify => {}
+            UpdatePolicy::Automatic => {
+                tree.set_selected(widgets.daily, 1);
+                tree.set_enabled(widgets.daily, false);
+            }
+            UpdatePolicy::Managed => {
+                tree.set_selected(widgets.daily, 0);
+                tree.set_enabled(widgets.daily, false);
+                tree.set_enabled(widgets.updates_button, false);
+                let line = match &record.locked_by {
+                    Some(manager) => format!("Managed by {manager}"),
+                    None => String::from(MANAGED_HERE),
+                };
+                show_line(tree, widgets.updates_line, &line, Token::Text);
+            }
+        }
+    }
+
     fn show_updates_band(&self, tree: &mut WidgetTree<CAPACITY>) {
         let widgets = self.widgets;
         let others_busy = self.others_busy();
@@ -1433,6 +1532,7 @@ impl ComponentsPane {
             Some(_) => format!("{}", with_updates.len()),
         };
         tree.set_accessible_value(widgets.updates_band, &value);
+        self.show_update_policy(tree);
     }
 
     fn installing_here(&self, name: &str) -> bool {
@@ -1927,11 +2027,12 @@ impl ComponentsPane {
             true => m.download_shift,
             false => 0,
         };
+        let extra = self.policy_extra();
         let (x, y, w, h) = m.updates_band;
-        tree.set_place(widgets.updates_band, at(x, y + shift + below_store, w, h));
+        tree.set_place(widgets.updates_band, at(x, y + shift + below_store, w, h + extra));
         let (x, y, w, h) = m.edition_band;
-        tree.set_place(widgets.edition_band, at(x, y + shift + below_band, w, h));
-        let mut next_top = m.rows_top + shift + below_edition;
+        tree.set_place(widgets.edition_band, at(x, y + shift + extra + below_band, w, h));
+        let mut next_top = m.rows_top + shift + extra + below_edition;
         let mut row_bottoms = [0i32; ROWS];
         let acting = match anchor {
             Some(Anchor::Row(row)) => Some(row),
@@ -2038,8 +2139,8 @@ impl ComponentsPane {
         }
         let note_top = anchor.map(|anchor| match anchor {
             Anchor::Store => STORE_NOTE_TOP,
-            Anchor::Band => m.updates_band.1 + shift + m.updates_band.3,
-            Anchor::Edition => m.edition_band.1 + shift + m.edition_band.3,
+            Anchor::Band => m.updates_band.1 + shift + m.updates_band.3 + extra,
+            Anchor::Edition => m.edition_band.1 + shift + extra + m.edition_band.3,
             Anchor::Row(row) => row_bottoms.get(row).copied().unwrap_or(next_top),
         });
         self.place_note(tree, note_top);

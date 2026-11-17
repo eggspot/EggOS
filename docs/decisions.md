@@ -28401,3 +28401,20 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the band's `Updated 2 components · today at 09:16` and
   `Could not update automatically` lines, which need the automatic update's outcome recorded;
   the `Updates` chip after a failed automatic update.
+
+
+## D662 `Install updates` in the Components pane (M16 editions; editions-policy v0.1 sections 2, 3 and 10; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** While `management` is installed the Updates band grows by one row (36 px on a
+  desktop, 48 on a tablet, 76 on a phone) holding the label `Install updates` and a dropdown
+  (`Automatic`, `Notify only`, `Managed`) at section 3's and section 10's places, and the
+  Edition band, the rows and the notes' anchors move down by the same amount. Choosing a value
+  asks the program to record it (`Request::SetUpdatePolicy`), which refuses a locked key the
+  same way `settings set` does, and reads the components again. Under `automatic` the
+  `Check every day` box is checked and disabled; under `managed` it is unchecked and disabled,
+  `Check now` and `Update all` are disabled, and the band's line reads `Managed: EggOS
+  installs no updates by itself`, or `Managed by Contoso IT` when the policy file locks it,
+  which also disables the dropdown. Reading the components first brings D657's record in line
+  with the policy file (D658).
+- **Not yet.** Building and running; the lock glyph and its tooltip (section 5.2, a toolkit
+  `set_locked`); the tooltips on the disabled controls; the search words; the automatic
+  states' band lines (D661).

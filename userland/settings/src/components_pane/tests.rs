@@ -719,3 +719,34 @@ fn on_a_tablet_the_desktop_layout_takes_forty_pixel_controls() {
     assert_eq!(rect(&window, ids.rows[0].panel).height, 56);
     assert_eq!(rect(&window, ids.updates_button).height, 40);
 }
+
+#[test]
+fn install_updates_shows_with_management_and_a_lock_disables_it() {
+    use eggos_components::state::{UpdatePolicy, UpdatePolicyRecord};
+    let plain = opened(read(&["desktop", "builtin-apps"]));
+    assert!(!plain.widgets().is_shown(widgets(&plain).policy));
+    let edition_top = rect(&plain, widgets(&plain).edition_band).y;
+    let mut managed = read(&["desktop", "builtin-apps"]);
+    managed.update_policy = Some(UpdatePolicyRecord::default());
+    let mut window = opened(managed);
+    let ids = widgets(&window);
+    assert!(window.widgets().is_shown(ids.policy));
+    assert!(window.widgets().is_enabled(ids.policy));
+    assert_eq!(rect(&window, ids.edition_band).y, edition_top + 36);
+    assert_eq!(
+        window.respond(Response::Chosen(ids.policy, 0), 0),
+        Some(Request::SetUpdatePolicy(UpdatePolicy::Automatic))
+    );
+    assert!(!window.widgets().is_enabled(ids.daily));
+    let mut locked = read(&["desktop", "builtin-apps"]);
+    locked.update_policy = Some(UpdatePolicyRecord {
+        policy: UpdatePolicy::Managed,
+        locked_by: Some(String::from("Contoso IT")),
+    });
+    let window = opened(locked);
+    let ids = widgets(&window);
+    assert!(!window.widgets().is_enabled(ids.policy));
+    assert!(!window.widgets().is_enabled(ids.updates_button));
+    assert_eq!(window.widgets().text_of(ids.updates_line), Some("Managed by Contoso IT"));
+    assert_eq!(window.widgets().selected(ids.policy), Some(2));
+}
