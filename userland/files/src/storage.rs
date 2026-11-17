@@ -1369,6 +1369,93 @@ pub fn install(
     })
 }
 
+/// Why EggOS's partition could not be added beside what a disk holds (D644).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddPartitionError {
+    /// Opening, reading or writing the disk failed, or it is in use or read-only.
+    Storage(StorageError),
+    /// The disk has no readable GUID partition table.
+    NoTable,
+    /// The table refused the partition.
+    Table(eggos_gpt::AddRefusal),
+}
+
+fn read_table(
+    disks: &mut (impl WholeDisks + ?Sized),
+    handle: usize,
+    at_block: u64,
+) -> Result<(eggos_gpt::Header, Vec<u8>), AddPartitionError> {
+    let mut block = [0u8; SECTOR_BYTES as usize];
+    disks
+        .read_at(handle, at_block * SECTOR_BYTES, &mut block)
+        .map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
+    let header = eggos_gpt::read_header(&block).ok_or(AddPartitionError::NoTable)?;
+    let length = header.entry_count as usize * header.entry_bytes as usize;
+    let mut entries = Vec::new();
+    entries.resize(length, 0u8);
+    disks
+        .read_at(handle, header.entries_at * SECTOR_BYTES, &mut entries)
+        .map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
+    Ok((header, entries))
+}
+
+/// Adds an EggOS partition of `sectors` sectors from `first_sector` to the GUID partition
+/// table of the unmounted disk `device`, keeping every partition on it (D644): the backup
+/// entries and header are written first, then the primary ones, as UEFI asks, and the disk
+/// flushed. Answers the new partition's unique GUID.
+///
+/// # Errors
+///
+/// A missing, mounted or read-only disk, one with no readable table, a table that refuses the
+/// partition (full, overlapping, outside its usable blocks, damaged), or a failed write.
+pub fn add_eggos_partition(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    first_sector: u64,
+    sectors: u64,
+) -> Result<eggos_gpt::Guid, AddPartitionError> {
+    let line = unmounted(disks, device, true).map_err(AddPartitionError::Storage)?;
+    let mut unique = [0u8; 16];
+    disks.unique_bytes(&mut unique);
+    let unique = eggos_gpt::random_guid(unique);
+    let partition = eggos_gpt::NewPartition {
+        kind: eggos_gpt::EGGOS_DATA_PARTITION,
+        unique,
+        first: first_sector,
+        last: first_sector.saturating_add(sectors).saturating_sub(1),
+        name: "EggOS",
+    };
+    let handle = disks
+        .open(line.device, true)
+        .map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
+    let result = (|| {
+        let (primary, mut entries) = read_table(disks, handle, 1)?;
+        let (backup, backup_entries) = read_table(disks, handle, primary.backup)?;
+        if eggos_gpt::crc32(&backup_entries) != primary.entries_crc {
+            return Err(AddPartitionError::Table(eggos_gpt::AddRefusal::Damaged));
+        }
+        let crc = eggos_gpt::add_partition(&primary, &mut entries, &partition).map_err(AddPartitionError::Table)?;
+        let mut header_block = [0u8; SECTOR_BYTES as usize];
+        let mut write_at = |at_block: u64, bytes: &[u8]| {
+            disks
+                .write_at(handle, at_block * SECTOR_BYTES, bytes)
+                .map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))
+        };
+        write_at(backup.entries_at, &entries)?;
+        header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&eggos_gpt::rewritten_header(&backup, crc));
+        write_at(backup.current, &header_block)?;
+        write_at(primary.entries_at, &entries)?;
+        header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&eggos_gpt::rewritten_header(&primary, crc));
+        write_at(primary.current, &header_block)?;
+        Ok(unique)
+    })();
+    let flushed = disks.flush(handle);
+    disks.close(handle);
+    let unique = result?;
+    flushed.map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
+    Ok(unique)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_installation(
     disks: &mut (impl WholeDisks + ?Sized),
@@ -1548,6 +1635,54 @@ mod install_tests {
             available_bytes: None,
             partitions: None,
         }
+    }
+
+    #[test]
+    fn eggos_partition_is_added_beside_an_existing_one_in_both_tables() {
+        use crate::storage::memory::{MemoryDisks, MemoryWholeDisk};
+        let mut disk = MemoryWholeDisk::blank("vdb", 1024);
+        let sectors = disk.image.len() as u64 / SECTOR_BYTES;
+        let layout = eggos_gpt::Layout::new(sectors, SECTOR_BYTES).expect("a layout");
+        let first = layout.aligned(layout.first_usable);
+        let existing = [eggos_gpt::NewPartition {
+            kind: eggos_gpt::EFI_SYSTEM_PARTITION,
+            unique: [1; 16],
+            first,
+            last: first + 2047,
+            name: "EFI system partition",
+        }];
+        let table = eggos_gpt::NewTable::new(layout, [9; 16], &existing).expect("a table");
+        let places = table.places();
+        let mut put = |block: u64, bytes: &[u8]| {
+            let at = (block * SECTOR_BYTES) as usize;
+            disk.image[at..at + bytes.len()].copy_from_slice(bytes);
+        };
+        put(0, &table.mbr);
+        put(places[0], &table.primary_header);
+        put(places[1], &table.entries);
+        put(places[2], &table.entries);
+        put(places[3], &table.backup_header);
+        let mut disks = MemoryDisks::of(alloc::vec![disk]);
+        let start = first + 2048;
+        let added = add_eggos_partition(&mut disks, "/dev/vdb", start, 2048).expect("added");
+        assert_eq!(
+            add_eggos_partition(&mut disks, "/dev/vdb", start, 2048),
+            Err(AddPartitionError::Table(eggos_gpt::AddRefusal::Overlaps))
+        );
+        let image = &disks.disk("vdb").image;
+        for header_block in [places[0], places[3]] {
+            let at = (header_block * SECTOR_BYTES) as usize;
+            let header = eggos_gpt::read_header(&image[at..at + SECTOR_BYTES as usize]).expect("a header");
+            let entries_at = (header.entries_at * SECTOR_BYTES) as usize;
+            let found: Vec<_> = eggos_gpt::partitions(&header, &image[entries_at..entries_at + eggos_gpt::ENTRY_ARRAY_BYTES])
+                .expect("entries")
+                .collect();
+            assert_eq!(found.len(), 2);
+            assert_eq!(found[1].unique, added);
+            assert_eq!((found[1].first, found[1].blocks()), (start, 2048));
+        }
+        let mut blank = MemoryDisks::of(alloc::vec![MemoryWholeDisk::blank("vdb", 1024)]);
+        assert_eq!(add_eggos_partition(&mut blank, "/dev/vdb", start, 2048), Err(AddPartitionError::NoTable));
     }
 
     #[test]

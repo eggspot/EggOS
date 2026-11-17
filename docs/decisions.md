@@ -28117,3 +28117,19 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the storage code that writes it to a disk with the
   shrink and the EFI system partition.
 
+
+## D644 Writing EggOS's partition into another system's table (M8; installer dual boot v0.1 section 4; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `storage::add_eggos_partition(disks, device, first_sector, sectors)` adds
+  an EggOS data partition (a fresh unique GUID, named `EggOS`) to the GUID partition table of
+  an unmounted, writable disk with D643's primitive: it reads the primary header and entries,
+  then the backup ones the primary points at, refuses when the backup array differs from the
+  primary's CRC (a table half-updated by another tool), and writes the backup entries and
+  header first, then the primary ones, and flushes, so a cut at any point leaves one whole
+  table for the firmware and the next tool to repair from. Failures come back as
+  `AddPartitionError` (the disk's own errors, no table, or the table's refusal) rather than
+  new `StorageError` variants, so the pane, command and tool keep their error tables until
+  the alongside install that calls this is written.
+- **Not yet.** Building and running; making the new partition an EggFS volume at first boot
+  (as whole-disk installs do), the shrink that frees a tail, the shared EFI system partition
+  and the firmware entry, and calling all of it from `disk install --alongside` (D642).
+
