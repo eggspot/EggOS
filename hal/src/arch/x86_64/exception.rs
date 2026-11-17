@@ -101,7 +101,7 @@ exception_stubs:
     .irp vector, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83
     EXCEPTION_STUB \vector
     .endr
-    .balign 16                      // so the label is the stub, not the padding before it
+    .balign 16
     .global apic_spurious_stub
 apic_spurious_stub:
     EXCEPTION_STUB 255
@@ -168,9 +168,9 @@ exception_common:
     movq    $0, 64(%rsp)
     movq    %rax, %cr3
 9:  popq    %rax
-    addq    $16, %rsp               // vector and error code
+    addq    $16, %rsp
     iretq
-    int3                            // never runs: stops straight-line speculation (D49)
+    int3
 
 user_exception:
     swapgs
@@ -265,10 +265,10 @@ x86_64_syscall_entry:
 11: movq    %gs:{context_top}, %rsp
     pushq   ${user_ss}
     pushq   %gs:{user_rsp}
-    pushq   %r11                    // rflags
+    pushq   %r11
     pushq   ${user_cs}
-    pushq   %rcx                    // rip
-    pushq   $0                      // error code
+    pushq   %rcx
+    pushq   $0
     pushq   ${syscall_vector}
     jmp     user_exception_save
 
@@ -315,7 +315,7 @@ x86_64_enter_user:
     popq    %rcx
     popq    %rbx
     popq    %rax
-    addq    $16, %rsp               // vector and error code
+    addq    $16, %rsp
     cmpb    $0, {clear_buffers}(%rip)
     je      5f
     verw    {verw_selector}(%rip)
@@ -363,7 +363,7 @@ x86_64_enter_user:
     movq    {rflags}(%rdi), %r11
     cmpq    $0, %gs:{user_cr3}
     jne     14f
-    movq    {rsp}(%rdi), %rsp       // the program's stack
+    movq    {rsp}(%rdi), %rsp
     movq    {rdi}(%rdi), %rdi
     cmpb    $0, {clear_buffers}(%rip)
     je      6f
@@ -451,7 +451,7 @@ x86_64_user_test_checks:
 1:  jmp     1b
     .global x86_64_user_test_floating_point
 x86_64_user_test_floating_point:
-    .byte   0xd9, 0xe8              // fld1 (x87), spelled out: the target has no x87 feature
+    .byte   0xd9, 0xe8
     .global x86_64_user_test_null_syscalls
 x86_64_user_test_null_syscalls:
 2:  movl    ${syscall_null}, %eax
@@ -474,11 +474,11 @@ x86_64_user_test_linux_hello:
     movl    $1, %edx
     movl    $1, %eax
     syscall
-    addq    $14, %rax               // -EFAULT
+    addq    $14, %rax
     orq     %rax, %rbx
     movl    ${unknown_syscall}, %eax
     syscall
-    addq    $38, %rax               // -ENOSYS
+    addq    $38, %rax
     orq     %rax, %rbx
     xorl    %edi, %edi
     testq   %rbx, %rbx
@@ -512,7 +512,7 @@ x86_64_user_test_linux_start:
     orq     -8(%rsp), %rax
     jz      9f
     xorl    %edi, %edi
-    movl    $3, %esi                // RLIMIT_STACK
+    movl    $3, %esi
     xorl    %edx, %edx
     leaq    -32(%rsp), %r10
     movl    $302, %eax
@@ -524,11 +524,11 @@ x86_64_user_test_linux_start:
     jne     9f
     cmpq    $-1, -24(%rsp)
     jne     9f
-    movq    $1, -64(%rsp)           // SIG_IGN
+    movq    $1, -64(%rsp)
     movq    $0, -56(%rsp)
     movq    $0, -48(%rsp)
     movq    $0, -40(%rsp)
-    movl    $13, %edi               // SIGPIPE
+    movl    $13, %edi
     leaq    -64(%rsp), %rsi
     xorl    %edx, %edx
     movl    $8, %r10d
@@ -555,7 +555,7 @@ x86_64_user_test_linux_start:
     movl    $255, %edi
     testq   %rax, %rax
     jnz     9f
-    cmpl    $2, -120(%rsp)          // SS_DISABLE
+    cmpl    $2, -120(%rsp)
     jne     9f
     movq    (%rsp), %rbx
     leaq    8(%rsp), %r12
@@ -633,10 +633,10 @@ x86_64_user_test_linux_thread_pointer:
     .global x86_64_user_test_linux_poll
 x86_64_user_test_linux_poll:
     movl    $1, %ebx
-    movq    $0, -32(%rsp)           // fd 0, no events
-    movq    $1, -24(%rsp)           // fd 1, POLLOUT
+    movq    $0, -32(%rsp)
+    movq    $1, -24(%rsp)
     movw    $4, -20(%rsp)
-    movq    $2, -16(%rsp)           // fd 2, no events
+    movq    $2, -16(%rsp)
     leaq    -32(%rsp), %rdi
     movl    $3, %esi
     xorl    %edx, %edx
@@ -651,7 +651,7 @@ x86_64_user_test_linux_poll:
     cmpw    $0, -10(%rsp)
     jne     9f
     movl    $1, %edi
-    movl    $0x5413, %esi           // TIOCGWINSZ
+    movl    $0x5413, %esi
     leaq    -64(%rsp), %rdx
     movl    $16, %eax
     syscall
@@ -679,13 +679,13 @@ x86_64_user_test_linux_poll:
     .global x86_64_user_test_linux_signals
 x86_64_user_test_linux_signals:
     xorl    %edi, %edi
-    movl    $17, %esi               // SIGCHLD, ignored
+    movl    $17, %esi
     movl    $62, %eax
     syscall
     testq   %rax, %rax
     jnz     9f
-    movq    $(1 << 9), -16(%rsp)    // SIGUSR1
-    xorl    %edi, %edi              // SIG_BLOCK
+    movq    $(1 << 9), -16(%rsp)
+    xorl    %edi, %edi
     leaq    -16(%rsp), %rsi
     xorl    %edx, %edx
     movl    $8, %r10d
@@ -697,7 +697,7 @@ x86_64_user_test_linux_signals:
     syscall
     movq    %rax, %rdi
     movq    %rax, %rsi
-    movl    $10, %edx               // SIGUSR1
+    movl    $10, %edx
     movl    $234, %eax
     syscall
     testq   %rax, %rax
@@ -710,7 +710,7 @@ x86_64_user_test_linux_signals:
     jnz     9f
     cmpq    $(1 << 9), -32(%rsp)
     jne     9f
-    movl    $1, %edi                // SIG_UNBLOCK: SIGUSR1 ends the program here
+    movl    $1, %edi
     leaq    -16(%rsp), %rsi
     xorl    %edx, %edx
     movl    $8, %r10d
@@ -734,11 +734,11 @@ x86_64_user_test_linux_signal_handler:
     jnz     9f
     leaq    5f(%rip), %rax
     movq    %rax, -64(%rsp)
-    movq    $0x0c000004, -56(%rsp)  // SA_ONSTACK | SA_RESTORER | SA_SIGINFO
+    movq    $0x0c000004, -56(%rsp)
     leaq    6f(%rip), %rax
     movq    %rax, -48(%rsp)
-    movq    $0, -40(%rsp)           // no mask
-    movl    $10, %edi               // SIGUSR1
+    movq    $0, -40(%rsp)
+    movl    $10, %edi
     leaq    -64(%rsp), %rsi
     xorl    %edx, %edx
     movl    $8, %r10d
@@ -751,14 +751,14 @@ x86_64_user_test_linux_signal_handler:
     movq    %rax, %rdi
     movq    %rax, %rsi
     movl    $10, %edx
-    movl    $0x5a5, %ebx            // kept across the handler, which clobbers it
-    movl    $1, %r12d               // the handler sets it to 2 in its frame
+    movl    $0x5a5, %ebx
+    movl    $1, %r12d
     movl    ${signal_fp_kept}, %eax
     movq    %rax, %xmm8
     movl    ${signal_mxcsr}, -80(%rsp)
     ldmxcsr -80(%rsp)
     movl    $234, %eax
-    syscall                         // the handler runs before this returns
+    syscall
     testq   %rax, %rax
     jnz     9f
     cmpq    $0x5a5, %rbx
@@ -774,7 +774,7 @@ x86_64_user_test_linux_signal_handler:
     stmxcsr -80(%rsp)
     cmpl    ${signal_mxcsr}, -80(%rsp)
     jne     9f
-    xorl    %edi, %edi              // the mask is back: nothing blocked
+    xorl    %edi, %edi
     xorl    %esi, %esi
     leaq    -72(%rsp), %rdx
     movl    $8, %r10d
@@ -797,10 +797,10 @@ x86_64_user_test_linux_signal_handler:
     jne     7f
     cmpl    $-6, 8(%rsi)
     jne     7f
-    movq    16(%rdx), %rax          // uc_stack.ss_sp
+    movq    16(%rdx), %rax
     cmpq    %rax, %rsp
     jb      7f
-    addq    32(%rdx), %rax          // uc_stack.ss_size
+    addq    32(%rdx), %rax
     cmpq    %rax, %rsp
     jae     7f
     movq    %xmm8, %rax
@@ -825,11 +825,11 @@ x86_64_user_test_linux_signal_handler:
 x86_64_user_test_linux_fault_handler:
     leaq    5f(%rip), %rax
     movq    %rax, -64(%rsp)
-    movq    $0x04000004, -56(%rsp)  // SA_RESTORER | SA_SIGINFO
+    movq    $0x04000004, -56(%rsp)
     leaq    6f(%rip), %rax
     movq    %rax, -48(%rsp)
-    movq    $0, -40(%rsp)           // no mask
-    movl    $11, %edi               // SIGSEGV
+    movq    $0, -40(%rsp)
+    movl    $11, %edi
     leaq    -64(%rsp), %rsi
     xorl    %edx, %edx
     movl    $8, %r10d
@@ -837,7 +837,7 @@ x86_64_user_test_linux_fault_handler:
     syscall
     testq   %rax, %rax
     jnz     9f
-    xorl    %edi, %edi              // mmap(0, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS)
+    xorl    %edi, %edi
     movl    $4096, %esi
     xorl    %edx, %edx
     movl    $0x22, %r10d
@@ -848,13 +848,13 @@ x86_64_user_test_linux_fault_handler:
     cmpq    $-4095, %rax
     jae     9f
     movq    %rax, %rbx
-    xorl    %r12d, %r12d            // the faults the handler counted
-    movl    ${fault_address}, %r13d // nothing mapped there: SEGV_MAPERR
+    xorl    %r12d, %r12d
+    movl    ${fault_address}, %r13d
     movl    $1, %r14d
     leaq    1f(%rip), %r15
     movq    (%r13), %rax
     jmp     9f
-1:  movq    %rbx, %r13              // PROT_NONE: SEGV_ACCERR
+1:  movq    %rbx, %r13
     movl    $2, %r14d
     leaq    2f(%rip), %r15
     movq    (%r13), %rax

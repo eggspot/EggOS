@@ -95,3 +95,46 @@ design; this page is the routine-by-routine reference.
 
 - Calibrating the local APIC timer needs a reference clock (the 8254 PIT, else the ACPI PM
   timer); with neither, boot stops with a panic message on the console.
+
+## x86_64 exception and user test code (`hal/src/arch/x86_64/exception.rs`)
+
+The notes the assembly text carried, by instruction:
+
+- `.balign 16`: so the label is the stub, not the padding before it
+- `addq    $16, %rsp`: vector and error code
+- `int3`: never runs: stops straight-line speculation (D49)
+- `pushq   %r11`: rflags
+- `pushq   %rcx`: rip
+- `pushq   $0`: error code
+- `movq    {rsp}(%rdi), %rsp`: the program's stack
+- `.byte   0xd9, 0xe8`: fld1 (x87), spelled out: the target has no x87 feature
+- `addq    $14, %rax`: -EFAULT
+- `addq    $38, %rax`: -ENOSYS
+- `movl    $3, %esi`: RLIMIT_STACK
+- `movq    $1, -64(%rsp)`: SIG_IGN
+- `movl    $13, %edi`: SIGPIPE
+- `cmpl    $2, -120(%rsp)`: SS_DISABLE
+- `movq    $0, -32(%rsp)`: fd 0, no events
+- `movq    $1, -24(%rsp)`: fd 1, POLLOUT
+- `movq    $2, -16(%rsp)`: fd 2, no events
+- `movl    $0x5413, %esi`: TIOCGWINSZ
+- `movl    $17, %esi`: SIGCHLD, ignored
+- `movq    $(1 << 9), -16(%rsp)`: SIGUSR1
+- `xorl    %edi, %edi`: SIG_BLOCK
+- `movl    $10, %edx`: SIGUSR1
+- `movl    $1, %edi`: SIG_UNBLOCK: SIGUSR1 ends the program here
+- `movq    $0x0c000004, -56(%rsp)`: SA_ONSTACK | SA_RESTORER | SA_SIGINFO
+- `movq    $0, -40(%rsp)`: no mask
+- `movl    $10, %edi`: SIGUSR1
+- `movl    $0x5a5, %ebx`: kept across the handler, which clobbers it
+- `movl    $1, %r12d`: the handler sets it to 2 in its frame
+- `syscall`: the handler runs before this returns
+- `xorl    %edi, %edi`: the mask is back: nothing blocked
+- `movq    16(%rdx), %rax`: uc_stack.ss_sp
+- `addq    32(%rdx), %rax`: uc_stack.ss_size
+- `movq    $0x04000004, -56(%rsp)`: SA_RESTORER | SA_SIGINFO
+- `movl    $11, %edi`: SIGSEGV
+- `xorl    %edi, %edi`: mmap(0, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS)
+- `xorl    %r12d, %r12d`: the faults the handler counted
+- `movl    ${fault_address}, %r13d`: nothing mapped there: SEGV_MAPERR
+- `1:  movq    %rbx, %r13`: PROT_NONE: SEGV_ACCERR
