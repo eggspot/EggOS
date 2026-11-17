@@ -177,8 +177,7 @@ impl Canvas for Screen {
         for row in y..bottom {
             for column in x..right {
                 let at = row as usize * self.stride as usize + column as usize;
-                // SAFETY: `row` and `column` are inside the mode's width and height, and
-                // `is_usable` checked that every row of `stride` pixels lies in the framebuffer.
+                // SAFETY: inside the mode's rows and columns, which `is_usable` found in the framebuffer.
                 unsafe { self.pixels.add(at).write_volatile(pixel) };
             }
         }
