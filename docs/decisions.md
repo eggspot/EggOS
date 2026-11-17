@@ -27942,3 +27942,12 @@ the license, by an explicit instruction recorded here.
   disabled, then delivered: a line still asserted pends again and fires once it is enabled.
   Unmarked sources keep the order they had (deliver, then complete).
 - **Not yet.** Building and running.
+
+
+## D633 A header drag scrolls the table near its edges (M7; D628's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Decision.** While a header drag is on and the table is wider than its view, the pointer
+  within `DRAG_EDGE` (24) of the view's left or right edge scrolls `offset_x` by 24, at most
+  once every `DRAG_SCROLL_MS` (100), checked on each pointer move (the ghost and the slot
+  then follow the new offset). Scrolling only on moves keeps the tree free of another timer;
+  a still pointer at the edge stops scrolling, which the brief does not ask about.
+- **Not yet.** Building and running.

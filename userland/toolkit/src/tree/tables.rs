@@ -5,7 +5,10 @@ use super::{Kind, Response, Target, WidgetId, WidgetTree};
 use crate::input::key;
 use crate::table::{HANDLE_PART, ROW_HIT, RowSelected, SelectionChange, Table};
 use crate::table::ColumnMove;
-use crate::widget::{DRAG_THRESHOLD, MAX_COLUMNS, SortOrder, TABLE_KEY_SCROLL, TABLE_ROW_HEIGHT};
+use crate::widget::{
+    DRAG_EDGE, DRAG_SCROLL_MS, DRAG_THRESHOLD, MAX_COLUMNS, SortOrder, TABLE_KEY_SCROLL,
+    TABLE_ROW_HEIGHT,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ColumnDrag {
@@ -22,6 +25,7 @@ pub(super) struct HeaderMove {
     start_x: i32,
     grab: i32,
     pub(super) started: bool,
+    scrolled_ms: Option<u32>,
 }
 
 impl<const N: usize, const A: usize> WidgetTree<N, A> {
@@ -69,7 +73,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.table(id).map(|table| table.order)
     }
 
-    pub(super) fn header_moved(&mut self, moving: HeaderMove, x: i32) -> Response {
+    pub(super) fn header_moved(&mut self, moving: HeaderMove, x: i32, now_ms: u32) -> Response {
         let (Some(table), Some(rect)) = (self.table(moving.table), self.rect(moving.table)) else {
             self.header_move = None;
             return Response::Nothing;
@@ -78,10 +82,32 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if !started {
             return Response::Nothing;
         }
+        let view = table.view(rect);
+        let step = match () {
+            () if table.content_width() <= view.width => 0,
+            () if x < view.x + DRAG_EDGE => -DRAG_EDGE,
+            () if x >= view.right() - DRAG_EDGE => DRAG_EDGE,
+            () => 0,
+        };
+        let due = moving
+            .scrolled_ms
+            .is_none_or(|at| now_ms.wrapping_sub(at) >= DRAG_SCROLL_MS);
+        let scrolled_ms = match (step != 0, due) {
+            (true, true) => {
+                self.scroll_axis_to(moving.table, true, table.offset_x + step);
+                Some(now_ms)
+            }
+            (true, false) => moving.scrolled_ms,
+            (false, _) => None,
+        };
         self.header_move = Some(HeaderMove {
             started: true,
+            scrolled_ms,
             ..moving
         });
+        let Some(table) = self.table(moving.table) else {
+            return Response::Nothing;
+        };
         let from = table.position_of(moving.column);
         let slot = Some(table.slot_at(rect, x)).filter(|&slot| slot != from && slot != from + 1);
         let ghost_x = x - moving.grab;
@@ -365,6 +391,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 start_x: x,
                 grab,
                 started: false,
+                scrolled_ms: None,
             });
         }
         if part < MAX_COLUMNS && table.columns[part].sortable {

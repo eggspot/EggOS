@@ -153,7 +153,8 @@ and is not listed per item.
 - [ ] Toolkit: the overflow title as an agent's `More` element, and an open menu closing when its title becomes hidden or shown (docs/ux/toolkit-v0.6.md sections 3, 6)
 - [x] Toolkit: table multi-selection and cell focus (docs/ux/toolkit-v0.6.md sections 4.3, 4.4) — code written, unbuilt, D627
 - [x] Toolkit: table column reordering by drag and fit-to-content (docs/ux/toolkit-v0.6.md sections 4.1, 4.2) — code written, unbuilt, D628
-- [ ] Toolkit: a table header drag scrolling the table near its edges, and Files using `RowSet` and saving its column order (docs/ux/toolkit-v0.6.md section 4)
+- [x] Toolkit: a table header drag scrolling the table near its edges (docs/ux/toolkit-v0.6.md section 4.1) — code written, unbuilt, D633
+- [ ] Files: its table on `RowSet` multi-selection and saving its column order (docs/ux/toolkit-v0.6.md section 4)
 
 ## M13 Real hardware, vendor drivers and mitigations
 

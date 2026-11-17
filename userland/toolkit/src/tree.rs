@@ -1475,7 +1475,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     return self.column_moved(column, x);
                 }
                 if let Some(moving) = self.header_move {
-                    return self.header_moved(moving, x);
+                    return self.header_moved(moving, x, time_ms);
                 }
                 if self.pick.is_some() {
                     return self.pick_moved(x, y, time_ms);
