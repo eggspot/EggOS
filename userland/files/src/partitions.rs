@@ -497,6 +497,11 @@ impl Placement {
 pub enum AlongsideRefusal {
     TableIsMbr,
     TableDamaged,
+    TableFull,
+    PartitionEncrypted,
+    SystemHibernated,
+    NeedsCheck,
+    CannotShrink,
     NoRoom,
 }
 
@@ -506,8 +511,119 @@ impl AlongsideRefusal {
         match self {
             Self::TableIsMbr => "table_is_mbr",
             Self::TableDamaged => "table_damaged",
+            Self::TableFull => "table_full",
+            Self::PartitionEncrypted => "partition_encrypted",
+            Self::SystemHibernated => "system_hibernated",
+            Self::NeedsCheck => "needs_check",
+            Self::CannotShrink => "cannot_shrink",
             Self::NoRoom => "no_room_alongside",
         }
+    }
+}
+
+/// The most partitions a GPT EggOS writes holds, and so the most it adds one to.
+pub const TABLE_ENTRIES: usize = 128;
+
+fn no_room_reason(layout: &DiskLayout) -> AlongsideRefusal {
+    let largest = layout
+        .systems
+        .iter()
+        .filter_map(|found| {
+            layout
+                .partitions
+                .iter()
+                .find(|partition| partition.number == found.partition)
+        })
+        .max_by_key(|partition| partition.sectors);
+    let Some(partition) = largest else {
+        return AlongsideRefusal::NoRoom;
+    };
+    match (partition.shrink_blocked, partition.file_system) {
+        (Some(ShrinkBlocked::Encrypted), _) => AlongsideRefusal::PartitionEncrypted,
+        (Some(ShrinkBlocked::Hibernated), _) => AlongsideRefusal::SystemHibernated,
+        (Some(ShrinkBlocked::NeedsCheck), _) => AlongsideRefusal::NeedsCheck,
+        (
+            _,
+            FileSystemKind::Apfs
+            | FileSystemKind::HfsPlus
+            | FileSystemKind::Btrfs
+            | FileSystemKind::Xfs
+            | FileSystemKind::Luks,
+        ) => AlongsideRefusal::CannotShrink,
+        (_, _) if partition.kind == PartitionType::LinuxLvm => AlongsideRefusal::CannotShrink,
+        _ => AlongsideRefusal::NoRoom,
+    }
+}
+
+/// The two lines that say why installing alongside what `layout` holds is refused and the
+/// way out (section 8), for the pane's two lines, the command's message and the tool's error.
+pub fn refusal_lines(refusal: AlongsideRefusal, layout: &DiskLayout) -> (String, String) {
+    let largest = layout
+        .systems
+        .iter()
+        .filter_map(|found| {
+            let partition = layout
+                .partitions
+                .iter()
+                .find(|partition| partition.number == found.partition)?;
+            Some((found.name, partition))
+        })
+        .max_by_key(|(_, partition)| partition.sectors);
+    let name = largest.map_or("the other system", |(name, _)| name);
+    let file_system = largest.map_or("its", |(_, partition)| match partition.file_system {
+        FileSystemKind::Apfs => "APFS",
+        FileSystemKind::HfsPlus => "HFS+",
+        FileSystemKind::Btrfs => "Btrfs",
+        FileSystemKind::Xfs => "XFS",
+        FileSystemKind::Luks => "LUKS",
+        _ => "LVM",
+    });
+    let (first, second) = match refusal {
+        AlongsideRefusal::TableIsMbr => (
+            String::from("MBR partition table: EggOS installs alongside on GPT disks only."),
+            String::from("Convert it to GPT in the other system, or use the whole disk."),
+        ),
+        AlongsideRefusal::TableDamaged => (
+            String::from("The partition table is damaged: EggOS will not change it."),
+            String::from("Repair it in the other system, or use the whole disk."),
+        ),
+        AlongsideRefusal::TableFull => (
+            alloc::format!("The partition table is full: {TABLE_ENTRIES} partitions."),
+            String::from("Remove one in the other system, or use the whole disk."),
+        ),
+        AlongsideRefusal::PartitionEncrypted => (
+            alloc::format!("{name} is encrypted with BitLocker: EggOS cannot shrink it."),
+            alloc::format!("In {name}, shrink the volume by 16 GB or more, then come back."),
+        ),
+        AlongsideRefusal::SystemHibernated => (
+            alloc::format!("{name} is hibernated or uses Fast Startup: its disk is in use."),
+            alloc::format!("Shut {name} down fully (shutdown /s /t 0), then try again."),
+        ),
+        AlongsideRefusal::NeedsCheck => (
+            alloc::format!("{name}' file system needs a check: EggOS will not shrink it."),
+            String::from("Run chkdsk in Windows (fsck in Linux), then try again."),
+        ),
+        AlongsideRefusal::CannotShrink => (
+            alloc::format!("EggOS cannot shrink a {name} ({file_system}) volume."),
+            alloc::format!("Shrink it in {name}, then install in the space."),
+        ),
+        AlongsideRefusal::NoRoom => (
+            alloc::format!("No room beside {name}: EggOS needs 1 GB."),
+            alloc::format!("Free space in {name}, or use the whole disk."),
+        ),
+    };
+    (first, second)
+}
+
+/// The size, in whole GiB, the alongside slider opens at for `placement` (section 2.1): all
+/// of an unallocated run; else half the room, or 16 when half is less and the room allows 16,
+/// or all the room when it is under 16.
+pub fn opening_size_gib(placement: &Placement) -> u64 {
+    let room = placement.room_gib();
+    match placement {
+        Placement::Unallocated(_) => room,
+        Placement::ShrunkTail { .. } if room < 16 => room,
+        Placement::ShrunkTail { .. } => (room / 2).max(16),
     }
 }
 
@@ -518,6 +634,9 @@ pub fn place(layout: &DiskLayout) -> Result<Placement, AlongsideRefusal> {
     match layout.table {
         TableKind::Mbr => return Err(AlongsideRefusal::TableIsMbr),
         TableKind::Damaged => return Err(AlongsideRefusal::TableDamaged),
+        TableKind::Gpt if layout.partitions.len() >= TABLE_ENTRIES => {
+            return Err(AlongsideRefusal::TableFull);
+        }
         TableKind::Gpt | TableKind::None => {}
     }
     let largest = layout
@@ -552,7 +671,7 @@ pub fn place(layout: &DiskLayout) -> Result<Placement, AlongsideRefusal> {
     }
     match largest.filter(|run| run.size_bytes() >= MIN_INSTALL_BYTES) {
         Some(run) => Ok(Placement::Unallocated(run)),
-        None => Err(AlongsideRefusal::NoRoom),
+        None => Err(no_room_reason(layout)),
     }
 }
 
@@ -1363,6 +1482,23 @@ mod tests {
         assert_eq!(place(&layout).map(|placement| placement.room_gib()), Ok(2));
         layout.unallocated.clear();
         assert_eq!(place(&layout), Err(AlongsideRefusal::NoRoom));
+        layout.systems = recognise(&mut layout.partitions, EspFindings::default());
+        layout.partitions[2].shrink_blocked = Some(ShrinkBlocked::Hibernated);
+        assert_eq!(place(&layout), Err(AlongsideRefusal::SystemHibernated));
+        let shrunk = Placement::ShrunkTail {
+            partition: 3,
+            shrink_bytes: 72 * GIB,
+            following: None,
+        };
+        assert_eq!(opening_size_gib(&shrunk), 36);
+        let small = Placement::ShrunkTail {
+            partition: 3,
+            shrink_bytes: 20 * GIB,
+            following: None,
+        };
+        assert_eq!(opening_size_gib(&small), 16);
+        let (first, _) = refusal_lines(AlongsideRefusal::SystemHibernated, &layout);
+        assert_eq!(first, "Windows is hibernated or uses Fast Startup: its disk is in use.");
         layout.table = TableKind::Mbr;
         assert_eq!(place(&layout), Err(AlongsideRefusal::TableIsMbr));
     }

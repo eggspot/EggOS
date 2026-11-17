@@ -28058,3 +28058,19 @@ the license, by an explicit instruction recorded here.
   shown by (`Windows and Ubuntu`). `FoundSystem` carries that name; Linux on LVM or swap
   alone is found on that partition.
 - **Not yet.** Building and running.
+
+
+## D641 Why alongside is refused, and the slider's opening size (M8; installer dual boot v0.1 sections 2.1 and 8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Decision.** `place` refuses a full table (`table_full`, 128 partitions) after an MBR or
+  damaged one, and when no place of 1 GiB is found it names the reason of the largest
+  system's partition: BitLocker or LUKS (`partition_encrypted`), hibernated
+  (`system_hibernated`), marked for a check (`needs_check`), a file system EggOS does not
+  shrink (APFS, HFS+, Btrfs, XFS, LUKS, LVM: `cannot_shrink`), else `no_room_alongside`.
+  `refusal_lines` gives each its two lines (the pane's widgets 48 and 49, joined for the
+  command and the tool). `opening_size_gib` opens the slider at all of a free run, else half
+  the room, at least 16 when the room allows, or all of a room under 16.
+- **Deviation.** `no_room_alongside`'s first line leaves out how much can be freed (`0.6 GB
+  can be freed`) until the shrinkable size is known for every file system; it reads `No room
+  beside Windows: EggOS needs 1 GB.`
+- **Not yet.** Building and running; the macOS line naming Disk Utility uses the system's
+  name (`Shrink it in macOS`).
