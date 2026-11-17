@@ -41,6 +41,7 @@ mod tests;
 pub use host::{Host, HostError};
 pub use interpreter::{
     DeviceStatus, INTERPRETER_REVISION, Interpreter, MAX_CALL_DEPTH, MAX_LOOP_ITERATIONS, Machine,
+    PciRoute,
 };
 pub use name::{NameSeg, NameString, Path};
 pub use namespace::{Namespace, NodeId, REVISION};

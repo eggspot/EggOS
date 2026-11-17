@@ -335,6 +335,67 @@ impl<H: Host> Interpreter<H> {
         }
     }
 
+    /// The legacy PCI interrupt routes `_PRT` gives (ACPI 6.5, 6.2.13; D621): for each host
+    /// bridge (its bus from `_BBN`, 0 without one), each device and pin (0 for INTA to 3 for
+    /// INTD) with the global system interrupt it reaches, through a link device's current
+    /// `_CRS` where the entry names one. Entries that do not read are left out.
+    pub fn pci_routes(&mut self) -> Vec<PciRoute> {
+        let mut routes = Vec::new();
+        for bridge in self.devices_with_id(&[b"PNP0A03", b"PNP0A08"]) {
+            let bus = match self.evaluate_child(&bridge, b"_BBN", &[]) {
+                Ok(Some(value)) => self.to_integer(&value).unwrap_or(0) as u8,
+                _ => 0,
+            };
+            let Ok(Some(Object::Package(entries))) = self.evaluate_child(&bridge, b"_PRT", &[])
+            else {
+                continue;
+            };
+            for entry in entries {
+                if let Some(route) = self.pci_route(bus, &entry) {
+                    routes.push(route);
+                }
+            }
+        }
+        routes
+    }
+
+    fn pci_route(&mut self, bus: u8, entry: &Object) -> Option<PciRoute> {
+        let Object::Package(fields) = entry else {
+            return None;
+        };
+        let address = self.to_integer(fields.first()?).ok()?;
+        let pin = self.to_integer(fields.get(1)?).ok()? as u8;
+        let device = (address >> 16) as u8;
+        let source = fields.get(2)?;
+        let index = self.to_integer(fields.get(3)?).ok()? as u32;
+        let link = match source {
+            Object::NameReference(path) => Some(path.clone()),
+            Object::String(name) => Path::parse(name),
+            _ => None,
+        };
+        let interrupt = match link {
+            None => crate::resources::Interrupt {
+                number: index,
+                edge: false,
+                active_low: true,
+            },
+            Some(link) => {
+                let Ok(Some(Object::Buffer(template))) =
+                    self.evaluate_child(&link, b"_CRS", &[])
+                else {
+                    return None;
+                };
+                *crate::resources::interrupts(&template).get(index as usize)?
+            }
+        };
+        Some(PciRoute {
+            bus,
+            device,
+            pin,
+            interrupt,
+        })
+    }
+
     /// Whether the device at `path` is a PCI host bridge: its `_HID` or one of its `_CID`s is
     /// `PNP0A03` or `PNP0A08`.
     pub fn is_pci_host_bridge(&mut self, path: &Path) -> bool {
@@ -1184,4 +1245,14 @@ impl<H: Host> Interpreter<H> {
         let value = self.operand(frame, stream)?;
         Ok(Self::target_of(value))
     }
+}
+
+/// One `_PRT` route (D621): bus `bus`'s device `device`, pin `pin` (0 for INTA), reaches
+/// `interrupt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciRoute {
+    pub bus: u8,
+    pub device: u8,
+    pub pin: u8,
+    pub interrupt: crate::resources::Interrupt,
 }

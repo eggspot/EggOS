@@ -138,9 +138,15 @@ fn connect_pin(
         .pci_config()
         .ok_or(ProbeError::Refused("no PCI configuration space"))?;
     let pin_and_line = config.read32(address, INTERRUPT_LINE);
-    let input = pin_and_line & 0xff;
+    let line_register = pin_and_line & 0xff;
     let pin = pin_and_line >> 8 & 0xff;
-    if pin == 0 || input == 0 || input == NO_INTERRUPT_LINE {
+    let routed = super::acpi_namespace::pci_interrupt(address.bus, address.device, pin as u8)
+        .map(|(global, _)| global);
+    let input = match routed {
+        Some(global) => global,
+        None => line_register,
+    };
+    if pin == 0 || input == 0 || (routed.is_none() && input == NO_INTERRUPT_LINE) {
         return Err(ProbeError::Refused(
             "the function has no MSI-X, MSI or routed INTx pin",
         ));

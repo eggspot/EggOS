@@ -27703,3 +27703,17 @@ the license, by an explicit instruction recorded here.
   mapped framebuffer (`rgb565`, `rgbx`). BGRX framebuffers are drawn into directly as before.
 - **Not yet.** Building and running; dithering for 16-bit; measuring the conversion's cost per
   frame; `simple-framebuffer`'s other formats (`a2r10g10b10`, `r8g8b8`).
+
+## D621 ACPI `_PRT`: legacy PCI interrupts routed by the firmware's tables (M5, M8; D413's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, ACPI 6.5 sections 6.2.13 and 6.4)
+- **Decision.** Once the namespace is loaded, the kernel asks the interpreter for every
+  host bridge's (`PNP0A03`, `PNP0A08`) `_PRT` (`Interpreter::pci_routes`): each entry's device
+  (the address's high word), pin (0 for INTA) and the interrupt it reaches, either the global
+  system interrupt the entry names when its source is 0, or the link device's current `_CRS`
+  interrupt (the new `resources::interrupts` reads IRQ and extended interrupt descriptors with
+  their trigger and polarity). The bus is the bridge's `_BBN`, 0 without one. A function
+  without MSI-X or MSI now takes its INTx from `_PRT` when a route exists
+  (`acpi_namespace::pci_interrupt`), and only falls back to the interrupt line register, so a
+  firmware that leaves that register 0 or 255 still gets its devices' INTx.
+- **Not yet.** Building and running; devices behind PCI-to-PCI bridges (the pin swizzle up to
+  the root bus); `_SRS` to change a link's routing; the routes after `_PIC` changes; and the two
+  lines now of their own: `interrupt-map` on device-tree hosts and shared INTx lines.

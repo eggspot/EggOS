@@ -717,6 +717,21 @@ fn mix_generation_id<P: Platform>(address: u64) {
 
 static NAMESPACE: SleepLock<Option<Box<Loaded>>> = SleepLock::new(None, Sleeping::spinning());
 
+static PCI_ROUTES: SleepLock<Vec<eggos_acpi::PciRoute>> =
+    SleepLock::new(Vec::new(), Sleeping::spinning());
+
+/// The global system interrupt `_PRT` routes bus `bus`'s device `device`'s pin `pin` (1 for
+/// INTA to 4 for INTD, as the configuration space's interrupt pin register says) to, and whether
+/// it is edge-triggered (D621); `None` without ACPI or a route for it.
+pub fn pci_interrupt(bus: u8, device: u8, pin: u8) -> Option<(u32, bool)> {
+    let wanted = pin.checked_sub(1)?;
+    PCI_ROUTES
+        .lock()
+        .iter()
+        .find(|route| route.bus == bus && route.device == device && route.pin == wanted)
+        .map(|route| (route.interrupt.number, route.interrupt.edge))
+}
+
 /// What [`start`] did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Started {
@@ -763,6 +778,7 @@ pub fn start<P: Platform>(
         .map(|status| status.path)
         .collect();
     *HOST_TEMPLATE.lock() = Some(interpreter.host().for_another_thread());
+    *PCI_ROUTES.lock() = interpreter.pci_routes();
     *NAMESPACE.lock() = Some(Box::new(Loaded {
         interpreter,
         absent,
