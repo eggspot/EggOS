@@ -28667,3 +28667,13 @@ the license, by an explicit instruction recorded here.
   its refusals (in use, needed by another). `--dry-run` lists both halves.
 - **Not yet.** Building and running; the Components pane's edition dropdown offering it; the
   `component_edition` tool's `exact` argument.
+
+
+## D681 `GetCurrentThreadStackLimits` (M15 Windows; follow-up of D346; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `GetCurrentThreadStackLimits` answers the calling thread's whole stack as
+  Windows does: the low limit is the TEB's `DeallocationStack` (the stack mapping's start,
+  guard and overflow reserve included, D346), or its `StackLimit` when that is not set, and the
+  high limit its `StackBase`. (The follow-up's `GetThreadStackLimits` is this function; Windows
+  has no other.)
+- **Not yet.** Building and running; the main thread's overflow raised as
+  `STATUS_STACK_OVERFLOW`.

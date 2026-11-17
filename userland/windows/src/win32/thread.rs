@@ -395,6 +395,26 @@ extern "efiapi" fn set_thread_description(_handle: usize, _description: *const u
     0
 }
 
+unsafe extern "efiapi" fn get_current_thread_stack_limits(low: *mut usize, high: *mut usize) {
+    let teb = thread_environment::current();
+    let word = |offset: usize| {
+        // SAFETY: the field is inside the calling thread's TEB, 8-byte aligned.
+        unsafe { ((teb + offset) as *const u64).read() as usize }
+    };
+    let lowest = match word(thread_environment::teb::DEALLOCATION_STACK) {
+        0 => word(thread_environment::teb::STACK_LIMIT),
+        mapping => mapping,
+    };
+    if !low.is_null() {
+        // SAFETY: `GetCurrentThreadStackLimits`'s contract: a writable `ULONG_PTR`.
+        unsafe { low.write(lowest) };
+    }
+    if !high.is_null() {
+        // SAFETY: as above.
+        unsafe { high.write(word(thread_environment::teb::STACK_BASE)) };
+    }
+}
+
 unsafe extern "efiapi" fn set_thread_stack_guarantee(size: *mut u32) -> Bool {
     if size.is_null() {
         return fail(error::INVALID_PARAMETER, FALSE);
@@ -428,6 +448,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetThreadId" => get_thread_id,
     b"ResumeThread" => resume_thread,
     b"SuspendThread" => suspend_thread,
+    b"GetCurrentThreadStackLimits" => get_current_thread_stack_limits,
     b"TerminateThread" => terminate_thread,
     b"GetCurrentThreadId" => get_current_thread_id,
     b"SwitchToThread" => switch_to_thread,
