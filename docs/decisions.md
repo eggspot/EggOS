@@ -27915,3 +27915,17 @@ the license, by an explicit instruction recorded here.
   (`Bar::stops`); Down, Enter and Space open it like any title.
 - **Not yet.** Building and running; the agent's `More` element; closing an open menu whose
   title becomes hidden or shown on a resize.
+
+
+## D631 Device-tree INTx behind PCI bridges (M8; D623's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the PCI-to-PCI bridge specification's interrupt routing)
+- **Rule.** A function behind a bridge raises its pin on the bridge's own pins turned by its
+  device number: pin' = ((pin - 1 + device) mod 4) + 1, again at each bridge on the way up,
+  until the bridge on the host's first bus, whose address and turned pin the host's
+  `interrupt-map` is looked up with (D623). The host's map only lists its first bus, as the
+  binding expects.
+- **Where.** ECAM discovery records each bridge by the secondary bus it serves while it
+  enumerates (depth first, so a bridge comes before what is behind it), and
+  `pin_at_root_bus` walks a function's buses up to the first; a bus with no recorded bridge
+  gives no interrupt rather than a wrong one.
+- **Not yet.** Building and running; hosts whose map lists functions behind bridges
+  themselves (none known among the generic ECAM hosts).

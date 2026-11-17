@@ -95,6 +95,26 @@ pub(super) fn discover_device_tree<P: Platform>(
     Ok(())
 }
 
+/// Where INTx `pin` of the function at `address` arrives on the host's first bus `root_bus`
+/// (D623): the PCI-to-PCI bridge rule turns the pin by the device number at each bridge on
+/// the way up, so it names the bridge on the first bus and the pin it raises there.
+fn pin_at_root_bus(
+    bridges: &[Option<pci::Address>; 256],
+    root_bus: u8,
+    address: pci::Address,
+    pin: u8,
+) -> Option<(pci::Address, u8)> {
+    let (mut here, mut pin) = (address, pin);
+    for _ in 0..bridges.len() {
+        if here.bus == root_bus {
+            return Some((here, pin));
+        }
+        pin = (pin - 1 + here.device % 4) % 4 + 1;
+        here = bridges[usize::from(here.bus)]?;
+    }
+    None
+}
+
 fn add_host_functions<C: ConfigSpace + ?Sized>(
     config: &C,
     start_bus: u8,
@@ -135,11 +155,19 @@ fn add_host_functions<C: ConfigSpace + ?Sized>(
         count += 1;
     }
     let windows = &mut windows[..count];
+    let mut bridges: [Option<pci::Address>; 256] = [None; 256];
     pci::enumerate(config, start_bus, end_bus, &mut |function| {
         let mut device = DeviceNode::new(Identity::Pci(function));
         device.dma = DmaCoherence::Coherent;
-        if function.address.bus == start_bus && function.interrupt_pin != 0 {
-            device.interrupts[0] = intx(function.address, function.interrupt_pin);
+        if function.header_type == pci::HEADER_TYPE_BRIDGE {
+            let secondary = config.read8(function.address, pci::SECONDARY_BUS);
+            bridges[usize::from(secondary)] = Some(function.address);
+        }
+        if function.interrupt_pin != 0
+            && let Some((root, pin)) =
+                pin_at_root_bus(&bridges, start_bus, function.address, function.interrupt_pin)
+        {
+            device.interrupts[0] = intx(root, pin);
         }
         for bar in pci::bars(config, function.address, function.header_type)
             .into_iter()
@@ -253,7 +281,23 @@ fn add_functions<C: ConfigSpace + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use eggos_drivers::pci::Address;
+
+    fn at(bus: u8, device: u8) -> pci::Address {
+        pci::Address::new(bus, device, 0).unwrap()
+    }
+
+    #[test]
+    fn a_pin_behind_two_bridges_turns_at_each() {
+        let mut bridges = [None; 256];
+        bridges[1] = Some(at(0, 2));
+        bridges[2] = Some(at(1, 3));
+        assert_eq!(pin_at_root_bus(&bridges, 0, at(0, 5), 2), Some((at(0, 5), 2)));
+        assert_eq!(pin_at_root_bus(&bridges, 0, at(1, 1), 1), Some((at(0, 2), 2)));
+        assert_eq!(pin_at_root_bus(&bridges, 0, at(2, 0), 4), Some((at(0, 2), 3)));
+        assert_eq!(pin_at_root_bus(&bridges, 0, at(3, 0), 1), None);
+    }
 
     #[derive(Default)]
     struct Q35 {
@@ -338,3 +382,4 @@ mod tests {
         assert_eq!(devices[1].dma, DmaCoherence::Coherent);
     }
 }
+
