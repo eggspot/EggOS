@@ -24,7 +24,8 @@ const WAIT_KEY: &str = "boot.menu_wait_s";
 const LAST_KEY: &str = "boot.last";
 const HIGH_CONTRAST_KEY: &str = "accessibility.high_contrast";
 
-/// A short ASCII text of fixed room, written with `write!`, cut when full.
+/// A short ASCII text of fixed room, written with `write!`, cut when full; other characters
+/// and control characters but line breaks are kept as `?`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Text<const N: usize> {
     bytes: [u8; N],
@@ -72,7 +73,7 @@ impl<const N: usize> Write for Text<N> {
             if self.length == N {
                 break;
             }
-            self.bytes[self.length] = if byte.is_ascii() && !byte.is_ascii_control() {
+            self.bytes[self.length] = if byte.is_ascii() && (!byte.is_ascii_control() || matches!(byte, b'\n' | b'\r')) {
                 byte
             } else {
                 b'?'

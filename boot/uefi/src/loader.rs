@@ -48,15 +48,15 @@ const fn utf16(text: &str) -> [u16; 32] {
     out
 }
 
-struct Firmware {
+pub(crate) struct Firmware {
     image: Handle,
-    system: *mut SystemTable,
+    pub(crate) system: *mut SystemTable,
     boot: *mut BootServices,
 }
 
 static mut SYSTEM: *mut SystemTable = null_mut();
 
-fn print(text: &str) {
+pub(crate) fn print(text: &str) {
     // SAFETY: `SYSTEM` is written once at entry, before anything prints, and read only while
     // boot services run; the console protocol is the firmware's, valid until `ExitBootServices`.
     let system = unsafe { SYSTEM };
@@ -125,7 +125,7 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 }
 
 impl Firmware {
-    fn services(&self) -> &BootServices {
+    pub(crate) fn services(&self) -> &BootServices {
         // SAFETY: the boot services table is valid while boot services run, which every caller
         // is before `exit`.
         unsafe { &*self.boot }
@@ -204,7 +204,7 @@ impl Firmware {
     }
 }
 
-fn read_file(
+pub(crate) fn read_file(
     firmware: &Firmware,
     root: *mut efi::File,
     path: &[u16],
@@ -602,6 +602,7 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
         return Err("the boot partition could not be opened");
     }
     let own_path = image_path(loaded);
+    crate::firmware_menu::run(firmware, root, own_path.as_ref())?;
     let beside = |name: &str| -> Option<&'static [u8]> {
         let wanted = paths::beside(own_path.as_ref()?, name)?;
         read_file(firmware, root, &wanted).ok()

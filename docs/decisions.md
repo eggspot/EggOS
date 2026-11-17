@@ -28227,3 +28227,22 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the loader reading the firmware's variables, drawing the
   menu, reading keys, `BootNext` and the restart, and writing `BOOT.TXT` (D651); a loader found
   on the partition with no firmware entry; `settings get|set boot.*`.
+
+
+## D651 The loader shows the boot menu in text before it loads the kernel (M8; installer dual boot v0.1 section 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Right after it knows its own path, the loader reads `BOOT.TXT` beside itself,
+  builds D650's menu from the firmware's `BootOrder` and `Boot####` variables (and
+  `OsIndicationsSupported` for `Firmware settings`), and returns at once when there is no
+  other system. Otherwise it shows the menu as section 6's lines on the firmware's text
+  console (`> ` on the selected row, the hint rewritten in place each second), reads keys every
+  50 ms, and on a start: EggOS goes on loading; another system's entry is written to
+  `BootNext` and the machine restarts cold (`Restarting into Windows Boot Manager...`), so it
+  starts exactly as its own entry does; `Firmware settings` sets `OsIndications`'
+  boot-to-firmware-UI bit and restarts. A wait of 0 shows nothing unless a key is already
+  waiting. `BOOT.TXT` is written again (deleted, then created) when D or T changed a setting or
+  the started entry changed `boot.last`. The EFI bindings gain the runtime services' variable
+  and reset calls, the text input protocol and a file's `write` and `delete`.
+- **Not yet.** Building and running; drawing the menu on the framebuffer with the boot font and
+  section 6's colours and sizes (text console first, which serial consoles also show); "the
+  last start did not finish"; the firmware entry for `\EFI\EGGOS\` (section 6's first
+  paragraph); `settings get|set boot.*`.

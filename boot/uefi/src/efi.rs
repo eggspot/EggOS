@@ -14,6 +14,7 @@ pub const NOT_FOUND: Status = ERROR_BIT | 14;
 pub const LOAD_ERROR: Status = ERROR_BIT | 1;
 pub const OUT_OF_RESOURCES: Status = ERROR_BIT | 9;
 pub const UNSUPPORTED: Status = ERROR_BIT | 3;
+pub const NOT_READY: Status = ERROR_BIT | 6;
 
 pub fn is_error(status: Status) -> bool {
     status & ERROR_BIT != 0
@@ -69,6 +70,12 @@ pub const GRAPHICS_OUTPUT_PROTOCOL: Guid = Guid::new(
     0x4a38,
     [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a],
 );
+pub const GLOBAL_VARIABLE: Guid = Guid::new(
+    0x8be4_df61,
+    0x93ca,
+    0x11d2,
+    [0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c],
+);
 pub const ACPI_20_TABLE: Guid = Guid::new(
     0x8868_e871,
     0xe4f1,
@@ -115,15 +122,58 @@ pub struct SystemTable {
     pub firmware_vendor: *const u16,
     pub firmware_revision: u32,
     pub console_in_handle: Handle,
-    pub console_in: *mut c_void,
+    pub console_in: *mut SimpleTextInput,
     pub console_out_handle: Handle,
     pub console_out: *mut SimpleTextOutput,
     pub standard_error_handle: Handle,
     pub standard_error: *mut SimpleTextOutput,
-    pub runtime_services: *mut c_void,
+    pub runtime_services: *mut RuntimeServices,
     pub boot_services: *mut BootServices,
     pub configuration_table_entries: usize,
     pub configuration_table: *mut ConfigurationTable,
+}
+
+pub const VARIABLE_NON_VOLATILE: u32 = 1;
+pub const VARIABLE_BOOTSERVICE_ACCESS: u32 = 2;
+pub const VARIABLE_RUNTIME_ACCESS: u32 = 4;
+pub const RESET_COLD: u32 = 0;
+pub const OS_INDICATIONS_BOOT_TO_FW_UI: u64 = 1;
+
+#[repr(C)]
+pub struct RuntimeServices {
+    pub header: TableHeader,
+    pub get_time: Unused,
+    pub set_time: Unused,
+    pub get_wakeup_time: Unused,
+    pub set_wakeup_time: Unused,
+    pub set_virtual_address_map: Unused,
+    pub convert_pointer: Unused,
+    pub get_variable:
+        unsafe extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut c_void) -> Status,
+    pub get_next_variable_name: Unused,
+    pub set_variable:
+        unsafe extern "efiapi" fn(*const u16, *const Guid, u32, usize, *const c_void) -> Status,
+    pub get_next_high_monotonic_count: Unused,
+    pub reset_system: unsafe extern "efiapi" fn(u32, Status, usize, *const c_void) -> !,
+}
+
+pub const SCAN_UP: u16 = 1;
+pub const SCAN_DOWN: u16 = 2;
+pub const SCAN_HOME: u16 = 5;
+pub const SCAN_END: u16 = 6;
+pub const SCAN_ESCAPE: u16 = 0x17;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InputKey {
+    pub scan_code: u16,
+    pub unicode_char: u16,
+}
+
+#[repr(C)]
+pub struct SimpleTextInput {
+    pub reset: unsafe extern "efiapi" fn(*mut SimpleTextInput, bool) -> Status,
+    pub read_key_stroke: unsafe extern "efiapi" fn(*mut SimpleTextInput, *mut InputKey) -> Status,
 }
 
 pub const ALLOCATE_ANY_PAGES: u32 = 0;
@@ -215,6 +265,8 @@ pub struct SimpleFileSystem {
 }
 
 pub const FILE_MODE_READ: u64 = 1;
+pub const FILE_MODE_WRITE: u64 = 2;
+pub const FILE_MODE_CREATE: u64 = 1 << 63;
 pub const FILE_INFO_FILE_SIZE: usize = 8;
 
 #[repr(C)]
@@ -222,9 +274,9 @@ pub struct File {
     pub revision: u64,
     pub open: unsafe extern "efiapi" fn(*mut File, *mut *mut File, *const u16, u64, u64) -> Status,
     pub close: unsafe extern "efiapi" fn(*mut File) -> Status,
-    pub delete: Unused,
+    pub delete: unsafe extern "efiapi" fn(*mut File) -> Status,
     pub read: unsafe extern "efiapi" fn(*mut File, *mut usize, *mut c_void) -> Status,
-    pub write: Unused,
+    pub write: unsafe extern "efiapi" fn(*mut File, *mut usize, *const c_void) -> Status,
     pub get_position: Unused,
     pub set_position: Unused,
     pub get_info:
