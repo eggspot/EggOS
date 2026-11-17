@@ -1237,3 +1237,35 @@ fn a_sheet_sits_at_the_window_s_bottom_over_the_widgets_under_it_until_it_goes_b
     assert_eq!(tree.rect(panel), Some(Rect::new(0, 20, 400, 60)));
     assert_eq!(click(&mut tree, 20, 160, 1000), Response::Activated(over));
 }
+
+#[test]
+fn a_locked_widget_is_disabled_and_draws_its_lock_left_of_it_or_after_it() {
+    let mut tree = WidgetTree::<4>::new();
+    let roomy = tree
+        .add(
+            None,
+            Place::at(40, 10, Length::Px(100), Length::Px(28)),
+            Kind::button("Apply", false),
+        )
+        .unwrap();
+    let tight = tree
+        .add(
+            None,
+            Place::at(4, 50, Length::Px(60), Length::Px(28)),
+            Kind::button("Edit", false),
+        )
+        .unwrap();
+    tree.resize(200, 100);
+    tree.set_locked(roomy, true);
+    tree.set_locked(tight, true);
+    assert!(tree.is_locked(roomy) && !tree.is_enabled(roomy));
+    assert_eq!(tree.lock_cell(roomy), Some(Rect::new(16, 16, 16, 16)));
+    assert_eq!(tree.lock_cell(tight), Some(Rect::new(72, 56, 16, 16)));
+    let mut pixels = vec![0u32; 200 * 100];
+    tree.render(&mut pixels, 200, 100, 1);
+    let dim = tree.palette().get(crate::theme::Token::TextDim);
+    assert_eq!(pixels[(16 + 2) * 200 + 16 + 5], dim);
+    assert_ne!(pixels[(16 + 8) * 200 + 16 + 7], dim);
+    tree.set_locked(roomy, false);
+    assert!(tree.is_enabled(roomy) && !tree.is_locked(roomy));
+}

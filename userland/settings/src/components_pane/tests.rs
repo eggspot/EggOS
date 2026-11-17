@@ -746,6 +746,7 @@ fn install_updates_shows_with_management_and_a_lock_disables_it() {
     let window = opened(locked);
     let ids = widgets(&window);
     assert!(!window.widgets().is_enabled(ids.policy));
+    assert!(window.widgets().is_locked(ids.policy));
     assert!(!window.widgets().is_enabled(ids.updates_button));
     assert_eq!(window.widgets().text_of(ids.updates_line), Some("Managed by Contoso IT"));
     assert_eq!(window.widgets().selected(ids.policy), Some(2));

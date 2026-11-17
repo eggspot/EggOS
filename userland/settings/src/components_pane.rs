@@ -1444,7 +1444,10 @@ impl ComponentsPane {
             .position(|policy| *policy == record.policy)
             .unwrap_or(1);
         tree.set_selected(widgets.policy, index);
-        tree.set_enabled(widgets.policy, record.locked_by.is_none() && !self.awaits_job());
+        tree.set_locked(widgets.policy, record.locked_by.is_some());
+        if record.locked_by.is_none() {
+            tree.set_enabled(widgets.policy, !self.awaits_job());
+        }
         match record.policy {
             UpdatePolicy::Notify => {}
             UpdatePolicy::Automatic => {

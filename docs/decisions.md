@@ -28418,3 +28418,16 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the lock glyph and its tooltip (section 5.2, a toolkit
   `set_locked`); the tooltips on the disabled controls; the search words; the automatic
   states' band lines (D661).
+
+
+## D663 The toolkit locks a widget and draws its lock (M16 editions; editions-policy v0.1 section 5.2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `WidgetTree::set_locked(id, bool)` disables a widget (so it shows its value,
+  is skipped by Tab and ignores the pointer, as any disabled widget) and makes the tree draw
+  section 5.2's 16x16 lock in `text.dim` beside it, with no widget added to any pane: its cell
+  24 px left of the control, centred on its height, or 8 px right of it when its container
+  leaves less than 24 px on its left (`lock_cell`); the canvas doubles it at 2x. Unlocking
+  enables it again. The Components pane's `Install updates` uses it for a locked
+  `update.policy`.
+- **Not yet.** Building and running; the owner tooltip (`set_lock_owner`, 600 ms on the
+  control or its lock); locks on the other panes' controls; the pane banner and the Management
+  pane (sections 5.1, 5.3).

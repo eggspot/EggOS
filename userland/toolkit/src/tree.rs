@@ -133,6 +133,27 @@ const DOUBLE_CLICK_MS: u32 = 400;
 const LEFT_SHIFT: u16 = key::LEFT_SHIFT;
 const RIGHT_SHIFT: u16 = key::RIGHT_SHIFT;
 const DAMAGE_OUTSET: i32 = 5;
+const LOCK_SIZE: i32 = 16;
+const LOCK_GAP: i32 = 24;
+const LOCK_AFTER: i32 = 8;
+const LOCK_GLYPH: [u16; 16] = [
+    0,
+    0,
+    0b0000_0111_1110_0000,
+    0b0000_1000_0001_0000,
+    0b0000_1000_0001_0000,
+    0b0000_1000_0001_0000,
+    0b0001_1111_1111_1000,
+    0b0001_1111_1111_1000,
+    0b0001_1110_0111_1000,
+    0b0001_1110_0111_1000,
+    0b0001_1111_1111_1000,
+    0b0001_1111_1111_1000,
+    0b0001_1111_1111_1000,
+    0,
+    0,
+    0,
+];
 
 #[derive(Debug, Clone, Copy)]
 struct Node {
@@ -143,6 +164,7 @@ struct Node {
     visible: Rect,
     shown: bool,
     enabled: bool,
+    locked: bool,
     person_only: bool,
     drag_source: bool,
     drag_out: bool,
@@ -369,6 +391,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             visible: Rect::default(),
             shown: true,
             enabled: true,
+            locked: false,
             person_only: false,
             drag_source: false,
             drop: None,
@@ -658,6 +681,63 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// Whether widget `id` is enabled.
     pub fn is_enabled(&self, id: WidgetId) -> bool {
         self.node(id).is_some_and(|node| node.enabled)
+    }
+
+    /// Locks or unlocks widget `id` (D663, editions-policy v0.1 section 5.2): a locked widget
+    /// is disabled and the tree draws a lock beside it; unlocking enables it again.
+    pub fn set_locked(&mut self, id: WidgetId, locked: bool) {
+        let Some(node) = self.node_mut(id) else {
+            return;
+        };
+        if node.locked == locked {
+            return;
+        }
+        node.locked = locked;
+        if let Some(cell) = self.lock_cell(id) {
+            self.damage.add(cell);
+        }
+        self.set_enabled(id, !locked);
+    }
+
+    /// Whether widget `id` is locked.
+    pub fn is_locked(&self, id: WidgetId) -> bool {
+        self.node(id).is_some_and(|node| node.locked)
+    }
+
+    /// Where widget `id`'s lock is drawn: 24 px left of it, centred on its height, or 8 px
+    /// right of it when its container leaves less than 24 px on its left.
+    pub fn lock_cell(&self, id: WidgetId) -> Option<Rect> {
+        let node = self.node(id)?;
+        let left_room = node
+            .parent
+            .and_then(|parent| self.rect(parent))
+            .map_or(node.rect.x, |parent| node.rect.x - parent.x);
+        let x = match left_room >= LOCK_GAP {
+            true => node.rect.x - LOCK_GAP,
+            false => node.rect.right() + LOCK_AFTER,
+        };
+        let y = node.rect.y + (node.rect.height - LOCK_SIZE) / 2;
+        Some(Rect::new(x, y, LOCK_SIZE, LOCK_SIZE))
+    }
+
+    fn paint_lock(&self, canvas: &mut Canvas<'_>, id: WidgetId, clip: Rect) {
+        let Some(cell) = self.lock_cell(id) else {
+            return;
+        };
+        let reach = cell.intersection(&clip);
+        if reach.is_empty() {
+            return;
+        }
+        let previous = canvas.narrow(reach);
+        let colour = self.palette.get(crate::theme::Token::TextDim);
+        for (row, bits) in LOCK_GLYPH.iter().enumerate() {
+            for column in 0..LOCK_SIZE {
+                if bits & (0x8000 >> column) != 0 {
+                    canvas.pixel(cell.x + column, cell.y + row as i32, colour);
+                }
+            }
+        }
+        canvas.restore(previous);
     }
 
     /// Marks widget `id` as one only a person operates (D193): [`Self::act`] refuses every
@@ -1109,6 +1189,13 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
         }
         canvas.restore(previous);
+        if node.locked {
+            let within = node
+                .parent
+                .and_then(|parent| self.node(parent))
+                .map_or(clip, |parent| parent.visible.intersection(&clip));
+            self.paint_lock(canvas, id, within);
+        }
     }
 
     fn popup_of(&self) -> Option<(WidgetId, widget::Dropdown, Rect, usize)> {
