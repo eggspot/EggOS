@@ -210,7 +210,7 @@ and is not listed per item.
 - [ ] Android: `__system_property_set` through the `property_service` socket and `persist.` properties kept across boots (D188)
 - [x] Windows: `CopyFileExW`, `GetFinalPathNameByHandleW`, `CreateSymbolicLinkW`, `CreateHardLinkW`, `LockFileEx`/`UnlockFileEx` (D189; code written, unbuilt: D675)
 - [x] Windows: `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList` and `STARTUPINFOEXW` (D189; code written, unbuilt: D676)
-- [ ] Windows: `MapViewOfFileExNuma` and `SEC_IMAGE` mappings (D189)
+- [x] Windows: `MapViewOfFileExNuma` and `SEC_IMAGE` mappings (D189; code written, unbuilt: D678)
 - [ ] Translation: x87 transcendentals and the rest (`fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`, `fprem`, `fprem1`, `fscale`, `fxtract`, `fxam`, `ftst`, `fi*` integer forms, `fnstenv`/`fldenv`/`fnsave`/`frstor`) (D191)
 - [ ] Translation: SSSE3 (`pshufb`, `palignr`, `phadd*`, `pmaddubsw`, `pabs*`, `psign*`, `pmulhrsw`) and the rest of SSE4.1/4.2 (Windows 11 24H2's baseline) (D191)
 - [ ] Translation: AVX/AVX2 (VEX decoding, 256-bit registers as register pairs) (D191)

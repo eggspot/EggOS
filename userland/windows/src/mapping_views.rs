@@ -43,9 +43,6 @@ pub struct Protection {
 /// The protection `CreateFileMappingW`'s `flProtect` asks for (its `SEC_*` bits aside), or
 /// `ERROR_INVALID_PARAMETER`; `SEC_IMAGE` is `ERROR_NOT_SUPPORTED`.
 pub fn protection(flags: u32) -> Result<Protection, u32> {
-    if flags & SECTION_IMAGE != 0 {
-        return Err(error::NOT_SUPPORTED);
-    }
     let (writable, copy_on_write, executable) = match flags & 0xff {
         page::READONLY => (false, false, false),
         page::READWRITE => (true, false, false),
@@ -148,10 +145,8 @@ mod tests {
         assert!(copy.copy_on_write && !copy.writable);
         assert!(protection(page::EXECUTE_READ).unwrap().executable);
         assert_eq!(protection(0x01), Err(error::INVALID_PARAMETER));
-        assert_eq!(
-            protection(page::READONLY | SECTION_IMAGE),
-            Err(error::NOT_SUPPORTED)
-        );
+        let image = protection(page::READONLY | SECTION_IMAGE).unwrap();
+        assert!(!image.writable && !image.copy_on_write && !image.executable);
     }
 
     #[test]

@@ -28627,3 +28627,16 @@ the license, by an explicit instruction recorded here.
   which `GetThreadContext` after `SuspendThread` does not yet wait for.
 - **Not yet.** Building and running; `GetThreadContext`/`SetThreadContext` on a suspended
   thread.
+
+
+## D678 `SEC_IMAGE` file mappings and `MapViewOfFileExNuma` (M15 Windows; follow-up of D189; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `CreateFileMapping` with `SEC_IMAGE` over a file (not the page file, which
+  answers `ERROR_INVALID_PARAMETER`) makes an image section. Each view of it parses the file as
+  a PE (D119's parser; a file that is not one answers `ERROR_BAD_EXE_FORMAT`), takes
+  `SizeOfImage` of private anonymous memory (at the base asked for, if any), copies the headers
+  and each section's raw bytes to its RVA, leaves the rest zero, then protects the headers
+  read-only and each section by its characteristics (read, write as private copy-on-write,
+  execute), as Windows' image views are; no relocation or import is applied, which is the
+  loader's work, not the mapping's. `MapViewOfFileExNuma` is `MapViewOfFileEx`, the node
+  ignored, since EggOS places memory itself.
+- **Not yet.** Building and running; sharing an image's unchanged pages between views.

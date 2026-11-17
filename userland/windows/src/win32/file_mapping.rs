@@ -18,6 +18,79 @@ use crate::named_objects::{self, State};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 const MAX_VIEWS: usize = 256;
+const SECTION_EXECUTES: u32 = 0x2000_0000;
+const SECTION_READS: u32 = 0x4000_0000;
+const SECTION_WRITES: u32 = 0x8000_0000;
+
+fn page_rounded(length: usize) -> usize {
+    length.next_multiple_of(linux::PAGE_SIZE)
+}
+
+fn section_protection(flags: u32) -> usize {
+    let mut protection = 0;
+    if flags & SECTION_READS != 0 {
+        protection |= linux::PROT_READ;
+    }
+    if flags & SECTION_WRITES != 0 {
+        protection |= linux::PROT_READ | linux::PROT_WRITE;
+    }
+    if flags & SECTION_EXECUTES != 0 {
+        protection |= linux::PROT_READ | linux::PROT_EXEC;
+    }
+    protection
+}
+
+fn image_view(file: &[u8], base: usize) -> Result<View, u32> {
+    let pe = crate::pe::Pe::parse(file).map_err(|_| error::BAD_EXE_FORMAT)?;
+    let length = usize::try_from(pe.mapped_size()).map_err(|_| error::NOT_ENOUGH_MEMORY)?;
+    let writable = linux::PROT_READ | linux::PROT_WRITE;
+    let address = linux::map_anonymous(base, length, writable, base != 0).map_err(|errno| match base {
+        0 => error_for(errno),
+        _ => error::INVALID_ADDRESS,
+    })?;
+    if base != 0 && address != base {
+        // SAFETY: the mapping was just made and nothing uses it yet.
+        let _ = unsafe { linux::unmap(address, length) };
+        return Err(error::INVALID_ADDRESS);
+    }
+    // SAFETY: the fresh anonymous mapping holds `length` writable bytes no one else uses.
+    let image = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) };
+    let headers = (pe.headers_size as usize).min(file.len()).min(length);
+    image[..headers].copy_from_slice(&file[..headers]);
+    for section in pe.sections() {
+        let raw = section.raw_size.min(section.memory_size()) as usize;
+        let (from, to) = (section.raw_offset as usize, section.virtual_address as usize);
+        if let (Some(source), Some(target)) = (file.get(from..from + raw), image.get_mut(to..to + raw)) {
+            target.copy_from_slice(source);
+        }
+    }
+    // SAFETY: the image's own pages, which only this call has touched.
+    let _ = unsafe { linux::protect(address, page_rounded(headers), linux::PROT_READ) };
+    for section in pe.sections() {
+        let start = section.virtual_address as usize;
+        let end = page_rounded(start + section.memory_size() as usize).min(length);
+        if start < end {
+            // SAFETY: as above, one section's pages.
+            let _ = unsafe { linux::protect(address + start, end - start, section_protection(section.flags)) };
+        }
+    }
+    Ok(View {
+        base: address,
+        length,
+        held: None,
+    })
+}
+
+fn map_image(fd: usize, base: usize) -> Result<View, u32> {
+    let size = linux::fstat(fd).map_err(error_for)?[linux::STAT_SIZE_WORD] as usize;
+    let file = linux::map_file(0, size, linux::PROT_READ, linux::MAP_PRIVATE, fd, 0).map_err(error_for)?;
+    // SAFETY: the private read-only mapping just made holds the file's `size` bytes.
+    let bytes = unsafe { core::slice::from_raw_parts(file as *const u8, size) };
+    let made = image_view(bytes, base);
+    // SAFETY: only `image_view` read the file's mapping, and it is done with it.
+    let _ = unsafe { linux::unmap(file, size) };
+    made
+}
 
 /// A file mapping: a descriptor of the file behind it, its size and protection, and its slot
 /// in the shared table when it has a name.
@@ -27,6 +100,7 @@ pub struct Section {
     size: u64,
     protection: Protection,
     named: Option<Reference>,
+    image: bool,
 }
 
 impl Drop for Section {
@@ -64,6 +138,7 @@ fn unnamed_page_file(size: u64, protection: Protection) -> Result<Section, u32> 
         size,
         protection,
         named: None,
+        image: false,
     })
 }
 
@@ -78,6 +153,7 @@ fn named_section(found: named::Named) -> Result<Section, u32> {
         size: found.state.size,
         protection,
         named: Some(found.reference),
+        image: false,
     })
 }
 
@@ -127,6 +203,7 @@ fn file_section(
         size,
         protection,
         named,
+        image: flags & mapping_views::SECTION_IMAGE != 0,
     };
     Ok((section, existed))
 }
@@ -141,6 +218,9 @@ fn create_mapping(file: usize, flags: u32, requested: u64, name: Option<&[u16]>)
         Err(code) => return fail(code, 0),
     };
     let made = match file {
+        INVALID_HANDLE_VALUE if flags & mapping_views::SECTION_IMAGE != 0 => {
+            Err(error::INVALID_PARAMETER)
+        }
         INVALID_HANDLE_VALUE => page_file_section(flags, protection, requested, name.as_ref()),
         _ => file_section(file, flags, protection, requested, name.as_ref()),
     };
@@ -230,6 +310,9 @@ unsafe extern "efiapi" fn open_file_mapping_a(
 
 impl Section {
     fn map(&self, desired: u32, offset: u64, bytes: usize, base: usize) -> Result<View, u32> {
+        if self.image {
+            return map_image(self.fd, base);
+        }
         let mapping = mapping_views::view_mapping(self.protection, desired)?;
         let length = mapping_views::view_length(self.size, offset, bytes as u64)?;
         let length = usize::try_from(length).map_err(|_| error::NOT_ENOUGH_MEMORY)?;
@@ -327,6 +410,18 @@ extern "efiapi" fn map_view_of_file_ex(
     )
 }
 
+extern "efiapi" fn map_view_of_file_ex_numa(
+    handle: usize,
+    desired: u32,
+    offset_high: u32,
+    offset_low: u32,
+    bytes: usize,
+    base: usize,
+    _node: u32,
+) -> usize {
+    map_view(handle, desired, joined(offset_high, offset_low), bytes, base)
+}
+
 fn holds(view: &Option<View>, address: usize) -> bool {
     view.as_ref()
         .is_some_and(|view| (view.base..view.base + view.length).contains(&address))
@@ -374,6 +469,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"OpenFileMappingA" => open_file_mapping_a,
     b"MapViewOfFile" => map_view_of_file,
     b"MapViewOfFileEx" => map_view_of_file_ex,
+    b"MapViewOfFileExNuma" => map_view_of_file_ex_numa,
     b"UnmapViewOfFile" => unmap_view_of_file,
     b"FlushViewOfFile" => flush_view_of_file,
 ];
