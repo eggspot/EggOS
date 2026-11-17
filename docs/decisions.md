@@ -27994,3 +27994,14 @@ the license, by an explicit instruction recorded here.
   and the record's `label` is that name up to its first zero, without control characters or
   unpaired surrogates (`label_of`), quoted in the text form; `used_bytes` and `free_bytes`
   stay null.
+
+
+## D636 A partitioned disk's contents line (M8; installer dual boot v0.1 section 1; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Decision.** When `storage::list` finds a disk that is neither EggFS, FAT nor blank, it
+  reads its layout (D634); a GPT with partitions gives the record's new `partitions` line
+  (`Windows · 4 partitions`, `3 partitions`), which `contents_text` shows in place of
+  `Unknown contents`. `disk list` keeps its `unknown` word, as the brief says.
+- **Left for `--alongside`.** The install line's `can keep Windows on this disk` sentence
+  promises installing alongside, so it waits for that command rather than offering what
+  does not exist yet.
+- **Not yet.** Building and running.

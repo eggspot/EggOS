@@ -138,6 +138,9 @@ pub struct DiskRecord {
     pub used_bytes: Option<u64>,
     /// Bytes still free, when known.
     pub available_bytes: Option<u64>,
+    /// What a partitioned disk holds, as its contents line reads it: `Windows · 4 partitions`
+    /// (D636); None for a disk without a partition table.
+    pub partitions: Option<String>,
 }
 
 impl DiskRecord {
@@ -331,6 +334,7 @@ fn record(disks: &mut (impl WholeDisks + ?Sized), line: Line) -> DiskRecord {
         mounted_on: None,
         used_bytes: None,
         available_bytes: None,
+        partitions: None,
     };
     if let Some(place) = line.place {
         record.file_system = match place == HOST_FOLDER {
@@ -375,6 +379,13 @@ fn record(disks: &mut (impl WholeDisks + ?Sized), line: Line) -> DiskRecord {
         Err(DiskError) => {}
     }
     disks.close(handle);
+    if record.file_system == FileSystem::Unknown
+        && let Ok(layout) = crate::partitions::read_layout(disks, line.device, line.sectors)
+        && layout.table == crate::partitions::TableKind::Gpt
+        && !layout.partitions.is_empty()
+    {
+        record.partitions = Some(crate::partitions::contents_line(&layout));
+    }
     record
 }
 
@@ -519,6 +530,9 @@ pub fn contents_text(record: &DiskRecord) -> String {
         (FileSystem::EggFs, Some(label)) => format!("EggFS \"{label}\""),
         (FileSystem::Fat, _) if record.mounted_on.as_deref() == Some(HOST_FOLDER) => {
             String::from("FAT (the host's shared folder)")
+        }
+        (FileSystem::Unknown, _) if record.partitions.is_some() => {
+            record.partitions.clone().unwrap_or_default()
         }
         (file_system, _) => String::from(file_system.name()),
     }
@@ -1532,6 +1546,7 @@ mod install_tests {
             mounted_on: mounted_on.map(String::from),
             used_bytes: None,
             available_bytes: None,
+            partitions: None,
         }
     }
 
