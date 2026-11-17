@@ -565,8 +565,7 @@ fn image_path(loaded: *mut efi::LoadedImage) -> Option<Path> {
     let mut bytes = [0u8; MOST_DEVICE_PATH_BYTES];
     let mut used = 0;
     loop {
-        // SAFETY: every device path node is at least its 4-byte header, and the firmware's path
-        // ends with an end node, so the walk stays inside it.
+        // SAFETY: each node is at least its 4-byte header, and the path ends with an end node.
         let header = unsafe { core::slice::from_raw_parts(node, 4) };
         let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
         let end = header[0] == 0x7f && header[1] == 0xff;
