@@ -14,6 +14,85 @@ use crate::widget::{
 /// Writes the text of cell (`row`, `column`) into `out`, from the program's `data`.
 pub type CellText = fn(data: u32, row: usize, column: usize, out: &mut Text<64>);
 
+/// Whether row `row` is in the program's set of selected rows, from its `data`.
+pub type RowSelected = fn(data: u32, row: usize) -> bool;
+
+/// What a person did to a table's set of selected rows (docs/ux/toolkit-v0.6.md section 4.3):
+/// the program applies it to the set it keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionChange {
+    Only(usize),
+    Toggle(usize),
+    Range(usize, usize),
+    AddRange(usize, usize),
+    All,
+    Clear,
+}
+
+/// A set of rows, 64 a word, for a program whose rows are at most `64 * WORDS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowSet<const WORDS: usize> {
+    words: [u64; WORDS],
+}
+
+impl<const WORDS: usize> Default for RowSet<WORDS> {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl<const WORDS: usize> RowSet<WORDS> {
+    /// No row.
+    pub const EMPTY: Self = Self { words: [0; WORDS] };
+
+    /// Whether `row` is in it.
+    pub fn contains(&self, row: usize) -> bool {
+        self.words
+            .get(row / 64)
+            .is_some_and(|word| word & (1 << (row % 64)) != 0)
+    }
+
+    fn put(&mut self, row: usize, on: bool) {
+        if let Some(word) = self.words.get_mut(row / 64) {
+            match on {
+                true => *word |= 1 << (row % 64),
+                false => *word &= !(1 << (row % 64)),
+            }
+        }
+    }
+
+    /// How many rows it holds.
+    pub fn count(&self) -> usize {
+        self.words.iter().map(|word| word.count_ones() as usize).sum()
+    }
+
+    /// Applies `change` for a table of `rows` rows.
+    pub fn apply(&mut self, change: SelectionChange, rows: usize) {
+        let rows = rows.min(64 * WORDS);
+        match change {
+            SelectionChange::Only(row) => {
+                *self = Self::EMPTY;
+                self.put(row, row < rows);
+            }
+            SelectionChange::Toggle(row) => self.put(row, !self.contains(row) && row < rows),
+            SelectionChange::Range(first, last) | SelectionChange::AddRange(first, last) => {
+                if matches!(change, SelectionChange::Range(..)) {
+                    *self = Self::EMPTY;
+                }
+                for row in first.min(last)..=first.max(last).min(rows.saturating_sub(1)) {
+                    self.put(row, true);
+                }
+            }
+            SelectionChange::All => {
+                for row in 0..rows {
+                    self.put(row, true);
+                }
+            }
+            SelectionChange::Clear => *self = Self::EMPTY,
+        }
+    }
+}
+
 /// Which way a sorted column reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortOrder {
@@ -90,6 +169,16 @@ pub struct Table {
     pub offset_y: i32,
     pub offset_x: i32,
     pub empty_text: &'static str,
+    /// The program's set of selected rows (docs/ux/toolkit-v0.6.md section 4.3); None for one
+    /// selected row, `selected`. With a set, `selected` is the current row.
+    pub selection: Option<RowSelected>,
+    pub selected_count: usize,
+    /// The row a range starts at.
+    pub anchor: usize,
+    /// Whether Left and Right move a focused cell rather than scroll (section 4.4).
+    pub cell_focus: bool,
+    /// The focused cell's column.
+    pub column: usize,
 }
 
 impl Table {
@@ -124,6 +213,11 @@ impl Table {
             offset_y: 0,
             offset_x: 0,
             empty_text: "No items",
+            selection: None,
+            selected_count: 0,
+            anchor: 0,
+            cell_focus: false,
+            column: 0,
         }
     }
 
@@ -281,6 +375,32 @@ impl Table {
         }
     }
 
+    /// Whether row `row` is drawn selected: in the program's set, or the one selected row.
+    pub fn is_row_selected(&self, row: usize) -> bool {
+        match self.selection {
+            Some(selected) => selected(self.data, row),
+            None => row == self.selected,
+        }
+    }
+
+    /// The column whose cells are at `x` in a table at `rect`.
+    pub fn column_at_x(&self, rect: Rect, x: i32) -> Option<usize> {
+        (0..self.column_count)
+            .find(|&column| x >= self.column_x(rect, column) && x < self.column_x(rect, column + 1))
+    }
+
+    /// The offset that shows column `column` whole in a table at `rect`, its left edge first.
+    pub fn offset_showing_column(&self, rect: Rect, column: usize) -> i32 {
+        let view = self.view(rect);
+        let left = self.column_x(rect, column) + self.offset_x - rect.x;
+        let right = left + self.columns[column.min(MAX_COLUMNS - 1)].width;
+        match () {
+            () if left < self.offset_x => left,
+            () if right > self.offset_x + view.width => (right - view.width).min(left),
+            () => self.offset_x,
+        }
+    }
+
     /// The text of cell (`row`, `column`).
     pub fn cell_text(&self, row: usize, column: usize) -> Text<64> {
         let mut out = Text::new();
@@ -397,7 +517,8 @@ impl Table {
             if row_rect.intersection(&clip).is_empty() {
                 continue;
             }
-            let chosen = row == self.selected;
+            let chosen = self.is_row_selected(row);
+            let current = row == self.selected;
             if chosen {
                 canvas.fill(row_rect, palette.selection);
             } else if look.hovered == Some(ROW_HIT + row) {
@@ -431,8 +552,21 @@ impl Table {
                     ink,
                 );
             }
-            if chosen && look.focused {
-                focus_ring(canvas, row_rect, 0);
+            if current && look.focused {
+                match self.cell_focus {
+                    true => {
+                        let column = self.column.min(self.column_count.saturating_sub(1));
+                        let left = self.column_x(rect, column);
+                        let cell = Rect::new(
+                            left,
+                            row_rect.y,
+                            self.columns[column].width,
+                            TABLE_ROW_HEIGHT,
+                        );
+                        focus_ring(canvas, cell, 0);
+                    }
+                    false => focus_ring(canvas, row_rect, 0),
+                }
             }
         }
         canvas.restore(previous);
@@ -448,5 +582,29 @@ impl Table {
             };
             canvas.rounded(thumb, &crate::canvas::INSET_R4, colour);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_set_applies_each_change_within_its_rows() {
+        let mut set = RowSet::<2>::EMPTY;
+        set.apply(SelectionChange::Only(3), 100);
+        assert!(set.contains(3) && set.count() == 1);
+        set.apply(SelectionChange::Toggle(70), 100);
+        set.apply(SelectionChange::AddRange(10, 8), 100);
+        assert_eq!(set.count(), 5);
+        set.apply(SelectionChange::Range(98, 96), 100);
+        assert_eq!(set.count(), 3);
+        assert!(set.contains(96) && !set.contains(3));
+        set.apply(SelectionChange::All, 100);
+        assert_eq!(set.count(), 100);
+        set.apply(SelectionChange::Toggle(5), 100);
+        assert!(!set.contains(5));
+        set.apply(SelectionChange::Clear, 100);
+        assert_eq!(set.count(), 0);
     }
 }

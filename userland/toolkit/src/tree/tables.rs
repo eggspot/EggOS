@@ -3,7 +3,7 @@
 
 use super::{Kind, Response, Target, WidgetId, WidgetTree};
 use crate::input::key;
-use crate::table::{HANDLE_PART, ROW_HIT, Table};
+use crate::table::{HANDLE_PART, ROW_HIT, RowSelected, SelectionChange, Table};
 use crate::widget::{MAX_COLUMNS, SortOrder, TABLE_KEY_SCROLL, TABLE_ROW_HEIGHT};
 
 #[derive(Debug, Clone, Copy)]
@@ -88,10 +88,89 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         });
     }
 
+    /// Turns table `id`'s multi-selection on with `is_selected` telling which rows the
+    /// program's set holds, or off with None; without a response.
+    pub fn set_row_selection(&mut self, id: WidgetId, is_selected: Option<RowSelected>) {
+        self.change_table(id, |table| {
+            table.selection = is_selected;
+            table.anchor = table.selected;
+        });
+    }
+
+    /// Says how many rows table `id`'s set holds now, which agents read; without a response.
+    pub fn set_selection_count(&mut self, id: WidgetId, count: usize) {
+        self.change_table(id, |table| table.selected_count = count);
+    }
+
+    /// Turns table `id`'s cell focus on or off; without a response.
+    pub fn set_cell_focus(&mut self, id: WidgetId, on: bool) {
+        self.change_table(id, |table| {
+            table.cell_focus = on;
+            table.column = table.column.min(table.column_count.saturating_sub(1));
+        });
+    }
+
+    /// Table `id`'s focused cell: its row and column.
+    pub fn focused_cell(&self, id: WidgetId) -> Option<(usize, usize)> {
+        self.table(id).map(|table| (table.selected, table.column))
+    }
+
+    fn selection_change(
+        &mut self,
+        id: WidgetId,
+        current: usize,
+        keep_anchor: bool,
+        change: SelectionChange,
+    ) -> Response {
+        self.change_table(id, |table| {
+            table.selected = current.min(table.rows.saturating_sub(1));
+            if !keep_anchor {
+                table.anchor = table.selected;
+            }
+        });
+        self.keep_row_visible(id);
+        Response::Selection(id, change)
+    }
+
+    fn focus_cell(&mut self, id: WidgetId, column: usize) -> Response {
+        let (Some(table), Some(rect)) = (self.table(id), self.rect(id)) else {
+            return Response::Nothing;
+        };
+        let column = column.min(table.column_count.saturating_sub(1));
+        self.change_table(id, |table| table.column = column);
+        let offset = table.offset_showing_column(rect, column);
+        self.scroll_axis_to(id, true, offset);
+        Response::CellFocused(id, table.selected, column)
+    }
+
+    pub(super) fn focus_cell_by_agent(&mut self, id: WidgetId, column: usize) -> Response {
+        self.focus_cell(id, column)
+    }
+
+    pub(super) fn selection_by_agent(&mut self, id: WidgetId, change: SelectionChange) -> Response {
+        let Some(table) = self.table(id) else {
+            return Response::Nothing;
+        };
+        let (current, keep_anchor) = match change {
+            SelectionChange::Only(row) | SelectionChange::Toggle(row) => (row, false),
+            SelectionChange::Range(_, last) | SelectionChange::AddRange(_, last) => (last, true),
+            SelectionChange::All | SelectionChange::Clear => (table.selected, true),
+        };
+        self.selection_change(id, current, keep_anchor, change)
+    }
+
     pub(super) fn select_row(&mut self, id: WidgetId, row: usize) -> Response {
         let Some(table) = self.table(id) else {
             return Response::Nothing;
         };
+        if table.selection.is_some() && row < table.rows {
+            return self.selection_change(id, row, false, SelectionChange::Only(row));
+        }
+        if table.cell_focus && row < table.rows && row != table.selected {
+            self.change_table(id, |table| table.selected = row);
+            self.keep_row_visible(id);
+            return Response::CellFocused(id, row, table.column);
+        }
         if row >= table.rows || row == table.selected {
             self.keep_row_visible(id);
             return Response::Nothing;
@@ -123,6 +202,25 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         };
         if part >= ROW_HIT {
             let row = part - ROW_HIT;
+            if table.cell_focus
+                && let Some(rect) = self.rect(id)
+                && let Some(column) = table.column_at_x(rect, x)
+                && column != table.column
+            {
+                self.change_table(id, |table| table.column = column);
+                if table.selection.is_none() && row == table.selected && !double {
+                    return Response::CellFocused(id, row, column);
+                }
+            }
+            let (mod_held, shift) = (self.shortcut_held, self.shift_held);
+            if table.selection.is_some() && (mod_held || shift) {
+                let change = match (mod_held, shift) {
+                    (true, true) => SelectionChange::AddRange(table.anchor, row),
+                    (false, true) => SelectionChange::Range(table.anchor, row),
+                    _ => SelectionChange::Toggle(row),
+                };
+                return self.selection_change(id, row, shift, change);
+            }
             if self.is_drag_source(id) {
                 self.start_pick(id, row, x, y, time_ms, double);
                 return Response::Nothing;
@@ -207,6 +305,36 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let shown = (table.view(rect).height + TABLE_ROW_HEIGHT - 1) / TABLE_ROW_HEIGHT;
         let page = (shown - 1).max(1) as usize;
         let here = table.selected;
+        let held = self.held_keys;
+        let mod_held = held.control || held.command;
+        if table.selection.is_some() && held.command && !held.control
+            && matches!(code, key::UP | key::DOWN)
+        {
+            return unused;
+        }
+        if table.selection.is_some() && mod_held && code == key::A {
+            let change = match self.shift_held {
+                true => SelectionChange::Clear,
+                false => SelectionChange::All,
+            };
+            return self.selection_change(id, here, true, change);
+        }
+        if table.selection.is_some() && held.control && code == key::SPACE && table.rows > 0 {
+            return self.selection_change(id, here, false, SelectionChange::Toggle(here));
+        }
+        if table.cell_focus && matches!(code, key::LEFT | key::RIGHT) {
+            let last_column = table.column_count.saturating_sub(1);
+            let column = match (code, mod_held) {
+                (key::LEFT, true) => 0,
+                (key::LEFT, false) => table.column.saturating_sub(1),
+                (_, true) => last_column,
+                _ => (table.column + 1).min(last_column),
+            };
+            if column == table.column {
+                return Response::Nothing;
+            }
+            return self.focus_cell(id, column);
+        }
         let next = match code {
             key::UP => here.saturating_sub(1),
             key::DOWN => (here + 1).min(last),
@@ -228,6 +356,19 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         };
         if table.rows == 0 {
             return Response::Nothing;
+        }
+        if table.selection.is_some() && held.control && matches!(code, key::UP | key::DOWN) {
+            self.change_table(id, |table| table.selected = next);
+            self.keep_row_visible(id);
+            return Response::Chosen(id, next);
+        }
+        if table.selection.is_some() && self.shift_held {
+            return self.selection_change(
+                id,
+                next,
+                true,
+                SelectionChange::Range(table.anchor, next),
+            );
         }
         self.select_row(id, next)
     }

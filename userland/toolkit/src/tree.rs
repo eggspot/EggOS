@@ -64,6 +64,11 @@ pub enum Response {
     Sorted(WidgetId, usize, SortOrder),
     /// A table's column was resized to this width by a drag that just ended.
     ColumnResized(WidgetId, usize, i32),
+    /// A person changed a multi-selection table's set of rows: apply it to the set, then call
+    /// [`WidgetTree::set_selection_count`] (docs/ux/toolkit-v0.6.md section 4.3).
+    Selection(WidgetId, crate::table::SelectionChange),
+    /// A table's focused cell moved to this row and column (section 4.4).
+    CellFocused(WidgetId, usize, usize),
     /// A drag of this source's part (a row, or 0 for a whole widget) started: call
     /// [`WidgetTree::cancel_drag`] to refuse it.
     DragStarted(WidgetId, usize),

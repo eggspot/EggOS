@@ -149,7 +149,8 @@ and is not listed per item.
 - [x] Toolkit: check and radio items with program-owned marks, in the window's menus and the macOS top bar (docs/ux/toolkit-v0.6.md sections 2.1, 2.2, 2.5) — code written, unbuilt, D626
 - [ ] Toolkit: submenus and `menu::Stack` (docs/ux/toolkit-v0.6.md sections 2.1 to 2.5), with `wm menu` listing marks and nested entries
 - [ ] Toolkit: the menu bar's `...` overflow (docs/ux/toolkit-v0.6.md section 3)
-- [ ] Toolkit: table column reordering, fit-to-content, multi-selection and cell focus (docs/ux/toolkit-v0.6.md section 4)
+- [x] Toolkit: table multi-selection and cell focus (docs/ux/toolkit-v0.6.md sections 4.3, 4.4) — code written, unbuilt, D627
+- [ ] Toolkit: table column reordering by drag and fit-to-content (docs/ux/toolkit-v0.6.md sections 4.1, 4.2), and Files using `RowSet`
 
 ## M13 Real hardware, vendor drivers and mitigations
 

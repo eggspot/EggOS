@@ -27821,3 +27821,29 @@ the license, by an explicit instruction recorded here.
   marks parses and draws as before.
 - **Not yet.** Building and running; submenus and the shared `menu::Stack`, the `wm menu`
   listing of marks, and the brief's acceptance cases as tree tests.
+
+
+## D627 Table multi-selection and cell focus (M7; toolkit v0.6 sections 4.3 and 4.4; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **The program owns the set.** `Table` gains `selection: Option<RowSelected>` (the
+  program's `fn(data, row) -> bool`), `selected_count`, `anchor`, `cell_focus` and `column`,
+  all off or zero by default, so a v0.5 table is unchanged. With a set, `selected` is the
+  current row, and every input that changes the set returns
+  `Response::Selection(id, SelectionChange)` (`Only`, `Toggle`, `Range`, `AddRange`, `All`,
+  `Clear`) for the program to apply and report back with `set_selection_count`.
+  `table::RowSet<WORDS>` is a bitmap set for programs with bounded rows.
+- **Pointer and keys.** Mod+press toggles, Shift+press ranges from the anchor, both add a
+  range; a plain press (or a drag source's release without a drag) is `Only`. Arrows, Home,
+  End and the page keys give `Only` (with Shift, `Range` from the kept anchor); Ctrl+Up and
+  Ctrl+Down move the current row alone (`Chosen`); Super+Up and Super+Down go to the
+  program; Ctrl+Space toggles; Mod+A is `All` and Mod+Shift+A `Clear`.
+- **Cell focus.** Left and Right move the focused column, Mod+Left and Mod+Right go to the
+  first and last, a press focuses the cell under it, the view scrolls the cell in, and the
+  ring is drawn on the cell; `CellFocused(id, row, column)` replaces `Chosen` when only the
+  row of a single-selection table moved. `focused_cell` reads it.
+- **Agents.** The table's value gains `, column <n>` and `, <k> selected`; rows are flagged
+  `selected` by the program's set; `set-text` takes `all`, `none`, `toggle <row>`,
+  `range <a> <b>`, `add <a> <b>` and `column <n>`, each `NotSupported` with its mode off.
+- **Not yet.** Building and running; column reordering and fit (sections 4.1 and 4.2) and
+  the column's visual order, which `column` will then follow; the right-click rules of the
+  pointer table (they need the drag source's release path checked against them); Files
+  moving to `RowSet`.

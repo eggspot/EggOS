@@ -274,6 +274,18 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                             format_args!("row {} of {}", table.selected + 1, rows),
                         ),
                     };
+                    if table.cell_focus {
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut range,
+                            format_args!(", column {}", table.column + 1),
+                        );
+                    }
+                    if table.selection.is_some() {
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut range,
+                            format_args!(", {} selected", table.selected_count),
+                        );
+                    }
                     Element {
                         role: Role::Table,
                         ..here
@@ -466,7 +478,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                         .valued(for_agents(node.person_only, cells.as_str().as_bytes()))
                         .flagged(
                             disabled
-                                | if row == table.selected {
+                                | if table.is_row_selected(row) {
                                     flags::SELECTED
                                 } else {
                                     0
@@ -661,7 +673,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     (Outcome::Done, self.select_row(id, row - 1))
                 }
                 Ok(_) => (Outcome::Done, Response::Nothing),
-                Err(_) => (Outcome::NotSupported, Response::Nothing),
+                Err(_) => self.table_text_by_agent(id, &table, text.trim()),
             },
             (action, Kind::Table(table), Some(part)) => {
                 let Some(rect) = self.rect(id) else {
@@ -697,5 +709,56 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
             _ => (Outcome::NotSupported, Response::Nothing),
         }
+    }
+
+    fn table_text_by_agent(
+        &mut self,
+        id: WidgetId,
+        table: &crate::table::Table,
+        text: &str,
+    ) -> (Outcome, Response) {
+        use crate::table::SelectionChange;
+        let mut words = text.split_ascii_whitespace();
+        let command = words.next().unwrap_or("");
+        let mut number = || {
+            words
+                .next()
+                .and_then(|word| word.parse::<usize>().ok())
+                .filter(|&row| row >= 1)
+                .map(|row| row - 1)
+        };
+        if command == "column" && table.cell_focus {
+            return match number().filter(|&column| column < table.column_count) {
+                Some(column) => (Outcome::Done, self.focus_cell_by_agent(id, column)),
+                None => (Outcome::Done, Response::Nothing),
+            };
+        }
+        if table.selection.is_none() {
+            return (Outcome::NotSupported, Response::Nothing);
+        }
+        let last = table.rows.saturating_sub(1);
+        let change = match command {
+            "all" => SelectionChange::All,
+            "none" => SelectionChange::Clear,
+            "toggle" => match number() {
+                Some(row) => SelectionChange::Toggle(row.min(last)),
+                None => return (Outcome::NotSupported, Response::Nothing),
+            },
+            "range" | "add" => match (number(), number()) {
+                (Some(first), Some(second)) => {
+                    let (first, second) = (first.min(last), second.min(last));
+                    match command {
+                        "range" => SelectionChange::Range(first, second),
+                        _ => SelectionChange::AddRange(first, second),
+                    }
+                }
+                _ => return (Outcome::NotSupported, Response::Nothing),
+            },
+            _ => return (Outcome::NotSupported, Response::Nothing),
+        };
+        if table.rows == 0 {
+            return (Outcome::Done, Response::Nothing);
+        }
+        (Outcome::Done, self.selection_by_agent(id, change))
     }
 }
