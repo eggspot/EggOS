@@ -1,5 +1,6 @@
 use crate::efi::{self, BootServices, Guid, Handle, Status, SystemTable};
 use crate::elf::{self, Image};
+use crate::paths::{self, Path};
 use crate::placement::{self, FreeRange, GIGABYTE, PAGE};
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
@@ -206,7 +207,7 @@ impl Firmware {
 fn read_file(
     firmware: &Firmware,
     root: *mut efi::File,
-    path: &[u16; 32],
+    path: &[u16],
 ) -> Result<&'static [u8], &'static str> {
     let mut file: *mut efi::File = null_mut();
     // SAFETY: `root` is the volume's open root directory and `path` a NUL-ended UTF-16 path.
@@ -553,6 +554,38 @@ fn boot_data(firmware: &Firmware) -> Result<BootData, &'static str> {
     })
 }
 
+const MOST_DEVICE_PATH_BYTES: usize = 1024;
+
+fn image_path(loaded: *mut efi::LoadedImage) -> Option<Path> {
+    // SAFETY: `loaded` is the firmware's loaded image protocol for this image.
+    let mut node = unsafe { (*loaded).file_path }.cast::<u8>().cast_const();
+    if node.is_null() {
+        return None;
+    }
+    let mut bytes = [0u8; MOST_DEVICE_PATH_BYTES];
+    let mut used = 0;
+    loop {
+        // SAFETY: every device path node is at least its 4-byte header, and the firmware's path
+        // ends with an end node, so the walk stays inside it.
+        let header = unsafe { core::slice::from_raw_parts(node, 4) };
+        let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
+        let end = header[0] == 0x7f && header[1] == 0xff;
+        if length < 4 || used + length > bytes.len() {
+            return None;
+        }
+        // SAFETY: the node's header says it is `length` bytes long.
+        let whole = unsafe { core::slice::from_raw_parts(node, length) };
+        bytes[used..used + length].copy_from_slice(whole);
+        used += length;
+        if end {
+            break;
+        }
+        // SAFETY: the next node starts right after this one, inside the same device path.
+        node = unsafe { node.add(length) };
+    }
+    paths::file_path_of(&bytes[..used])
+}
+
 fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str> {
     // SAFETY: disabling the watchdog, a firmware call with no pointers of ours.
     unsafe { (firmware.services().set_watchdog_timer)(0, 0, 0, null()) };
@@ -569,9 +602,22 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
     if efi::is_error(status) || root.is_null() {
         return Err("the boot partition could not be opened");
     }
-    let kernel_file = read_file(firmware, root, &KERNEL_PATH)?;
-    let command_line = read_file(firmware, root, &COMMAND_LINE_PATH).unwrap_or_default();
-    let loader_file = read_file(firmware, root, &LOADER_PATH).unwrap_or_default();
+    let own_path = image_path(loaded);
+    let beside = |name: &str| -> Option<&'static [u8]> {
+        let wanted = paths::beside(own_path.as_ref()?, name)?;
+        read_file(firmware, root, &wanted).ok()
+    };
+    let kernel_file = match beside("KERNEL.ELF") {
+        Some(file) => file,
+        None => read_file(firmware, root, &KERNEL_PATH)?,
+    };
+    let command_line = beside("CMDLINE.TXT")
+        .or_else(|| read_file(firmware, root, &COMMAND_LINE_PATH).ok())
+        .unwrap_or_default();
+    let loader_file = own_path
+        .and_then(|own| read_file(firmware, root, &own).ok())
+        .or_else(|| read_file(firmware, root, &LOADER_PATH).ok())
+        .unwrap_or_default();
     let image = Image::parse(kernel_file)?;
     if image.machine != MACHINE {
         return Err("the kernel on the boot partition is for another kind of CPU");

@@ -28154,3 +28154,16 @@ the license, by an explicit instruction recorded here.
   `CMDLINE.TXT` and `BOOT.TXT` (section 5), with EggOS's own 256 MB partition when the shared
   one is full.
 
+
+## D646 The loader reads its files from the folder it was started from (M8; installer dual boot v0.1 section 5; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** The UEFI loader takes its own path from its loaded image's device path (the
+  media file-path nodes, joined, `/` read as `\`) and reads `KERNEL.ELF`, `CMDLINE.TXT` and
+  itself from that folder first, so an EggOS in `\EFI\EGGOS\` on an EFI system partition shared
+  with Windows or Linux boots without touching their files; when they are not there it falls
+  back to `\EGGOS\KERNEL.ELF`, `\EGGOS\CMDLINE.TXT` and `\EFI\BOOT\BOOTX64.EFI` (or
+  `BOOTAA64.EFI`), the USB stick's and the whole-disk install's layout, so both keep working
+  unchanged. The path logic is a host-tested `paths` module; the loader only copies the device
+  path's nodes (at most 1 KiB) out of firmware memory, one node at a time.
+- **Not yet.** Building and running; `BOOT.TXT` and the boot menu (section 6), which read
+  from the same folder.
+
