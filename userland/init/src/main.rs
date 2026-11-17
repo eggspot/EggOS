@@ -35,6 +35,8 @@ mod network_clock;
 mod shutdown;
 #[cfg(eggos_user)]
 mod system;
+#[cfg(any(test, eggos_user))]
+mod update_policy;
 
 #[cfg(eggos_user)]
 eggos_runtime::main!(system::run);

@@ -28389,3 +28389,15 @@ the license, by an explicit instruction recorded here.
   every remove does. Rules 1, 3 and 4 are D655 and D656.
 - **Not yet.** Building and running; a program an agent starts with the `run` grant having no
   write access to `/etc/eggos/` (it runs as root today; that needs accounts or a sandbox).
+
+
+## D661 Init's daily loop follows the update policy (M16 editions; editions-policy v0.1 section 2; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Each turn of init's update loop reads D657's record: `automatic` runs the
+  check (`component update --dry-run --json`, which records what the store has) and then
+  `component update`, every day whatever `updates-daily` says; `notify` checks only while the
+  daily check is on, as before; `managed` neither checks nor installs. A missing or unknown
+  record is `notify`. The rule is a host-tested module of init, `update_policy::turn`; an
+  update never restarts anything.
+- **Not yet.** Building and running; the band's `Updated 2 components · today at 09:16` and
+  `Could not update automatically` lines, which need the automatic update's outcome recorded;
+  the `Updates` chip after a failed automatic update.

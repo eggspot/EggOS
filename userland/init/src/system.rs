@@ -759,11 +759,19 @@ fn check_updates_daily() -> ! {
         }
         sleep_seconds(FIRST_CHECK_S);
         loop {
-            if daily_check_on() {
-                let _ = run_logged(COMPONENT, &CHECK_ARGUMENTS);
-                sleep_seconds(CHECK_EVERY_S);
-            } else {
-                sleep_seconds(LOOK_AGAIN_LATER_S);
+            let mut record = [0u8; 128];
+            let length = read_file(crate::update_policy::PATH, &mut record).unwrap_or(0);
+            match crate::update_policy::turn(&record[..length], daily_check_on()) {
+                crate::update_policy::Turn::Wait => sleep_seconds(LOOK_AGAIN_LATER_S),
+                crate::update_policy::Turn::Check => {
+                    let _ = run_logged(COMPONENT, &CHECK_ARGUMENTS);
+                    sleep_seconds(CHECK_EVERY_S);
+                }
+                crate::update_policy::Turn::CheckAndInstall => {
+                    let _ = run_logged(COMPONENT, &CHECK_ARGUMENTS);
+                    let _ = run_logged(COMPONENT, &crate::update_policy::INSTALL_ARGUMENTS);
+                    sleep_seconds(CHECK_EVERY_S);
+                }
             }
             if !network_has_address() {
                 break;
