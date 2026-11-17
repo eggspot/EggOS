@@ -427,6 +427,8 @@ pub enum Denial {
     UnknownAgent,
     /// The store cannot be read, so no agent gets more than reading.
     StoreUnreadable(StoreError),
+    /// The policy file allows no agent this grant (D656).
+    Managed,
 }
 
 /// Why the store cannot be read or changed.
@@ -900,6 +902,8 @@ pub struct Policy {
     pub boot: Grants,
     /// The store.
     pub store: StoreState,
+    /// The most the policy file lets any agent hold (D656).
+    pub ceiling: crate::managed::Ceiling,
 }
 
 impl Policy {
@@ -909,6 +913,9 @@ impl Policy {
     /// The boot's grants bound every agent's. An unreadable store leaves the local agent
     /// reading and every other agent nothing.
     pub fn check(&self, agent: &AgentId, capability: Option<Grant>, now: u64) -> Decision {
+        if capability.is_some_and(|grant| !self.ceiling.allows(grant)) {
+            return Decision::Deny(Denial::Managed);
+        }
         let entry = match &self.store {
             StoreState::Unreadable(error) => {
                 return match (agent.is_local(), capability) {

@@ -28311,3 +28311,23 @@ the license, by an explicit instruction recorded here.
   or with an untrusted one it says so. Status 0 in every case.
 - **Not yet.** Building and running; `settings policy --json` and `--apply`; the `locked` and
   `managed_by` fields of `settings list|get --json`; `update.policy`; the MCP side (D656).
+
+
+## D656 The MCP server holds agents to the policy file's ceiling and denied tools (M16 editions; editions-policy v0.1 sections 7 and 8; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Before every call, with the grants store, the MCP server reads the policy file
+  (only while the `management` component's record exists; `statx` without following links for
+  the file and `/etc/eggos`; at most 16 KiB, a longer file untrusted) and turns it into
+  `managed::Limits`: a `Ceiling` of the four classes (`agents.grants`; an empty line allows
+  reading only; no line allows every class), the tools `agents.deny` names (32 at most) and the
+  manager's name. An untrusted file holds every agent to `view`. A tool the policy denies
+  answers `Refused: disk_install is managed by Contoso IT: no agent may call it.` with the
+  coded error `managed`, before any grant is looked at, for every agent, the local one
+  included. A call needing a class above the ceiling is refused with the new
+  `Denial::Managed`, also `managed`, before the agent's own grants, so a grant held above the
+  ceiling stops counting from the next call. Every such refusal is logged with the outcome
+  `refused`. The ceiling is its own type, not `Grants`, since there `run` stands for every
+  class.
+- **Not yet.** Building and running; the `settings_policy` tool and the `locked` fields of
+  `settings_list|get`; the grant prompt and the Agents pane not offering a class above the
+  ceiling; file tools refusing `/etc/eggos/`; `update.policy` set to `managed` by an agent
+  needing confirmation; `component_remove management` while a policy file exists.

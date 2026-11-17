@@ -219,6 +219,7 @@ pub struct Server {
     agent: AgentId,
     agent_bound: bool,
     policy: Policy,
+    limits: crate::managed::Limits,
     unknown: Unknown,
     started_ms: u64,
     questions: u64,
@@ -262,6 +263,7 @@ impl Default for Server {
             agent: AgentId::LOCAL,
             agent_bound: false,
             policy: Policy::default(),
+            limits: crate::managed::Limits::default(),
             unknown: Unknown::default(),
             started_ms: 0,
             questions: 0,
@@ -1284,6 +1286,24 @@ impl Server {
         };
         let tool_name = tool.name.as_bytes();
         let now = self.refresh_policy(system);
+        if self.limits.denies(tool_name) {
+            let mut message = [0u8; 480];
+            let length = denied_by_policy(tool, self.limits.manager(), &mut message);
+            let message = text_prefix(&message, length);
+            self.stop(
+                system,
+                scratch,
+                id,
+                number,
+                tool_name,
+                Outcome::Refused,
+                Logged::Names(arguments),
+                message,
+                Ending::Refused(&errors::MANAGED),
+                out,
+            );
+            return;
+        }
         let mut ask_user = false;
         let mut session_answer = false;
         match self.policy.check(&self.agent, tool.grant, now) {
@@ -1296,6 +1316,10 @@ impl Server {
                 let mut message = [0u8; 480];
                 let length = denied(tool, denial, &mut message);
                 let message = text_prefix(&message, length);
+                let refusal = match denial {
+                    Denial::Managed => &errors::MANAGED,
+                    _ => &errors::NEEDS_GRANT,
+                };
                 self.stop(
                     system,
                     scratch,
@@ -1305,7 +1329,7 @@ impl Server {
                     Outcome::Refused,
                     Logged::Names(arguments),
                     message,
-                    Ending::Refused(&errors::NEEDS_GRANT),
+                    Ending::Refused(refusal),
                     out,
                 );
                 return;
@@ -2097,6 +2121,10 @@ impl Server {
         let read = system.read_grant_store(&mut file);
         let read = read.map(|length| file.get(..length).unwrap_or_default());
         self.policy.store = StoreState::from_read(read);
+        let mut text = [0u8; eggos_settings_file::policy::LARGEST];
+        let read = system.read_policy(&mut text);
+        self.limits = crate::managed::Limits::of(read, &text);
+        self.policy.ceiling = self.limits.ceiling;
         match self.policy.needs_clock() {
             true => match system.now() {
                 0 => u64::MAX,
@@ -3687,6 +3715,12 @@ fn denied(tool: &Tool, denial: Denial, out: &mut [u8]) -> usize {
     let mut text = Text::new(out);
     text.put("Refused: ");
     match denial {
+        Denial::Managed => {
+            text.put(tool.name);
+            text.put(" needs the ");
+            text.put(tool.grant.map_or("", Grant::name));
+            text.put(" grant, which this computer's policy allows no agent. settings policy lists what is managed.");
+        }
         Denial::UnknownAgent => text.put(
             "EggOS does not know this agent. The user has to add it and give it grants \
              before it can use any tool.",
@@ -3714,6 +3748,16 @@ fn denied(tool: &Tool, denial: Denial, out: &mut [u8]) -> usize {
             });
         }
     }
+    text.length
+}
+
+fn denied_by_policy(tool: &Tool, manager: &str, out: &mut [u8]) -> usize {
+    let mut text = Text::new(out);
+    text.put("Refused: ");
+    text.put(tool.name);
+    text.put(" is managed by ");
+    text.put(manager);
+    text.put(": no agent may call it. settings policy lists what is managed.");
     text.length
 }
 

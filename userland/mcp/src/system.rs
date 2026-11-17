@@ -165,6 +165,12 @@ pub trait System {
         let _ = out;
         Err(Errno::ENOENT)
     }
+    /// Reads the policy file ([`eggos_settings_file::policy::PATH`]) into `out` when the
+    /// `management` component is installed, and says whether it can be trusted (D656).
+    fn read_policy(&mut self, out: &mut [u8]) -> crate::managed::PolicyRead {
+        let _ = out;
+        crate::managed::PolicyRead::NotManaged
+    }
     /// Shows the grant prompt on EggOS's own screen ([`crate::grant_prompt`]) with `question`,
     /// one JSON line; the answer comes later, to [`crate::server::Server::prompt_answered`].
     /// An error when there is no desktop or the prompt cannot start: the server then asks

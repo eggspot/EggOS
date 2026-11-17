@@ -6,6 +6,7 @@
 )]
 
 use super::*;
+use crate::managed::Ceiling;
 
 fn id(text: &str) -> AgentId {
     AgentId::stored(text.as_bytes()).unwrap()
@@ -19,6 +20,7 @@ fn loaded(store: GrantStore, boot: Grants) -> Policy {
     Policy {
         boot,
         store: StoreState::Loaded(store),
+        ceiling: Ceiling::EVERY,
     }
 }
 
@@ -51,6 +53,7 @@ fn an_unknown_agent_gets_nothing_not_even_reading() {
         Policy {
             boot: Grants::ALL,
             store: StoreState::Missing,
+            ceiling: Ceiling::EVERY,
         },
         loaded(
             store_with("other", &[(Grant::Run, Permission::Allow, None)]),
@@ -137,12 +140,14 @@ fn a_revoked_grant_stops_the_next_check() {
     let policy = Policy {
         boot: Grants::ALL,
         store: before,
+        ceiling: Ceiling::EVERY,
     };
     assert_eq!(policy.check(&agent, Some(Grant::Write), 5), Decision::Allow);
     store.get_mut(&agent).unwrap().revoke(Grant::Write);
     let after = Policy {
         boot: Grants::ALL,
         store: StoreState::from_read(Ok(encoded(&store).as_slice())),
+        ceiling: Ceiling::EVERY,
     };
     assert_eq!(
         after.check(&agent, Some(Grant::Write), 6),
@@ -208,6 +213,7 @@ fn the_local_agent_keeps_the_boot_grants_until_the_user_lowers_them() {
     let missing = Policy {
         boot,
         store: StoreState::Missing,
+        ceiling: Ceiling::EVERY,
     };
     assert_eq!(missing.check(&local, None, 0), Decision::Allow);
     assert_eq!(
@@ -261,6 +267,7 @@ fn an_unreadable_store_leaves_the_local_agent_reading_and_others_nothing() {
     let policy = Policy {
         boot: Grants::ALL,
         store: StoreState::Unreadable(StoreError::Checksum),
+        ceiling: Ceiling::EVERY,
     };
     let denied = Decision::Deny(Denial::StoreUnreadable(StoreError::Checksum));
     assert_eq!(policy.check(&AgentId::LOCAL, None, 0), Decision::Allow);
@@ -505,4 +512,17 @@ fn paired_agents_keep_only_their_tokens_hash_and_older_stores_still_read() {
         GrantStore::decode(&local_with_token),
         Err(StoreError::Malformed)
     );
+}
+
+#[test]
+fn the_policy_ceiling_refuses_a_grant_before_the_agent_s_own() {
+    let policy = Policy {
+        boot: Grants::ALL,
+        store: StoreState::Missing,
+        ceiling: Ceiling::of_classes("view write"),
+    };
+    let local = AgentId::LOCAL;
+    assert_eq!(policy.check(&local, Some(Grant::Write), 0), Decision::Allow);
+    assert_eq!(policy.check(&local, Some(Grant::Run), 0), Decision::Deny(Denial::Managed));
+    assert_eq!(policy.check(&local, None, 0), Decision::Allow);
 }

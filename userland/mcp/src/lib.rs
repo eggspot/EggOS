@@ -22,6 +22,7 @@ pub mod http;
 pub mod json;
 #[cfg(eggos_user)]
 pub mod linux;
+pub mod managed;
 pub mod pairing;
 pub mod paths;
 pub mod prompts;

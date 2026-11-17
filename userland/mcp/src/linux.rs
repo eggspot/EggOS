@@ -42,6 +42,15 @@ const O_CREAT: usize = 0o100;
 const O_EXCL: usize = 0o200;
 #[cfg(target_arch = "aarch64")]
 const O_NOFOLLOW: usize = 0o100_000;
+const STATX_BYTES: usize = 256;
+const STATX_BASIC_STATS: usize = 0x7ff;
+const STATX_OWNER: usize = 20;
+const STATX_MODE: usize = 28;
+const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+const FILE_KIND_MASK: u32 = 0o170_000;
+const REGULAR_FILE: u32 = 0o100_000;
+const DIRECTORY: u32 = 0o040_000;
+const PERMISSION_BITS: u32 = 0o7777;
 #[cfg(not(target_arch = "aarch64"))]
 const O_NOFOLLOW: usize = 0o400_000;
 const CAPTURE_MODE: usize = 0o600;
@@ -518,6 +527,56 @@ fn size_of(status: &[u8; STATX_BYTES]) -> u64 {
     let mut size = [0u8; 8];
     size.copy_from_slice(&status[STATX_SIZE_OFFSET..STATX_SIZE_OFFSET + 8]);
     u64::from_ne_bytes(size)
+}
+
+fn ownership(path: &str, kind: u32) -> Option<eggos_settings_file::policy::Ownership> {
+    let mut buffer = [0u8; 64];
+    let path = c_path(path, &mut buffer)?;
+    let mut record = [0u8; STATX_BYTES];
+    call(
+        number::STATX,
+        [
+            AT_FDCWD,
+            path.as_ptr() as usize,
+            AT_SYMLINK_NOFOLLOW,
+            STATX_BASIC_STATS,
+            record.as_mut_ptr() as usize,
+            0,
+        ],
+    )
+    .ok()?;
+    let owner = u32::from_ne_bytes(record[STATX_OWNER..STATX_OWNER + 4].try_into().ok()?);
+    let mode = u32::from(u16::from_ne_bytes(record[STATX_MODE..STATX_MODE + 2].try_into().ok()?));
+    Some(eggos_settings_file::policy::Ownership {
+        right_kind: mode & FILE_KIND_MASK == kind,
+        owner,
+        mode: mode & PERMISSION_BITS,
+    })
+}
+
+fn read_whole(path: &CStr, out: &mut [u8]) -> Result<usize, Errno> {
+    let file = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, 0)?;
+    let mut length = 0;
+    let mut result = Ok(());
+    while let Some(free) = out.get_mut(length..).filter(|free| !free.is_empty()) {
+        match call(number::READ, [file, free.as_mut_ptr() as usize, free.len(), 0, 0, 0]) {
+            Ok(0) => break,
+            Ok(count) => length += count,
+            Err(Errno::EINTR) => continue,
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        }
+    }
+    if result.is_ok() && length == out.len() {
+        let mut more = [0u8; 1];
+        if call(number::READ, [file, more.as_mut_ptr() as usize, 1, 0, 0, 0]).is_ok_and(|count| count > 0) {
+            result = Err(Errno::E2BIG);
+        }
+    }
+    close(file);
+    result.map(|()| length)
 }
 
 fn c_path<'b>(path: &str, buffer: &'b mut [u8]) -> Option<&'b CStr> {
@@ -1138,6 +1197,38 @@ impl System for Linux {
         }
         close(file);
         result.map(|()| length)
+    }
+
+    fn read_policy(&mut self, out: &mut [u8]) -> crate::managed::PolicyRead {
+        use crate::managed::PolicyRead;
+        use eggos_settings_file::policy;
+        let mut buffer = [0u8; 64];
+        let Some(record) = c_path(crate::managed::COMPONENT_RECORD, &mut buffer) else {
+            return PolicyRead::NotManaged;
+        };
+        match open(record, O_RDONLY | O_NOFOLLOW | O_NONBLOCK, 0) {
+            Ok(file) => close(file),
+            Err(_) => return PolicyRead::NotManaged,
+        }
+        let Some(file) = ownership(policy::PATH, REGULAR_FILE) else {
+            return PolicyRead::NotManaged;
+        };
+        let folder = ownership(policy::FOLDER, DIRECTORY).unwrap_or(policy::Ownership {
+            right_kind: false,
+            owner: u32::MAX,
+            mode: 0,
+        });
+        let mut name = [0u8; 64];
+        let Some(path) = c_path(policy::PATH, &mut name) else {
+            return PolicyRead::Untrusted;
+        };
+        let Ok(length) = read_whole(path, out) else {
+            return PolicyRead::Untrusted;
+        };
+        match policy::distrust(file, folder, &out[..length]) {
+            Some(_) => PolicyRead::Untrusted,
+            None => PolicyRead::Trusted(length),
+        }
     }
 
     fn now(&mut self) -> u64 {
