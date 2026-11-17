@@ -4328,6 +4328,41 @@ pub const DISK_CHECK: CommandDefinition = CommandDefinition {
     surface: DISK_SURFACE,
 };
 
+/// What `disk partitions --json` writes (D634).
+pub const DISK_PARTITIONS_FIELDS: [Field; 5] = [
+    field("device", FieldType::Text),
+    field("table", FieldType::Text),
+    field("partitions", FieldType::List),
+    field("unallocated", FieldType::List),
+    field("systems", FieldType::List),
+];
+
+/// `disk partitions` (D634, docs/ux/installer-dual-boot-v0.1.md section 7).
+pub const DISK_PARTITIONS: CommandDefinition = CommandDefinition {
+    words: &["disk", "partitions"],
+    summary: "Lists a disk's partitions and the systems on them.",
+    description: "Reads a disk's partition table (/dev/vda to /dev/vdd) and changes nothing: the \
+                  table (gpt, mbr, none or damaged), each partition with its number, first \
+                  sector, size, type, file system and the system it holds, the free runs of \
+                  1 MiB or more between them, and the systems found (Windows, macOS, Linux, \
+                  EggOS); - where a value is unknown. --json writes one object, sizes in bytes.",
+    options: &[JSON_OPTION],
+    operands: &[DISK_OPERAND],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Object(&DISK_PARTITIONS_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&crate::errors::NO_SUCH_DISK, 1),
+        exits(&PERMISSION_DENIED, 1),
+        exits(&FAILED, 1),
+    ],
+    examples: &[refused_example("disk partitions /dev/vdb")],
+    surface: DISK_SURFACE,
+};
+
 /// `disk install` (D241).
 pub const DISK_INSTALL: CommandDefinition = CommandDefinition {
     words: &["disk", "install"],
@@ -4679,7 +4714,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 126] = [
+pub static COMMANDS: [CommandDefinition; 127] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4714,6 +4749,7 @@ pub static COMMANDS: [CommandDefinition; 126] = [
     DISK_FORMAT,
     DISK_INSTALL,
     DISK_LIST,
+    DISK_PARTITIONS,
     DISK_REPAIR,
     DOWNLOAD_CANCEL,
     DOWNLOAD_CLEAR,

@@ -27976,3 +27976,16 @@ the license, by an explicit instruction recorded here.
   placement uses free runs only; the EFI system partition's folder probes (`bootmgfw.efi`,
   distribution names) wait for reading FAT folders here; the command, the tool, the pane
   and the writing steps are the rest of docs/follow-ups.md's dual-boot item.
+
+
+## D635 `disk partitions` and `disk_partitions` (M8; installer dual boot v0.1 section 7; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Claude Fable's design, D16)
+- **Decision.** The `disk` command gains `disk partitions [--json] <device>` over D634's
+  record (`eggos_files::partitions::disk_layout`, which finds the disk as `disk list` does):
+  the text form prints the table kind, then one line a partition and a free run in sector
+  order (`NUMBER  START  SIZE  TYPE  FS  LABEL  SYSTEM  FREE  SHRINK`, `-` for a run's number
+  and for what is unknown); `--json` writes one object with `device`, `table`, `partitions`,
+  `unallocated` and `systems` as the brief lists them. The registry gains `DISK_PARTITIONS`
+  (command) and `disk_partitions` (tool, view grant, read-only, the device checked as the
+  other disk tools' is), and the MCP server's table its twin.
+- **Not yet.** Building and running; `label`, `used_bytes` and `free_bytes` are null until
+  the GPT names and the file systems' usage are read; the Storage pane's line.

@@ -8,6 +8,7 @@ use alloc::format;
 use alloc::string::String;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_eggfs::{CheckMode, DiskCheck};
+use eggos_files::partitions::DiskLayout;
 use eggos_files::storage::{
     self, DiskRecord, StorageError, WholeDisks, erased_text, headline, outcome_word,
 };
@@ -15,7 +16,8 @@ use eggos_mcp::json::JsonWriter;
 use eggos_mcp::server::write_error;
 
 /// The command's usage, printed for a usage error.
-pub const USAGE: &str = "usage: disk list [--json] | disk check [--json] <device> | disk repair \
+pub const USAGE: &str = "usage: disk list [--json] | disk partitions [--json] <device> | disk \
+                         check [--json] <device> | disk repair \
                          [--json] [--dry-run] <device> | disk format [--label NAME] [--yes] \
                          [--dry-run] <device> | disk install [--yes] [--dry-run] <device>\n";
 /// The exit status of a usage error.
@@ -80,6 +82,7 @@ pub fn run(disks: &mut impl WholeDisks, console: &mut impl Console, arguments: &
     let plain = !options.dry_run && !options.yes && options.label.is_none();
     match words[..count] {
         ["list"] if plain => list(disks, console, options.json),
+        ["partitions", device] if plain => partitions(disks, console, device, options.json),
         ["check", device] if plain => {
             check(disks, console, device, CheckMode::ReadOnly, options.json)
         }
@@ -236,6 +239,156 @@ fn list(disks: &mut impl WholeDisks, console: &mut impl Console, json: bool) -> 
             true => write_record(console, record),
             false => console.write_output(list_line(record).as_bytes()),
         }
+    }
+    0
+}
+
+fn optional_u64(out: &mut JsonWriter<'_>, key: &str, value: Option<u64>) {
+    out.key(key);
+    match value {
+        Some(value) => out.u64(value),
+        None => out.null(),
+    }
+}
+
+fn write_layout(console: &mut impl Console, device: &str, layout: &DiskLayout) {
+    let mut buffer = alloc::vec![0u8; RECORD_BYTES * (2 + layout.partitions.len())];
+    let mut out = JsonWriter::new(&mut buffer);
+    out.begin_object();
+    out.key("device");
+    out.string(device);
+    out.key("table");
+    out.string(layout.table.name());
+    out.key("partitions");
+    out.begin_array();
+    for partition in &layout.partitions {
+        out.begin_object();
+        out.key("number");
+        out.u64(partition.number as u64);
+        out.key("first_sector");
+        out.u64(partition.first_sector);
+        out.key("sectors");
+        out.u64(partition.sectors);
+        out.key("size_bytes");
+        out.u64(partition.size_bytes());
+        out.key("type");
+        out.string(partition.kind.name());
+        out.key("file_system");
+        out.string(partition.file_system.name());
+        out.key("label");
+        out.null();
+        out.key("system");
+        match partition.system {
+            Some(system) => out.string(system.name()),
+            None => out.null(),
+        }
+        out.key("system_name");
+        match partition.system {
+            Some(system) => out.string(system.shown()),
+            None => out.null(),
+        }
+        optional_u64(&mut out, "used_bytes", None);
+        optional_u64(&mut out, "free_bytes", None);
+        optional_u64(&mut out, "shrinkable_bytes", partition.shrinkable_bytes);
+        out.key("shrink_blocked");
+        match partition.shrink_blocked {
+            Some(reason) => out.string(reason.name()),
+            None => out.null(),
+        }
+        out.end_object();
+    }
+    out.end_array();
+    out.key("unallocated");
+    out.begin_array();
+    for run in &layout.unallocated {
+        out.begin_object();
+        out.key("first_sector");
+        out.u64(run.first_sector);
+        out.key("sectors");
+        out.u64(run.sectors);
+        out.key("size_bytes");
+        out.u64(run.size_bytes());
+        out.end_object();
+    }
+    out.end_array();
+    out.key("systems");
+    out.begin_array();
+    for found in &layout.systems {
+        out.begin_object();
+        out.key("system");
+        out.string(found.system.name());
+        out.key("name");
+        out.string(found.system.shown());
+        out.key("partition");
+        out.u64(found.partition as u64);
+        out.end_object();
+    }
+    out.end_array();
+    out.end_object();
+    out.end_line();
+    if !out.overflowed() {
+        console.write_output(out.as_bytes());
+    }
+}
+
+fn layout_lines(layout: &DiskLayout) -> String {
+    let mut lines: alloc::vec::Vec<(u64, String)> = layout
+        .partitions
+        .iter()
+        .map(|partition| {
+            let system = partition.system.map(|system| String::from(system.shown()));
+            let shrink = match (partition.shrinkable_bytes, partition.shrink_blocked) {
+                (Some(bytes), _) => storage_size(bytes),
+                (None, Some(reason)) => String::from(reason.name()),
+                (None, None) => String::from("-"),
+            };
+            (
+                partition.first_sector,
+                format!(
+                    "{}  {}  {}  {}  {}  -  {}  -  {shrink}\n",
+                    partition.number,
+                    partition.first_sector,
+                    storage_size(partition.size_bytes()),
+                    partition.kind.name(),
+                    partition.file_system.name(),
+                    dash(system),
+                ),
+            )
+        })
+        .collect();
+    for run in &layout.unallocated {
+        lines.push((
+            run.first_sector,
+            format!(
+                "-  {}  {}  unallocated  -  -  -  {}  -\n",
+                run.first_sector,
+                storage_size(run.size_bytes()),
+                storage_size(run.size_bytes()),
+            ),
+        ));
+    }
+    lines.sort_by_key(|(first, _)| *first);
+    let mut text = format!("table {}\nNUMBER  START  SIZE  TYPE  FS  LABEL  SYSTEM  FREE  SHRINK\n", layout.table.name());
+    for (_, line) in lines {
+        text.push_str(&line);
+    }
+    text
+}
+
+fn partitions(
+    disks: &mut impl WholeDisks,
+    console: &mut impl Console,
+    device: &str,
+    json: bool,
+) -> i32 {
+    let shown = storage::device_named(device).unwrap_or(device);
+    let (device, layout) = match eggos_files::partitions::disk_layout(disks, device) {
+        Ok(found) => found,
+        Err(error) => return refuse(console, json, shown, &error),
+    };
+    match json {
+        true => write_layout(console, device, &layout),
+        false => console.write_output(layout_lines(&layout).as_bytes()),
     }
     0
 }

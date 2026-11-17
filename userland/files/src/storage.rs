@@ -203,7 +203,8 @@ impl StorageError {
         }
     }
 
-    fn of(fault: Fault) -> Self {
+    /// The error a disk's fault is.
+    pub fn of(fault: Fault) -> Self {
         match fault {
             Fault::NotAllowed => StorageError::NotAllowed,
             Fault::Busy => StorageError::Busy,

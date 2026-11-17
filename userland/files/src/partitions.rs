@@ -3,7 +3,7 @@
 //! runs between them, and where an EggOS installed alongside them would go. Every probe only
 //! reads.
 
-use crate::storage::{Fault, MIN_INSTALL_BYTES, SECTOR_BYTES, WholeDisks};
+use crate::storage::{self, Fault, MIN_INSTALL_BYTES, SECTOR_BYTES, StorageError, WholeDisks};
 use alloc::string::String;
 use alloc::vec::Vec;
 use eggos_gpt::{Guid, guid};
@@ -528,6 +528,18 @@ pub fn table_kind(mbr: &[u8], gpt_header: Option<&eggos_gpt::Header>) -> TableKi
         (false, false, true) => TableKind::Mbr,
         _ => TableKind::None,
     }
+}
+
+/// The layout of attached disk `device` (`/dev/vdb` or `vdb`): what `disk partitions`
+/// reports, with the disk's device file.
+pub fn disk_layout(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+) -> Result<(&'static str, DiskLayout), StorageError> {
+    let record = storage::find(disks, device)?;
+    let layout = read_layout(disks, record.device, record.size_bytes / SECTOR_BYTES)
+        .map_err(StorageError::of)?;
+    Ok((record.device, layout))
 }
 
 /// Reads `device`'s table and partitions through `disks` and probes each partition's file

@@ -2432,6 +2432,27 @@ pub const DISK_LIST: ToolDefinition = reading(
     ToolResult::Items(records_of(&crate::commands::DISK_LIST)),
 );
 
+/// `disk_partitions` (D634).
+pub const DISK_PARTITIONS: ToolDefinition = ToolDefinition {
+    name: "disk_partitions",
+    title: "List a disk's partitions",
+    description: "Reads a disk's partition table, as `disk partitions --json` does, and changes \
+                  nothing: a JSON object with device, table (gpt, mbr, none or damaged), \
+                  partitions (number, first_sector, sectors, size_bytes, type, file_system, \
+                  label, system, system_name, used_bytes, free_bytes, shrinkable_bytes, \
+                  shrink_blocked), unallocated runs and the systems found. Needs the view \
+                  grant: it reads a whole disk.",
+    command: &["disk", "partitions"],
+    fixed: &["--json"],
+    arguments: &[DEVICE],
+    max_effect: Effect::Read,
+    grant: Some(Grant::View),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Never,
+    result: ToolResult::Text,
+};
+
 /// `disk_check` (D192).
 pub const DISK_CHECK: ToolDefinition = ToolDefinition {
     name: "disk_check",
@@ -2823,7 +2844,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 94] = [
+pub const TOOLS: [ToolDefinition; 95] = [
     LS,
     CAT,
     PS,
@@ -2876,6 +2897,7 @@ pub const TOOLS: [ToolDefinition; 94] = [
     LOGCAT,
     APP_SHOW,
     DISK_LIST,
+    DISK_PARTITIONS,
     DISK_CHECK,
     DISK_REPAIR,
     DISK_FORMAT,

@@ -172,6 +172,8 @@ pub enum Kind {
     WmDesktopNew,
     /// `disk_list`: the disks (D192).
     DiskList,
+    /// `disk_partitions`: a disk's partitions and systems (D634).
+    DiskPartitions,
     /// `disk_check`: checks an unmounted disk (D192).
     DiskCheck,
     /// `disk_repair`: repairs an unmounted disk (D192).
@@ -477,7 +479,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 94] = [
+pub const TOOLS: [Tool; 95] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -719,6 +721,15 @@ pub const TOOLS: [Tool; 94] = [
         &registry::DISK_LIST,
         Kind::DiskList,
         twin("/bin/disk", &["list", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::DISK_PARTITIONS,
+        Kind::DiskPartitions,
+        twin(
+            "/bin/disk",
+            &["partitions", "--json"],
+            Operand::Path(DEVICE_PATH),
+        ),
     ),
     tool(
         &registry::DISK_CHECK,
