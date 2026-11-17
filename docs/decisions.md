@@ -28246,3 +28246,20 @@ the license, by an explicit instruction recorded here.
   section 6's colours and sizes (text console first, which serial consoles also show); "the
   last start did not finish"; the firmware entry for `\EFI\EGGOS\` (section 6's first
   paragraph); `settings get|set boot.*`.
+
+
+## D652 The loader writes EggOS's firmware boot entry on its first start from `\EFI\EGGOS\` (M8; installer dual boot v0.1 section 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Section 6 has the installation add a firmware entry named `EggOS`, first in the
+  boot order. EggOS's userland cannot reach the firmware's variables (the kernel keeps no UEFI
+  runtime services), so the loader does it: when it was started from `\EFI\EGGOS\` and no
+  `Boot####` in `BootOrder` is named `EggOS` and ends with its own file's path, it writes an
+  active load option for its file (its partition's device path, then its file-path nodes) under
+  the first `Boot####` number the firmware does not hold (a size-0 read that does not answer
+  "not found" counts as held), then `BootOrder` with that number first and the others after it
+  in their order. A refused write leaves everything as it was. It runs before the menu, so the
+  machine's next start comes to EggOS's menu. So the first start after installing alongside
+  is the user's choice in the firmware's own boot menu (D648's done line says so), and every
+  later one is EggOS's. A user who moves EggOS down later is not overruled: an existing entry
+  is never moved.
+- **Not yet.** Building and running; the whole-disk install's entry (it starts from
+  `\EFI\BOOT\`, which a USB stick shares, so the loader cannot tell them apart yet).

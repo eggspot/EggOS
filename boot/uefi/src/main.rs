@@ -12,6 +12,8 @@
 mod efi;
 #[cfg_attr(not(eggos_uefi), allow(dead_code))]
 mod elf;
+#[cfg_attr(not(eggos_uefi), allow(dead_code))]
+mod firmware_entry;
 #[cfg(eggos_uefi)]
 mod firmware_menu;
 #[cfg(eggos_uefi)]

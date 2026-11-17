@@ -3,6 +3,7 @@ use core::ptr::{null, null_mut};
 
 use crate::efi::{self, InputKey};
 use crate::loader::{Firmware, print, read_file};
+use crate::firmware_entry;
 use crate::menu::{self, Action, Entry, Key, Kind, Menu, Text};
 use crate::paths::{self, Path};
 
@@ -52,6 +53,18 @@ fn variable_named(firmware: &Firmware, wanted: &[u16; NAME_UNITS], buffer: &mut 
         )
     };
     (!efi::is_error(status)).then_some(size)
+}
+
+fn variable_exists(firmware: &Firmware, wanted: &[u16; NAME_UNITS]) -> bool {
+    let Some(services) = runtime(firmware) else {
+        return true;
+    };
+    let mut size = 0;
+    // SAFETY: `wanted` is a NUL-ended UTF-16 name; a size of 0 lets the firmware write nothing.
+    let status = unsafe {
+        (services.get_variable)(wanted.as_ptr(), &efi::GLOBAL_VARIABLE, null_mut(), &mut size, null_mut())
+    };
+    status != efi::NOT_FOUND
 }
 
 fn set_variable(firmware: &Firmware, wanted: &str, bytes: &[u8]) -> bool {
@@ -269,5 +282,46 @@ pub fn run(firmware: &Firmware, root: *mut efi::File, own_path: Option<&Path>) -
             }
         }
         show_hint(&menu);
+    }
+}
+
+/// Writes EggOS's own `Boot####` entry for the loader's file and puts it first in `BootOrder`
+/// (D652), unless an entry named EggOS already starts that file; a firmware that refuses the
+/// write leaves the machine as it was.
+pub fn add_own_entry(firmware: &Firmware, partition: &[u8], file: &[u8]) {
+    let mut order = [0u8; MOST_BOOT_ORDER_ENTRIES * 2];
+    let order_length = variable(firmware, "BootOrder", &mut order).unwrap_or(0).min(order.len());
+    for pair in order[..order_length].chunks_exact(2) {
+        let number = u16::from_le_bytes([pair[0], pair[1]]);
+        let mut bytes = [0u8; MOST_OPTION_BYTES];
+        let Some(length) = variable_named(firmware, &boot_option_name(number), &mut bytes) else {
+            continue;
+        };
+        if menu::load_option_of(&bytes[..length.min(bytes.len())])
+            .is_some_and(|option| firmware_entry::starts_file(&option, file))
+        {
+            return;
+        }
+    }
+    let mut path = [0u8; MOST_OPTION_BYTES];
+    let Some(path_length) = firmware_entry::file_device_path(partition, file, &mut path) else {
+        return;
+    };
+    let mut option = [0u8; MOST_OPTION_BYTES];
+    let Some(option_length) = firmware_entry::load_option(&path[..path_length], &mut option) else {
+        return;
+    };
+    let free = firmware_entry::first_free(|number| variable_exists(firmware, &boot_option_name(number)));
+    let Some(number) = free else {
+        return;
+    };
+    let mut wanted = Text::<16>::new();
+    let _ = write!(wanted, "Boot{number:04X}");
+    if !set_variable(firmware, wanted.as_str(), &option[..option_length]) {
+        return;
+    }
+    let mut new_order = [0u8; MOST_BOOT_ORDER_ENTRIES * 2 + 2];
+    if let Some(length) = firmware_entry::order_with_first(&order[..order_length], number, &mut new_order) {
+        set_variable(firmware, "BootOrder", &new_order[..length]);
     }
 }

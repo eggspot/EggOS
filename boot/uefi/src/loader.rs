@@ -556,13 +556,11 @@ fn boot_data(firmware: &Firmware) -> Result<BootData, &'static str> {
 
 const MOST_DEVICE_PATH_BYTES: usize = 1024;
 
-fn image_path(loaded: *mut efi::LoadedImage) -> Option<Path> {
-    // SAFETY: `loaded` is the firmware's loaded image protocol for this image.
-    let mut node = unsafe { (*loaded).file_path }.cast::<u8>().cast_const();
+pub(crate) fn copy_device_path(first: *const efi::DevicePath, bytes: &mut [u8]) -> Option<usize> {
+    let mut node = first.cast::<u8>();
     if node.is_null() {
         return None;
     }
-    let mut bytes = [0u8; MOST_DEVICE_PATH_BYTES];
     let mut used = 0;
     loop {
         // SAFETY: each node is at least its 4-byte header, and the path ends with an end node.
@@ -577,12 +575,37 @@ fn image_path(loaded: *mut efi::LoadedImage) -> Option<Path> {
         bytes[used..used + length].copy_from_slice(whole);
         used += length;
         if end {
-            break;
+            return Some(used);
         }
         // SAFETY: the next node starts right after this one, inside the same device path.
         node = unsafe { node.add(length) };
     }
+}
+
+fn image_file_nodes(loaded: *mut efi::LoadedImage, bytes: &mut [u8]) -> Option<usize> {
+    // SAFETY: `loaded` is the firmware's loaded image protocol for this image.
+    copy_device_path(unsafe { (*loaded).file_path }.cast_const(), bytes)
+}
+
+fn image_path(loaded: *mut efi::LoadedImage) -> Option<Path> {
+    let mut bytes = [0u8; MOST_DEVICE_PATH_BYTES];
+    let used = image_file_nodes(loaded, &mut bytes)?;
     paths::file_path_of(&bytes[..used])
+}
+
+fn add_own_entry(firmware: &Firmware, loaded: *mut efi::LoadedImage, device: Handle) {
+    let mut file = [0u8; MOST_DEVICE_PATH_BYTES];
+    let Some(file_length) = image_file_nodes(loaded, &mut file) else {
+        return;
+    };
+    let Ok(partition) = firmware.protocol::<efi::DevicePath>(device, &efi::DEVICE_PATH_PROTOCOL) else {
+        return;
+    };
+    let mut partition_bytes = [0u8; MOST_DEVICE_PATH_BYTES];
+    let Some(partition_length) = copy_device_path(partition.cast_const(), &mut partition_bytes) else {
+        return;
+    };
+    crate::firmware_menu::add_own_entry(firmware, &partition_bytes[..partition_length], &file[..file_length]);
 }
 
 fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str> {
@@ -602,6 +625,9 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
         return Err("the boot partition could not be opened");
     }
     let own_path = image_path(loaded);
+    if own_path.as_ref().is_some_and(|own| crate::firmware_entry::wants_entry(own)) {
+        add_own_entry(firmware, loaded, device);
+    }
     crate::firmware_menu::run(firmware, root, own_path.as_ref())?;
     let beside = |name: &str| -> Option<&'static [u8]> {
         let wanted = paths::beside(own_path.as_ref()?, name)?;
