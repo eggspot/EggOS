@@ -1,10 +1,13 @@
-//! Wired Ethernet adapters on PCI (D240): Intel's e1000 and e1000e (82540 to I219), Intel's igc
-//! (I225 and I226) and Realtek's RTL8111/8168 and RTL8125. Each keeps a ring of 32 receive and 32
-//! transmit descriptors with a 2 KiB buffer each in one block of DMA memory, and is polled.
+//! Wired Ethernet adapters on PCI (D240, D615): Intel's e1000 and e1000e (82540 to I219), igb
+//! (82575 to I211) and igc (I225 and I226), Intel's ixgbe (82599, X540, X550), Realtek's
+//! RTL8111/8168 and RTL8125, and Realtek's RTL8139. Each keeps its rings and 2 KiB buffers in
+//! one block of DMA memory, and is polled.
 
 pub mod e1000;
 pub mod igc;
+pub mod ixgbe;
 pub mod realtek;
+pub mod rtl8139;
 
 use crate::dma::DmaMemory;
 use crate::storage::{copy_in, copy_out};

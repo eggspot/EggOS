@@ -153,7 +153,7 @@ and is not listed per item.
 - [x] NVMe namespaces past the first (D238) — code written, unbuilt, D613
 - [x] AHCI port multipliers (D238) — code written, unbuilt, D614
 - [x] Linux-style disk names (`nvme0n1`, `sda`) beside `vdX`, and more than four disks (D238) — code written, unbuilt, D613
-- [ ] Ethernet: Intel igb (I210/I211), ixgbe (82599/X540/X550) and Realtek RTL8139 drivers (D240)
+- [x] Ethernet: Intel igb (I210/I211), ixgbe (82599/X540/X550) and Realtek RTL8139 drivers (D240) — code written, unbuilt, D615
 - [ ] Ethernet: jumbo frames and Wake-on-LAN (D240)
 - [ ] Wi-Fi: WPA2/WPA3-Enterprise (802.1X with EAP-PEAP/MSCHAPv2 and EAP-TLS) and roaming between access points of one network (D246)
 - [ ] x86_64: the paranoid GS check in the NMI, double-fault, machine-check and debug handlers, and NMIs from ring 3 handled by the kernel (D47, D49, D248)

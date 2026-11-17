@@ -1,5 +1,7 @@
-//! Intel's I225 and I226 adapters (igc), with advanced descriptors on queue 0 (Intel's
-//! Ethernet Controller I225 datasheet; D240).
+//! Intel's adapters with advanced descriptors on queue 0: the I225 and I226 (igc; Intel's
+//! Ethernet Controller I225 datasheet; D240) and the 82575, 82576, 82580, I350, I354, I210 and
+//! I211 (igb; their datasheets; D615), whose queue, receive-address and control registers sit
+//! at the same places; only the interrupt mask moved.
 
 use super::{
     BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS,
@@ -12,7 +14,8 @@ use core::sync::atomic::{Ordering, fence};
 
 const CTRL: usize = 0x0000;
 const STATUS: usize = 0x0008;
-const IMC: usize = 0x150c;
+const IGC_IMC: usize = 0x150c;
+const IGB_IMC: usize = 0x00d8;
 const EIMC: usize = 0x1528;
 const RCTL: usize = 0x0100;
 const TCTL: usize = 0x0400;
@@ -56,6 +59,62 @@ const PAYLOAD_SHIFT: u32 = 14;
 const DESCRIPTOR_BYTES: usize = 16;
 const MULTICAST_TABLE_WORDS: usize = 128;
 
+/// Which of the two generations an adapter is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// The 82575 to the I211.
+    Igb,
+    /// The I225 and I226.
+    Igc,
+}
+
+impl Family {
+    const fn interrupt_mask_clear(self) -> usize {
+        match self {
+            Self::Igb => IGB_IMC,
+            Self::Igc => IGC_IMC,
+        }
+    }
+}
+
+/// Whether the Intel device id is an 82575, 82576, 82580, I350, I354, I210 or I211 adapter.
+pub fn is_igb(device: u16) -> bool {
+    matches!(
+        device,
+        0x10a7
+            | 0x10a9
+            | 0x10d6
+            | 0x10c9
+            | 0x10e6
+            | 0x10e7
+            | 0x10e8
+            | 0x1526
+            | 0x150a
+            | 0x1518
+            | 0x150d
+            | 0x150e
+            | 0x150f
+            | 0x1510
+            | 0x1511
+            | 0x1516
+            | 0x1527
+            | 0x1521
+            | 0x1522
+            | 0x1523
+            | 0x1524
+            | 0x1f40
+            | 0x1f41
+            | 0x1f45
+            | 0x1533
+            | 0x1536
+            | 0x1537
+            | 0x1538
+            | 0x157b
+            | 0x157c
+            | 0x1539
+    )
+}
+
 /// Whether the Intel device id is an I225 or I226 adapter.
 pub fn is_igc(device: u16) -> bool {
     matches!(
@@ -88,19 +147,21 @@ pub struct Igc<R: RegisterIo, M: DmaMemory> {
 }
 
 impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
-    /// Resets the adapter at `regs` and starts queue 0 with its rings in `memory`.
+    /// Resets the adapter of `family` at `regs` and starts queue 0 with its rings in `memory`.
     pub fn new(
         regs: R,
         memory: M,
+        family: Family,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<Self, (Error, M)> {
+        let imc = family.interrupt_mask_clear();
         if memory.len() < super::MEMORY_BYTES {
             return Err((
                 Error::Unsupported("too little DMA memory for a network adapter"),
                 memory,
             ));
         }
-        regs.write32(IMC, u32::MAX);
+        regs.write32(imc, u32::MAX);
         regs.write32(EIMC, u32::MAX);
         let control = regs.read32(CTRL);
         regs.write32(CTRL, control | CTRL_RESET);
@@ -113,7 +174,7 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
             }
             core::hint::spin_loop();
         }
-        regs.write32(IMC, u32::MAX);
+        regs.write32(imc, u32::MAX);
         regs.write32(EIMC, u32::MAX);
         let low = regs.read32(RAL).to_le_bytes();
         let high = regs.read32(RAH).to_le_bytes();
@@ -270,5 +331,13 @@ mod tests {
         assert!(is_igc(0x15f3));
         assert!(is_igc(0x125c));
         assert!(!is_igc(0x15b8));
+    }
+
+    #[test]
+    fn the_igb_ids_are_not_the_igc_ones() {
+        assert!(is_igb(0x1533));
+        assert!(is_igb(0x10c9));
+        assert!(!is_igb(0x15f3));
+        assert!(!is_igc(0x1533));
     }
 }

@@ -27597,3 +27597,25 @@ the license, by an explicit instruction recorded here.
   device, each request choosing its device first; they are named `sda`, `sdb`... in order.
 - **Not yet.** Building and running; FIS-based switching (several devices' commands in flight
   at once); hot-plug behind a multiplier; ATAPI devices behind one.
+
+## D615 Ethernet: Intel igb and ixgbe, and Realtek RTL8139 (M13; D240's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's 82576, I210, 82599, X540 and X550 datasheets and Realtek's RTL8139 datasheet)
+- **igb** (82575, 82576, 82580, I350, I354, I210, I211): the igc driver now takes a `Family`.
+  The igb generation keeps queue 0's registers, the receive address, `SRRCTL` and the advanced
+  descriptors where igc has them; only the interrupt mask clear moves (`0x00d8` instead of
+  `0x150c`). `is_igb` lists the device ids.
+- **ixgbe** (`drivers/src/ethernet/ixgbe.rs`; 82599, X540, X550): reset (`CTRL.RST` and the
+  link reset), the EEPROM's auto-read and the DMA's set-up waited for, the receive address at
+  `0xa200`, CRC stripping in `HLREG0` and `RDRXCTL`, broadcast in `FCTRL`, queue 0 at `0x1000`
+  (receive) and `0x6000` (transmit) with `SRRCTL` at `0x2100`, `RXCTRL` and `DMATXCTL`
+  enabling the two directions, link from `LINKS`. The same 32-entry rings and advanced
+  descriptors as igc.
+- **RTL8139** (`drivers/src/ethernet/rtl8139.rs`; also the 8100, 8130 and 8138): powered on
+  through `CONFIG1`, reset, an 8 KiB receive ring (with its wrap slack) at `RBSTART` in which
+  each frame follows a 4-byte header and `CAPR` trails the read place by 16, and four transmit
+  buffers through `TSAD0`-`TSAD3` and `TSD0`-`TSD3`, short frames padded to 60 bytes; link
+  from `MSR`. It refuses DMA memory above 4 GiB.
+- The kernel's Ethernet probe takes all three (`Kind::Igc(family)`, `Kind::Ixgbe`,
+  `Kind::Rtl8139`), polled like the others.
+- **Not yet.** Building and running (QEMU has `igb` and `rtl8139`); interrupts for these
+  three; the X550's and X540's own PHY set-up beyond what the firmware leaves; SFP+ modules on
+  the 82599; several queues.

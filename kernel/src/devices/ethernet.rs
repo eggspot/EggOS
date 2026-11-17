@@ -1,6 +1,6 @@
-//! Wired Ethernet adapters on PCI (D240): Intel's e1000, e1000e and igc, Realtek's RTL8111/8168
-//! and RTL8125, the first one found installed as the network stack's adapter ([`crate::net`]),
-//! polled.
+//! Wired Ethernet adapters on PCI (D240, D615): Intel's e1000, e1000e, igb, igc and ixgbe,
+//! Realtek's RTL8111/8168, RTL8125 and RTL8139, the first one found installed as the network
+//! stack's adapter ([`crate::net`]), polled.
 
 use super::dma::DmaRegion;
 use super::{
@@ -8,7 +8,7 @@ use super::{
 };
 use crate::net::NetDevice;
 use alloc::boxed::Box;
-use eggos_drivers::ethernet::{self, MEMORY_BYTES, e1000, igc, realtek};
+use eggos_drivers::ethernet::{self, MEMORY_BYTES, e1000, igc, ixgbe, realtek, rtl8139};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_net::ethernet::MacAddress;
@@ -34,7 +34,9 @@ pub static ETHERNET_DRIVER: DriverDescriptor = DriverDescriptor {
 enum Adapter {
     E1000(e1000::E1000<Mmio, DmaRegion>),
     Igc(igc::Igc<Mmio, DmaRegion>),
+    Ixgbe(ixgbe::Ixgbe<Mmio, DmaRegion>),
     Realtek(realtek::Realtek<Mmio, DmaRegion>),
+    Rtl8139(rtl8139::Rtl8139<Mmio, DmaRegion>),
 }
 
 impl NetDevice for Adapter {
@@ -42,7 +44,9 @@ impl NetDevice for Adapter {
         MacAddress(match self {
             Adapter::E1000(adapter) => adapter.mac(),
             Adapter::Igc(adapter) => adapter.mac(),
+            Adapter::Ixgbe(adapter) => adapter.mac(),
             Adapter::Realtek(adapter) => adapter.mac(),
+            Adapter::Rtl8139(adapter) => adapter.mac(),
         })
     }
 
@@ -54,7 +58,9 @@ impl NetDevice for Adapter {
         match self {
             Adapter::E1000(adapter) => adapter.is_link_up(),
             Adapter::Igc(adapter) => adapter.is_link_up(),
+            Adapter::Ixgbe(adapter) => adapter.is_link_up(),
             Adapter::Realtek(adapter) => adapter.is_link_up(),
+            Adapter::Rtl8139(adapter) => adapter.is_link_up(),
         }
     }
 
@@ -62,7 +68,9 @@ impl NetDevice for Adapter {
         match self {
             Adapter::E1000(adapter) => adapter.receive(frame),
             Adapter::Igc(adapter) => adapter.receive(frame),
+            Adapter::Ixgbe(adapter) => adapter.receive(frame),
             Adapter::Realtek(adapter) => adapter.receive(frame),
+            Adapter::Rtl8139(adapter) => adapter.receive(frame),
         }
     }
 
@@ -70,7 +78,9 @@ impl NetDevice for Adapter {
         match self {
             Adapter::E1000(adapter) => adapter.transmit(frame),
             Adapter::Igc(adapter) => adapter.transmit(frame),
+            Adapter::Ixgbe(adapter) => adapter.transmit(frame),
             Adapter::Realtek(adapter) => adapter.transmit(frame),
+            Adapter::Rtl8139(adapter) => adapter.transmit(frame),
         }
         .map_err(ethernet::Error::description)
     }
@@ -78,14 +88,19 @@ impl NetDevice for Adapter {
 
 enum Kind {
     E1000(e1000::Family),
-    Igc,
+    Igc(igc::Family),
+    Ixgbe,
     Realtek(realtek::Generation),
+    Rtl8139,
 }
 
 fn kind_of(vendor: u16, device: u16) -> Option<Kind> {
     match vendor {
-        INTEL if igc::is_igc(device) => Some(Kind::Igc),
+        INTEL if igc::is_igc(device) => Some(Kind::Igc(igc::Family::Igc)),
+        INTEL if igc::is_igb(device) => Some(Kind::Igc(igc::Family::Igb)),
+        INTEL if ixgbe::is_ixgbe(device) => Some(Kind::Ixgbe),
         INTEL => e1000::family_of(device).map(Kind::E1000),
+        REALTEK if rtl8139::is_rtl8139(device) => Some(Kind::Rtl8139),
         REALTEK => realtek::generation_of(device).map(Kind::Realtek),
         _ => None,
     }
@@ -131,7 +146,15 @@ fn probe_ethernet(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError>
         Kind::E1000(family) => Adapter::E1000(
             e1000::E1000::new(regs, memory, family, &mut keep_waiting).map_err(refuse)?,
         ),
-        Kind::Igc => Adapter::Igc(igc::Igc::new(regs, memory, &mut keep_waiting).map_err(refuse)?),
+        Kind::Igc(family) => Adapter::Igc(
+            igc::Igc::new(regs, memory, family, &mut keep_waiting).map_err(refuse)?,
+        ),
+        Kind::Ixgbe => {
+            Adapter::Ixgbe(ixgbe::Ixgbe::new(regs, memory, &mut keep_waiting).map_err(refuse)?)
+        }
+        Kind::Rtl8139 => Adapter::Rtl8139(
+            rtl8139::Rtl8139::new(regs, memory, &mut keep_waiting).map_err(refuse)?,
+        ),
         Kind::Realtek(generation) => Adapter::Realtek(
             realtek::Realtek::new(regs, memory, generation, &mut keep_waiting).map_err(refuse)?,
         ),
