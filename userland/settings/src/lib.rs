@@ -22,6 +22,7 @@ pub mod grant_prompt;
 pub mod input_panes;
 pub mod keys;
 pub mod managed;
+pub mod management_pane;
 pub mod mouse_devices;
 pub mod network_pane;
 pub mod network_view;

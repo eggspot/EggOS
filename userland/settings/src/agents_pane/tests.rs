@@ -448,7 +448,7 @@ fn an_agent_cannot_change_grants_through_the_element_tree() {
     assert!(window.grants_to_write().get(&id("tv")).is_none());
 }
 
-const ABOUT_ROW_Y: i32 = 44 + (ABOUT as i32 - 1) * 32 + 10;
+const ABOUT_ROW_Y: i32 = 44 + (ABOUT as i32 - 2) * 32 + 10;
 const GRANTS_VIEW: usize = 0;
 const ACTIVITY: usize = 1;
 

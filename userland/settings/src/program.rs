@@ -1819,6 +1819,11 @@ impl Application<CAPACITY> for Settings {
                 let _ = save_update_policy(policy);
                 self.window.show_components(components_read());
             }
+            Some(Request::ReadPolicy) => {
+                if let Some(Request::ReadComponents) = self.window.show_policy(policy_file()) {
+                    self.window.show_components(components_read());
+                }
+            }
             Some(Request::WifiJoin(join)) => {
                 let crate::settings_window::WifiJoin {
                     name,
@@ -1924,7 +1929,7 @@ impl Application<CAPACITY> for Settings {
     }
 
     fn focused(&mut self, _now_ms: u32) {
-        self.show_windows_layer();
+        self.show_installed_panes();
         if self.unsaved_profile.is_some() {
             return;
         }
@@ -1981,6 +1986,9 @@ impl Settings {
                 self.window.show_devices(read.map(|length| &text[..length]));
             }
             Some(Request::ReadComponents) => self.window.show_components(components_read()),
+            Some(Request::ReadPolicy) => {
+                let _ = self.window.show_policy(policy_file());
+            }
             _ if pane == NETWORK => {
                 self.window.show_network_adapter(network_adapter());
                 self.window.show_wifi(wifi_status(), wifi_chosen());
@@ -1989,10 +1997,13 @@ impl Settings {
         }
     }
 
-    fn show_windows_layer(&mut self) {
+    fn show_installed_panes(&mut self) {
         if let Some(Request::ReadComponents) =
             self.window.show_windows_layer(windows_layer_installed())
         {
+            self.window.show_components(components_read());
+        }
+        if let Some(Request::ReadComponents) = self.window.show_policy(policy_file()) {
             self.window.show_components(components_read());
         }
     }
@@ -2030,7 +2041,7 @@ impl Settings {
                 let next = self
                     .window
                     .show_component_job_ended(succeeded, components_read());
-                self.show_windows_layer();
+                self.show_installed_panes();
                 if next == Some(Request::StartComponentJob) {
                     self.start_component_job();
                 }
@@ -2065,7 +2076,7 @@ impl Settings {
                 self.window.show_removed(removed, components_read());
             }
         }
-        self.show_windows_layer();
+        self.show_installed_panes();
     }
 
     fn keyboard(&self) -> Option<Keyboard> {

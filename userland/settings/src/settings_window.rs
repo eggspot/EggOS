@@ -57,6 +57,7 @@ pub const DEFAULT_SIZE: (u32, u32) = (640, 440);
 pub const MINIMUM_SIZE: (u32, u32) = (640, 360);
 /// The most widgets the window holds.
 pub const CAPACITY: usize = 283
+    + crate::management_pane::WIDGETS
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
@@ -169,7 +170,7 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 13] = [
+pub const PANES: [&str; 14] = [
     "Appearance",
     "Network",
     "Display",
@@ -182,6 +183,7 @@ pub const PANES: [&str; 13] = [
     "Agents",
     "Windows",
     "Components",
+    "Management",
     "About",
 ];
 
@@ -207,13 +209,16 @@ pub const AGENTS: usize = 9;
 pub const WINDOWS: usize = 10;
 /// The `Components` pane's place in [`PANES`] (D235, docs/ux/components-v0.3.md).
 pub const COMPONENTS: usize = 11;
+/// The `Management` pane's place in [`PANES`] (D664, docs/ux/editions-policy-v0.1.md
+/// section 5.3): its row shows only while the `management` component is installed.
+pub const MANAGEMENT: usize = 12;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 12;
+pub const ABOUT: usize = 13;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 13] = [
+const PANE_WORDS: [&[&str]; 14] = [
     &[
         "theme",
         "dark",
@@ -529,6 +534,24 @@ const PANE_WORDS: [&[&str]; 13] = [
         "Remove",
     ],
     &[
+        "managed",
+        "management",
+        "policy",
+        "policies",
+        "organization",
+        "organisation",
+        "administrator",
+        "admin",
+        "locked",
+        "lock",
+        "MDM",
+        "Group Policy",
+        "work",
+        "school",
+        "automatic updates",
+        "update policy",
+    ],
+    &[
         "version",
         "system",
         "licence",
@@ -686,6 +709,9 @@ pub enum Request {
     StartComponentJob,
     /// Record how component updates are installed, then read the components again (D662).
     SetUpdatePolicy(eggos_components::state::UpdatePolicy),
+    /// Read the policy file for the Management pane, then [`SettingsWindow::show_policy`]
+    /// (D664).
+    ReadPolicy,
 }
 
 /// How setting the clock went, as the `Date & time` pane's status line says it.
@@ -911,6 +937,7 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
         AGENTS => write!(text, "Which agents may act for you"),
         WINDOWS => write!(text, "Registry of Windows programs"),
         COMPONENTS => write!(text, "Install and remove parts of EggOS"),
+        MANAGEMENT => write!(text, "Who manages this computer"),
         _ => write!(
             text,
             "EggOS {}, {}",
@@ -940,6 +967,8 @@ pub struct SettingsWindow {
     wifi: WifiSection,
     windows: WindowsPane,
     components: ComponentsPane,
+    management_pane: crate::management_pane::ManagementPane,
+    management: bool,
     windows_layer: bool,
     facts: Facts,
     pane: usize,
@@ -949,8 +978,8 @@ pub struct SettingsWindow {
     page: Page,
 }
 
-fn every_pane_but_windows() -> u32 {
-    ((1u32 << PANES.len()) - 1) & !(1 << WINDOWS)
+fn panes_listed_by_default() -> u32 {
+    ((1u32 << PANES.len()) - 1) & !(1 << WINDOWS) & !(1 << MANAGEMENT)
 }
 
 fn lowercase_contains(haystack: &str, needle: &str) -> bool {
@@ -1481,6 +1510,8 @@ impl SettingsWindow {
             AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], Shown::of(&facts));
         let power = PowerPane::build(&mut tree, panes[POWER], &facts);
         let about_devices = AboutPane::build(&mut tree, panes[ABOUT]);
+        let management_pane =
+            crate::management_pane::ManagementPane::build(&mut tree, panes[MANAGEMENT]);
         let network = NetworkPane::build(
             &mut tree,
             panes[NETWORK],
@@ -1513,7 +1544,7 @@ impl SettingsWindow {
         for (index, pane) in panes.iter().enumerate() {
             tree.set_shown(*pane, index == APPEARANCE);
         }
-        tree.set_shown_items(list, every_pane_but_windows());
+        tree.set_shown_items(list, panes_listed_by_default());
         tree.set_focus(Some(search), 0);
         let (width, height) = DEFAULT_SIZE;
         tree.resize(width as i32, height as i32);
@@ -1566,6 +1597,8 @@ impl SettingsWindow {
             wifi,
             windows,
             components,
+            management_pane,
+            management: false,
             windows_layer: false,
             facts,
             pane: APPEARANCE,
@@ -1815,6 +1848,9 @@ impl SettingsWindow {
             self.components.reset(&mut self.tree);
             return Some(Request::ReadComponents);
         }
+        if pane == MANAGEMENT {
+            return Some(Request::ReadPolicy);
+        }
         None
     }
 
@@ -1831,6 +1867,28 @@ impl SettingsWindow {
         };
         self.filter_list();
         request
+    }
+
+    /// Shows what the policy file says (D664): the `Management` row while the `management`
+    /// component is installed, and the pane's facts; a pane closing under it opens Components.
+    pub fn show_policy(&mut self, file: crate::managed::PolicyFile) -> Option<Request> {
+        self.management = file != crate::managed::PolicyFile::NotInstalled;
+        self.management_pane.show(&mut self.tree, &file, &self.facts);
+        self.filter_list();
+        match (self.management, self.pane == MANAGEMENT) {
+            (false, true) => self.open_pane(COMPONENTS),
+            _ => None,
+        }
+    }
+
+    /// Whether the `Management` row shows.
+    pub fn management_shown(&self) -> bool {
+        self.management
+    }
+
+    /// The Management pane.
+    pub fn management_pane(&self) -> &crate::management_pane::ManagementPane {
+        &self.management_pane
     }
 
     /// Whether the `Windows` row shows.
@@ -3004,7 +3062,10 @@ impl SettingsWindow {
             }
         }
         if !self.windows_layer {
-            shown &= every_pane_but_windows();
+            shown &= panes_listed_by_default() | (1 << MANAGEMENT);
+        }
+        if !self.management {
+            shown &= !(1 << MANAGEMENT);
         }
         self.tree.set_shown_items(self.widgets.list, shown);
         self.mark_rows();
@@ -3261,7 +3322,7 @@ mod tests {
         click(
             &mut window,
             40,
-            LIST_TOP + (ABOUT as i32 - 1) * SIDEBAR_ROW + 10,
+            LIST_TOP + (ABOUT as i32 - 2) * SIDEBAR_ROW + 10,
         );
         assert_eq!(window.pane(), ABOUT);
         assert!(window.widgets().rect(window.widgets.uptime).is_some());

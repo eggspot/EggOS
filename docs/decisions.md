@@ -28431,3 +28431,20 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the owner tooltip (`set_lock_owner`, 600 ms on the
   control or its lock); locks on the other panes' controls; the pane banner and the Management
   pane (sections 5.1, 5.3).
+
+
+## D664 The Management pane (M16 editions; editions-policy v0.1 sections 5.3 and 9; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Settings gains `Management` between `Components` and `About` (so `About`
+  moves to place 13), listed only while the `management` component is installed, like the
+  Windows row. Opening it reads the policy file (`Request::ReadPolicy`) and shows section
+  5.3's widgets: the heading, `Managed by Contoso IT`, the contact, `/etc/eggos/policy · N
+  settings locked`, the read-only `Locked settings` table (`Setting` 216, `Value` 104 with
+  `(pending)` while the running value differs, `Pane` 112, the pane found from the key's
+  first word), the agents line (`Agents: at most view write. Denied: 3 tools.`, hidden when the
+  policy says nothing about agents) and the status line (ignored lines first, then pending
+  values). No file: `Not managed` and `No policy file at /etc/eggos/policy.`; an untrusted
+  file: `The policy file cannot be trusted` and the reason. The program reads the file at
+  start and with the other installed-panes checks; when the component goes while the pane is
+  open, Components opens. Search words are section 5.3's.
+- **Not yet.** Building and running; Enter or a double-click on a row showing its pane; the
+  pane banner (section 5.1); the phone and TV layouts (section 10).
