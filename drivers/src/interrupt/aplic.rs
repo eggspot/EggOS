@@ -133,6 +133,12 @@ impl<R: RegisterIo> Aplic<R> {
         );
     }
 
+    /// Lets `source` interrupt again after [`Self::disable`] (a level line masked on arrival,
+    /// D632).
+    pub fn enable(&self, source: u32) {
+        self.regs.write32(SET_ENABLE_NUMBER, source);
+    }
+
     /// Stops `source` from interrupting.
     pub fn disable(&self, source: u32) {
         self.regs.write32(CLEAR_ENABLE_NUMBER, source);

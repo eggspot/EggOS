@@ -30,6 +30,9 @@ const NO_CONTEXT: usize = usize::MAX;
 const DEVICE_PRIORITY: u32 = 1;
 
 static CONTEXT: AtomicUsize = AtomicUsize::new(NO_CONTEXT);
+const SOURCE_WORDS: usize = 32;
+static MASKED_ON_ARRIVAL: [core::sync::atomic::AtomicU32; SOURCE_WORDS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; SOURCE_WORDS];
 
 static DEVICE_LINES: SourceLines = SourceLines::new();
 
@@ -369,6 +372,70 @@ pub(super) fn route_device(
     Ok(line)
 }
 
+fn masks_on_arrival(source: u32) -> bool {
+    MASKED_ON_ARRIVAL
+        .get((source / 32) as usize)
+        .is_some_and(|word| word.load(Ordering::Acquire) & 1 << (source % 32) != 0)
+}
+
+fn source_context(line: crate::DeviceLine) -> usize {
+    match SOURCE_CONTEXTS[line.index()].load(Ordering::Acquire) {
+        NO_CONTEXT => CONTEXT.load(Ordering::Relaxed),
+        steered => steered,
+    }
+}
+
+fn set_source_enabled(line: crate::DeviceLine, source: u32, enabled: bool) {
+    if let Some(aplic) = aplic() {
+        match enabled {
+            true => aplic.enable(source),
+            false => aplic.disable(source),
+        }
+        return;
+    }
+    let context = source_context(line);
+    if context < MAPPED_CONTEXTS {
+        match enabled {
+            true => plic(context).enable(source, DEVICE_PRIORITY),
+            false => plic(context).disable(source),
+        }
+    }
+}
+
+/// Routes `source` as [`route_device`] does, as a level line masked each time it arrives
+/// until [`unmask_device`] (a PCI function's INTx, D632).
+pub(super) fn route_masked_device(
+    context: Option<usize>,
+    source: u32,
+    mode: aplic::SourceMode,
+) -> Result<crate::DeviceLine, &'static str> {
+    let word = MASKED_ON_ARRIVAL
+        .get((source / 32) as usize)
+        .ok_or("the source is past the interrupt controller's")?;
+    let line = route_device(context, source, mode)?;
+    word.fetch_or(1 << (source % 32), Ordering::AcqRel);
+    Ok(line)
+}
+
+fn mask_on_arrival(source: u32) {
+    if !masks_on_arrival(source) {
+        return;
+    }
+    if let Some(line) = DEVICE_LINES.line_of(source) {
+        set_source_enabled(line, source, false);
+    }
+}
+
+/// Lets `line`'s source interrupt again when it is masked on arrival.
+pub(super) fn unmask_device(line: crate::DeviceLine) {
+    let Some(source) = DEVICE_LINES.source_of(line) else {
+        return;
+    };
+    if masks_on_arrival(source) {
+        set_source_enabled(line, source, true);
+    }
+}
+
 /// Gives `line` back: its source stops interrupting the context it was routed or steered to
 /// (D413).
 pub(super) fn release_device(line: crate::DeviceLine) {
@@ -376,6 +443,9 @@ pub(super) fn release_device(line: crate::DeviceLine) {
     let Some(source) = DEVICE_LINES.release(line) else {
         return;
     };
+    if let Some(word) = MASKED_ON_ARRIVAL.get((source / 32) as usize) {
+        word.fetch_and(!(1 << (source % 32)), Ordering::AcqRel);
+    }
     if MSI_IDENTITIES[line.index()].swap(0, Ordering::AcqRel) != 0 {
         enable_identity(source, false);
         return;
@@ -440,10 +510,17 @@ pub(super) fn interrupt(pc: u64) {
         return;
     };
     let delivered = delivered_as(source);
+    let masked = delivered.is_some() && masks_on_arrival(source);
+    if masked {
+        plic.complete(source);
+        mask_on_arrival(source);
+    }
     if let Some(delivered) = delivered {
         crate::interrupt::deliver(delivered);
     }
-    plic.complete(source);
+    if !masked {
+        plic.complete(source);
+    }
     if delivered.is_none() {
         report_unexpected("unexpected PLIC source", source, pc);
     }
@@ -469,7 +546,10 @@ fn report_unexpected(name: &'static str, source: u32, pc: u64) {
 
 fn deliver_source(identity: u32, pc: u64) {
     match delivered_as(identity) {
-        Some(delivered) => crate::interrupt::deliver(delivered),
+        Some(delivered) => {
+            mask_on_arrival(identity);
+            crate::interrupt::deliver(delivered)
+        }
         None => report_unexpected("unexpected AIA identity", identity, pc),
     }
 }

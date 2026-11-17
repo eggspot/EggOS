@@ -27929,3 +27929,16 @@ the license, by an explicit instruction recorded here.
   gives no interrupt rather than a wrong one.
 - **Not yet.** Building and running; hosts whose map lists functions behind bridges
   themselves (none known among the generic ECAM hosts).
+
+
+## D632 riscv64 INTx masked on arrival at the PLIC or APLIC (M8; D623's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, the PLIC and AIA specifications' claim, completion and enable rules)
+- **Decision.** `Platform::route_masked_device_interrupt` on riscv64 routes the source as
+  `route_device_interrupt` does and marks it in a 1024-bit table. When a marked source
+  arrives it is disabled where it was routed (the PLIC context it was routed or steered to,
+  or the APLIC's `clrienum`) before the kernel hears of it, and `unmask_device_interrupt`
+  enables it again (`setienum`, the new `Aplic::enable`, or the PLIC enable bit).
+- **Order at the PLIC.** A completion for a source the context has disabled is ignored, which
+  would leave the gateway waiting for good; so a marked source is completed first, then
+  disabled, then delivered: a line still asserted pends again and fires once it is enabled.
+  Unmarked sources keep the order they had (deliver, then complete).
+- **Not yet.** Building and running.

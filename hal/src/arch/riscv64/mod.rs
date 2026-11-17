@@ -470,6 +470,25 @@ impl Platform for Riscv64 {
         console_input::route_device(context, source, mode)
     }
 
+    fn route_masked_device_interrupt(
+        specifier: &crate::fdt::InterruptSpecifier,
+    ) -> Result<crate::DeviceLine, &'static str> {
+        use eggos_drivers::interrupt::{aplic, plic};
+        let (source, mode) = match console_input::uses_aia() {
+            true => aplic::source_of_specifier(specifier.cells())?,
+            false => (
+                plic::source_of_specifier(specifier.cells())?,
+                aplic::SourceMode::LevelHigh,
+            ),
+        };
+        let context = plic_context_of(BOOT_HART.load(Ordering::Relaxed));
+        console_input::route_masked_device(context, source, mode)
+    }
+
+    fn unmask_device_interrupt(line: crate::DeviceLine) {
+        console_input::unmask_device(line);
+    }
+
     fn release_device_interrupt(line: crate::DeviceLine) {
         console_input::release_device(line);
     }
