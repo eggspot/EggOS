@@ -6,7 +6,8 @@
 
 use super::event;
 use super::{
-    NSBUTTON, NSBUTTON_META, NSCONTROL, NSCONTROL_META, NSTEXTFIELD, NSTEXTFIELD_META, NSVIEW,
+    NSBUTTON, NSBUTTON_META, NSCONTROL, NSCONTROL_META, NSSLIDER, NSSLIDER_META, NSTEXTFIELD,
+    NSTEXTFIELD_META, NSVIEW,
     application, drawing, is, store, store_copy, string, view, window, with_text,
 };
 use crate::objc::abi::{Id, Sel};
@@ -65,6 +66,208 @@ struct TextFieldFields {
     alignment: usize,
     read_only: bool,
     plain: bool,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct SliderFields {
+    control: ControlFields,
+    value: eggos_macos_gui::slider::SliderValue,
+    continuous: bool,
+    tracking: bool,
+}
+
+fn slider(object: Id) -> &'static mut SliderFields {
+    // SAFETY: the callers pass NSSlider instances.
+    unsafe { &mut *object.cast::<SliderFields>() }
+}
+
+extern "C" fn slider_init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
+    if this.is_null() {
+        return this;
+    }
+    view::fields(this).frame = frame;
+    let fields = slider(this);
+    fields.value = eggos_macos_gui::slider::SliderValue::default();
+    fields.continuous = true;
+    this
+}
+
+fn new_slider(class: Id, value: f64, min: f64, max: f64, target: Id, action: Sel) -> Id {
+    let object = view::new_with_frame_of(class, Frame::default());
+    if object.is_null() {
+        return object;
+    }
+    let fields = slider(object);
+    fields.value = eggos_macos_gui::slider::SliderValue {
+        min,
+        max,
+        ..eggos_macos_gui::slider::SliderValue::default()
+    };
+    fields.value.value = fields.value.settled(value);
+    fields.continuous = true;
+    control(object).target = target;
+    control(object).action = action as usize;
+    crate::foundation::autoreleased(object)
+}
+
+extern "C" fn slider_with_target(this: Id, _: Sel, target: Id, action: Sel) -> Id {
+    new_slider(this, 0.0, 0.0, 1.0, target, action)
+}
+
+extern "C" fn slider_with_value(this: Id, _: Sel, value: f64, min: f64, max: f64, target: Id, action: Sel) -> Id {
+    new_slider(this, value, min, max, target, action)
+}
+
+fn set_slider_value(this: Id, value: f64) {
+    let fields = slider(this);
+    fields.value.value = fields.value.settled(value);
+    changed(this);
+}
+
+extern "C" fn double_value(this: Id, _: Sel) -> f64 {
+    slider(this).value.value
+}
+
+extern "C" fn set_double_value(this: Id, _: Sel, value: f64) {
+    set_slider_value(this, value);
+}
+
+extern "C" fn float_value(this: Id, _: Sel) -> f32 {
+    slider(this).value.value as f32
+}
+
+extern "C" fn set_float_value(this: Id, _: Sel, value: f32) {
+    set_slider_value(this, f64::from(value));
+}
+
+extern "C" fn slider_integer_value(this: Id, _: Sel) -> isize {
+    slider(this).value.value.round() as isize
+}
+
+extern "C" fn set_slider_integer_value(this: Id, _: Sel, value: isize) {
+    set_slider_value(this, value as f64);
+}
+
+extern "C" fn slider_int_value(this: Id, _: Sel) -> i32 {
+    slider(this).value.value.round() as i32
+}
+
+extern "C" fn set_slider_int_value(this: Id, _: Sel, value: i32) {
+    set_slider_value(this, f64::from(value));
+}
+
+extern "C" fn min_value(this: Id, _: Sel) -> f64 {
+    slider(this).value.min
+}
+
+extern "C" fn set_min_value(this: Id, _: Sel, value: f64) {
+    slider(this).value.min = value;
+    let current = slider(this).value.value;
+    set_slider_value(this, current);
+}
+
+extern "C" fn max_value(this: Id, _: Sel) -> f64 {
+    slider(this).value.max
+}
+
+extern "C" fn set_max_value(this: Id, _: Sel, value: f64) {
+    slider(this).value.max = value;
+    let current = slider(this).value.value;
+    set_slider_value(this, current);
+}
+
+extern "C" fn number_of_tick_marks(this: Id, _: Sel) -> isize {
+    slider(this).value.ticks as isize
+}
+
+extern "C" fn set_number_of_tick_marks(this: Id, _: Sel, count: isize) {
+    slider(this).value.ticks = count.max(0) as usize;
+    let current = slider(this).value.value;
+    set_slider_value(this, current);
+}
+
+extern "C" fn allows_tick_mark_values_only(this: Id, _: Sel) -> bool {
+    slider(this).value.ticks_only
+}
+
+extern "C" fn set_allows_tick_mark_values_only(this: Id, _: Sel, only: bool) {
+    slider(this).value.ticks_only = only;
+    let current = slider(this).value.value;
+    set_slider_value(this, current);
+}
+
+extern "C" fn is_continuous(this: Id, _: Sel) -> bool {
+    slider(this).continuous
+}
+
+extern "C" fn set_continuous(this: Id, _: Sel, continuous: bool) {
+    slider(this).continuous = continuous;
+}
+
+fn slide_to(this: Id, event: Id) {
+    let origin = view::origin_in_window(this);
+    let size = view::fields(this).frame;
+    let frame = Frame::new(origin.x, origin.y, size.width, size.height);
+    let window = view::fields(this).window;
+    if window.is_null() {
+        return;
+    }
+    let height = window::fields(window).buffer.height as i32;
+    let x = event::fields(event).location.x as i32;
+    let fields = slider(this);
+    let value = fields.value.value_at(frame, height, x);
+    if value != fields.value.value {
+        fields.value.value = value;
+        changed(this);
+        if fields.continuous {
+            send_action(this);
+        }
+    }
+}
+
+extern "C" fn slider_mouse_down(this: Id, _: Sel, event: Id) {
+    if control(this).disabled {
+        return;
+    }
+    slider(this).tracking = true;
+    slide_to(this, event);
+}
+
+extern "C" fn slider_mouse_dragged(this: Id, _: Sel, event: Id) {
+    if slider(this).tracking {
+        slide_to(this, event);
+    }
+}
+
+extern "C" fn slider_mouse_up(this: Id, _: Sel, event: Id) {
+    let fields = slider(this);
+    if !fields.tracking {
+        return;
+    }
+    fields.tracking = false;
+    slide_to(this, event);
+    if !slider(this).continuous {
+        send_action(this);
+    }
+}
+
+extern "C" fn slider_draw_rect(this: Id, _: Sel, _: Frame) {
+    let size = view::fields(this).frame;
+    let enabled = !control(this).disabled;
+    let value = slider(this).value;
+    drawing::with_canvas(|canvas, height, origin, _, _| {
+        eggos_macos_gui::slider::paint(
+            canvas,
+            height,
+            Frame::new(origin.x, origin.y, size.width, size.height),
+            &value,
+            Look {
+                enabled,
+                ..Look::default()
+            },
+        );
+    });
 }
 
 fn control(object: Id) -> &'static mut ControlFields {
@@ -767,6 +970,37 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "textFieldWithString:" => text_field_with_string,
         "labelWithString:" => label_with_string,
     ];
+    let slider_instance = methods![
+        "initWithFrame:" => slider_init_with_frame,
+        "doubleValue" => double_value,
+        "setDoubleValue:" => set_double_value,
+        "floatValue" => float_value,
+        "setFloatValue:" => set_float_value,
+        "integerValue" => slider_integer_value,
+        "setIntegerValue:" => set_slider_integer_value,
+        "intValue" => slider_int_value,
+        "setIntValue:" => set_slider_int_value,
+        "minValue" => min_value,
+        "setMinValue:" => set_min_value,
+        "maxValue" => max_value,
+        "setMaxValue:" => set_max_value,
+        "numberOfTickMarks" => number_of_tick_marks,
+        "setNumberOfTickMarks:" => set_number_of_tick_marks,
+        "allowsTickMarkValuesOnly" => allows_tick_mark_values_only,
+        "setAllowsTickMarkValuesOnly:" => set_allows_tick_mark_values_only,
+        "isContinuous" => is_continuous,
+        "setContinuous:" => set_continuous,
+        "setSliderType:" => ignore_word,
+        "setVertical:" => ignore_word,
+        "mouseDown:" => slider_mouse_down,
+        "mouseDragged:" => slider_mouse_dragged,
+        "mouseUp:" => slider_mouse_up,
+        "drawRect:" => slider_draw_rect,
+    ];
+    let slider_class = methods![
+        "sliderWithTarget:action:" => slider_with_target,
+        "sliderWithValue:minValue:maxValue:target:action:" => slider_with_value,
+    ];
     super::define(
         runtime,
         b"NSControl\0",
@@ -783,6 +1017,14 @@ pub fn define(runtime: &mut Runtime) -> bool {
         core::mem::size_of::<ButtonFields>(),
         &button_instance,
         &button_class,
+    ) && super::define(
+        runtime,
+        b"NSSlider\0",
+        (&NSSLIDER, &NSSLIDER_META),
+        &NSCONTROL,
+        core::mem::size_of::<SliderFields>(),
+        &slider_instance,
+        &slider_class,
     ) && super::define(
         runtime,
         b"NSTextField\0",

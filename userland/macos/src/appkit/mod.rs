@@ -60,6 +60,7 @@ class_pairs! {
     NSCONTROL, NSCONTROL_META;
     NSBUTTON, NSBUTTON_META;
     NSTEXTFIELD, NSTEXTFIELD_META;
+    NSSLIDER, NSSLIDER_META;
     NSWINDOW, NSWINDOW_META;
     NSAPPLICATION, NSAPPLICATION_META;
     NSEVENT, NSEVENT_META;
@@ -258,6 +259,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSButton" => class(&NSBUTTON_META),
         b"_OBJC_CLASS_$_NSTextField" => class(&NSTEXTFIELD),
         b"_OBJC_METACLASS_$_NSTextField" => class(&NSTEXTFIELD_META),
+        b"_OBJC_CLASS_$_NSSlider" => class(&NSSLIDER),
+        b"_OBJC_METACLASS_$_NSSlider" => class(&NSSLIDER_META),
         b"_OBJC_CLASS_$_NSWindow" => class(&NSWINDOW),
         b"_OBJC_METACLASS_$_NSWindow" => class(&NSWINDOW_META),
         b"_OBJC_CLASS_$_NSApplication" => class(&NSAPPLICATION),

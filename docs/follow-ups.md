@@ -205,7 +205,7 @@ and is not listed per item.
 - [x] Objective-C runtime: associated objects (`objc_setAssociatedObject`/`objc_getAssociatedObject`/`objc_removeAssociatedObjects`) (D142; code written, unbuilt: D673)
 - [ ] Objective-C runtime: message forwarding (`forwardingTargetForSelector:`, `+resolveInstanceMethod:`, `forwardInvocation:` with NSInvocation and NSMethodSignature) (D142; resolution and `forwardingTargetForSelector:` code written, unbuilt: D674; left: `forwardInvocation:`)
 - [x] Objective-C runtime: `method_setImplementation`, `method_exchangeImplementations`, `class_replaceMethod`, `objc_msgSend_fpret` (D142; code written, unbuilt: D672)
-- [ ] AppKit: `NSSlider` (D147)
+- [x] AppKit: `NSSlider` (D147; code written, unbuilt: D679)
 - [ ] Windows GUI: `WM_DRAWITEM`/`WM_MEASUREITEM` owner-drawn buttons, list boxes, combo boxes and menus (D145)
 - [ ] Android: `__system_property_set` through the `property_service` socket and `persist.` properties kept across boots (D188)
 - [x] Windows: `CopyFileExW`, `GetFinalPathNameByHandleW`, `CreateSymbolicLinkW`, `CreateHardLinkW`, `LockFileEx`/`UnlockFileEx` (D189; code written, unbuilt: D675)

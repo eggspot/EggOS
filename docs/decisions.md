@@ -28640,3 +28640,19 @@ the license, by an explicit instruction recorded here.
   loader's work, not the mapping's. `MapViewOfFileExNuma` is `MapViewOfFileEx`, the node
   ignored, since EggOS places memory itself.
 - **Not yet.** Building and running; sharing an image's unchanged pages between views.
+
+
+## D679 AppKit's `NSSlider` (M15 macOS; follow-up of D147; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `NSSlider` is an `NSControl` drawn as the toolkit's slider (its track, filled
+  part and thumb, without the toolkit's number readout), 28 tall and centred in the app's frame
+  like the other controls. Its value is a double between `minValue` and `maxValue` (0 to 1 by
+  default); the thumb moves in 1000 steps across the track; with `numberOfTickMarks` and
+  `allowsTickMarkValuesOnly` a value snaps to the nearest mark. A press moves the thumb under
+  the pointer and dragging follows it; a continuous slider (the default) sends its action on
+  each change, another one when the press ends. `doubleValue`, `floatValue`, `integerValue`,
+  `intValue` and their setters, the range and tick setters, `isContinuous`,
+  `sliderWithTarget:action:` and `sliderWithValue:minValue:maxValue:target:action:` are there;
+  `setSliderType:` and `setVertical:` are accepted and change nothing. The value model and the
+  painting are `eggos_macos_gui::slider`, tested on the host.
+- **Not yet.** Building and running; drawing tick marks; circular and vertical sliders; keys
+  (arrows, Page Up/Down) and the element tree's value for agents.

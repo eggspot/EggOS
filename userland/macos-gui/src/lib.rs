@@ -25,5 +25,6 @@ pub mod paint;
 pub mod pasteboard;
 pub mod path;
 pub mod scroll_view;
+pub mod slider;
 pub mod sound;
 pub mod table_view;
