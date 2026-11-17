@@ -28504,3 +28504,13 @@ the license, by an explicit instruction recorded here.
   read-only form.
 - **Not yet.** Building and running; refusing `--apply` to anyone but root once there are
   accounts.
+
+
+## D669 `agent grant` above the policy's ceiling answers `managed` (M16 editions; editions-policy v0.1 section 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `agent grant <id> <class>` reads the policy file the way the MCP server does
+  (the `management` record, the file's and folder's owner and mode without following links,
+  at most 16 KiB, D654's trust rules, D656's `Limits`) and refuses a class above the ceiling
+  with `agent: run: managed by Contoso IT` and the coded error `managed`, before it asks for
+  confirmation or touches the store; an untrusted file allows `view` only. The buffer is on
+  the stack, as the agent command allocates nothing.
+- **Not yet.** Building and running.

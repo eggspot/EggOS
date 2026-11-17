@@ -183,6 +183,60 @@ fn read_all<S: System>(system: &mut S, path: &CStr, buffer: &mut [u8]) -> Result
     result
 }
 
+const POLICY_FILE: &CStr = c"/etc/eggos/policy";
+const POLICY_FOLDER: &CStr = c"/etc/eggos";
+const MANAGEMENT_RECORD: &CStr = c"/var/lib/eggos/components/management/component";
+const FILE_KIND_MASK: u32 = 0o170_000;
+const REGULAR_FILE: u32 = 0o100_000;
+const DIRECTORY: u32 = 0o040_000;
+const PERMISSION_BITS: u32 = 0o7777;
+
+fn ownership<S: System>(
+    output: &mut Output<S>,
+    path: &CStr,
+    kind: u32,
+) -> Option<eggos_settings_file::policy::Ownership> {
+    let status = output
+        .system
+        .status(None, path, crate::system::SymbolicLinks::DoNotFollow)
+        .ok()?;
+    Some(eggos_settings_file::policy::Ownership {
+        right_kind: status.mode & FILE_KIND_MASK == kind,
+        owner: status.owner,
+        mode: status.mode & PERMISSION_BITS,
+    })
+}
+
+fn policy_limits<S: System>(output: &mut Output<S>) -> eggos_mcp::managed::Limits {
+    use eggos_mcp::managed::{Limits, PolicyRead};
+    use eggos_settings_file::policy;
+    let mut text = [0u8; policy::LARGEST + 1];
+    let installed = match output.system.open(MANAGEMENT_RECORD) {
+        Ok(descriptor) => {
+            output.system.close(descriptor);
+            true
+        }
+        Err(_) => false,
+    };
+    let read = match (installed, ownership(output, POLICY_FILE, REGULAR_FILE)) {
+        (false, _) | (true, None) => PolicyRead::NotManaged,
+        (true, Some(file)) => {
+            let folder = ownership(output, POLICY_FOLDER, DIRECTORY).unwrap_or(policy::Ownership {
+                right_kind: false,
+                owner: u32::MAX,
+                mode: 0,
+            });
+            match read_whole(output, POLICY_FILE, &mut text) {
+                Ok(length) if policy::distrust(file, folder, &text[..length]).is_none() => {
+                    PolicyRead::Trusted(length)
+                }
+                _ => PolicyRead::Untrusted,
+            }
+        }
+    };
+    Limits::of(read, &text)
+}
+
 fn boot_grants<S: System>(output: &mut Output<S>) -> Grants {
     let mut line = [0u8; COMMAND_LINE_BYTES];
     match read_whole(output, COMMAND_LINE, &mut line) {
@@ -443,6 +497,18 @@ fn grant<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     let Some(given) = Grant::named(words.operands[1]) else {
         return usage(output);
     };
+    let limits = policy_limits(output);
+    if !limits.ceiling.allows(given) {
+        output.coded(
+            &errors::MANAGED,
+            &[
+                given.name().as_bytes(),
+                b": managed by ",
+                limits.manager().as_bytes(),
+            ],
+        );
+        return FAILURE;
+    }
     let until = match words.duration.map(duration_seconds) {
         None => None,
         Some(Some(seconds)) => Some(output.system.now().saturating_add(seconds)),

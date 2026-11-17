@@ -1621,6 +1621,7 @@ pub const AGENT_GRANT: CommandDefinition = CommandDefinition {
         exits(&USAGE, 2),
         exits(&crate::errors::TOO_MANY_AGENTS, 1),
         exits(&crate::errors::NEEDS_CONFIRMATION, 1),
+        exits(&crate::errors::MANAGED, 1),
         exits(&DAMAGED, 1),
         exits(&PERMISSION_DENIED, 1),
         exits(&FAILED, 1),
