@@ -15,6 +15,8 @@ mod elf;
 #[cfg(eggos_uefi)]
 mod loader;
 #[cfg_attr(not(eggos_uefi), allow(dead_code))]
+mod menu;
+#[cfg_attr(not(eggos_uefi), allow(dead_code))]
 mod paths;
 #[cfg_attr(not(eggos_uefi), allow(dead_code))]
 mod placement;

@@ -28209,3 +28209,21 @@ the license, by an explicit instruction recorded here.
   and whole-disk installs are unchanged. GUID text, both ways, moves into `eggos-gpt`
   (`guid_text`, `guid_of_text`), which the installer's `CMDLINE.TXT` (D648) and the kernel share.
 - **Not yet.** Building and running.
+
+
+## D650 The boot menu's rules live in a host-tested module of the loader (M8; installer dual boot v0.1 section 6; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `boot/uefi/src/menu.rs` decides everything the boot menu does, with no
+  firmware call and no allocation, so the host tests it: the entries (EggOS, then each active
+  `Boot####` whose device path starts a file on a hard-drive partition, in `BootOrder`, then
+  `Firmware settings`; EggOS's own `EggOS` entry, network and removable entries left out; at
+  most nine, for keys 1 to 9), their ids (`windows`, `ubuntu`, `macos`, else the description's
+  first word, lower case, `-2` for a second), the default (`boot.default`: `eggos`, `last`, or
+  an id; an id no longer listed falls back to EggOS), the countdown (any key stops it for good),
+  the keys (Up, Down wrapping, Home, End, Enter, 1 to 9, D sets the default, T steps the wait
+  through 0, 3, 5, 10, 30 s, Esc only stops), the hint and the serial lines, and `BOOT.TXT`'s
+  `key=value` text (`boot.default`, `boot.menu_wait_s` 0 to 60, `boot.last`,
+  `accessibility.high_contrast`; anything missing or out of range keeps its default). Names are
+  kept as ASCII, other characters shown as `?`, since the boot font is ASCII.
+- **Not yet.** Building and running; the loader reading the firmware's variables, drawing the
+  menu, reading keys, `BootNext` and the restart, and writing `BOOT.TXT` (D651); a loader found
+  on the partition with no firmware entry; `settings get|set boot.*`.
