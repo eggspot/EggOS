@@ -292,7 +292,7 @@ impl Desktop {
             },
             fill: match window.ready {
                 true => window.fill,
-                false => colour::WINDOW_BACKGROUND,
+                false => colour::current().window_background,
             },
         })
     }

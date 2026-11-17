@@ -7,7 +7,6 @@
 
 use super::*;
 use eggos_toolkit::canvas::Canvas;
-use eggos_toolkit::colour;
 
 /// How long the pointer rests on a folder before the window browses into it.
 pub const DRAG_SPRING_MS: u32 = 1000;
@@ -502,7 +501,7 @@ impl FilesWindow {
         if let Some(spot) = spot {
             let rect = self.spot_rect(spot);
             if spot != Spot::Whole {
-                canvas.fill(rect, colour::MENU_HOVER);
+                canvas.fill(rect, canvas.palette().menu_hover);
             }
             for edge in [
                 Rect::new(rect.x, rect.y, rect.width, OUTLINE),
@@ -510,7 +509,7 @@ impl FilesWindow {
                 Rect::new(rect.x, rect.y, OUTLINE, rect.height),
                 Rect::new(rect.right() - OUTLINE, rect.y, OUTLINE, rect.height),
             ] {
-                canvas.fill(edge, colour::ACCENT);
+                canvas.fill(edge, canvas.palette().accent);
             }
         }
         if let Some((words, (x, y))) = self.ghost_words() {

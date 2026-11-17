@@ -428,14 +428,14 @@ impl Desktop {
             if open {
                 canvas.fill(
                     Rect::new(button.x, button.y, button.width, button.height - 1),
-                    colour::BAR_PRESSED,
+                    colour::current().bar_pressed,
                 );
             }
             let is_focused = Some(slot) == focused;
             let ink = if is_focused || open {
-                colour::TEXT
+                colour::current().text
             } else {
-                colour::TEXT_DIM
+                colour::current().text_dim
             };
             let (text, cut) =
                 windows::cut_title(self.window_at(slot).title(), TITLE_GLYPHS.saturating_sub(3));
@@ -461,7 +461,7 @@ impl Desktop {
             if is_focused {
                 canvas.fill(
                     Rect::new(x, TITLE_LINE.0, text_width, TITLE_LINE.1),
-                    colour::ACCENT,
+                    colour::current().accent,
                 );
             }
         }
@@ -476,7 +476,7 @@ impl Desktop {
             if previous_pinned && !pinned {
                 canvas.fill(
                     Rect::new(target.x - DOCK_SEPARATOR + 8, target.y + 12, 1, 40),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 );
             }
             previous_pinned = pinned;
@@ -496,7 +496,7 @@ impl Desktop {
                         DOCK_RUNNING.2,
                         DOCK_RUNNING.2,
                     ),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
             if Some(app) == focused_app {
@@ -507,7 +507,7 @@ impl Desktop {
                         DOCK_FOCUS.2,
                         DOCK_FOCUS.3,
                     ),
-                    colour::ACCENT,
+                    colour::current().accent,
                 );
             }
         }
@@ -529,9 +529,9 @@ impl Desktop {
             None => self.divider_rect(pair.share),
         };
         let fill = if self.tablet.dragging.is_some() {
-            colour::BAR_PRESSED
+            colour::current().bar_pressed
         } else {
-            colour::BAR
+            colour::current().bar
         };
         canvas.fill(divider, fill);
         let waiting = pair.left.is_none() || pair.right.is_none();
@@ -543,26 +543,26 @@ impl Desktop {
                 GRIP.1,
             );
             let ink = if self.tablet.dragging.is_some() {
-                colour::TEXT
+                colour::current().text
             } else {
-                colour::TEXT_DIM
+                colour::current().text_dim
             };
             canvas.fill(grip, ink);
             return;
         }
         let side = self.side_rect(pair.right.is_none(), pair.share);
-        canvas.fill(side, colour::MENU);
+        canvas.fill(side, colour::current().menu);
         canvas.text(
             side.x + CHOOSER_HEADING.0,
             side.y + CHOOSER_HEADING.1,
             "Choose an app for this side",
-            colour::TEXT_DIM,
+            colour::current().text_dim,
         );
         for (slot, card) in self.chooser_cards(side) {
             if !card.overlaps(&canvas.clip()) {
                 continue;
             }
-            canvas.rounded(card, &paint::INSET_R4, true, true, colour::BUTTON);
+            canvas.rounded(card, &paint::INSET_R4, true, true, colour::current().button);
             let area = Rect::new(
                 card.x + CARD_BOX.0,
                 card.y + CARD_BOX.1,
@@ -571,7 +571,7 @@ impl Desktop {
             );
             self.draw_window_scaled(canvas, contents, slot, area);
             let (title, _) = windows::cut_title(self.window_at(slot).title(), CARD_GLYPHS);
-            canvas.text(card.x + CARD_TITLE.0, card.y + CARD_TITLE.1, title, colour::TEXT);
+            canvas.text(card.x + CARD_TITLE.0, card.y + CARD_TITLE.1, title, colour::current().text);
         }
         for (app, cell) in self.chooser_cells(side) {
             draw_icon(
@@ -582,7 +582,7 @@ impl Desktop {
                 cell.y + CELL_ICON.1,
             );
             let (text, _) = windows::cut_title(self.catalogue.name(app), 12);
-            canvas.text(cell.x + 8, cell.y + 64, text, colour::TEXT);
+            canvas.text(cell.x + 8, cell.y + 64, text, colour::current().text);
         }
     }
 
@@ -697,13 +697,13 @@ impl Desktop {
         };
         let rect = self.menu_rect(menu);
         canvas.shadow(rect);
-        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         let entries = self.menu_entries(usize::from(menu.slot));
         for (index, (entry, applicable)) in entries.iter().enumerate() {
@@ -711,19 +711,19 @@ impl Desktop {
             if index + 1 == entries.len() {
                 canvas.fill(
                     Rect::new(rect.x + 4, row.y - 5, rect.width - 8, 1),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 );
             }
             if menu.hover == Some(index) && *applicable {
                 canvas.fill(
                     Rect::new(row.x + 1, row.y, row.width - 2, row.height),
-                    colour::SELECTION,
+                    colour::current().selection,
                 );
             }
             let ink = if *applicable {
-                colour::TEXT
+                colour::current().text
             } else {
-                colour::TEXT_DIM
+                colour::current().text_dim
             };
             canvas.text(
                 row.x + MENU_TEXT.0,
@@ -1029,20 +1029,20 @@ impl Desktop {
         };
         let rect = self.dock_menu_rect(menu);
         canvas.shadow(rect);
-        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         let has_window = self.latest_window_of(menu.app).is_some();
         for (index, label) in DOCK_MENU_ENTRIES.iter().enumerate() {
             let row = self.dock_menu_row(menu, index);
             let ink = match index == DOCK_MENU_ENTRIES.len() - 1 && !has_window {
-                true => colour::TEXT_DIM,
-                false => colour::TEXT,
+                true => colour::current().text_dim,
+                false => colour::current().text,
             };
             canvas.text(row.x + MENU_TEXT.0, row.y + MENU_TEXT.1, label, ink);
         }

@@ -164,7 +164,7 @@ impl Desktop {
         if self.phone_shown_window().is_some() {
             return;
         }
-        let ink_rest = colour::TEXT_DIM;
+        let ink_rest = colour::current().text_dim;
         Self::draw_egg_mark(canvas, EGG.0, EGG.1, EGG.3, self.width);
         for (index, (label, x, text_x)) in STRIP_BUTTONS.into_iter().enumerate() {
             let rect = Rect::new(x, STRIP_BUTTON.0, STRIP_BUTTON.1, STRIP_BUTTON.2);
@@ -174,12 +174,12 @@ impl Desktop {
                 text_x,
                 STRIP_TEXT_Y,
                 label,
-                if focused { colour::TEXT } else { ink_rest },
+                if focused { colour::current().text } else { ink_rest },
             );
         }
         let clock = self.clock_text();
         let clock_x = self.width - TV_MARGIN_X - clock.len() as u32 * GLYPH_WIDTH as u32;
-        canvas.text(clock_x, STRIP_TEXT_Y, clock, colour::TEXT);
+        canvas.text(clock_x, STRIP_TEXT_Y, clock, colour::current().text);
         self.draw_strip_indicators(canvas, clock_x);
         let rows = self.tv_rows();
         let view_bottom = self.height - TV_MARGIN_Y;
@@ -195,8 +195,8 @@ impl Desktop {
                 title.len() as u32 * GLYPH_WIDTH as u32 + 8,
                 20,
             );
-            canvas.rounded(pill, &paint::INSET_R4, true, true, colour::BAR);
-            canvas.text(TV_MARGIN_X + 4, row_top, title, colour::TEXT_DIM);
+            canvas.rounded(pill, &paint::INSET_R4, true, true, colour::current().bar);
+            canvas.text(TV_MARGIN_X + 4, row_top, title, colour::current().text_dim);
             let focused_row = self.tv.focus == Focus::Tiles && self.tv.row == visible;
             let row_slot = Self::row_index(*kind);
             if focused_row && tiles.len() > self.tiles_fit() {
@@ -208,9 +208,9 @@ impl Desktop {
                     &paint::INSET_R4,
                     true,
                     true,
-                    colour::BAR,
+                    colour::current().bar,
                 );
-                canvas.text(x + 4, row_top, &position, colour::TEXT_DIM);
+                canvas.text(x + 4, row_top, &position, colour::current().text_dim);
             }
             let offset = self.tv.scroll[row_slot];
             for (index, tile) in tiles.iter().enumerate().skip(offset) {
@@ -241,7 +241,7 @@ impl Desktop {
                                     TILE_RUNNING.2,
                                     TILE_RUNNING.2,
                                 ),
-                                colour::TEXT,
+                                colour::current().text,
                             );
                         }
                     }
@@ -266,7 +266,7 @@ impl Desktop {
                         } else {
                             76
                         };
-                    let ink = if focused { colour::TEXT } else { ink_rest };
+                    let ink = if focused { colour::current().text } else { ink_rest };
                     canvas.text(label_x, top, text, ink);
                     if cut {
                         canvas.text(
@@ -285,7 +285,7 @@ impl Desktop {
     fn draw_tv_panel(&self, canvas: &mut Canvas<'_>, rect: Rect, focused: bool, corners: &[u32]) {
         match focused {
             true => {
-                canvas.rounded(rect, corners, true, true, colour::FOCUS_RING);
+                canvas.rounded(rect, corners, true, true, colour::current().focus_ring);
                 canvas.rounded(
                     Rect::new(
                         rect.x + RING,
@@ -296,17 +296,17 @@ impl Desktop {
                     corners,
                     true,
                     true,
-                    colour::SELECTION,
+                    colour::current().selection,
                 );
             }
             false => {
-                canvas.rounded(rect, corners, true, true, colour::MENU_BORDER);
+                canvas.rounded(rect, corners, true, true, colour::current().menu_border);
                 canvas.rounded(
                     Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
                     corners,
                     true,
                     true,
-                    colour::DOCK,
+                    colour::current().dock,
                 );
             }
         }
@@ -376,7 +376,7 @@ impl Desktop {
         if let Some(state) = self.network_state() {
             let x = right.saturating_sub(NETWORK_SIDE);
             for rect in state.glyph().into_iter().flatten() {
-                canvas.fill(rect.placed(x, STRIP_TEXT_Y, 1), colour::TEXT);
+                canvas.fill(rect.placed(x, STRIP_TEXT_Y, 1), colour::current().text);
             }
             right = x.saturating_sub(STRIP_GAP);
         }
@@ -388,8 +388,8 @@ impl Desktop {
                 AGENT_CHIP.2,
             );
             let (fill, text) = match self.agent_acting() {
-                true => (colour::ACCENT, colour::ICON_DARK),
-                false => (colour::BAR_HOVER, colour::TEXT_DIM),
+                true => (colour::current().accent, colour::current().icon_dark),
+                false => (colour::current().bar_hover, colour::current().text_dim),
             };
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             canvas.text(
@@ -475,19 +475,19 @@ impl Desktop {
         };
         let rect = self.tv_menu_rect(rows.len());
         canvas.shadow(rect);
-        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         for (index, label) in rows.iter().enumerate() {
             let top = rect.y + 4 + MENU_ROW * index as u32;
             if index == focused {
                 let row = Rect::new(rect.x + 1, top, rect.width - 2, MENU_ROW);
-                canvas.fill(row, colour::FOCUS_RING);
+                canvas.fill(row, colour::current().focus_ring);
                 canvas.fill(
                     Rect::new(
                         row.x + RING,
@@ -495,11 +495,11 @@ impl Desktop {
                         row.width - 2 * RING,
                         row.height - 2 * RING,
                     ),
-                    colour::SELECTION,
+                    colour::current().selection,
                 );
-                canvas.text(rect.x + 8, top + 8, ">", colour::TEXT);
+                canvas.text(rect.x + 8, top + 8, ">", colour::current().text);
             }
-            canvas.text(rect.x + 24, top + 8, label, colour::TEXT);
+            canvas.text(rect.x + 24, top + 8, label, colour::current().text);
         }
     }
 
@@ -727,19 +727,19 @@ impl Desktop {
             height,
         );
         canvas.shadow(rect);
-        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         for (index, label) in rows.iter().enumerate() {
             let top = rect.y + 4 + MENU_ROW * index as u32;
             if index == row {
                 let line = Rect::new(rect.x + 1, top, rect.width - 2, MENU_ROW);
-                canvas.fill(line, colour::FOCUS_RING);
+                canvas.fill(line, colour::current().focus_ring);
                 canvas.fill(
                     Rect::new(
                         line.x + RING,
@@ -747,11 +747,11 @@ impl Desktop {
                         line.width - 2 * RING,
                         line.height - 2 * RING,
                     ),
-                    colour::SELECTION,
+                    colour::current().selection,
                 );
-                canvas.text(rect.x + 8, top + 8, ">", colour::TEXT);
+                canvas.text(rect.x + 8, top + 8, ">", colour::current().text);
             }
-            canvas.text(rect.x + 24, top + 8, label, colour::TEXT);
+            canvas.text(rect.x + 24, top + 8, label, colour::current().text);
         }
     }
 

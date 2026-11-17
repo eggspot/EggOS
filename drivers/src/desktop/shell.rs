@@ -973,27 +973,27 @@ impl Desktop {
         let Some(text) = self.tooltip_text(item) else {
             return;
         };
-        canvas.rounded(rect, &paint::INSET_R4, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R4, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_INSIDE_R4,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         canvas.text(
             rect.x + TOOLTIP_PADDING,
             rect.y + TOOLTIP_TEXT_Y,
             text,
-            colour::TEXT,
+            colour::current().text,
         );
     }
 
     pub(super) fn item_fill(&self, item: PanelItem, open: bool) -> Option<u32> {
         if open || self.panels.pressed == Some(item) {
-            return Some(colour::BAR_PRESSED);
+            return Some(colour::current().bar_pressed);
         }
-        (self.panels.hover == Some(item)).then_some(colour::BAR_HOVER)
+        (self.panels.hover == Some(item)).then_some(colour::current().bar_hover)
     }
 
     pub(super) fn draw_panels(&self, canvas: &mut Canvas<'_>) {
@@ -1033,7 +1033,7 @@ impl Desktop {
                 Rect::new(button.x, bar.y + 1, button.width, bar.height - 1),
             ),
             None => (
-                self.menu_open.then_some(colour::BAR_PRESSED),
+                self.menu_open.then_some(colour::current().bar_pressed),
                 Rect::new(button.x, bar.y, button.width, bar.height - 1),
             ),
         };
@@ -1048,7 +1048,7 @@ impl Desktop {
                     canvas.pixel(
                         button.x + offset_x + column,
                         button.y + offset_y + row as u32,
-                        colour::TEXT,
+                        colour::current().text,
                     );
                 }
             }
@@ -1065,15 +1065,15 @@ impl Desktop {
         let mark_width = round_percent(72, height);
         for row in 0..height {
             let (from, to) = span(left + mark_width / 2, egg_half_width(height, row), width);
-            canvas.row(top + row, from, to, colour::ACCENT);
+            canvas.row(top + row, from, to, colour::current().accent);
         }
     }
 
     fn draw_top_bar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
-        canvas.fill(Rect::new(0, bar.y, self.width, bar.height - 1), colour::BAR);
+        canvas.fill(Rect::new(0, bar.y, self.width, bar.height - 1), colour::current().bar);
         canvas.fill(
             Rect::new(0, bar.bottom() - 1, self.width, 1),
-            colour::BAR_EDGE,
+            colour::current().bar_edge,
         );
         let launcher_open = match self.profile {
             Profile::Linux => self.overview.is_some(),
@@ -1081,23 +1081,23 @@ impl Desktop {
         };
         if let (Some(fill), Some(system)) = (
             self.item_fill(PanelItem::System, launcher_open)
-                .filter(|&fill| fill == colour::BAR_PRESSED),
+                .filter(|&fill| fill == colour::current().bar_pressed),
             self.system_item(),
         ) {
             canvas.fill(system, fill);
         }
         match self.profile {
-            Profile::Linux => canvas.text(ACTIVITIES_X, BAR_TEXT_Y, ACTIVITIES, colour::TEXT),
+            Profile::Linux => canvas.text(ACTIVITIES_X, BAR_TEXT_Y, ACTIVITIES, colour::current().text),
             _ => {
                 let top = (bar.height - BAR_MARK_HEIGHT) / 2;
                 Self::draw_egg_mark(canvas, BAR_MARK_X, top, BAR_MARK_HEIGHT, self.width);
-                canvas.text(SYSTEM_NAME_X, BAR_TEXT_Y, SYSTEM_NAME, colour::TEXT);
+                canvas.text(SYSTEM_NAME_X, BAR_TEXT_Y, SYSTEM_NAME, colour::current().text);
             }
         }
         self.for_each_chip(|slot, chip| {
             let fill = match self.panels.hover == Some(PanelItem::Chip(slot as u8)) {
-                true => colour::BAR_PRESSED,
-                false => colour::BAR_HOVER,
+                true => colour::current().bar_pressed,
+                false => colour::current().bar_hover,
             };
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             super::draw_chip_text(canvas, chip, self.window_at(slot).title());
@@ -1134,8 +1134,8 @@ impl Desktop {
         let text = self.clock_text();
         let width = text.len() as u32 * GLYPH_WIDTH as u32;
         let ink = match self.clock_shows_time_of_day() {
-            true => colour::TEXT,
-            false => colour::TEXT_DIM,
+            true => colour::current().text,
+            false => colour::current().text_dim,
         };
         canvas.text(
             clock.x + clock.width.saturating_sub(width) / 2,
@@ -1146,8 +1146,8 @@ impl Desktop {
     }
 
     fn draw_taskbar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
-        canvas.fill(bar, colour::BAR);
-        canvas.fill(Rect::new(0, bar.y, self.width, 1), colour::BAR_EDGE);
+        canvas.fill(bar, colour::current().bar);
+        canvas.fill(Rect::new(0, bar.y, self.width, 1), colour::current().bar_edge);
         let focused = self.focused_normal();
         self.for_each_taskbar_item(|item, rect| {
             if !rect.overlaps(&canvas.clip()) {
@@ -1176,9 +1176,9 @@ impl Desktop {
                 PanelItem::TaskView => {
                     let at = (rect.x + TASK_VIEW_ICON.0, rect.y + TASK_VIEW_ICON.1);
                     let place = |part: Rect| Rect::new(at.0 + part.x, at.1 + part.y, part.width, part.height);
-                    super::screenshots::outline(canvas, place(TASK_VIEW_BACK), 1, colour::TEXT);
-                    canvas.fill(place(TASK_VIEW_FRONT), fill.unwrap_or(colour::BAR));
-                    super::screenshots::outline(canvas, place(TASK_VIEW_FRONT), 1, colour::TEXT);
+                    super::screenshots::outline(canvas, place(TASK_VIEW_BACK), 1, colour::current().text);
+                    canvas.fill(place(TASK_VIEW_FRONT), fill.unwrap_or(colour::current().bar));
+                    super::screenshots::outline(canvas, place(TASK_VIEW_FRONT), 1, colour::current().text);
                 }
                 PanelItem::TaskbarWindow(slot) => {
                     let slot = usize::from(slot);
@@ -1191,8 +1191,8 @@ impl Desktop {
                     );
                     let line = match (self.window_at(slot).minimised, focused == Some(slot)) {
                         (true, _) => None,
-                        (false, true) => Some(colour::ACCENT),
-                        (false, false) => Some(colour::TEXT_DIM),
+                        (false, true) => Some(colour::current().accent),
+                        (false, false) => Some(colour::current().text_dim),
                     };
                     if let Some(line) = line {
                         canvas.fill(
@@ -1222,13 +1222,13 @@ impl Desktop {
 
     fn draw_dock(&self, canvas: &mut Canvas<'_>, dock: Rect) {
         canvas.shadow(dock);
-        canvas.rounded(dock, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(dock, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(dock.x + 1, dock.y + 1, dock.width - 2, dock.height - 2),
             &paint::INSET_INSIDE_R6,
             true,
             true,
-            colour::DOCK,
+            colour::current().dock,
         );
         let entries = self.dock_entries();
         let mut index = 0;
@@ -1241,7 +1241,7 @@ impl Desktop {
                         1,
                         dock.height - 2 * DOCK_SEPARATOR_INSET,
                     ),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 );
             }
             index += 1;
@@ -1281,7 +1281,7 @@ impl Desktop {
                         DOCK_MARK,
                         DOCK_MARK,
                     ),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
         });

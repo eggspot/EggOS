@@ -128,7 +128,7 @@ impl Contents for ScreenContents<'_> {
         }
         match self.buffers.pixels(window) {
             Some(pixels) => pixels.copy_row(x, y, out),
-            None => out.fill(colour::WINDOW_BACKGROUND),
+            None => out.fill(colour::current().window_background),
         }
     }
 }
@@ -1286,6 +1286,7 @@ fn render_terminal<P: Platform>(screen: &mut Screen, now: u64, damage: &mut Dama
     let half = mul_div_ceil(BLINK_HALF_MS, P::clock_frequency(), 1000);
     let (look, next) = cursor_look_at(focused, blinks, screen.active_at, now, half);
     terminal.set_cursor_look(look);
+    terminal.set_scheme(eggos_drivers::terminal::Scheme::of(desktop_palette()));
     let stride = screen.grid_stride();
     if !terminal.fits(screen.terminal_pixels.len(), stride, 0, 0) {
         return next.unwrap_or(NO_LOOK);

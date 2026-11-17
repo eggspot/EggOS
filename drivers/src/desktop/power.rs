@@ -314,7 +314,7 @@ impl Desktop {
             return;
         };
         canvas.shadow(menu);
-        Self::draw_popup_surface(canvas, menu, colour::MENU);
+        Self::draw_popup_surface(canvas, menu, colour::current().menu);
         let text_y = (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         let mut row_y = menu.y + 1;
         let mut line = [0u8; TOOLTIP_CAPACITY];
@@ -330,7 +330,7 @@ impl Desktop {
             };
             let length = writer.length;
             let text = core::str::from_utf8(&line[..length]).unwrap_or("");
-            canvas.text(menu.x + MENU_TEXT_X, row_y + text_y, text, colour::TEXT_DIM);
+            canvas.text(menu.x + MENU_TEXT_X, row_y + text_y, text, colour::current().text_dim);
             row_y += MENU_ITEM_HEIGHT;
         }
         let state = match shown.state_word() {
@@ -339,20 +339,20 @@ impl Desktop {
             "full" => "Plugged in, full",
             _ => "Discharging",
         };
-        canvas.text(menu.x + MENU_TEXT_X, row_y + text_y, state, colour::TEXT_DIM);
+        canvas.text(menu.x + MENU_TEXT_X, row_y + text_y, state, colour::current().text_dim);
         row_y += MENU_ITEM_HEIGHT;
         canvas.fill(
             Rect::new(menu.x + 1, row_y + SEPARATOR_HEIGHT / 2, menu.width - 2, 1),
-            colour::MENU_BORDER,
+            colour::current().menu_border,
         );
         row_y += SEPARATOR_HEIGHT;
         if selected {
             canvas.fill(
                 Rect::new(menu.x + 1, row_y, menu.width - 2, MENU_ITEM_HEIGHT),
-                colour::MENU_HOVER,
+                colour::current().menu_hover,
             );
         }
-        canvas.text(menu.x + MENU_TEXT_X, row_y + text_y, POWER_SETTINGS, colour::TEXT);
+        canvas.text(menu.x + MENU_TEXT_X, row_y + text_y, POWER_SETTINGS, colour::current().text);
     }
 
     /// Shows the power thread's countdown `text` (`None` ends it), redrawn each time the
@@ -401,21 +401,21 @@ impl Desktop {
             return;
         };
         canvas.shadow(rect);
-        Self::draw_popup_surface(canvas, rect, colour::MENU);
+        Self::draw_popup_surface(canvas, rect, colour::current().menu);
         let width = text.chars().count() as u32 * GLYPH_WIDTH as u32;
         canvas.text(
             rect.x + rect.width.saturating_sub(width) / 2,
             rect.y + (COUNTDOWN_HEIGHT - GLYPH_HEIGHT as u32) / 2,
             text,
-            colour::TEXT,
+            colour::current().text,
         );
     }
 }
 
 fn draw_battery_glyph(canvas: &mut Canvas<'_>, x: u32, y: u32, shown: &PowerShown) {
     let at = |dx: u32, dy: u32, width: u32, height: u32| Rect::new(x + dx, y + dy, width, height);
-    let text = colour::TEXT;
-    let accent = colour::ACCENT;
+    let text = colour::current().text;
+    let accent = colour::current().accent;
     canvas.fill(at(0, 4, 13, 1), text);
     canvas.fill(at(0, 11, 13, 1), text);
     canvas.fill(at(0, 4, 1, 8), text);

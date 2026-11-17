@@ -673,18 +673,18 @@ impl Desktop {
         if !panel.overlaps(&canvas.clip()) {
             return;
         }
-        canvas.rounded(panel, &paint::INSET_R4, true, true, colour::MENU_BORDER);
+        canvas.rounded(panel, &paint::INSET_R4, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(panel.x + 1, panel.y + 1, panel.width - 2, panel.height - 2),
             &paint::INSET_R4,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         let fits = ((panel.width - 2 * TEXT_X) / GLYPH_WIDTH as u32) as usize;
         let lines = [
-            (self.reader.shown.map(|(serial, _)| serial), FIRST_LINE_Y, colour::TEXT),
-            (Some(self.reader.previous), SECOND_LINE_Y, colour::TEXT_DIM),
+            (self.reader.shown.map(|(serial, _)| serial), FIRST_LINE_Y, colour::current().text),
+            (Some(self.reader.previous), SECOND_LINE_Y, colour::current().text_dim),
         ];
         for (serial, y, ink) in lines {
             let Some(line) = serial.and_then(|serial| self.reader.line(serial)) else {

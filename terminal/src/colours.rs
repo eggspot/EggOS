@@ -35,11 +35,54 @@ pub const ANSI_COLOURS: [u32; 16] = [
     0x00f2_f5f9,
 ];
 
-pub(super) fn pixel(index: u8, default: u32) -> u32 {
-    ANSI_COLOURS
-        .get(usize::from(index))
-        .copied()
-        .unwrap_or(default)
+/// A terminal's colours in one palette (D610, docs/ux/self-drawn-themes-v0.1.md section 3):
+/// `term.*`, the scrollback mark and the sixteen ANSI colours. A cell keeps its ANSI index, so
+/// another scheme recolours the whole grid, scrollback included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scheme {
+    pub background: u32,
+    pub foreground: u32,
+    pub cursor: u32,
+    pub selection: u32,
+    pub accent: u32,
+    pub ansi: [u32; 16],
+}
+
+/// The dark scheme: the constants above.
+pub const DARK_SCHEME: Scheme = Scheme {
+    background: TERM_BACKGROUND,
+    foreground: TERM_FOREGROUND,
+    cursor: TERM_CURSOR,
+    selection: TERM_SELECTION,
+    accent: ACCENT,
+    ansi: ANSI_COLOURS,
+};
+
+impl Scheme {
+    /// The scheme of palette index `index` (`theme + 2 x high_contrast`).
+    pub const fn of(index: u32) -> Self {
+        let palette = eggos_palette::palette_at(index);
+        let ansi = eggos_palette::ansi_at(index);
+        let mut colours = [0u32; 16];
+        let mut at = 0;
+        while at < 8 {
+            colours[at] = ansi.normal[at];
+            colours[at + 8] = ansi.bright[at];
+            at += 1;
+        }
+        Self {
+            background: palette.term_background,
+            foreground: palette.term_foreground,
+            cursor: palette.term_cursor,
+            selection: palette.term_selection,
+            accent: palette.accent,
+            ansi: colours,
+        }
+    }
+
+    pub(super) fn pixel(&self, index: u8, default: u32) -> u32 {
+        self.ansi.get(usize::from(index)).copied().unwrap_or(default)
+    }
 }
 
 const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];

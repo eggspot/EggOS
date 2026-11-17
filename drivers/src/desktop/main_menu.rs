@@ -818,14 +818,14 @@ impl Desktop {
             .filter(|open| open.window == bar.window)
             .map(|open| open.menu);
         let text_colour = match bar.inert {
-            true => colour::TEXT_DIM,
-            false => colour::TEXT,
+            true => colour::current().text_dim,
+            false => colour::current().text,
         };
         self.for_each_menu_title(bar.window, |index, rect| {
             let hovered = self.panels.hover == Some(PanelItem::MenuTitle(index as u8));
             let fill = match (open == Some(index), hovered && !bar.inert) {
-                (true, _) => Some(colour::BAR_PRESSED),
-                (false, true) => Some(colour::BAR_HOVER),
+                (true, _) => Some(colour::current().bar_pressed),
+                (false, true) => Some(colour::current().bar_hover),
                 (false, false) => None,
             };
             if let Some(fill) = fill {
@@ -850,7 +850,7 @@ impl Desktop {
         ) else {
             return;
         };
-        Self::draw_popup_surface(canvas, rect, colour::MENU);
+        Self::draw_popup_surface(canvas, rect, colour::current().menu);
         let mut top = rect.y + 1;
         for entry in 0..menu.entry_count(open.menu) {
             let kind = menu.entry_kind(open.menu, entry);
@@ -862,7 +862,7 @@ impl Desktop {
                         rect.width - 2 * SEPARATOR_INSET,
                         1,
                     ),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 ),
                 EntryKind::Item | EntryKind::DisabledItem => {
                     if open.hover == Some(entry) {
@@ -873,12 +873,12 @@ impl Desktop {
                                 rect.width - 2,
                                 MENU_ITEM_HEIGHT - 2 * HOVER_INSET,
                             ),
-                            colour::MENU_HOVER,
+                            colour::current().menu_hover,
                         );
                     }
                     let label_colour = match kind {
-                        EntryKind::Item => colour::TEXT,
-                        _ => colour::TEXT_DIM,
+                        EntryKind::Item => colour::current().text,
+                        _ => colour::current().text_dim,
                     };
                     let y = top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
                     canvas.text(
@@ -893,7 +893,7 @@ impl Desktop {
                             .saturating_sub(KEY_LABEL_RIGHT + text_width(key_label)),
                         y,
                         key_label,
-                        colour::TEXT_DIM,
+                        colour::current().text_dim,
                     );
                 }
             }

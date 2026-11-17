@@ -467,18 +467,18 @@ impl Desktop {
             return;
         };
         let rect = self.end_app_rect(dialog.window);
-        Self::draw_popup_surface(canvas, rect, colour::DOCK);
+        Self::draw_popup_surface(canvas, rect, colour::current().dock);
         let (title, cut) =
             windows::cut_title(self.window_at(dialog.window).title(), END_APP_TITLE_CELLS);
         let mut x = rect.x + LINE_X;
         let ellipsis = if cut { windows::ellipsis() } else { "" };
         for part in [title, ellipsis, END_APP_QUESTION] {
-            canvas.text(x, rect.y + FIRST_LINE_Y, part, colour::TEXT);
+            canvas.text(x, rect.y + FIRST_LINE_Y, part, colour::current().text);
             x += part.chars().count() as u32 * GLYPH_WIDTH as u32;
         }
         let mut y = rect.y + SECOND_LINE_Y;
         for warning in self.end_app_warnings().unwrap_or_default() {
-            canvas.text(rect.x + LINE_X, y, warning, colour::TEXT_DIM);
+            canvas.text(rect.x + LINE_X, y, warning, colour::current().text_dim);
             y += LINE_STEP;
         }
         for (button, label) in [
@@ -493,7 +493,7 @@ impl Desktop {
                     area.width + 2 * FOCUS_RING_INSET,
                     area.height + 2 * FOCUS_RING_INSET,
                 );
-                canvas.rounded(ring, &paint::INSET_R4, true, true, colour::FOCUS_RING);
+                canvas.rounded(ring, &paint::INSET_R4, true, true, colour::current().focus_ring);
                 canvas.rounded(
                     Rect::new(
                         ring.x + FOCUS_RING_WIDTH,
@@ -504,14 +504,14 @@ impl Desktop {
                     &FOCUS_RING_INNER,
                     true,
                     true,
-                    colour::DOCK,
+                    colour::current().dock,
                 );
             }
             let (fill, ink) = match button {
-                EndAppButton::Wait => (colour::ACCENT, colour::ICON_DARK),
-                EndAppButton::EndApp => (colour::MENU_BORDER, colour::TEXT),
+                EndAppButton::Wait => (colour::current().accent, colour::current().icon_dark),
+                EndAppButton::EndApp => (colour::current().menu_border, colour::current().text),
             };
-            canvas.rounded(area, &paint::INSET_R4, true, true, colour::BUTTON_BORDER);
+            canvas.rounded(area, &paint::INSET_R4, true, true, colour::current().button_border);
             canvas.rounded(
                 Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2),
                 &paint::INSET_INSIDE_R4,

@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eggos-palette = { path = "../userland/palette" }
 eggos-font = { path = "../font" }
 eggos-app-manifest = { path = "../app-manifest" }
 eggos-calendar = { path = "../calendar" }

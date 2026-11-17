@@ -206,6 +206,77 @@ pub mod colour {
     pub const ICON_PAGE: u32 = 0x00f6_f1e7;
     pub const ICON_PAGE_EDGE: u32 = 0x00c9_d1db;
     pub const ICON_PAGE_LINE: u32 = 0x004a_5466;
+
+    /// The palette the shell paints with (D610): the desktop's, `theme + 2 x high_contrast`
+    /// (D219, D224). The constants above are the dark palette's, for the boot screen, which
+    /// comes before the settings file, and for tests.
+    pub fn current() -> &'static eggos_palette::Palette {
+        eggos_palette::palette_at(painting())
+    }
+
+    /// The terminal's sixteen colours in [`current`]'s palette.
+    pub fn current_ansi() -> &'static eggos_palette::Ansi {
+        eggos_palette::ansi_at(painting())
+    }
+
+    #[cfg(not(test))]
+    static PAINTING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+    #[cfg(not(test))]
+    fn painting() -> u32 {
+        PAINTING.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn set_painting(index: u32) {
+        PAINTING.store(index, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    std::thread_local! {
+        static PAINTING: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    }
+
+    #[cfg(test)]
+    fn painting() -> u32 {
+        PAINTING.with(core::cell::Cell::get)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_painting(index: u32) {
+        PAINTING.with(|painting| painting.set(index));
+    }
+
+    /// What an icon shape holds for `icon.page.edge`, whose dark value is `icon.mac`'s.
+    pub(super) const PAGE_EDGE_INK: u32 = 0x01c9_d1db;
+    /// What an icon shape holds for `icon.badge`, whose dark value is `text`'s.
+    pub(super) const BADGE_INK: u32 = 0x01e6_eaf0;
+
+    /// An icon shape's dark colour in [`current`]'s palette: icons are drawn from shapes
+    /// holding the dark values, each an icon token's (or [`PAGE_EDGE_INK`], [`BADGE_INK`]).
+    pub fn icon_ink(dark: u32) -> u32 {
+        let palette = current();
+        match dark {
+            PAGE_EDGE_INK => palette.icon_page_edge,
+            BADGE_INK => palette.icon_badge,
+            ACCENT => palette.accent,
+            ICON_TILE => palette.icon_tile,
+            ICON_TILE_BORDER => palette.icon_tile_border,
+            ICON_PROMPT => palette.icon_prompt,
+            ICON_FOLDER => palette.icon_folder,
+            ICON_FOLDER_BACK => palette.icon_folder_back,
+            ICON_GEAR => palette.icon_gear,
+            ICON_GEAR_HOLE => palette.icon_gear_hole,
+            ICON_WINDOWS => palette.icon_windows,
+            ICON_MAC => palette.icon_mac,
+            ICON_ANDROID => palette.icon_android,
+            ICON_DARK => palette.icon_dark,
+            ICON_PAGE => palette.icon_page,
+            ICON_PAGE_LINE => palette.icon_page_line,
+            TEXT => palette.text,
+            other => other,
+        }
+    }
 }
 
 /// Height of the top bar, the 1 px edge line included.
@@ -500,6 +571,7 @@ impl Desktop {
         if !Self::fits(width, height) {
             return None;
         }
+        colour::set_painting(0);
         let (gradient, egg, yolk) = Self::wallpaper(width, height);
         let mut windows = Vec::new();
         windows.resize(MAX_WINDOWS, None);
@@ -1140,7 +1212,7 @@ impl Desktop {
             client,
             role,
             (width, height),
-            colour::WINDOW_BACKGROUND,
+            colour::current().window_background,
         );
         window.parent = parent;
         window.flags = window_flags;
@@ -1206,7 +1278,7 @@ impl Desktop {
 
     /// Gives `client`'s window `id` a buffer of `width` by `height`, clamped to its minimum
     /// and the work area ([`Self::size_for`]), and returns the size it got; its content shows
-    /// [`colour::WINDOW_BACKGROUND`] until the next commit. While a `Resize` the server sent
+    /// [`colour::current().window_background`] until the next commit. While a `Resize` the server sent
     /// waits for this answer, the window keeps the size the server gave it (the buffer is shown
     /// clipped to it); otherwise the window takes the new size, keeping its top-left corner
     /// unless the work area's edge moves it, and a maximised window becomes a normal one.
@@ -2835,12 +2907,12 @@ impl Desktop {
         for row in clip.y..clip.bottom() {
             canvas.row(row, clip.x, clip.right(), self.gradient[row as usize]);
             let (left, right) = self.egg[row as usize];
-            canvas.row(row, left, right, colour::WALLPAPER_EGG);
+            canvas.row(row, left, right, colour::current().wallpaper_egg);
             let distance = row.abs_diff(yolk_y);
             if distance < yolk_radius {
                 let half = isqrt(yolk_radius * yolk_radius - distance * distance);
                 let (left, right) = span(yolk_x, half, self.width);
-                canvas.row(row, left, right, colour::ACCENT);
+                canvas.row(row, left, right, colour::current().accent);
             }
         }
     }
@@ -2859,7 +2931,7 @@ impl Desktop {
                 let content = window.content();
                 canvas.fill(
                     Rect::new(content.x, content.y, content.width, 1),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 );
             }
             return;
@@ -2867,12 +2939,12 @@ impl Desktop {
         let outside = window.outside();
         let focused = self.focus == Some(slot);
         let (border, title, title_text) = if focused {
-            (colour::BORDER_ACTIVE, colour::TITLE_ACTIVE, colour::TEXT)
+            (colour::current().border_active, colour::current().title_active, colour::current().text)
         } else {
             (
-                colour::BORDER_INACTIVE,
-                colour::TITLE_INACTIVE,
-                colour::TEXT_DIM,
+                colour::current().border_inactive,
+                colour::current().title_inactive,
+                colour::current().text_dim,
             )
         };
         let (corners, inside_corners): (&[u32], &[u32]) = match window.has_square_corners() {
@@ -2899,13 +2971,13 @@ impl Desktop {
                 continue;
             };
             let (active, colour) = match part {
-                Part::Close => (window.closable, colour::BUTTON_CLOSE),
-                Part::Minimise => (true, colour::BUTTON_MINIMISE),
-                _ => (window.can_maximise(), colour::BUTTON_MAXIMISE),
+                Part::Close => (window.closable, colour::current().button_close),
+                Part::Minimise => (true, colour::current().button_minimise),
+                _ => (window.can_maximise(), colour::current().button_maximise),
             };
             let fill = match focused && active {
                 true => colour,
-                false => colour::BUTTON_INACTIVE,
+                false => colour::current().button_inactive,
             };
             let pressed = self.control_pressed == Some((slot, part))
                 && self.control_hover == Some((slot, part));
@@ -2936,7 +3008,7 @@ impl Desktop {
         }
         let (suffix, suffix_ink) = match (window.not_responding, self.agent_drives(slot)) {
             (true, _) => (NOT_RESPONDING, title_text),
-            (false, true) => (AGENT_SUFFIX, colour::ACCENT),
+            (false, true) => (AGENT_SUFFIX, colour::current().accent),
             (false, false) => ("", title_text),
         };
         let room = windows::title_room(outside.width).saturating_sub(suffix.len());
@@ -2967,7 +3039,7 @@ impl Desktop {
         );
         let fill = match window.ready {
             true => window.fill,
-            false => colour::WINDOW_BACKGROUND,
+            false => colour::current().window_background,
         };
         let top = content.y.max(clip.y);
         let bottom = content.bottom().min(clip.bottom());
@@ -3009,27 +3081,27 @@ impl Desktop {
 
     fn draw_menu(&self, canvas: &mut Canvas<'_>) {
         let menu = self.menu();
-        canvas.rounded(menu, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(menu, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(menu.x + 1, menu.y + 1, menu.width - 2, menu.height - 2),
             &paint::INSET_INSIDE_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         for (index, (label, _)) in MENU_ITEMS.iter().enumerate() {
             let top = menu.y + 1 + index as u32 * MENU_ITEM_HEIGHT;
             if self.menu_hover == Some(index) {
                 canvas.fill(
                     Rect::new(menu.x + 1, top + 2, menu.width - 2, MENU_ITEM_HEIGHT - 4),
-                    colour::MENU_HOVER,
+                    colour::current().menu_hover,
                 );
             }
             canvas.text(
                 menu.x + MENU_TEXT_X,
                 top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2,
                 label,
-                colour::TEXT,
+                colour::current().text,
             );
         }
     }
@@ -3081,10 +3153,10 @@ fn draw_chip_text(canvas: &mut Canvas<'_>, chip: Rect, title: &str) {
     let (text, cut) = windows::cut_title(title, CHIP_GLYPHS);
     let x = chip.x + CHIP_PADDING;
     let y = chip.y + (chip.height - GLYPH_HEIGHT as u32) / 2;
-    canvas.text(x, y, text, colour::TEXT);
+    canvas.text(x, y, text, colour::current().text);
     if cut {
         let after = x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
-        canvas.text(after, y, windows::ellipsis(), colour::TEXT);
+        canvas.text(after, y, windows::ellipsis(), colour::current().text);
     }
 }
 
@@ -3136,8 +3208,8 @@ fn span(centre: u32, half: u32, width: u32) -> (u32, u32) {
 fn gradient_pixel(row: u32, height: u32) -> u32 {
     let last = height.saturating_sub(1).max(1) as i64;
     let channel = |shift: u32| {
-        let top = i64::from((colour::WALLPAPER_TOP >> shift) & 0xff);
-        let bottom = i64::from((colour::WALLPAPER_BOTTOM >> shift) & 0xff);
+        let top = i64::from((colour::current().wallpaper_top >> shift) & 0xff);
+        let bottom = i64::from((colour::current().wallpaper_bottom >> shift) & 0xff);
         ((top + (bottom - top) * i64::from(row) / last) as u32) << shift
     };
     channel(16) | channel(8) | channel(0)

@@ -353,7 +353,7 @@ pub fn fits_cursor_image(shape: PointerShape) -> bool {
 /// its white pixels in the accent, its outline black.
 pub fn agent_arrow_pixel_at(at: (u32, u32), x: u32, y: u32) -> Option<u32> {
     pixel_at(PointerShape::Arrow, at, x, y).map(|pixel| match pixel {
-        WHITE => super::colour::ACCENT,
+        WHITE => super::colour::current().accent,
         other => other,
     })
 }

@@ -143,7 +143,7 @@ and is not listed per item.
 - [x] TV form (D307's deviations): the network glyph and `Agent` chip in the strip, a boot option for `input::pretend_remote`, an attached pointer's clicks on the home screen — code written, unbuilt, D607
 - [x] Components pane (D300's deviations): per-cause failure lines from the command's failure codes, check times in the local time zone, tooltips on disabled buttons, focus on `Update all` from the chip, the chip in the shell's element tree — code written, unbuilt, D608 (failure lines and local times were already there)
 - [x] App actions window (D301's deviations): a quiet success shown as a desktop notice, `Copy output`, type-to-jump in the menu, the read-only output area — code written, unbuilt, D609
-- [ ] Light theme and high contrast in what draws itself: the shell's panels, the terminal's grid and the light high-contrast ANSI table, Files' and the Text Editor's own drawing (D219, D224)
+- [x] Light theme and high contrast in what draws itself: the shell's panels, the terminal's grid and the light high-contrast ANSI table, Files' and the Text Editor's own drawing (D219, D224) — code written, unbuilt, D610
 - [ ] Toolkit: submenus and checkable menu items, a menu bar's overflow, table column reordering and fit-to-content, multi-selection and cell focus, the text area's undo and word moves (D219)
 
 ## M13 Real hardware, vendor drivers and mitigations

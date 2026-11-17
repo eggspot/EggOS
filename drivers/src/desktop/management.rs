@@ -311,6 +311,12 @@ impl Desktop {
     /// again.
     pub fn set_palette(&mut self, index: u32, damage: &mut Damage, events: &mut dyn EventSink) {
         self.palette = index;
+        super::colour::set_painting(index);
+        let (gradient, egg, yolk) = Self::wallpaper(self.width, self.height);
+        (self.gradient, self.egg, self.yolk) = (gradient, egg, yolk);
+        if let Some(terminal) = self.windows[super::TERMINAL_SLOT].as_mut() {
+            terminal.fill = super::colour::current().term_background;
+        }
         let reduce = i32::from(self.reduce_motion);
         for slot in 0..self.windows.len() {
             if self.windows[slot].is_some() {

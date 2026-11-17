@@ -27496,3 +27496,34 @@ the license, by an explicit instruction recorded here.
   the old undo of edits is gone.
 - **Not yet.** Building and running; one window height for every screen; the phone, tablet and
   TV layouts; the notice's rate limit (ask 3).
+
+## D610 The light theme and high contrast in what draws itself: one palette crate, the shell, the terminal, Files and the Text Editor (M11; D219's and D224's "Not yet"; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (design: docs/ux/self-drawn-themes-v0.1.md, by Claude Fable)
+- **Crate `eggos-palette`** (`userland/palette`, `no_std`, no dependencies, in the workspace and
+  `USER_CRATES`): the toolkit's `Token`, `Palette`, `DARK`, `LIGHT`, `DARK_HIGH_CONTRAST`,
+  `LIGHT_HIGH_CONTRAST` and `palette_at` moved here unchanged, plus the design's four new icon
+  tokens (`icon.android`, `icon.page`, `icon.page.edge`, `icon.page.line`) in all four columns,
+  the four ANSI tables (`Ansi`, `ansi_at`; light high contrast new), the syntax colours
+  (`Syntax`, `syntax_at`: dark columns from the bright row, light from the normal row) and
+  `index_of`. The toolkit's `theme` re-exports them, so nothing built on it changes.
+- **The shell** (`drivers/src/desktop`): every `colour::X` in a paint path is now
+  `colour::current().x`, the palette of the index `SET_PALETTE` last gave
+  (`colour::set_painting`; a thread-local under `cfg(test)`, so tests on different threads
+  keep their own). The constants stay as the dark palette's, for the boot screen and tests.
+  `set_palette` also repaints the wallpaper's gradient and egg and gives the console window
+  `term.bg`. Icon shapes keep their dark values and are mapped at draw time (`icon_ink`);
+  `icon.page.edge` and `icon.badge`, whose dark values equal `icon.mac`'s and `text`'s, are
+  marked by two values of their own (`PAGE_EDGE_INK`, `BADGE_INK`), so the Windows badge's `W`
+  takes `icon.badge`.
+- **The terminal** (`eggos-terminal`): `Scheme` (`term.*`, the scrollback mark and the sixteen
+  ANSI colours) with `DARK_SCHEME` and `Scheme::of(index)`; `Terminal::set_scheme` redraws the
+  whole grid when it changes; cells keep ANSI indexes, so a change recolours the scrollback.
+  The kernel gives the console's terminal the desktop's scheme every frame
+  (`render_terminal`); the kernel's window fills read `colour::current()`.
+- **Files and the Text Editor**: their painters read `canvas.palette()` instead of the
+  toolkit's `colour` constants; Files' source badges take the palette's icon tokens; the
+  editor's syntax colours come from `syntax_at(index_of(canvas.palette()))`.
+- **Not yet.**
+  - Building and running; the ratio test and the lint over the sources (section 7).
+  - The terminal window app (`userland/terminal`) following `PaletteChanged`.
+  - The 1 px black ring on the window controls in light high contrast.
+  - The installer's art, and the Windows and macOS layers' system colours.

@@ -119,15 +119,15 @@ impl Desktop {
             return;
         };
         let fill = match hovered {
-            true => colour::BAR_PRESSED,
-            false => colour::BAR_HOVER,
+            true => colour::current().bar_pressed,
+            false => colour::current().bar_hover,
         };
         canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
         canvas.text(
             chip.x + CHIP_PADDING,
             chip.y + UPDATES_LABEL_Y,
             UPDATES_LABEL,
-            colour::TEXT_DIM,
+            colour::current().text_dim,
         );
     }
 }

@@ -338,17 +338,17 @@ impl super::Desktop {
         };
         if let Some(text) = picker.hint() {
             let rect = self.hint_rect(text);
-            Self::draw_popup_surface(canvas, rect, super::colour::MENU);
-            canvas.text(rect.x + HINT_PADDING / 2, rect.y + HINT_TEXT_Y, text, super::colour::TEXT);
+            Self::draw_popup_surface(canvas, rect, super::colour::current().menu);
+            canvas.text(rect.x + HINT_PADDING / 2, rect.y + HINT_TEXT_Y, text, super::colour::current().text);
         }
         if let Some(rect) = picker.dragged() {
-            outline(canvas, rect, 1, super::colour::ACCENT);
+            outline(canvas, rect, 1, super::colour::current().accent);
             if rect.width > 2 && rect.height > 2 {
                 outline(
                     canvas,
                     Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
                     1,
-                    super::colour::ICON_DARK,
+                    super::colour::current().icon_dark,
                 );
             }
             let mut size = [0u8; 24];
@@ -365,12 +365,12 @@ impl super::Desktop {
                 ),
                 false => Rect::new(rect.x, rect.y + rect.height + 4, width, SIZE_PILL_HEIGHT),
             };
-            canvas.rounded(pill, &super::paint::INSET_R4, true, true, super::colour::BAR);
+            canvas.rounded(pill, &super::paint::INSET_R4, true, true, super::colour::current().bar);
             canvas.text(
                 pill.x + SIZE_PILL_PADDING,
                 pill.y + (SIZE_PILL_HEIGHT - GLYPH_HEIGHT as u32) / 2,
                 text,
-                super::colour::TEXT,
+                super::colour::current().text,
             );
         }
         if picker.mode == PickerMode::Window
@@ -380,7 +380,7 @@ impl super::Desktop {
                 canvas,
                 grown(self.window_at(slot).outside(), WINDOW_OUTLINE),
                 WINDOW_OUTLINE,
-                super::colour::ACCENT,
+                super::colour::current().accent,
             );
         }
     }

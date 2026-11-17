@@ -25,8 +25,8 @@ mod reflow;
 mod tests;
 
 pub use colours::{
-    ACCENT, ANSI_COLOURS, DEFAULT_COLOUR, DIM_ON_SELECTION, TERM_BACKGROUND, TERM_CURSOR,
-    TERM_FOREGROUND, TERM_SELECTION,
+    ACCENT, ANSI_COLOURS, DARK_SCHEME, DEFAULT_COLOUR, DIM_ON_SELECTION, Scheme, TERM_BACKGROUND,
+    TERM_CURSOR, TERM_FOREGROUND, TERM_SELECTION,
 };
 
 use alloc::boxed::Box;
@@ -119,15 +119,20 @@ impl Cell {
         flags: 0,
     };
 
-    /// Its foreground and background as pixels: bold brightens ANSI colours 0-7, inverse swaps
-    /// the two.
+    /// Its foreground and background as pixels in the dark scheme: bold brightens ANSI
+    /// colours 0-7, inverse swaps the two.
     pub fn colours(self) -> (u32, u32) {
+        self.colours_in(&DARK_SCHEME)
+    }
+
+    /// [`Self::colours`] in `scheme`.
+    pub fn colours_in(self, scheme: &Scheme) -> (u32, u32) {
         let mut foreground = self.foreground;
         if self.flags & cell_flags::BOLD != 0 && foreground < 8 {
             foreground += 8;
         }
-        let foreground = colours::pixel(foreground, TERM_FOREGROUND);
-        let background = colours::pixel(self.background, TERM_BACKGROUND);
+        let foreground = scheme.pixel(foreground, scheme.foreground);
+        let background = scheme.pixel(self.background, scheme.background);
         if self.flags & cell_flags::INVERSE != 0 {
             (background, foreground)
         } else {
@@ -138,14 +143,19 @@ impl Cell {
     /// [`Self::colours`], or for a selected cell its foreground on [`TERM_SELECTION`], bright
     /// black ([`DIM_ON_SELECTION`]) drawn as [`TERM_FOREGROUND`].
     pub fn colours_selected(self, selected: bool) -> (u32, u32) {
-        let (foreground, background) = self.colours();
+        self.colours_selected_in(selected, &DARK_SCHEME)
+    }
+
+    /// [`Self::colours_selected`] in `scheme`.
+    pub fn colours_selected_in(self, selected: bool, scheme: &Scheme) -> (u32, u32) {
+        let (foreground, background) = self.colours_in(scheme);
         if !selected {
             return (foreground, background);
         }
-        let dim = ANSI_COLOURS[usize::from(DIM_ON_SELECTION)];
+        let dim = scheme.ansi[usize::from(DIM_ON_SELECTION)];
         match foreground == dim {
-            true => (TERM_FOREGROUND, TERM_SELECTION),
-            false => (foreground, TERM_SELECTION),
+            true => (scheme.foreground, scheme.selection),
+            false => (foreground, scheme.selection),
         }
     }
 }
@@ -368,6 +378,7 @@ pub struct Terminal {
     onlcr: bool,
     parser: Parser,
     dirty: Box<[Span]>,
+    scheme: Scheme,
     shift: Option<Shift>,
     drawn_cursor: Option<(u16, u16)>,
     cursor_look: CursorLook,
@@ -435,6 +446,7 @@ impl Terminal {
             onlcr: false,
             parser: Parser::new(),
             dirty: filled(usize::from(rows), Span::CLEAN)?,
+            scheme: DARK_SCHEME,
             shift: None,
             drawn_cursor: None,
             cursor_look: CursorLook::Block,
@@ -729,6 +741,19 @@ impl Terminal {
         self.dirty.fill(Span::CLEAN);
         self.shift = None;
         self.drawn_cursor = None;
+    }
+
+    /// Draws in `scheme` from the next render on, the whole grid again when it changed (D610).
+    pub fn set_scheme(&mut self, scheme: Scheme) {
+        if self.scheme != scheme {
+            self.scheme = scheme;
+            self.invalidate();
+        }
+    }
+
+    /// The scheme it draws in.
+    pub fn scheme(&self) -> &Scheme {
+        &self.scheme
     }
 
     /// Marks every cell as changed, so the next render draws the whole grid.
@@ -1309,6 +1334,7 @@ impl Terminal {
     pub fn take_snapshot(&mut self, snapshot: &mut Snapshot) {
         snapshot.columns = self.columns;
         snapshot.rows = self.rows;
+        snapshot.scheme = self.scheme;
         snapshot.shift = self.shift.take();
         snapshot.spans.clear();
         snapshot.cells.clear();
@@ -1378,6 +1404,7 @@ struct SnapshotSpan {
 pub struct Snapshot {
     columns: u16,
     rows: u16,
+    scheme: Scheme,
     shift: Option<Shift>,
     spans: alloc::vec::Vec<SnapshotSpan>,
     cells: alloc::vec::Vec<Cell>,
@@ -1395,6 +1422,7 @@ impl Default for Snapshot {
             cells: alloc::vec::Vec::new(),
             cursor_look: CursorLook::Block,
             scrolled_back: false,
+            scheme: DARK_SCHEME,
         }
     }
 }
@@ -1446,8 +1474,8 @@ impl Snapshot {
             for columns in [before_cursor, after_cursor] {
                 for column in columns {
                     let cell = cell_of(column);
-                    let (foreground, background) =
-                        cell.colours_selected(span.selected.contains(&column));
+                    let (foreground, background) = cell
+                        .colours_selected_in(span.selected.contains(&column), &self.scheme);
                     let underline = cell.flags & cell_flags::UNDERLINE != 0;
                     font::draw_glyph(
                         pixels,
@@ -1468,6 +1496,7 @@ impl Snapshot {
                     cell_of(column),
                     self.cursor_look,
                     span.selected.contains(&column),
+                    &self.scheme,
                 );
             }
             band = band.union(Rect::new(
@@ -1486,8 +1515,8 @@ impl Snapshot {
                 stride,
                 at,
                 font::UP_TRIANGLE,
-                ACCENT,
-                TERM_BACKGROUND,
+                self.scheme.accent,
+                self.scheme.background,
                 false,
             );
         }
@@ -1517,31 +1546,32 @@ fn draw_cursor_cell(
     cell: Cell,
     look: CursorLook,
     selected: bool,
+    scheme: &Scheme,
 ) {
     let (foreground, background) = match look {
-        CursorLook::Block => (TERM_BACKGROUND, TERM_CURSOR),
-        _ => cell.colours_selected(selected),
+        CursorLook::Block => (scheme.background, scheme.cursor),
+        _ => cell.colours_selected_in(selected, scheme),
     };
     let underline = cell.flags & cell_flags::UNDERLINE != 0 && look != CursorLook::Block;
     font::draw_glyph(
         pixels, stride, at, cell.glyph, foreground, background, underline,
     );
     if look == CursorLook::Outline {
-        outline_cell(pixels, stride, at);
+        outline_cell(pixels, stride, at, scheme.cursor);
     }
 }
 
-fn outline_cell(pixels: &mut [u32], stride: usize, at: usize) {
+fn outline_cell(pixels: &mut [u32], stride: usize, at: usize, cursor: u32) {
     for row in 0..GLYPH_HEIGHT {
         let start = at + row * stride;
         let Some(line) = pixels.get_mut(start..start + GLYPH_WIDTH) else {
             return;
         };
         if row == 0 || row == GLYPH_HEIGHT - 1 {
-            line.fill(TERM_CURSOR);
+            line.fill(cursor);
         } else {
-            line[0] = TERM_CURSOR;
-            line[GLYPH_WIDTH - 1] = TERM_CURSOR;
+            line[0] = cursor;
+            line[GLYPH_WIDTH - 1] = cursor;
         }
     }
 }

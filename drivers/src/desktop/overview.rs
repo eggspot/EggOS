@@ -635,20 +635,20 @@ impl Desktop {
             let selected = overview.selection == OverviewSelection::Tile(index);
             if index >= self.desktops {
                 let fill = match hover == Some(OverviewItem::NewTile) {
-                    true => colour::BAR_PRESSED,
-                    false => colour::BAR_HOVER,
+                    true => colour::current().bar_pressed,
+                    false => colour::current().bar_hover,
                 };
                 canvas.rounded(tile, &paint::INSET_R4, true, true, fill);
-                canvas.character_doubled(tile.x + PLUS_AT.0, tile.y + PLUS_AT.1, '+', colour::TEXT);
+                canvas.character_doubled(tile.x + PLUS_AT.0, tile.y + PLUS_AT.1, '+', colour::current().text);
             } else {
                 self.draw_desktop_tile(canvas, tile, index, work, hover);
                 let label = self.tile_label_rect(index);
-                canvas.rounded(label, &paint::INSET_R4, true, true, colour::BAR);
+                canvas.rounded(label, &paint::INSET_R4, true, true, colour::current().bar);
                 let mut text = *b"Desktop 0";
                 text[8] = b'1' + index;
                 let ink = match index == self.current_desktop {
-                    true => colour::TEXT,
-                    false => colour::TEXT_DIM,
+                    true => colour::current().text,
+                    false => colour::current().text_dim,
                 };
                 canvas.text(
                     label.x + LABEL_PADDING,
@@ -660,10 +660,10 @@ impl Desktop {
             if let Some((x, y)) = overview.dragging
                 && contains(tile, x, y)
             {
-                outline(canvas, tile, RING, colour::FOCUS_RING);
+                outline(canvas, tile, RING, colour::current().focus_ring);
             }
             if selected {
-                outline(canvas, grown(tile, RING), RING, colour::FOCUS_RING);
+                outline(canvas, grown(tile, RING), RING, colour::current().focus_ring);
             }
         }
         let grid = self.overview_grid();
@@ -673,7 +673,7 @@ impl Desktop {
                 grid.area.x + grid.area.width.saturating_sub(width) / 2,
                 grid.area.y + grid.area.height.saturating_sub(GLYPH_HEIGHT as u32) / 2,
                 EMPTY_TEXT,
-                colour::TEXT_DIM,
+                colour::current().text_dim,
             );
         }
         for index in 0..grid.length {
@@ -684,9 +684,9 @@ impl Desktop {
                 overview.selection == OverviewSelection::Thumbnail(index),
                 self.focus == Some(slot),
             ) {
-                (true, _) => (RING, colour::FOCUS_RING),
-                (false, true) => (1, colour::BORDER_ACTIVE),
-                (false, false) => (1, colour::BORDER_INACTIVE),
+                (true, _) => (RING, colour::current().focus_ring),
+                (false, true) => (1, colour::current().border_active),
+                (false, false) => (1, colour::current().border_inactive),
             };
             outline(canvas, grown(thumbnail, ring.0), ring.0, ring.1);
             self.draw_thumbnail_label(canvas, &grid, index, thumbnail);
@@ -715,7 +715,7 @@ impl Desktop {
                     thumbnail.height,
                 ),
                 1,
-                colour::ACCENT,
+                colour::current().accent,
             );
         }
     }
@@ -734,7 +734,7 @@ impl Desktop {
                 .gradient
                 .get(source as usize)
                 .copied()
-                .unwrap_or(colour::WALLPAPER_TOP);
+                .unwrap_or(colour::current().wallpaper_top);
             let inset = paint::INSET_R4
                 .get(row as usize)
                 .or_else(|| paint::INSET_R4.get((tile.height - 1 - row) as usize))
@@ -763,17 +763,17 @@ impl Desktop {
                 width.min(tile.width - x.min(tile.width - 1)),
                 height.min(tile.height - y.min(tile.height - 1)),
             );
-            canvas.fill(mini, colour::TITLE_ACTIVE);
-            outline(canvas, mini, 1, colour::BORDER_ACTIVE);
+            canvas.fill(mini, colour::current().title_active);
+            outline(canvas, mini, 1, colour::current().border_active);
         }
         let hovered = matches!(
             hover,
             Some(OverviewItem::Tile(at) | OverviewItem::TileClose(at)) if at == desktop
         );
         let (thickness, ring) = match (desktop == self.current_desktop, hovered) {
-            (true, _) => (2, colour::ACCENT),
-            (false, true) => (1, colour::TEXT_DIM),
-            (false, false) => (1, colour::MENU_BORDER),
+            (true, _) => (2, colour::current().accent),
+            (false, true) => (1, colour::current().text_dim),
+            (false, false) => (1, colour::current().menu_border),
         };
         outline(canvas, tile, thickness, ring);
         if hovered && self.desktops > 1 {
@@ -815,7 +815,7 @@ impl Desktop {
             while column < right {
                 let source_x = (column - thumbnail.x) * scale;
                 if !(in_rows && source_x >= buffer.x && source_x < buffer.right()) {
-                    out[(column - left) as usize] = colour::WINDOW_BACKGROUND;
+                    out[(column - left) as usize] = colour::current().window_background;
                     column += 1;
                     continue;
                 }
@@ -849,10 +849,10 @@ impl Desktop {
             width,
             LABEL_HEIGHT,
         );
-        canvas.rounded(label, &paint::INSET_R4, true, true, colour::BAR);
+        canvas.rounded(label, &paint::INSET_R4, true, true, colour::current().bar);
         let ink = match window.minimised {
-            true => colour::TEXT_DIM,
-            false => colour::TEXT,
+            true => colour::current().text_dim,
+            false => colour::current().text,
         };
         let y = label.y + (LABEL_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         canvas.text(label.x + LABEL_PADDING, y, text, ink);
@@ -868,8 +868,8 @@ impl Desktop {
 
 fn draw_close(canvas: &mut Canvas<'_>, circle: Rect, pressed: bool) {
     let fill = match pressed {
-        true => paint::quarter(colour::BUTTON_CLOSE),
-        false => colour::BUTTON_CLOSE,
+        true => paint::quarter(colour::current().button_close),
+        false => colour::current().button_close,
     };
     canvas.rounded(circle, &paint::INSET_R6, true, true, fill);
     for (row, bits) in (0..).zip(&super::CLOSE_GLYPH) {

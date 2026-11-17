@@ -489,7 +489,7 @@ impl Desktop {
             };
             canvas.fill(area, fill);
         }
-        canvas.text(x, y, choice.code, colour::TEXT);
+        canvas.text(x, y, choice.code, colour::current().text);
     }
 
     pub(super) fn draw_keyboard_layout_menu(&self, canvas: &mut Canvas<'_>) {
@@ -503,13 +503,13 @@ impl Desktop {
             return;
         }
         canvas.shadow(menu);
-        canvas.rounded(menu, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(menu, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(menu.x + 1, menu.y + 1, menu.width - 2, menu.height - 2),
             &paint::INSET_INSIDE_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         let text_y = (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         for row in self.keyboard_layouts.rows() {
@@ -519,7 +519,7 @@ impl Desktop {
             if self.keyboard_layouts.menu_hover == Some(row) {
                 canvas.fill(
                     Rect::new(rect.x, rect.y + 2, rect.width, MENU_ITEM_HEIGHT - 4),
-                    colour::MENU_HOVER,
+                    colour::current().menu_hover,
                 );
             }
             let label = match row {
@@ -532,7 +532,7 @@ impl Desktop {
                             menu.x + MENU_MARK_X,
                             rect.y + text_y,
                             MENU_MARK,
-                            colour::ACCENT,
+                            colour::current().accent,
                         );
                     }
                     choice.title
@@ -540,12 +540,12 @@ impl Desktop {
                 LayoutMenuRow::KeyboardSettings => {
                     canvas.fill(
                         Rect::new(rect.x, rect.y - SEPARATOR_ROW / 2, rect.width, 1),
-                        colour::MENU_BORDER,
+                        colour::current().menu_border,
                     );
                     KEYBOARD_SETTINGS
                 }
             };
-            canvas.text(menu.x + MENU_TEXT_X, rect.y + text_y, label, colour::TEXT);
+            canvas.text(menu.x + MENU_TEXT_X, rect.y + text_y, label, colour::current().text);
         }
     }
 

@@ -358,13 +358,13 @@ impl Desktop {
             return;
         }
         canvas.shadow(rect);
-        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_INSIDE_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         let text_y = (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         for (index, entry) in menu.entries[..menu.count].iter().enumerate() {
@@ -377,16 +377,16 @@ impl Desktop {
             if entry.is(shell_menu_flags::SEPARATOR) {
                 canvas.fill(
                     Rect::new(row.x, row.y + SEPARATOR_HEIGHT / 2, row.width, 1),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 );
                 continue;
             }
             if menu.hover == Some(index) {
-                canvas.fill(row, colour::MENU_HOVER);
+                canvas.fill(row, colour::current().menu_hover);
             }
             let text = match entry.is(shell_menu_flags::GRAYED) {
-                true => colour::TEXT_DIM,
-                false => colour::TEXT,
+                true => colour::current().text_dim,
+                false => colour::current().text,
             };
             if entry.is(shell_menu_flags::CHECKED) {
                 match entry.is(shell_menu_flags::RADIO) {

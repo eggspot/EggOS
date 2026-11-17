@@ -8,7 +8,7 @@ use crate::highlight::{self, Kind, Language, State};
 use core::fmt::Write;
 use eggos_app::messages::Line;
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::{Syntax, index_of, syntax_at};
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::text::{self, Text};
 use eggos_toolkit::widget::{self, Kind as Widget, LINE_HEIGHT, Look};
@@ -36,29 +36,21 @@ fn edged(canvas: &mut Canvas<'_>, rect: Rect) {
             rect.height + 2 * EDGE,
         ),
         &INSET_R6,
-        colour::FIELD,
+        canvas.palette().field,
     );
-    canvas.rounded(rect, &INSET_R6, colour::MENU);
-    canvas.outline(rect, &INSET_R6, 1, colour::MENU_BORDER);
+    canvas.rounded(rect, &INSET_R6, canvas.palette().menu);
+    canvas.outline(rect, &INSET_R6, 1, canvas.palette().menu_border);
 }
 
-mod syntax_ink {
-    pub const CALL: u32 = 0x00f2_cc6d;
-    pub const NAME: u32 = 0x0072_d3e0;
-    pub const QUOTED: u32 = 0x0084_d48a;
-    pub const LITERAL: u32 = 0x00da_95e4;
-    pub const STRUCTURE: u32 = 0x007f_b0f0;
-}
-
-fn ink_of(kind: Kind) -> u32 {
+fn ink_of(kind: Kind, syntax: &Syntax) -> u32 {
     match kind {
-        Kind::Plain => colour::TEXT,
-        Kind::Function | Kind::Macro => syntax_ink::CALL,
-        Kind::Type | Kind::Key | Kind::Link => syntax_ink::NAME,
-        Kind::String => syntax_ink::QUOTED,
-        Kind::Number | Kind::Escape | Kind::Attribute => syntax_ink::LITERAL,
-        Kind::Keyword | Kind::Tag | Kind::Heading => syntax_ink::STRUCTURE,
-        Kind::Comment => colour::TEXT_DIM,
+        Kind::Plain => syntax.plain,
+        Kind::Function | Kind::Macro => syntax.function,
+        Kind::Type | Kind::Key | Kind::Link => syntax.type_name,
+        Kind::String => syntax.string,
+        Kind::Number | Kind::Escape | Kind::Attribute => syntax.number,
+        Kind::Keyword | Kind::Tag | Kind::Heading => syntax.keyword,
+        Kind::Comment => syntax.comment,
     }
 }
 
@@ -102,17 +94,17 @@ impl EditorWindow<'_> {
         let fill = match () {
             () if !on => None,
             () if self.pressed == Some(part) && self.hover == Some(part) => {
-                Some(colour::BAR_PRESSED)
+                Some(canvas.palette().bar_pressed)
             }
-            () if self.hover == Some(part) => Some(colour::BAR_HOVER),
+            () if self.hover == Some(part) => Some(canvas.palette().bar_hover),
             () => None,
         };
         if let Some(fill) = fill {
             canvas.rounded(rect, &INSET_R4, fill);
         }
         let ink = match on {
-            true => colour::TEXT,
-            false => colour::TEXT_DIM,
+            true => canvas.palette().text,
+            false => canvas.palette().text_dim,
         };
         let width = text::width(words);
         canvas.text(
@@ -126,10 +118,10 @@ impl EditorWindow<'_> {
 
     fn paint_toolbar(&self, canvas: &mut Canvas<'_>) {
         let toolbar = Rect::new(0, 0, self.width, TOOLBAR_HEIGHT);
-        canvas.fill(toolbar, colour::BAR);
+        canvas.fill(toolbar, canvas.palette().bar);
         canvas.fill(
             Rect::new(0, toolbar.bottom() - 1, toolbar.width, 1),
-            colour::BAR_EDGE,
+            canvas.palette().bar_edge,
         );
         for (tool, label) in TOOLS {
             self.flat_button(canvas, self.tool_rect(tool), label, Part::Tool(tool), true);
@@ -151,10 +143,10 @@ impl EditorWindow<'_> {
             return;
         }
         let bar = self.bar_rect();
-        canvas.fill(bar, colour::BAR);
+        canvas.fill(bar, canvas.palette().bar);
         canvas.fill(
             Rect::new(0, bar.bottom() - 1, bar.width, 1),
-            colour::BAR_EDGE,
+            canvas.palette().bar_edge,
         );
         match self.bar {
             Bar::Find => self.paint_find_bar(canvas, caret_shown),
@@ -204,7 +196,7 @@ impl EditorWindow<'_> {
                 BAR_TEXT_Y,
                 room,
                 words,
-                colour::TEXT_DIM,
+                canvas.palette().text_dim,
             );
         }
         self.flat_button(
@@ -221,7 +213,7 @@ impl EditorWindow<'_> {
             Bar::Open => ("Open:", "Open"),
             _ => ("Save as:", "Save"),
         };
-        canvas.text(12, BAR_TEXT_Y, label, colour::TEXT, 1);
+        canvas.text(12, BAR_TEXT_Y, label, canvas.palette().text, 1);
         widget::paint(
             canvas,
             &Widget::TextField(self.path_field),
@@ -236,8 +228,8 @@ impl EditorWindow<'_> {
         let area = self.area();
         let gutter = self.gutter_width();
         let view = self.text_view();
-        canvas.fill(Rect::new(0, area.y, gutter, area.height), colour::MENU);
-        canvas.fill(view, colour::FIELD);
+        canvas.fill(Rect::new(0, area.y, gutter, area.height), canvas.palette().menu);
+        canvas.fill(view, canvas.palette().field);
         let document = self.editor.document();
         let first = (self.scroll_y / ROW_HEIGHT).max(0) as usize;
         let shown = (area.height / ROW_HEIGHT + 2) as usize;
@@ -250,8 +242,8 @@ impl EditorWindow<'_> {
             let digits = number.as_str().len() as i32;
             let mut x = gutter - NUMBER_END_FROM_GUTTER - digits * CELL_WIDTH;
             let ink = match line == caret_line {
-                true => colour::TEXT,
-                false => colour::TEXT_DIM,
+                true => canvas.palette().text,
+                false => canvas.palette().text_dim,
             };
             for character in number.as_str().chars() {
                 mono(canvas, x, self.row_top(line), character, ink);
@@ -271,7 +263,7 @@ impl EditorWindow<'_> {
             let x = self.column_left(self.editor.view_column()) - CARET_WIDTH;
             canvas.fill(
                 Rect::new(x, self.row_top(caret_line), CARET_WIDTH, ROW_HEIGHT),
-                colour::TEXT,
+                canvas.palette().text,
             );
         }
         if let Some((track, thumb)) = self.vertical_bar() {
@@ -285,7 +277,7 @@ impl EditorWindow<'_> {
         {
             canvas.fill(
                 Rect::new(vertical.x, horizontal.y, vertical.width, horizontal.height),
-                colour::PROGRESS_TRACK,
+                canvas.palette().progress_track,
             );
         }
         canvas.restore(previous);
@@ -351,11 +343,14 @@ impl EditorWindow<'_> {
                 if selected {
                     canvas.fill(
                         Rect::new(left, top, cells * CELL_WIDTH, ROW_HEIGHT),
-                        colour::SELECTION,
+                        canvas.palette().selection,
                     );
                 }
                 if character != '\t' {
-                    let ink = runs.as_ref().map_or(colour::TEXT, |runs| ink_of(runs.kind_at(at)));
+                    let syntax = syntax_at(index_of(canvas.palette()));
+                    let ink = runs
+                        .as_ref()
+                        .map_or(canvas.palette().text, |runs| ink_of(runs.kind_at(at), &syntax));
                     mono(canvas, left, top, character, ink);
                 }
             }
@@ -366,22 +361,22 @@ impl EditorWindow<'_> {
         if has_break && line_end >= start && line_end < end {
             canvas.fill(
                 Rect::new(self.column_left(column), top, CELL_WIDTH, ROW_HEIGHT),
-                colour::SELECTION,
+                canvas.palette().selection,
             );
         }
         next_state
     }
 
     fn paint_scroll_bar(&self, canvas: &mut Canvas<'_>, track: Rect, thumb: Rect, part: Part) {
-        canvas.fill(track, colour::PROGRESS_TRACK);
+        canvas.fill(track, canvas.palette().progress_track);
         let dragged = matches!(
             (self.drag, part),
             (Some(Drag::Vertical { .. }), Part::VerticalThumb)
                 | (Some(Drag::Horizontal { .. }), Part::HorizontalThumb)
         );
         let ink = match self.hover == Some(part) || dragged {
-            true => colour::BUTTON_INACTIVE,
-            false => colour::BAR_PRESSED,
+            true => canvas.palette().button_inactive,
+            false => canvas.palette().bar_pressed,
         };
         canvas.rounded(thumb, &INSET_R4, ink);
     }
@@ -413,24 +408,24 @@ impl EditorWindow<'_> {
 
     fn paint_status(&self, canvas: &mut Canvas<'_>) {
         let status = self.status_bar();
-        canvas.fill(status, colour::BAR);
-        canvas.fill(Rect::new(0, status.y, status.width, 1), colour::BAR_EDGE);
+        canvas.fill(status, canvas.palette().bar);
+        canvas.fill(Rect::new(0, status.y, status.width, 1), canvas.palette().bar_edge);
         let y = status.y + STATUS_TEXT_TOP;
         canvas.text(
             STATUS_TEXT_X,
             y,
             self.status_text().as_str(),
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
             1,
         );
         let ending = self.editor.document().ending().label();
         let ending_x = self.width - STATUS_TEXT_X - text::width(ending);
-        canvas.text(ending_x, y, ending, colour::TEXT_DIM, 1);
+        canvas.text(ending_x, y, ending, canvas.palette().text_dim, 1);
         let state = self.state_text();
         let mut language_end = ending_x - STATE_GAP;
         if !state.is_empty() {
             let state_x = ending_x - STATE_GAP - text::width(state);
-            canvas.text(state_x, y, state, colour::TEXT_DIM, 1);
+            canvas.text(state_x, y, state, canvas.palette().text_dim, 1);
             language_end = state_x - STATE_GAP;
         }
         let language = self.language.map_or(PLAIN_TEXT, Language::name);
@@ -438,7 +433,7 @@ impl EditorWindow<'_> {
             language_end - text::width(language),
             y,
             language,
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
             1,
         );
     }
@@ -478,7 +473,7 @@ impl EditorWindow<'_> {
             rect.y + NOTICE_TEXT_TOP,
             space,
             words,
-            colour::TEXT,
+            canvas.palette().text,
         );
     }
 }

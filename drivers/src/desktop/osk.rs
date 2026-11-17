@@ -1706,8 +1706,8 @@ impl Desktop {
             return;
         }
         let panel = self.osk.panel;
-        canvas.fill(panel, colour::BAR);
-        canvas.row(panel.y, panel.x, panel.right(), colour::BAR_EDGE);
+        canvas.fill(panel, colour::current().bar);
+        canvas.row(panel.y, panel.x, panel.right(), colour::current().bar_edge);
         let kind = self.osk.focus.map_or(FieldKind::Text, |focus| focus.kind);
         let enter = self
             .osk
@@ -1730,13 +1730,13 @@ impl Desktop {
             && let Some(character) = self.shown_character(self.osk.keys[pressed].cap)
         {
             let rect = self.preview_rect(pressed);
-            canvas.fill(rect, colour::MENU);
-            outline(canvas, rect, colour::MENU_BORDER);
-            draw_character(canvas, rect, character, colour::TEXT);
+            canvas.fill(rect, colour::current().menu);
+            outline(canvas, rect, colour::current().menu_border);
+            draw_character(canvas, rect, character, colour::current().text);
         }
         if let Some(strip) = &self.osk.strip {
-            canvas.fill(strip.rect, colour::MENU);
-            outline(canvas, strip.rect, colour::MENU_BORDER);
+            canvas.fill(strip.rect, colour::current().menu);
+            outline(canvas, strip.rect, colour::current().menu_border);
             let cell_width = strip.rect.width / strip.cells.len().max(1) as u32;
             for (index, &character) in strip.cells.iter().enumerate() {
                 let cell = Rect::new(
@@ -1746,9 +1746,9 @@ impl Desktop {
                     strip.rect.height,
                 );
                 if strip.hover == Some(index) {
-                    canvas.fill(inset(cell, 1), colour::SELECTION);
+                    canvas.fill(inset(cell, 1), colour::current().selection);
                 }
-                draw_character(canvas, cell, character, colour::TEXT);
+                draw_character(canvas, cell, character, colour::current().text);
             }
         }
     }
@@ -1787,33 +1787,33 @@ impl Desktop {
         );
         let (fill, border, label) = match key.cap {
             Cap::Enter if pressed => (
-                colour::BUTTON_PRIMARY_HOVER,
-                colour::BUTTON_PRIMARY,
-                colour::ICON_DARK,
+                colour::current().button_primary_hover,
+                colour::current().button_primary,
+                colour::current().icon_dark,
             ),
             Cap::Enter => (
-                colour::BUTTON_PRIMARY,
-                colour::BUTTON_PRIMARY,
-                colour::ICON_DARK,
+                colour::current().button_primary,
+                colour::current().button_primary,
+                colour::current().icon_dark,
             ),
             _ if pressed => (
-                colour::BUTTON_PRESSED,
+                colour::current().button_pressed,
                 if function {
-                    colour::MENU_BORDER
+                    colour::current().menu_border
                 } else {
-                    colour::BUTTON_BORDER
+                    colour::current().button_border
                 },
-                colour::TEXT,
+                colour::current().text,
             ),
-            _ if latched || focused => (colour::SELECTION, colour::BUTTON_BORDER, colour::TEXT),
-            _ if function => (colour::MENU, colour::MENU_BORDER, colour::TEXT),
-            _ => (colour::BUTTON, colour::BUTTON_BORDER, colour::TEXT),
+            _ if latched || focused => (colour::current().selection, colour::current().button_border, colour::current().text),
+            _ if function => (colour::current().menu, colour::current().menu_border, colour::current().text),
+            _ => (colour::current().button, colour::current().button_border, colour::current().text),
         };
         canvas.fill(cap, fill);
         outline(canvas, cap, border);
         if focused {
-            outline(canvas, key.zone, colour::FOCUS_RING);
-            outline(canvas, inset(key.zone, 1), colour::FOCUS_RING);
+            outline(canvas, key.zone, colour::current().focus_ring);
+            outline(canvas, inset(key.zone, 1), colour::current().focus_ring);
         }
         if latched {
             let line_y = cap.bottom().saturating_sub(3);
@@ -1822,7 +1822,7 @@ impl Desktop {
                     row,
                     cap.x + LATCH_LINE_INSET,
                     cap.right().saturating_sub(LATCH_LINE_INSET),
-                    colour::ACCENT,
+                    colour::current().accent,
                 );
             }
         }

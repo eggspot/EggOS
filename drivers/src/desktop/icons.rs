@@ -208,7 +208,7 @@ const TEXT_EDITOR_LARGE: [Shape; 7] = [
         rect(8, 0, 32, 48),
         Corners::R4,
         colour::ICON_PAGE,
-        colour::ICON_PAGE_EDGE,
+        colour::PAGE_EDGE_INK,
     ),
     Shape::Fill(rect(14, 9, 20, 2), colour::ICON_PAGE_LINE),
     Shape::Fill(rect(14, 15, 20, 2), colour::ICON_PAGE_LINE),
@@ -280,7 +280,7 @@ const TEXT_EDITOR_SMALL: [Shape; 6] = [
         rect(5, 0, 22, 32),
         Corners::R4,
         colour::ICON_PAGE,
-        colour::ICON_PAGE_EDGE,
+        colour::PAGE_EDGE_INK,
     ),
     Shape::Fill(rect(9, 6, 14, 2), colour::ICON_PAGE_LINE),
     Shape::Fill(rect(9, 11, 14, 2), colour::ICON_PAGE_LINE),
@@ -291,7 +291,7 @@ const TEXT_EDITOR_SMALL: [Shape; 6] = [
 
 fn badge_colours(source: Source) -> (u32, u8, u32) {
     match source {
-        Source::Windows => (colour::ICON_WINDOWS, b'W', colour::TEXT),
+        Source::Windows => (colour::ICON_WINDOWS, b'W', colour::BADGE_INK),
         Source::Macos => (colour::ICON_MAC, b'M', colour::ICON_DARK),
         Source::Linux => (colour::ICON_LINUX, b'L', colour::ICON_DARK),
         Source::Android => (colour::ICON_ANDROID, b'A', colour::ICON_DARK),
@@ -348,12 +348,14 @@ fn insets(corners: Corners) -> (&'static [u32], &'static [u32]) {
 
 fn draw_shape(canvas: &mut Canvas<'_>, shape: Shape, x: u32, y: u32) {
     let moved = |area: Rect| Rect::new(x + area.x, y + area.y, area.width, area.height);
+    let ink = colour::icon_ink;
     match shape {
-        Shape::Fill(area, colour) => canvas.fill(moved(area), colour),
+        Shape::Fill(area, colour) => canvas.fill(moved(area), ink(colour)),
         Shape::Rounded(area, corners, colour) => {
-            canvas.rounded(moved(area), insets(corners).0, true, true, colour)
+            canvas.rounded(moved(area), insets(corners).0, true, true, ink(colour))
         }
         Shape::Tile(area, corners, fill, border) => {
+            let (fill, border) = (ink(fill), ink(border));
             let (outside, inside) = insets(corners);
             let area = moved(area);
             canvas.rounded(area, outside, true, true, border);
@@ -366,9 +368,10 @@ fn draw_shape(canvas: &mut Canvas<'_>, shape: Shape, x: u32, y: u32) {
             );
         }
         Shape::Circle((centre_x, centre_y), radius, colour) => {
-            canvas.circle(x + centre_x, y + centre_y, radius, colour)
+            canvas.circle(x + centre_x, y + centre_y, radius, ink(colour))
         }
         Shape::Glyph(character, (left, top), doubled, colour) => {
+            let colour = ink(colour);
             let id = crate::font::glyph_id(u32::from(character));
             match doubled {
                 true => canvas.glyph_doubled(x + left, y + top, id, colour),

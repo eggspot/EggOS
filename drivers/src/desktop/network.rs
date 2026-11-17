@@ -46,11 +46,11 @@ enum Ink {
 }
 
 impl Ink {
-    const fn pixel(self) -> u32 {
+    fn pixel(self) -> u32 {
         match self {
-            Self::Text => colour::TEXT,
-            Self::Dim => colour::TEXT_DIM,
-            Self::Accent => colour::ACCENT,
+            Self::Text => colour::current().text,
+            Self::Dim => colour::current().text_dim,
+            Self::Accent => colour::current().accent,
         }
     }
 }
@@ -314,7 +314,7 @@ impl Desktop {
                 )
             }),
             None => (self.panels.pressed == Some(PanelItem::Network)).then_some((
-                colour::BAR_PRESSED,
+                colour::current().bar_pressed,
                 Rect::new(
                     indicator.x,
                     indicator.y,

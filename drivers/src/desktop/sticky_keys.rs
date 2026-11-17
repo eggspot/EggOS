@@ -287,8 +287,8 @@ impl Desktop {
     pub(super) fn draw_sticky_chips(&self, canvas: &mut Canvas<'_>) {
         self.for_each_sticky_chip(|chip, word, locked| {
             let (fill, ink) = match locked {
-                true => (colour::ACCENT, colour::ICON_DARK),
-                false => (colour::BAR_HOVER, colour::TEXT),
+                true => (colour::current().accent, colour::current().icon_dark),
+                false => (colour::current().bar_hover, colour::current().text),
             };
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             canvas.text(chip.x + CHIP_PADDING, chip.y + STICKY_LABEL_Y, word, ink);

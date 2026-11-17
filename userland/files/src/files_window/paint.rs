@@ -9,7 +9,7 @@ use crate::listing::{free_space_text, items_text, size_text};
 use crate::names;
 use eggos_app_manifest::Source;
 use eggos_toolkit::canvas::{Canvas, INSET_R4, INSET_R6};
-use eggos_toolkit::colour;
+use eggos_toolkit::theme::Palette;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::text;
 use eggos_toolkit::widget::{self, Kind as Widget, LINE_HEIGHT, Look};
@@ -32,22 +32,22 @@ pub(crate) const LINK_PLATE: Rect = Rect::new(7, 12, 6, 6);
 const LINK_ARROW_INSET: i32 = 1;
 const LINK_ARROW: [&[u8; 4]; 4] = [b".###", b"..##", b".#.#", b"#..."];
 
-fn badge_colour(source: Source) -> u32 {
+fn badge_colour(source: Source, palette: &Palette) -> u32 {
     match source {
-        Source::Windows => colour::ICON_WINDOWS,
-        Source::Macos => colour::ICON_MAC,
-        Source::Linux => colour::ICON_LINUX,
-        Source::Android => colour::ICON_ANDROID,
+        Source::Windows => palette.icon_windows,
+        Source::Macos => palette.icon_mac,
+        Source::Linux => palette.icon_linux,
+        Source::Android => palette.icon_android,
     }
 }
 
 fn folder_mark(canvas: &mut Canvas<'_>, x: i32, y: i32) {
-    canvas.fill(Rect::new(x, y + 2, 12, 8), colour::ICON_FOLDER_BACK);
-    canvas.fill(Rect::new(x, y + 4, 12, 6), colour::ICON_FOLDER);
+    canvas.fill(Rect::new(x, y + 2, 12, 8), canvas.palette().icon_folder_back);
+    canvas.fill(Rect::new(x, y + 4, 12, 6), canvas.palette().icon_folder);
 }
 
 fn page_mark(canvas: &mut Canvas<'_>, x: i32, y: i32) {
-    let ink = colour::TEXT_DIM;
+    let ink = canvas.palette().text_dim;
     canvas.fill(Rect::new(x, y, 1, 12), ink);
     canvas.fill(Rect::new(x, y + 11, 10, 1), ink);
     canvas.fill(Rect::new(x, y, 8, 1), ink);
@@ -64,14 +64,14 @@ pub(crate) fn link_badge(canvas: &mut Canvas<'_>, x: i32, y: i32) {
         LINK_PLATE.width,
         LINK_PLATE.height,
     );
-    canvas.fill(plate, colour::MENU);
+    canvas.fill(plate, canvas.palette().menu);
     for (row, cells) in LINK_ARROW.iter().enumerate() {
         for (column, &cell) in cells.iter().enumerate() {
             if cell == b'#' {
                 canvas.pixel(
                     plate.x + LINK_ARROW_INSET + column as i32,
                     plate.y + LINK_ARROW_INSET + row as i32,
-                    colour::TEXT,
+                    canvas.palette().text,
                 );
             }
         }
@@ -91,10 +91,10 @@ fn edged(canvas: &mut Canvas<'_>, rect: Rect) {
             rect.height + 2 * EDGE,
         ),
         &INSET_R6,
-        colour::FIELD,
+        canvas.palette().field,
     );
-    canvas.rounded(rect, &INSET_R6, colour::MENU);
-    canvas.outline(rect, &INSET_R6, 1, colour::MENU_BORDER);
+    canvas.rounded(rect, &INSET_R6, canvas.palette().menu);
+    canvas.outline(rect, &INSET_R6, 1, canvas.palette().menu_border);
 }
 
 impl FilesWindow {
@@ -135,17 +135,17 @@ impl FilesWindow {
         );
         let fill = match () {
             () if !enabled => None,
-            () if pressed => Some(colour::BAR_PRESSED),
-            () if self.hover == Some(hover) => Some(colour::BAR_HOVER),
+            () if pressed => Some(canvas.palette().bar_pressed),
+            () if self.hover == Some(hover) => Some(canvas.palette().bar_hover),
             () => None,
         };
         if let Some(fill) = fill {
             canvas.rounded(rect, &INSET_R4, fill);
         }
         let ink = if enabled {
-            colour::TEXT
+            canvas.palette().text
         } else {
-            colour::TEXT_DIM
+            canvas.palette().text_dim
         };
         let width = text::width(glyph);
         canvas.text(
@@ -159,10 +159,10 @@ impl FilesWindow {
 
     fn paint_toolbar(&self, canvas: &mut Canvas<'_>) {
         let toolbar = self.toolbar();
-        canvas.fill(toolbar, colour::BAR);
+        canvas.fill(toolbar, canvas.palette().bar);
         canvas.fill(
             Rect::new(0, toolbar.bottom() - 1, toolbar.width, 1),
-            colour::BAR_EDGE,
+            canvas.palette().bar_edge,
         );
         self.paint_button(
             canvas,
@@ -189,17 +189,17 @@ impl FilesWindow {
 
     fn paint_sidebar(&self, canvas: &mut Canvas<'_>) {
         let sidebar = self.sidebar();
-        canvas.fill(sidebar, colour::DOCK);
+        canvas.fill(sidebar, canvas.palette().dock);
         canvas.fill(
             Rect::new(SIDEBAR_WIDTH - 1, sidebar.y, 1, sidebar.height),
-            colour::MENU_BORDER,
+            canvas.palette().menu_border,
         );
         let previous = canvas.narrow(sidebar);
         canvas.text(
             PLACES_HEADING.0,
             PLACES_HEADING.1,
             "Places",
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
             1,
         );
         let current = self.current_place();
@@ -207,10 +207,10 @@ impl FilesWindow {
             let rect = self.place_rect(index);
             let chosen = current == Some(index);
             if chosen {
-                canvas.fill(rect, colour::SELECTION);
-                canvas.text(rect.x + MARK_X, rect.y + TEXT_TOP, ">", colour::ACCENT, 1);
+                canvas.fill(rect, canvas.palette().selection);
+                canvas.text(rect.x + MARK_X, rect.y + TEXT_TOP, ">", canvas.palette().accent, 1);
             } else if self.hover == Some(Hover::Place(index)) {
-                canvas.fill(rect, colour::MENU_HOVER);
+                canvas.fill(rect, canvas.palette().menu_hover);
             }
             widget::clipped_text(
                 canvas,
@@ -218,7 +218,7 @@ impl FilesWindow {
                 rect.y + TEXT_TOP,
                 rect.width - PLACE_TEXT_X - 8,
                 place.label(self.windows_words),
-                colour::TEXT,
+                canvas.palette().text,
             );
             if self.window_focused && self.focus == Focus::Sidebar && self.place_ring == index {
                 widget::focus_ring(canvas, rect, 0);
@@ -229,16 +229,16 @@ impl FilesWindow {
 
     fn paint_list(&self, canvas: &mut Canvas<'_>) {
         let list = self.list();
-        canvas.fill(list, colour::MENU);
+        canvas.fill(list, canvas.palette().menu);
         let right = self.columns_right();
         let header_y = list.y + TEXT_TOP;
-        canvas.text(list.x + NAME_X, header_y, "Name", colour::TEXT_DIM, 1);
+        canvas.text(list.x + NAME_X, header_y, "Name", canvas.palette().text_dim, 1);
         right_aligned(
             canvas,
             right - SIZE_END_FROM_RIGHT,
             header_y,
             "Size",
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
         );
         let time_heading = match self.location {
             Location::Trash => "Deleted",
@@ -248,12 +248,12 @@ impl FilesWindow {
             right - COLUMN_GAP - TIME_WIDTH,
             header_y,
             time_heading,
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
             1,
         );
         canvas.fill(
             Rect::new(list.x, list.y + HEADER_HEIGHT - 1, list.width, 1),
-            colour::BAR_EDGE,
+            canvas.palette().bar_edge,
         );
         let rows = self.rows();
         let previous = canvas.narrow(rows);
@@ -266,12 +266,12 @@ impl FilesWindow {
             self.paint_row(canvas, index);
         }
         if let Some((track, thumb)) = self.scroll_bar() {
-            canvas.fill(track, colour::PROGRESS_TRACK);
+            canvas.fill(track, canvas.palette().progress_track);
             let active = self.hover == Some(Hover::Thumb)
                 || matches!(self.pressed, Some(Pressed::Thumb { .. }));
             let ink = match active {
-                true => colour::BUTTON_INACTIVE,
-                false => colour::BAR_PRESSED,
+                true => canvas.palette().button_inactive,
+                false => canvas.palette().bar_pressed,
             };
             canvas.rounded(thumb, &INSET_R4, ink);
         }
@@ -309,7 +309,7 @@ impl FilesWindow {
             rows.y + TEXT_TOP,
             rows.width - NAME_X - 8,
             words,
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
         );
     }
 
@@ -323,8 +323,8 @@ impl FilesWindow {
         }
         let chosen = self.selected == Some(index);
         if chosen {
-            canvas.fill(row, colour::SELECTION);
-            canvas.text(row.x + MARK_X, row.y + TEXT_TOP, ">", colour::ACCENT, 1);
+            canvas.fill(row, canvas.palette().selection);
+            canvas.text(row.x + MARK_X, row.y + TEXT_TOP, ">", canvas.palette().accent, 1);
         } else {
             match entry.kind.is_folder() {
                 true => folder_mark(canvas, row.x + MARK_X, row.y + 7),
@@ -336,8 +336,8 @@ impl FilesWindow {
         }
         let dimmed = self.is_cut(index) || entry.link == Link::Broken;
         let ink = match dimmed && !chosen {
-            true => colour::TEXT_DIM,
-            false => colour::TEXT,
+            true => canvas.palette().text_dim,
+            false => canvas.palette().text,
         };
         let renaming = self.rename.filter(|rename| rename.index == index);
         if let Some(rename) = renaming {
@@ -369,7 +369,7 @@ impl FilesWindow {
             {
                 canvas.fill(
                     Rect::new(after + BADGE_GAP, row.y + BADGE_TOP, BADGE, BADGE),
-                    badge_colour(source),
+                    badge_colour(source, canvas.palette()),
                 );
             }
             let size = match entry.kind.is_folder() || entry.link == Link::Broken {
@@ -402,19 +402,19 @@ impl FilesWindow {
 
     fn paint_status(&self, canvas: &mut Canvas<'_>) {
         let status = self.status_bar();
-        canvas.fill(status, colour::BAR);
-        canvas.fill(Rect::new(0, status.y, status.width, 1), colour::BAR_EDGE);
+        canvas.fill(status, canvas.palette().bar);
+        canvas.fill(Rect::new(0, status.y, status.width, 1), canvas.palette().bar_edge);
         canvas.text(
             STATUS_TEXT_X,
             status.y + TEXT_TOP,
             items_text(self.listing.len()).as_str(),
-            colour::TEXT_DIM,
+            canvas.palette().text_dim,
             1,
         );
         if let (Some(rect), Some(free)) =
             (self.free_space_rect(), free_space_text(self.free_space()))
         {
-            canvas.text(rect.x, rect.y, free.as_str(), colour::TEXT_DIM, 1);
+            canvas.text(rect.x, rect.y, free.as_str(), canvas.palette().text_dim, 1);
         }
     }
 
@@ -453,7 +453,7 @@ impl FilesWindow {
             rect.y + NOTICE_TEXT_TOP,
             space,
             words,
-            colour::TEXT,
+            canvas.palette().text,
         );
     }
 }

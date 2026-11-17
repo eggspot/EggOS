@@ -188,19 +188,19 @@ impl Desktop {
         if !ghost.overlaps(&canvas.clip()) {
             return;
         }
-        canvas.rounded(ghost, &paint::INSET_R4, true, true, colour::MENU_BORDER);
+        canvas.rounded(ghost, &paint::INSET_R4, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(ghost.x + 1, ghost.y + 1, ghost.width - 2, ghost.height - 2),
             &paint::INSET_INSIDE_R4,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         canvas.text(
             ghost.x + GHOST_TEXT_X,
             ghost.y + GHOST_TEXT_Y,
             Self::carry_text(&carry),
-            colour::TEXT,
+            colour::current().text,
         );
     }
 }

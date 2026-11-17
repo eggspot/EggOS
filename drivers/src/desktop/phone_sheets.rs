@@ -442,14 +442,14 @@ impl Desktop {
                 self.width,
                 sheet.y - self.layout.work_area.y,
             ));
-            canvas.fill(sheet, colour::MENU);
+            canvas.fill(sheet, colour::current().menu);
             canvas.fill(
                 Rect::new(sheet.x, sheet.y, sheet.width, 1),
-                colour::MENU_BORDER,
+                colour::current().menu_border,
             );
             for (index, (label, _)) in POWER_ROWS.iter().enumerate() {
                 let top = sheet.y + 1 + POWER_ROW_HEIGHT * index as u32;
-                canvas.text(SIDE, top + 16, label, colour::TEXT);
+                canvas.text(SIDE, top + 16, label, colour::current().text);
             }
         }
         if self.phone.app_sheet.is_some() {
@@ -460,14 +460,14 @@ impl Desktop {
                 self.width,
                 sheet.y - self.layout.work_area.y,
             ));
-            canvas.fill(sheet, colour::MENU);
+            canvas.fill(sheet, colour::current().menu);
             canvas.fill(
                 Rect::new(sheet.x, sheet.y, sheet.width, 1),
-                colour::MENU_BORDER,
+                colour::current().menu_border,
             );
             for (index, label) in APP_SHEET_ROWS.iter().enumerate() {
                 let top = sheet.y + 1 + POWER_ROW_HEIGHT * index as u32;
-                canvas.text(SIDE, top + 16, label, colour::TEXT);
+                canvas.text(SIDE, top + 16, label, colour::current().text);
             }
         }
     }
@@ -481,7 +481,7 @@ impl Desktop {
             zone.x + (zone.width - 14) / 2,
             zone.y + (zone.height - 14) / 2,
         );
-        let ink = colour::TEXT;
+        let ink = colour::current().text;
         canvas.fill(Rect::new(x, y, side, 1), ink);
         canvas.fill(Rect::new(x, y + side - 1, side, 1), ink);
         canvas.fill(Rect::new(x, y, 1, side), ink);
@@ -490,12 +490,12 @@ impl Desktop {
 
     fn draw_switcher_cards(&self, canvas: &mut Canvas<'_>, contents: &dyn Contents) {
         let work = self.layout.work_area;
-        canvas.fill(work, colour::WINDOW_BACKGROUND);
+        canvas.fill(work, colour::current().window_background);
         let entries = self.phone_switcher_entries();
         if entries.is_empty() {
             let text = "No open apps.";
             let x = (self.width - text.len() as u32 * GLYPH_WIDTH as u32) / 2;
-            canvas.text(x, work.y + work.height / 2, text, colour::TEXT_DIM);
+            canvas.text(x, work.y + work.height / 2, text, colour::current().text_dim);
             return;
         }
         for (index, &slot) in entries.iter().enumerate() {
@@ -503,7 +503,7 @@ impl Desktop {
             if card.bottom() <= work.y || card.y >= work.bottom() {
                 continue;
             }
-            canvas.rounded(card, &paint::INSET_R4, true, true, colour::MENU);
+            canvas.rounded(card, &paint::INSET_R4, true, true, colour::current().menu);
             let window = self.window_at(slot);
             let joined;
             let full_title = match self.switcher_pair().filter(|&(left, _)| left == slot) {
@@ -520,7 +520,7 @@ impl Desktop {
                 card.x + CARD_TITLE.0,
                 card.y + CARD_TITLE.1,
                 title,
-                colour::TEXT,
+                colour::current().text,
             );
             if cut {
                 let after =
@@ -529,7 +529,7 @@ impl Desktop {
                     after,
                     card.y + CARD_TITLE.1,
                     windows::ellipsis(),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
             let close = Self::card_close(card);
@@ -543,14 +543,14 @@ impl Desktop {
                 &paint::INSET_R6,
                 true,
                 true,
-                colour::BUTTON_CLOSE,
+                colour::current().button_close,
             );
             self.draw_thumbnail(canvas, contents, slot, card);
         }
         let all = self.close_all_button(entries.len());
         if all.y < work.bottom() {
-            canvas.rounded(all, &paint::INSET_R4, true, true, colour::BUTTON_BORDER);
-            canvas.text(all.x + 16, all.y + 14, "Close all", colour::TEXT);
+            canvas.rounded(all, &paint::INSET_R4, true, true, colour::current().button_border);
+            canvas.text(all.x + 16, all.y + 14, "Close all", colour::current().text);
         }
     }
 
@@ -621,33 +621,33 @@ impl Desktop {
             self.width,
             self.height.saturating_sub(sheet.bottom()),
         ));
-        canvas.fill(sheet, colour::MENU);
+        canvas.fill(sheet, colour::current().menu);
         canvas.fill(
             Rect::new(0, sheet.bottom().saturating_sub(1), self.width, 1),
-            colour::MENU_BORDER,
+            colour::current().menu_border,
         );
         for (index, tile) in TILES.into_iter().enumerate() {
             let rect = self.tile_rect(index);
             let (title, state, on) = self.tile_state(tile);
             let fill = if on {
-                colour::SELECTION
+                colour::current().selection
             } else {
-                colour::BUTTON_INACTIVE
+                colour::current().button_inactive
             };
             canvas.rounded(rect, &paint::INSET_R4, true, true, fill);
             if on {
                 canvas.fill(
                     Rect::new(rect.x, rect.y + 8, MARK.0, MARK.1),
-                    colour::ACCENT,
+                    colour::current().accent,
                 );
             }
             canvas.text(
                 rect.x + TILE_LINES.0,
                 rect.y + TILE_LINES.1,
                 title,
-                colour::TEXT,
+                colour::current().text,
             );
-            let ink = if on { colour::TEXT } else { colour::TEXT_DIM };
+            let ink = if on { colour::current().text } else { colour::current().text_dim };
             canvas.text(rect.x + TILE_LINES.0, rect.y + TILE_LINES.2, state, ink);
         }
         let settings = self.settings_button();
@@ -656,39 +656,39 @@ impl Desktop {
             &paint::INSET_R4,
             true,
             true,
-            colour::BUTTON_INACTIVE,
+            colour::current().button_inactive,
         );
         canvas.text(
             settings.x + TILE_LINES.0,
             settings.y + 20,
             "Settings",
-            colour::TEXT,
+            colour::current().text,
         );
         let power = self.power_button_rect();
-        canvas.rounded(power, &paint::INSET_R4, true, true, colour::BUTTON_INACTIVE);
-        canvas.text(power.x + TILE_LINES.0, power.y + 14, "Power", colour::TEXT);
+        canvas.rounded(power, &paint::INSET_R4, true, true, colour::current().button_inactive);
+        canvas.text(power.x + TILE_LINES.0, power.y + 14, "Power", colour::current().text);
         let left = self.sheet_left() + SIDE;
-        canvas.text(left, self.notices_top(), "Notices", colour::TEXT_DIM);
+        canvas.text(left, self.notices_top(), "Notices", colour::current().text_dim);
         if self.phone.notice_count == 0 {
             canvas.text(
                 left,
                 self.notices_top() + 50,
                 "No notices.",
-                colour::TEXT_DIM,
+                colour::current().text_dim,
             );
             return;
         }
         let clear = self.clear_button();
-        canvas.rounded(clear, &paint::INSET_R4, true, true, colour::BUTTON_INACTIVE);
-        canvas.text(clear.x + 20, clear.y + 14, "Clear", colour::TEXT);
+        canvas.rounded(clear, &paint::INSET_R4, true, true, colour::current().button_inactive);
+        canvas.text(clear.x + 20, clear.y + 14, "Clear", colour::current().text);
         for index in 0..self.phone.notice_count {
             let row = self.notice_row(index);
-            canvas.rounded(row, &paint::INSET_R4, true, true, colour::BAR);
+            canvas.rounded(row, &paint::INSET_R4, true, true, colour::current().bar);
             let (text, cut) = windows::cut_title(self.phone.notices[index], NOTICE_GLYPHS);
-            canvas.text(row.x + 12, row.y + 14, text, colour::TEXT);
+            canvas.text(row.x + 12, row.y + 14, text, colour::current().text);
             if cut {
                 let after = row.x + 12 + text.chars().count() as u32 * GLYPH_WIDTH as u32;
-                canvas.text(after, row.y + 14, windows::ellipsis(), colour::TEXT);
+                canvas.text(after, row.y + 14, windows::ellipsis(), colour::current().text);
             }
         }
     }

@@ -598,7 +598,7 @@ impl Desktop {
 
     pub(super) fn draw_popup_surface(canvas: &mut Canvas<'_>, rect: Rect, surface: u32) {
         canvas.shadow(rect);
-        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(rect, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2),
             &paint::INSET_INSIDE_R6,
@@ -610,18 +610,18 @@ impl Desktop {
 
     fn draw_switcher(&self, canvas: &mut Canvas<'_>, switcher: &Switcher) {
         let rect = self.switcher_rect(switcher);
-        Self::draw_popup_surface(canvas, rect, colour::DOCK);
+        Self::draw_popup_surface(canvas, rect, colour::current().dock);
         for index in switcher.shown() {
             let row = switcher.row(rect, index);
             if index == switcher.selected {
-                canvas.fill(row, colour::BAR_PRESSED);
+                canvas.fill(row, colour::current().bar_pressed);
                 let ring = Rect::new(
                     row.x + FOCUS_RING_INSET,
                     row.y + FOCUS_RING_INSET,
                     row.width - 2 * FOCUS_RING_INSET,
                     row.height - 2 * FOCUS_RING_INSET,
                 );
-                canvas.rounded(ring, &paint::INSET_R4, true, true, colour::FOCUS_RING);
+                canvas.rounded(ring, &paint::INSET_R4, true, true, colour::current().focus_ring);
                 canvas.rounded(
                     Rect::new(
                         ring.x + FOCUS_RING_WIDTH,
@@ -632,7 +632,7 @@ impl Desktop {
                     &FOCUS_RING_INNER,
                     true,
                     true,
-                    colour::BAR_PRESSED,
+                    colour::current().bar_pressed,
                 );
             }
             let slot = usize::from(switcher.entries[index]);
@@ -645,8 +645,8 @@ impl Desktop {
             );
             let window = self.window_at(slot);
             let text_colour = match window.minimised {
-                true => colour::TEXT_DIM,
-                false => colour::TEXT,
+                true => colour::current().text_dim,
+                false => colour::current().text,
             };
             let (text, cut) = cut_title(window.title(), SWITCHER_GLYPHS);
             let x = row.x - 1 + SWITCHER_TEXT_X;
@@ -661,18 +661,18 @@ impl Desktop {
 
     fn draw_window_menu(&self, canvas: &mut Canvas<'_>, menu: &WindowMenu) {
         let rect = self.window_menu_rect(menu);
-        Self::draw_popup_surface(canvas, rect, colour::MENU);
+        Self::draw_popup_surface(canvas, rect, colour::current().menu);
         for (index, label) in WINDOW_MENU_ITEMS.iter().enumerate() {
             let top = rect.y + 1 + index as u32 * MENU_ITEM_HEIGHT;
             if menu.hover == Some(index) {
                 canvas.fill(
                     Rect::new(rect.x + 1, top + 2, rect.width - 2, MENU_ITEM_HEIGHT - 4),
-                    colour::MENU_HOVER,
+                    colour::current().menu_hover,
                 );
             }
             let text_colour = match menu.enabled[index] {
-                true => colour::TEXT,
-                false => colour::TEXT_DIM,
+                true => colour::current().text,
+                false => colour::current().text_dim,
             };
             canvas.text(
                 rect.x + MENU_TEXT_X,

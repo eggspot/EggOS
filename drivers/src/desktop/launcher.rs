@@ -299,7 +299,7 @@ impl AppMenu {
     }
 
     pub fn draw(&self, canvas: &mut Canvas<'_>, rect: Rect) {
-        Desktop::draw_popup_surface(canvas, rect, colour::MENU);
+        Desktop::draw_popup_surface(canvas, rect, colour::current().menu);
         for (index, item) in self.items().iter().enumerate() {
             let top = rect.y + self.item_top(index);
             if *item == MenuItem::Separator {
@@ -310,21 +310,21 @@ impl AppMenu {
                         rect.width.saturating_sub(2 * SEPARATOR_INSET),
                         1,
                     ),
-                    colour::MENU_BORDER,
+                    colour::current().menu_border,
                 );
                 continue;
             }
             if self.hover == Some(index) {
                 canvas.fill(
                     Rect::new(rect.x + 1, top + 2, rect.width - 2, MENU_ITEM_HEIGHT - 4),
-                    colour::MENU_HOVER,
+                    colour::current().menu_hover,
                 );
             }
             canvas.text(
                 rect.x + MENU_TEXT_X,
                 top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2,
                 item.label(),
-                colour::TEXT,
+                colour::current().text,
             );
         }
     }
@@ -923,7 +923,7 @@ impl Desktop {
             around.width - 2 * FOCUS_RING_INSET,
             around.height - 2 * FOCUS_RING_INSET,
         );
-        canvas.rounded(ring, &paint::INSET_R4, true, true, colour::FOCUS_RING);
+        canvas.rounded(ring, &paint::INSET_R4, true, true, colour::current().focus_ring);
         canvas.rounded(
             Rect::new(
                 ring.x + FOCUS_RING_WIDTH,
@@ -943,17 +943,17 @@ impl Desktop {
             return;
         };
         let rect = self.layout.launcher;
-        Self::draw_popup_surface(canvas, rect, colour::DOCK);
+        Self::draw_popup_surface(canvas, rect, colour::current().dock);
         canvas.text(
             self.content_x(),
             rect.y + FOOTER_Y + FOOTER_TEXT_Y,
             LAUNCHER_FOOTER,
-            colour::TEXT_DIM,
+            colour::current().text_dim,
         );
         if self.profile == Profile::Linux {
             canvas.fill(
                 Rect::new(rect.x + DASH_WIDTH, rect.y + 1, 1, rect.height - 2),
-                colour::MENU_BORDER,
+                colour::current().menu_border,
             );
             for (index, app) in DASH_APPS.into_iter().enumerate() {
                 let Some(icon) = self.dash_icon(index) else {
@@ -970,7 +970,7 @@ impl Desktop {
                         &paint::INSET_R6,
                         true,
                         true,
-                        colour::BAR_HOVER,
+                        colour::current().bar_hover,
                     );
                 }
                 draw_icon(
@@ -989,19 +989,19 @@ impl Desktop {
                             DASH_MARK,
                             DASH_MARK,
                         ),
-                        colour::TEXT,
+                        colour::current().text,
                     );
                 }
             }
         }
         let field = self.field_rect();
-        canvas.rounded(field, &paint::INSET_R4, true, true, colour::BUTTON_BORDER);
+        canvas.rounded(field, &paint::INSET_R4, true, true, colour::current().button_border);
         canvas.rounded(
             Rect::new(field.x + 1, field.y + 1, field.width - 2, field.height - 2),
             &paint::INSET_INSIDE_R4,
             true,
             true,
-            colour::FIELD,
+            colour::current().field,
         );
         let text_y = field.y + (FIELD_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         let query = launcher.query();
@@ -1010,12 +1010,12 @@ impl Desktop {
                 field.x + FIELD_TEXT_X,
                 text_y,
                 PLACEHOLDER,
-                colour::TEXT_DIM,
+                colour::current().text_dim,
             ),
-            false => canvas.text(field.x + FIELD_TEXT_X, text_y, query, colour::TEXT),
+            false => canvas.text(field.x + FIELD_TEXT_X, text_y, query, colour::current().text),
         }
         if launcher.caret_shown {
-            canvas.fill(self.caret_rect(launcher), colour::TEXT);
+            canvas.fill(self.caret_rect(launcher), colour::current().text);
         }
         let text_offset = (LAUNCHER_ROW_HEIGHT - GLYPH_HEIGHT as u32) / 2;
         if launcher.match_count == 0 {
@@ -1024,7 +1024,7 @@ impl Desktop {
                 row.x + ROW_TEXT_X,
                 row.y + text_offset,
                 NO_MATCH,
-                colour::TEXT_DIM,
+                colour::current().text_dim,
             );
         }
         for (index, &app) in launcher.apps().iter().enumerate() {
@@ -1032,8 +1032,8 @@ impl Desktop {
                 continue;
             };
             if launcher.selected == Some(index) {
-                canvas.fill(row, colour::SELECTION);
-                Self::draw_focus_ring(canvas, row, colour::SELECTION);
+                canvas.fill(row, colour::current().selection);
+                Self::draw_focus_ring(canvas, row, colour::current().selection);
             }
             draw_icon(
                 canvas,
@@ -1045,14 +1045,14 @@ impl Desktop {
             let name = self.catalogue.name(app);
             let room = ((row.width - ROW_TEXT_X) / GLYPH_WIDTH as u32) as usize;
             let (shown, cut) = windows::cut_title(name, room.saturating_sub(SOURCE_ROOM_GLYPHS));
-            canvas.text(row.x + ROW_TEXT_X, row.y + text_offset, shown, colour::TEXT);
+            canvas.text(row.x + ROW_TEXT_X, row.y + text_offset, shown, colour::current().text);
             if cut {
                 let after = row.x + ROW_TEXT_X + shown.chars().count() as u32 * GLYPH_WIDTH as u32;
                 canvas.text(
                     after,
                     row.y + text_offset,
                     windows::ellipsis(),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
             if let Some(source) = self.catalogue.source(app) {
@@ -1062,7 +1062,7 @@ impl Desktop {
                     row.right() - ROW_SOURCE_FROM_RIGHT - width,
                     row.y + text_offset,
                     label,
-                    colour::TEXT_DIM,
+                    colour::current().text_dim,
                 );
             }
         }
@@ -1073,13 +1073,13 @@ impl Desktop {
                     self.content_x(),
                     chip.y + MINIMISED_TEXT_Y,
                     MINIMISED_LABEL,
-                    colour::TEXT_DIM,
+                    colour::current().text_dim,
                 );
                 label_drawn = true;
             }
             let fill = match launcher.hover == Some(Spot::Chip(slot as u8)) {
-                true => colour::BAR_PRESSED,
-                false => colour::BAR_HOVER,
+                true => colour::current().bar_pressed,
+                false => colour::current().bar_hover,
             };
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             draw_chip_text(canvas, chip, self.window_at(slot).title());
@@ -1169,13 +1169,13 @@ impl Desktop {
             return;
         };
         let rect = self.notice_rect();
-        Self::draw_popup_surface(canvas, rect, colour::MENU);
+        Self::draw_popup_surface(canvas, rect, colour::current().menu);
         let width = text.chars().count() as u32 * GLYPH_WIDTH as u32;
         canvas.text(
             rect.x + rect.width.saturating_sub(width) / 2,
             rect.y + NOTICE_TEXT_Y,
             text,
-            colour::TEXT,
+            colour::current().text,
         );
     }
 }

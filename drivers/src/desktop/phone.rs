@@ -823,17 +823,17 @@ impl Desktop {
             return;
         }
         let field = self.search_field();
-        canvas.rounded(field, &paint::INSET_R4, true, true, colour::BUTTON_BORDER);
+        canvas.rounded(field, &paint::INSET_R4, true, true, colour::current().button_border);
         canvas.rounded(
             Rect::new(field.x + 1, field.y + 1, field.width - 2, field.height - 2),
             &paint::INSET_R4,
             true,
             true,
-            colour::FIELD,
+            colour::current().field,
         );
         let (text, ink) = match self.phone.query_length {
-            0 => (SEARCH_PLACEHOLDER, colour::TEXT_DIM),
-            _ => (self.phone.query(), colour::TEXT),
+            0 => (SEARCH_PLACEHOLDER, colour::current().text_dim),
+            _ => (self.phone.query(), colour::current().text),
         };
         canvas.text(field.x + SEARCH_TEXT.0, field.y + SEARCH_TEXT.1, text, ink);
         if self.phone.search_focused {
@@ -841,7 +841,7 @@ impl Desktop {
                 field.x + SEARCH_TEXT.0 + self.phone.query_length as u32 * GLYPH_WIDTH as u32;
             canvas.fill(
                 Rect::new(caret_x, field.y + SEARCH_TEXT.1, 1, GLYPH_HEIGHT as u32),
-                colour::TEXT,
+                colour::current().text,
             );
         }
         let area = self.grid_area();
@@ -852,7 +852,7 @@ impl Desktop {
                     break;
                 }
                 if index == 0 {
-                    canvas.fill(row, colour::SELECTION);
+                    canvas.fill(row, colour::current().selection);
                 }
                 draw_icon(
                     canvas,
@@ -865,7 +865,7 @@ impl Desktop {
                     row.x + ROW_TEXT.0,
                     row.y + ROW_TEXT.1,
                     self.catalogue.name(app),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
             return;
@@ -884,7 +884,7 @@ impl Desktop {
             };
             let canvas = &mut clipped;
             if highlighted == Some(index) {
-                canvas.rounded(cell, &paint::INSET_R4, true, true, colour::SELECTION);
+                canvas.rounded(cell, &paint::INSET_R4, true, true, colour::current().selection);
             }
             draw_icon(
                 canvas,
@@ -902,7 +902,7 @@ impl Desktop {
                         RUNNING_MARK.2,
                         RUNNING_MARK.2,
                     ),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
             let (text, cut) = windows::cut_title(self.catalogue.name(app), LABEL_GLYPHS);
@@ -914,14 +914,14 @@ impl Desktop {
                 width,
                 LABEL_HEIGHT,
             );
-            canvas.rounded(pill, &paint::INSET_R4, true, true, colour::BAR);
-            canvas.text(pill.x + LABEL_PADDING, pill.y + 2, text, colour::TEXT);
+            canvas.rounded(pill, &paint::INSET_R4, true, true, colour::current().bar);
+            canvas.text(pill.x + LABEL_PADDING, pill.y + 2, text, colour::current().text);
             if cut {
                 canvas.text(
                     pill.x + LABEL_PADDING + text.chars().count() as u32 * GLYPH_WIDTH as u32,
                     pill.y + 2,
                     windows::ellipsis(),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
         }
@@ -943,24 +943,24 @@ impl Desktop {
 
     fn draw_status_bar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
         let fill = match self.phone.pressed {
-            Some(Target::StatusBar) => colour::BAR_PRESSED,
-            _ => colour::BAR,
+            Some(Target::StatusBar) => colour::current().bar_pressed,
+            _ => colour::current().bar,
         };
         canvas.fill(Rect::new(bar.x, bar.y, bar.width, bar.height - 1), fill);
         canvas.fill(
             Rect::new(bar.x, bar.bottom() - 1, bar.width, 1),
-            colour::BAR_EDGE,
+            colour::current().bar_edge,
         );
         let ink = match self.clock_shows_time_of_day() {
-            true => colour::TEXT,
-            false => colour::TEXT_DIM,
+            true => colour::current().text,
+            false => colour::current().text_dim,
         };
         canvas.text(CLOCK_X, TEXT_Y, self.clock_text(), ink);
         let mut right = bar.width.saturating_sub(RIGHT_EDGE_FROM_SCREEN);
         if let Some(state) = self.network_state() {
             let x = right - NETWORK_SIDE;
             for rect in state.glyph().into_iter().flatten() {
-                canvas.fill(rect.placed(x, TEXT_Y, 1), colour::TEXT);
+                canvas.fill(rect.placed(x, TEXT_Y, 1), colour::current().text);
             }
             right = x - ITEM_GAP;
         }
@@ -972,8 +972,8 @@ impl Desktop {
                 AGENT_CHIP.1,
             );
             let (fill, text) = match self.agent_acting() {
-                true => (colour::ACCENT, colour::ICON_DARK),
-                false => (colour::BAR_HOVER, colour::TEXT_DIM),
+                true => (colour::current().accent, colour::current().icon_dark),
+                false => (colour::current().bar_hover, colour::current().text_dim),
             };
             canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
             canvas.text(
@@ -996,13 +996,13 @@ impl Desktop {
                 true => (self.window_at(slot).title(), false),
                 false => (text, cut),
             };
-            canvas.text(TITLE_X, TEXT_Y, text, colour::TEXT);
+            canvas.text(TITLE_X, TEXT_Y, text, colour::current().text);
             if cut {
                 canvas.text(
                     TITLE_X + text.chars().count() as u32 * GLYPH_WIDTH as u32,
                     TEXT_Y,
                     windows::ellipsis(),
-                    colour::TEXT,
+                    colour::current().text,
                 );
             }
         }
@@ -1011,9 +1011,9 @@ impl Desktop {
     fn draw_navigation_bar(&self, canvas: &mut Canvas<'_>, bar: Rect) {
         canvas.fill(
             Rect::new(bar.x, bar.y + 1, bar.width, bar.height - 1),
-            colour::BAR,
+            colour::current().bar,
         );
-        canvas.fill(Rect::new(bar.x, bar.y, bar.width, 1), colour::BAR_EDGE);
+        canvas.fill(Rect::new(bar.x, bar.y, bar.width, 1), colour::current().bar_edge);
         let pressed = match self.phone.pressed {
             Some(Target::Back) => Some(0),
             Some(Target::Home) => Some(1),
@@ -1022,12 +1022,12 @@ impl Desktop {
         if let Some(zone) = pressed.and_then(|index| self.navigation_zone(index)) {
             canvas.fill(
                 Rect::new(zone.x, zone.y + 1, zone.width, zone.height - 1),
-                colour::BAR_PRESSED,
+                colour::current().bar_pressed,
             );
         }
         let ink = match self.phone_can_go_back() {
-            true => colour::TEXT,
-            false => colour::TEXT_DIM,
+            true => colour::current().text,
+            false => colour::current().text_dim,
         };
         let back = self.navigation_zone(0).unwrap_or(bar);
         let length = BACK_ARROW.2;

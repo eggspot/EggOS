@@ -573,6 +573,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-commands",
     "eggos-device-list",
     "eggos-element-tree",
+    "eggos-palette",
     "eggos-hello-window",
     "eggos-toolkit",
     "eggos-settings",

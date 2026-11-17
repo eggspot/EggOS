@@ -213,9 +213,9 @@ impl Desktop {
             return;
         };
         let (fill, ink) = match (self.agent_acting(), hovered) {
-            (true, _) => (colour::ACCENT, colour::ICON_DARK),
-            (false, true) => (colour::BAR_PRESSED, colour::TEXT_DIM),
-            (false, false) => (colour::BAR_HOVER, colour::TEXT_DIM),
+            (true, _) => (colour::current().accent, colour::current().icon_dark),
+            (false, true) => (colour::current().bar_pressed, colour::current().text_dim),
+            (false, false) => (colour::current().bar_hover, colour::current().text_dim),
         };
         canvas.rounded(chip, &paint::INSET_R4, true, true, fill);
         canvas.text(

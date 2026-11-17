@@ -138,11 +138,11 @@ impl PixelBuffer {
     /// the window background.
     pub fn copy_row(&self, x: u32, y: u32, out: &mut [u32]) {
         if y >= self.height || x >= self.width {
-            out.fill(colour::WINDOW_BACKGROUND);
+            out.fill(colour::current().window_background);
             return;
         }
         let count = out.len().min((self.width - x) as usize);
-        out[count..].fill(colour::WINDOW_BACKGROUND);
+        out[count..].fill(colour::current().window_background);
         let at = y as usize * self.width as usize + x as usize;
         // SAFETY: row `y`, columns `x..x + count`, are inside the buffer's frames, which stay
         // allocated while `self` lives. A program that maps them may write them meanwhile:
@@ -216,14 +216,14 @@ impl GpuPicture {
 impl WindowPixels for GpuPicture {
     fn copy_row(&self, x: u32, y: u32, out: &mut [u32]) {
         if y >= self.height || x >= self.width {
-            out.fill(colour::WINDOW_BACKGROUND);
+            out.fill(colour::current().window_background);
             return;
         }
         let count = out.len().min((self.width - x) as usize);
-        out[count..].fill(colour::WINDOW_BACKGROUND);
+        out[count..].fill(colour::current().window_background);
         let at = self.offset + u64::from(y) * u64::from(self.stride) + u64::from(x) * 4;
         if !self.buffer.read_pixels(at, &mut out[..count]) {
-            out[..count].fill(colour::WINDOW_BACKGROUND);
+            out[..count].fill(colour::current().window_background);
         }
     }
 }
@@ -653,7 +653,7 @@ pub fn copy_content_rows<E>(
             let out = &mut chunk[..count];
             layout.copy_row(x, y, out, &mut |column, line, out| match pixels {
                 Some(buffer) => buffer.copy_row(column, line, out),
-                None => out.fill(colour::WINDOW_BACKGROUND),
+                None => out.fill(colour::current().window_background),
             });
             for (pixel, place) in out.iter().zip(bytes.as_chunks_mut::<4>().0.iter_mut()) {
                 place.copy_from_slice(&pixel.to_ne_bytes());

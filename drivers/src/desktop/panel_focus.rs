@@ -182,7 +182,7 @@ impl Desktop {
                 inner_height,
             ),
         ] {
-            canvas.fill(edge, colour::FOCUS_RING);
+            canvas.fill(edge, colour::current().focus_ring);
         }
     }
 }

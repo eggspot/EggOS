@@ -388,7 +388,7 @@ impl Desktop {
                 continue;
             }
             if self.icons.selected == Some(index) {
-                canvas.rounded(cell, &paint::INSET_R6, true, true, colour::SELECTION);
+                canvas.rounded(cell, &paint::INSET_R6, true, true, colour::current().selection);
                 if self.desktop_focused() {
                     let ring = Rect::new(
                         cell.x + FOCUS_RING_INSET,
@@ -396,7 +396,7 @@ impl Desktop {
                         cell.width - 2 * FOCUS_RING_INSET,
                         cell.height - 2 * FOCUS_RING_INSET,
                     );
-                    canvas.rounded(ring, &paint::INSET_R6, true, true, colour::FOCUS_RING);
+                    canvas.rounded(ring, &paint::INSET_R6, true, true, colour::current().focus_ring);
                     canvas.rounded(
                         Rect::new(
                             ring.x + FOCUS_RING_WIDTH,
@@ -407,7 +407,7 @@ impl Desktop {
                         &FOCUS_RING_INNER,
                         true,
                         true,
-                        colour::SELECTION,
+                        colour::current().selection,
                     );
                 }
             }
@@ -427,13 +427,13 @@ impl Desktop {
                 width,
                 LABEL_HEIGHT,
             );
-            canvas.rounded(pill, &paint::INSET_R4, true, true, colour::BAR);
+            canvas.rounded(pill, &paint::INSET_R4, true, true, colour::current().bar);
             let text_x = pill.x + LABEL_PADDING;
             let text_y = pill.y + LABEL_TEXT_Y;
-            canvas.text(text_x, text_y, text, colour::TEXT);
+            canvas.text(text_x, text_y, text, colour::current().text);
             if cut {
                 let after = text_x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
-                canvas.text(after, text_y, windows::ellipsis(), colour::TEXT);
+                canvas.text(after, text_y, windows::ellipsis(), colour::current().text);
             }
         }
     }

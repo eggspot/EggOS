@@ -296,7 +296,7 @@ impl Desktop {
                 || self.anchors_shell_menu(item);
             let fill = match taskbar {
                 true => self.item_fill(item, open),
-                false => (open || self.panels.pressed == Some(item)).then_some(colour::BAR_PRESSED),
+                false => (open || self.panels.pressed == Some(item)).then_some(colour::current().bar_pressed),
             };
             if let Some(fill) = fill {
                 canvas.fill(rect, fill);
@@ -315,7 +315,7 @@ impl Desktop {
                         }
                     }
                 }
-                _ => canvas.text(x + 4, y, "^", colour::TEXT),
+                _ => canvas.text(x + 4, y, "^", colour::current().text),
             }
         });
     }
@@ -581,13 +581,13 @@ impl Desktop {
             return;
         }
         canvas.shadow(popup);
-        canvas.rounded(popup, &paint::INSET_R6, true, true, colour::MENU_BORDER);
+        canvas.rounded(popup, &paint::INSET_R6, true, true, colour::current().menu_border);
         canvas.rounded(
             Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2),
             &paint::INSET_INSIDE_R6,
             true,
             true,
-            colour::MENU,
+            colour::current().menu,
         );
         let (overflowed, rows) = self.overflowed_tray();
         let text_y = (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
@@ -596,7 +596,7 @@ impl Desktop {
                 continue;
             };
             if self.tray.overflow_hover == Some(index) {
-                canvas.fill(row, colour::MENU_HOVER);
+                canvas.fill(row, colour::current().menu_hover);
             }
             let Some(icon) = self.tray.icons[at] else {
                 continue;
@@ -609,10 +609,10 @@ impl Desktop {
             }
             let (text, cut) = cut_title(name, OVERFLOW_GLYPHS);
             let x = popup.x + OVERFLOW_TEXT_X;
-            canvas.text(x, row.y + text_y, text, colour::TEXT);
+            canvas.text(x, row.y + text_y, text, colour::current().text);
             if cut {
                 let after = x + text.chars().count() as u32 * GLYPH_WIDTH as u32;
-                canvas.text(after, row.y + text_y, ellipsis(), colour::TEXT);
+                canvas.text(after, row.y + text_y, ellipsis(), colour::current().text);
             }
         }
     }
@@ -635,17 +635,17 @@ fn draw_pixels(canvas: &mut Canvas<'_>, (x, y): (u32, u32), pixels: &[u32; PIXEL
 
 fn draw_tile(canvas: &mut Canvas<'_>, (x, y): (u32, u32), title: &str) {
     let side = TRAY_ICON_SIDE as u32;
-    canvas.fill(Rect::new(x, y, side, side), colour::ICON_TILE_BORDER);
+    canvas.fill(Rect::new(x, y, side, side), colour::current().icon_tile_border);
     canvas.fill(
         Rect::new(x + 1, y + 1, side - 2, side - 2),
-        colour::ICON_TILE,
+        colour::current().icon_tile,
     );
     let letter = title
         .chars()
         .find(char::is_ascii_alphanumeric)
         .map_or('?', |letter| letter.to_ascii_uppercase());
     let mut buffer = [0u8; 4];
-    canvas.text(x + 4, y, letter.encode_utf8(&mut buffer), colour::TEXT);
+    canvas.text(x + 4, y, letter.encode_utf8(&mut buffer), colour::current().text);
 }
 
 impl Desktop {
