@@ -185,6 +185,7 @@ pub fn dispose(object: Id) {
     if count_of(object).load(Ordering::Acquire) & WEAKLY_REFERENCED != 0 {
         super::weak::clear(object);
     }
+    super::associated::objc_remove_associated_objects(object);
     heap::release(object.cast::<u8>().wrapping_sub(HEADER));
 }
 

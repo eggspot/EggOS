@@ -41,6 +41,8 @@ pub(crate) use methods;
 #[cfg(eggos_user)]
 mod api;
 #[cfg(eggos_user)]
+pub mod associated;
+#[cfg(eggos_user)]
 pub mod autorelease;
 #[cfg(eggos_user)]
 pub mod block;
@@ -164,6 +166,7 @@ mod runtime {
             .or_else(|| cxx_abi::resolve(name))
             .or_else(|| block::resolve(name))
             .or_else(|| weak::resolve(name))
+            .or_else(|| associated::resolve(name))
     }
 
     const CLASS_PREFIX: &[u8] = b"_OBJC_CLASS_$_";

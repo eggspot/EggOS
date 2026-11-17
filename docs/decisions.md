@@ -28550,3 +28550,17 @@ the license, by an explicit instruction recorded here.
   as adding methods already does. `objc_msgSend_fpret` and `objc_msgSend_fp2ret` resolve to
   `objc_msgSend`, which leaves the IMP's return registers (x87 `st0` included) untouched.
 - **Not yet.** Building and running; a guest test program for swizzling.
+
+
+## D673 Associated objects in the Objective-C runtime (M15 macOS; follow-up of D142; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `objc_setAssociatedObject`, `objc_getAssociatedObject` and
+  `objc_removeAssociatedObjects` keep one table of (object, key, value, owned) behind one lock,
+  as the weak table does (D175). The retain policies (`OBJC_ASSOCIATION_RETAIN` and
+  `_NONATOMIC`) retain the value, the copy policies send it `copy`, assign keeps it as is;
+  setting nil removes the pair. Retains, copies and releases happen outside the lock, since
+  they may run the program's own methods. Freeing an object drops its pairs right after its
+  weak references are cleared; a counter of pairs makes that a single load for a program that
+  never associates anything. Atomic and non-atomic policies behave alike: every read and write
+  is under the lock.
+- **Not yet.** Building and running; `objc_getAssociatedObject` retaining and autoreleasing
+  for the atomic retain policy, as Apple's does; a guest test program.
