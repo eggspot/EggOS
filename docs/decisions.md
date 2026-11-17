@@ -27693,3 +27693,13 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; turning STIBP on only for processes that ask
   (`PR_SET_SPECULATION_CTRL`) or that are not trusted, as Linux's conditional mode does;
   following SMT being turned off at run time.
+
+## D620 Framebuffers in RGB order and 16-bit `r5g6b5` (M13; D542's "Not yet" and D236's RGB order; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `pixel_format::RGB565` (16-bit, red in bits 15 to 11) joins the handoff with
+  `bytes_per_pixel`, and a `simple-framebuffer` of `r5g6b5` is taken (its stride in bytes is
+  halved for pixels). A framebuffer the kernel cannot draw into directly, `r5g6b5` or the
+  RGB byte order UEFI may leave, becomes a `ConvertedFramebuffer`: the compositor draws into a
+  32-bit copy at the visible width, and each flush converts the rectangles it names into the
+  mapped framebuffer (`rgb565`, `rgbx`). BGRX framebuffers are drawn into directly as before.
+- **Not yet.** Building and running; dithering for 16-bit; measuring the conversion's cost per
+  frame; `simple-framebuffer`'s other formats (`a2r10g10b10`, `r8g8b8`).

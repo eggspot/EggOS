@@ -169,7 +169,7 @@ and is not listed per item.
 - [ ] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465)
 - [ ] ACPI `_PRT` legacy PCI interrupt routing through the AML interpreter; INTx through `interrupt-map` on device-tree PCI hosts; shared INTx lines (D413)
 - [ ] GPIO controllers (Intel and AMD pin controllers) and GPIO interrupts for I2C-HID devices (D462)
-- [ ] `simple-framebuffer`: 16-bit `r5g6b5` formats (D542)
+- [x] `simple-framebuffer`: 16-bit `r5g6b5` formats (D542) — code written, unbuilt, D620
 - [ ] AMD DCN: DMCUB commands through the inbox, the other DCN versions' register places, link training and higher rates, HDMI, the scaler, the second pipe, AUX and EDID, watermarks from the mode equations, vertical-blank interrupts, and DCE for older cards (D496, D514, D521)
 - [ ] NVIDIA: Turing's GSP boot (version 2 descriptors, the non-PKC booter path), flips into the kernel's own surfaces in video memory, mode changes after the first, more heads, the cursor channel, completion notifiers, GSP-RM's unload booter at shutdown (D512, D522, D530)
 - [ ] Intel Type-C: Thunderbolt alternate mode (fixed PLL, AUX I/O select), lane reversal, legacy Type-C connectors, giving the PHY back on unplug, UHBR rates on display 14 (D526, D528)

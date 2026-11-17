@@ -1305,7 +1305,11 @@ pub(crate) mod tests {
         assert_eq!(framebuffer.stride_pixels, 1920);
         assert_eq!(framebuffer.format, crate::handoff::pixel_format::BGRX);
         assert!(framebuffer.is_usable());
-        assert_eq!(simple_framebuffer(&tree(b"r5g6b5\0", b"okay\0")), None);
+        assert_eq!(
+            simple_framebuffer(&tree(b"r5g6b5\0", b"okay\0")).map(|framebuffer| framebuffer.format),
+            Some(crate::handoff::pixel_format::RGB565)
+        );
+        assert_eq!(simple_framebuffer(&tree(b"r8g8b8\0", b"okay\0")), None);
         assert_eq!(
             simple_framebuffer(&tree(b"x8r8g8b8\0", b"disabled\0")),
             None
@@ -1419,11 +1423,10 @@ pub fn supervisor_imsic_base(blob: &[u8]) -> Option<u64> {
 /// The framebuffer the firmware lit that `blob` describes as an enabled `simple-framebuffer`
 /// (D542), as m1n1 on Apple silicon and U-Boot on other Arm and RISC-V boards leave it: its
 /// memory, size in pixels, stride and pixel order; `None` when there is none or its pixels are
-/// not 32-bit `a8r8g8b8`, `x8r8g8b8`, `a8b8g8r8` or `x8b8g8r8`.
+/// not 32-bit `a8r8g8b8`, `x8r8g8b8`, `a8b8g8r8` or `x8b8g8r8`, or 16-bit `r5g6b5` (D620).
 pub fn simple_framebuffer(blob: &[u8]) -> Option<crate::handoff::Framebuffer> {
     use crate::handoff::pixel_format;
     const SIMPLE_FRAMEBUFFER: &[u8] = b"simple-framebuffer";
-    const BYTES_PER_PIXEL: u32 = 4;
     let tree = Fdt::new(blob).ok()?;
     let node = tree
         .nodes()
@@ -1433,6 +1436,7 @@ pub fn simple_framebuffer(blob: &[u8]) -> Option<crate::handoff::Framebuffer> {
     let format = match node.format.strip_suffix(b"\0").unwrap_or(node.format) {
         b"a8r8g8b8" | b"x8r8g8b8" => pixel_format::BGRX,
         b"a8b8g8r8" | b"x8b8g8r8" => pixel_format::RGBX,
+        b"r5g6b5" => pixel_format::RGB565,
         _ => return None,
     };
     Some(crate::handoff::Framebuffer {
@@ -1440,7 +1444,7 @@ pub fn simple_framebuffer(blob: &[u8]) -> Option<crate::handoff::Framebuffer> {
         size,
         width: node.width?,
         height: node.height?,
-        stride_pixels: node.stride? / BYTES_PER_PIXEL,
+        stride_pixels: node.stride? / pixel_format::bytes_per_pixel(format),
         format,
     })
 }

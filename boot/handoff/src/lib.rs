@@ -42,6 +42,17 @@ pub mod pixel_format {
     pub const RGBX: u32 = 1;
     /// Bytes blue, green, red, unused: a `u32` `0x00RRGGBB` on a little-endian CPU.
     pub const BGRX: u32 = 2;
+    /// 16-bit pixels, red in bits 15 to 11, green 10 to 5, blue 4 to 0, little-endian
+    /// (`simple-framebuffer`'s `r5g6b5`, D620).
+    pub const RGB565: u32 = 3;
+
+    /// The bytes of one pixel of `format`: 2 for [`RGB565`], else 4.
+    pub const fn bytes_per_pixel(format: u32) -> u32 {
+        match format {
+            RGB565 => 2,
+            _ => 4,
+        }
+    }
 }
 
 /// One range of physical memory and what it holds.
@@ -87,8 +98,12 @@ impl Framebuffer {
             && self.width != 0
             && self.height != 0
             && self.stride_pixels >= self.width
-            && matches!(self.format, pixel_format::RGBX | pixel_format::BGRX)
-            && rows.saturating_mul(4) <= self.size
+            && matches!(
+                self.format,
+                pixel_format::RGBX | pixel_format::BGRX | pixel_format::RGB565
+            )
+            && rows.saturating_mul(u64::from(pixel_format::bytes_per_pixel(self.format)))
+                <= self.size
     }
 }
 
