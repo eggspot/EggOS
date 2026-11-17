@@ -5,7 +5,7 @@
 //! when its last thread does, with that thread's code, as on Windows.
 
 use super::sync::{self, Kind, Object, Thread};
-use super::{Bool, FALSE, TRUE, error, fail, thread_environment};
+use super::{Bool, FALSE, TRUE, error, error_for, fail, thread_environment};
 use crate::library::Export;
 use crate::linux::{self, PROT_NONE, PROT_READ, PROT_WRITE};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -71,6 +71,8 @@ pub(super) unsafe extern "efiapi" fn create_thread(
         Kind::Thread(Thread {
             id_word: AtomicU32::new(0),
             run: AtomicU32::new(run),
+            suspensions: AtomicU32::new(0),
+            terminate_code: AtomicU32::new(0),
             id: AtomicU32::new(0),
             ended: false,
             exit_code: 0,
@@ -169,6 +171,7 @@ extern "C" fn thread_main(object: usize) -> ! {
     while run.load(Ordering::Acquire) != RUN {
         let _ = linux::futex_wait(run, 0, None);
     }
+    wait_while_suspended(object.cast_mut());
     crate::fault_handler::give_thread_signal_stack();
     // SAFETY: the TEB `CreateThread` made for this thread.
     unsafe { thread_environment::enter(start.teb) };
@@ -220,7 +223,136 @@ extern "efiapi" fn get_thread_id(handle: usize) -> u32 {
     }
 }
 
+const SUSPEND_SIGNAL: i32 = 35;
+const TERMINATE_SIGNAL: i32 = 36;
+static SIGNALS_HANDLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn suspensions_of(object: *mut Object) -> Option<&'static AtomicU32> {
+    if object.is_null() {
+        return None;
+    }
+    // SAFETY: a thread's own object, which outlives the thread's use of it.
+    match unsafe { &(*object).kind } {
+        Kind::Thread(thread) => Some(&thread.suspensions),
+        _ => None,
+    }
+}
+
+fn wait_while_suspended(object: *mut Object) {
+    let Some(suspensions) = suspensions_of(object) else {
+        return;
+    };
+    loop {
+        let count = suspensions.load(Ordering::Acquire);
+        if count == 0 {
+            return;
+        }
+        let _ = linux::futex_wait(suspensions, count, None);
+    }
+}
+
+extern "C" fn on_suspend(_: i32, _: *const u8, _: *mut u8) {
+    wait_while_suspended(thread_environment::thread_object() as *mut Object);
+}
+
+extern "C" fn on_terminate(_: i32, _: *const u8, _: *mut u8) {
+    let object = thread_environment::thread_object() as *mut Object;
+    if object.is_null() {
+        return;
+    }
+    // SAFETY: the thread's own object, as above.
+    let code = match unsafe { &(*object).kind } {
+        Kind::Thread(thread) => thread.terminate_code.load(Ordering::Acquire),
+        _ => return,
+    };
+    finish(code)
+}
+
+fn handle_thread_signals() {
+    if !SIGNALS_HANDLED.swap(true, Ordering::AcqRel) {
+        let _ = linux::handle_signal(SUSPEND_SIGNAL, on_suspend);
+        let _ = linux::handle_signal(TERMINATE_SIGNAL, on_terminate);
+    }
+}
+
+fn started_thread(handle: usize) -> Option<(u32, usize)> {
+    sync::change(handle, |kind| match kind {
+        Kind::Thread(thread) if !thread.ended => (
+            Some((thread.id.load(Ordering::Acquire), &raw const thread.suspensions as usize)),
+            false,
+        ),
+        _ => (None, false),
+    })
+    .flatten()
+}
+
+extern "efiapi" fn suspend_thread(handle: usize) -> u32 {
+    if handle == super::CURRENT_THREAD {
+        let object = thread_environment::thread_object() as *mut Object;
+        let Some(count) = suspensions_of(object) else {
+            return fail(error::INVALID_HANDLE, u32::MAX);
+        };
+        let previous = count.fetch_add(1, Ordering::AcqRel);
+        wait_while_suspended(object);
+        return previous;
+    }
+    let Some((id, suspensions)) = started_thread(handle) else {
+        return fail(error::INVALID_HANDLE, u32::MAX);
+    };
+    // SAFETY: the count lives in the thread's object, which the caller's handle keeps alive.
+    let count = unsafe { AtomicU32::from_ptr(suspensions as *mut u32) };
+    let previous = count.fetch_add(1, Ordering::AcqRel);
+    if previous == 0 && id != 0 {
+        handle_thread_signals();
+        let _ = linux::signal_thread(id, SUSPEND_SIGNAL);
+    }
+    previous
+}
+
+extern "efiapi" fn terminate_thread(handle: usize, code: u32) -> Bool {
+    if handle == super::CURRENT_THREAD {
+        finish(code);
+    }
+    let target = sync::change(handle, |kind| match kind {
+        Kind::Thread(thread) if !thread.ended => {
+            thread.terminate_code.store(code, Ordering::Release);
+            thread.suspensions.store(0, Ordering::Release);
+            thread.run.store(RUN, Ordering::Release);
+            (
+                Some((thread.id.load(Ordering::Acquire), &raw const thread.suspensions as usize, thread.run.as_ptr() as usize)),
+                false,
+            )
+        }
+        _ => (None, false),
+    })
+    .flatten();
+    let Some((id, suspensions, run)) = target else {
+        return fail(error::INVALID_HANDLE, FALSE);
+    };
+    if id == thread_environment::thread_id() {
+        finish(code);
+    }
+    handle_thread_signals();
+    linux::futex_wake(suspensions, WakeCount::All);
+    linux::futex_wake(run, WakeCount::One);
+    match linux::signal_thread(id, TERMINATE_SIGNAL) {
+        Ok(_) => TRUE,
+        Err(errno) => fail(error_for(errno), FALSE),
+    }
+}
+
 extern "efiapi" fn resume_thread(handle: usize) -> u32 {
+    if let Some((_, suspensions)) = started_thread(handle) {
+        // SAFETY: the count lives in the thread's object, which the caller's handle keeps alive.
+        let count = unsafe { AtomicU32::from_ptr(suspensions as *mut u32) };
+        let previous = count.load(Ordering::Acquire);
+        if previous > 0 {
+            if count.fetch_sub(1, Ordering::AcqRel) == 1 {
+                linux::futex_wake(suspensions, WakeCount::All);
+            }
+            return previous;
+        }
+    }
     let run = sync::change(handle, |kind| match kind {
         Kind::Thread(thread) => (Ok(thread.run.as_ptr() as usize), false),
         Kind::Process(process) => (Err(process.resume()), false),
@@ -295,6 +427,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"GetExitCodeThread" => get_exit_code_thread,
     b"GetThreadId" => get_thread_id,
     b"ResumeThread" => resume_thread,
+    b"SuspendThread" => suspend_thread,
+    b"TerminateThread" => terminate_thread,
     b"GetCurrentThreadId" => get_current_thread_id,
     b"SwitchToThread" => switch_to_thread,
     b"SetThreadPriority" => set_thread_priority,

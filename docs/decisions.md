@@ -28610,3 +28610,20 @@ the license, by an explicit instruction recorded here.
   inherited. Other attributes (the parent process, a pseudoconsole) are accepted and ignored.
 - **Not yet.** Building and running; pseudoconsoles; inheriting handles other than the three
   standard ones.
+
+
+## D677 `SuspendThread`, `ResumeThread` of a running thread, and `TerminateThread` (M15 Windows; follow-up of D121; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** Each thread object gains a suspend count. `SuspendThread` raises it and, going
+  from 0, sends the thread real-time signal 35, whose handler waits on the count's futex until
+  it is 0 again; suspending oneself waits at once. `ResumeThread` lowers it and wakes the thread
+  at 0, answering the previous count as Windows does; a thread created suspended keeps its
+  run word (D121), and a thread suspended before it ran waits on the count after it is let
+  run. `TerminateThread` stores the exit code, lifts any suspension and sends signal 36, whose
+  handler ends the thread through `ExitThread`'s own path, so waiters see the code and the
+  process ends with its last thread; terminating oneself is `ExitThread`. Both handlers are
+  installed on first use.
+- **Differences kept.** As on Windows, a terminated thread runs no cleanup and may leave locks
+  it held taken; a suspension takes effect at the thread's next signal delivery, not at once,
+  which `GetThreadContext` after `SuspendThread` does not yet wait for.
+- **Not yet.** Building and running; `GetThreadContext`/`SetThreadContext` on a suspended
+  thread.

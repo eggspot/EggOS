@@ -37,6 +37,10 @@ pub const STILL_ACTIVE: u32 = 259;
 pub struct Thread {
     pub id_word: AtomicU32,
     pub run: AtomicU32,
+    /// `SuspendThread`'s count for a started thread, which waits while it is above 0 (D677).
+    pub suspensions: AtomicU32,
+    /// The exit code `TerminateThread` gives the thread it ends (D677).
+    pub terminate_code: AtomicU32,
     pub id: AtomicU32,
     pub ended: bool,
     pub exit_code: u32,

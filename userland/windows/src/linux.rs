@@ -629,6 +629,17 @@ pub fn ignore_signal(signal: i32) -> Result<usize, Errno> {
     set_signal_action(signal, SIGNAL_IGNORE, 0)
 }
 
+/// Sends `signal` to the thread `thread` of this process (`tgkill`).
+pub fn signal_thread(thread: u32, signal: i32) -> Result<usize, Errno> {
+    // SAFETY: `tgkill` touches no memory.
+    unsafe {
+        syscall(
+            number::TGKILL,
+            [process_id() as usize, thread as usize, signal as usize, 0, 0, 0],
+        )
+    }
+}
+
 /// Sends `signal` to the calling thread.
 pub fn signal_this_thread(signal: i32) -> Result<usize, Errno> {
     // SAFETY: `tgkill` touches no memory.

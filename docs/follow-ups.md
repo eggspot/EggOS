@@ -200,7 +200,7 @@ and is not listed per item.
 
 - [ ] Windows: a benchmark of program start and the hot Win32 calls, run inside the benchmark kernel (D118, D121)
 - [ ] macOS: a benchmark of program start and the hot libSystem calls, run inside the benchmark kernel (D120, D123)
-- [ ] Windows: `SuspendThread`, `ResumeThread` of a suspended thread, and `TerminateThread` (D121)
+- [x] Windows: `SuspendThread`, `ResumeThread` of a suspended thread, and `TerminateThread` (D121; code written, unbuilt: D677)
 - [ ] Windows: ARM64EC and ARM64X hybrid images (D124)
 - [x] Objective-C runtime: associated objects (`objc_setAssociatedObject`/`objc_getAssociatedObject`/`objc_removeAssociatedObjects`) (D142; code written, unbuilt: D673)
 - [ ] Objective-C runtime: message forwarding (`forwardingTargetForSelector:`, `+resolveInstanceMethod:`, `forwardInvocation:` with NSInvocation and NSMethodSignature) (D142; resolution and `forwardingTargetForSelector:` code written, unbuilt: D674; left: `forwardInvocation:`)
