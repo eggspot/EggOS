@@ -28825,3 +28825,15 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; `HCBT_MOVESIZE` (the shell moves and sizes windows),
   `HCBT_CLICKSKIPPED`, `HCBT_KEYSKIPPED`, `HCBT_QS`; low-level hooks on the installing
   thread's loop; the injected-input flags.
+
+
+## D693 Windows C++ frame handlers honour collided unwinds (M15 Windows; follow-up of D347; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented `EXCEPTION_COLLIDED_UNWIND` behaviour)
+- **Decision.** `__CxxFrameHandler3` and `4`, unwinding a frame, record before each destructor
+  or unwind funclet the state the frame will be in once it ran, in the dispatcher context's
+  scope index (`cxx_walk::scope_index_of_state`: the state plus 2, so 0 still means nothing
+  recorded), as `__C_specific_handler` records its `__finally` progress. When an unwind
+  started inside one of those destructors collides with this one (D347), the unwinder calls
+  the handler again with `EXCEPTION_COLLIDED_UNWIND` and that scope index, and the handler
+  goes on from the recorded state, so no destructor runs twice and none is skipped.
+- **Not yet.** Building and running; a collided unwind inside a catch funclet's own locals
+  (`FrameRole::FuncletLocals`) still starts from the funclet's state.

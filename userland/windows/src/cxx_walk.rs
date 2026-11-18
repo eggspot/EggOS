@@ -143,6 +143,15 @@ pub fn unwind_actions<'a>(
     from: i32,
     to: i32,
 ) -> impl Iterator<Item = Action> + 'a {
+    unwind_steps(function, from, to).map(|(action, _)| action)
+}
+
+/// [`unwind_actions`], each with the state the function is in once the action ran.
+pub fn unwind_steps<'a>(
+    function: FunctionData<'a>,
+    from: i32,
+    to: i32,
+) -> impl Iterator<Item = (Action, i32)> + 'a {
     let mut state = from;
     let mut steps = 0;
     core::iter::from_fn(move || {
@@ -152,8 +161,19 @@ pub fn unwind_actions<'a>(
         steps += 1;
         let entry = function.unwind_entry(state)?;
         state = entry.to_state;
-        Some(entry.action)
+        Some((entry.action, entry.to_state))
     })
+}
+
+/// The dispatcher context's scope index that records a C++ frame unwound down to `state`, for
+/// a collided unwind to go on from (0 is "nothing recorded").
+pub fn scope_index_of_state(state: i32) -> u32 {
+    state.saturating_add(2).max(1) as u32
+}
+
+/// The state a scope index from [`scope_index_of_state`] records, if any.
+pub fn state_of_scope_index(index: u32) -> Option<i32> {
+    (index != 0).then(|| index as i32 - 2)
 }
 
 /// What was thrown: a C++ object with its `ThrowInfo`, or a structured exception.
@@ -490,6 +510,12 @@ mod tests {
         assert_eq!(unwind_actions(function, 1, 1).count(), 0);
         assert_eq!(unwind_actions(function, OUTSIDE_EVERY_STATE, 0).count(), 0);
         assert_eq!(unwind_actions(function, 9, OUTSIDE_EVERY_STATE).count(), 0);
+        let states: Vec<i32> = unwind_steps(function, 3, OUTSIDE_EVERY_STATE).map(|(_, state)| state).collect();
+        assert_eq!(states.len(), all.len());
+        for state in [OUTSIDE_EVERY_STATE, 0, 5] {
+            assert_eq!(state_of_scope_index(scope_index_of_state(state)), Some(state));
+        }
+        assert_eq!(state_of_scope_index(0), None);
     }
 
     #[test]

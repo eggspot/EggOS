@@ -190,10 +190,15 @@ fn unwind_states(
     function: &FunctionData<'_>,
     frame: u64,
     registers: &FuncletRegisters,
-    from: i32,
-    to: i32,
+    (from, to): (i32, i32),
+    progress: Option<*mut u32>,
 ) {
-    for action in cxx_walk::unwind_actions(*function, from, to) {
+    for (action, reached) in cxx_walk::unwind_steps(*function, from, to) {
+        if let Some(progress) = progress {
+            // SAFETY: the scope index of the dispatcher context the unwind called this handler
+            // with, alive for the call.
+            unsafe { progress.write(cxx_walk::scope_index_of_state(reached)) };
+        }
         let mut bridge = Bridge::new(None, None);
         match action {
             Action::Nothing => {}
@@ -384,8 +389,13 @@ unsafe fn frame_handler(
     establisher: u64,
     dispatcher: *mut DispatcherContext,
 ) -> i32 {
-    // SAFETY: the handler's contract.
+    // SAFETY: the handler's contract: a dispatcher context alive for the call.
+    let progress = unsafe { &raw mut (*dispatcher).scope_index };
+    // SAFETY: as above.
     let dispatcher = unsafe { &*dispatcher };
+    // SAFETY: as above.
+    let collided = unsafe { (*record).flags } & flag::COLLIDED_UNWIND != 0;
+    let resumed = collided.then(|| cxx_walk::state_of_scope_index(dispatcher.scope_index)).flatten();
     let image = frames::image();
     let function_begin = dispatcher.function_begin();
     // SAFETY: as above; the handler data starts with the C++ data's address.
@@ -439,8 +449,8 @@ unsafe fn frame_handler(
                     &own_function,
                     frame,
                     &catch_registers(),
-                    from,
-                    OUTSIDE_EVERY_STATE,
+                    (from, OUTSIDE_EVERY_STATE),
+                    None,
                 );
             }
             return disposition::CONTINUE_SEARCH;
@@ -461,7 +471,8 @@ unsafe fn frame_handler(
             dispatch::unwind_target(),
             long_jump,
         );
-        unwind_states(&function, frame, &registers, state, to);
+        let from = resumed.unwrap_or(state);
+        unwind_states(&function, frame, &registers, (from, to), Some(progress));
         return disposition::CONTINUE_SEARCH;
     }
     search(record, &function, data, frame, state);
