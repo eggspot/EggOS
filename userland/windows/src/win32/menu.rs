@@ -1029,8 +1029,7 @@ unsafe extern "efiapi" fn load_menu_indirect_w(template: *const u8) -> usize {
     }
     let word = |at: usize| {
         (at + 2 <= LARGEST_INDIRECT_TEMPLATE).then(|| {
-            // SAFETY: `LoadMenuIndirectW`'s contract: a whole menu template, which the parser
-            // reads no further than its last item.
+            // SAFETY: `LoadMenuIndirectW`'s contract: a whole template, read only up to its end.
             unsafe { template.add(at).cast::<u16>().read_unaligned() }
         })
     };
