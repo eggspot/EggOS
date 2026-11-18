@@ -5,7 +5,8 @@
 //! A `new` that finds no memory throws `std::bad_alloc` from the layer.
 
 use super::cxx_types::{
-    self, PointerRecord, SingleBaseRecord, TYPE_BAD_ALLOC, TYPE_EXCEPTION, TypeRecord, VTABLES,
+    self, PointerRecord, SingleBaseRecord, TYPE_BAD_ALLOC, TYPE_BAD_CAST, TYPE_BAD_TYPEID,
+    TYPE_EXCEPTION, TypeRecord, VTABLES,
 };
 use super::exception::{CXX_HEADER, cxa_allocate_exception};
 use crate::libsystem::{self, heap, process};
@@ -17,6 +18,8 @@ const MOST_FINALIZERS: usize = 256;
 const ALIGNMENT: usize = 16;
 const EXCEPTION_WHAT: &core::ffi::CStr = c"std::exception";
 const BAD_ALLOC_WHAT: &core::ffi::CStr = c"std::bad_alloc";
+const BAD_CAST_WHAT: &core::ffi::CStr = c"std::bad_cast";
+const BAD_TYPEID_WHAT: &core::ffi::CStr = c"std::bad_typeid";
 
 /// A polymorphic class's vtable as the Itanium ABI lays it out: the offset to the top, the
 /// type information, then the virtual functions.
@@ -65,6 +68,32 @@ pub static BAD_ALLOC_VTABLE: ExceptionVtable = ExceptionVtable {
     what: bad_alloc_what,
 };
 
+extern "C" fn bad_cast_what(_: *const u8) -> *const u8 {
+    BAD_CAST_WHAT.as_ptr().cast()
+}
+
+extern "C" fn bad_typeid_what(_: *const u8) -> *const u8 {
+    BAD_TYPEID_WHAT.as_ptr().cast()
+}
+
+/// `std::bad_cast`'s vtable.
+pub static BAD_CAST_VTABLE: ExceptionVtable = ExceptionVtable {
+    offset_to_top: 0,
+    type_info: (&raw const TYPE_BAD_CAST).cast(),
+    complete_destructor: exception_destructor,
+    deleting_destructor: exception_deleting_destructor,
+    what: bad_cast_what,
+};
+
+/// `std::bad_typeid`'s vtable.
+pub static BAD_TYPEID_VTABLE: ExceptionVtable = ExceptionVtable {
+    offset_to_top: 0,
+    type_info: (&raw const TYPE_BAD_TYPEID).cast(),
+    complete_destructor: exception_destructor,
+    deleting_destructor: exception_deleting_destructor,
+    what: bad_typeid_what,
+};
+
 fn address_point(vtable: &'static ExceptionVtable) -> usize {
     (vtable as *const ExceptionVtable as usize) + 2 * core::mem::size_of::<usize>()
 }
@@ -87,18 +116,40 @@ unsafe extern "C" {
     fn eggos_cxa_throw();
 }
 
-fn throw_bad_alloc() -> ! {
+fn throw_standard(vtable: &'static ExceptionVtable, type_info: *const SingleBaseRecord) -> ! {
     let object = cxa_allocate_exception(core::mem::size_of::<usize>()).cast::<usize>();
-    bad_alloc_construct(object);
+    // SAFETY: a new exception object one word long, its first word the vtable pointer.
+    unsafe { object.write(address_point(vtable)) };
     let throw: extern "C" fn(*mut usize, *const SingleBaseRecord, usize) -> ! =
-        // SAFETY: `eggos_cxa_throw` is `__cxa_throw`'s entry, which takes the object, its type
-        // and its destructor and never returns.
+        // SAFETY: `eggos_cxa_throw` is `__cxa_throw`'s entry; it takes object, type, destructor.
         unsafe { core::mem::transmute(eggos_cxa_throw as *const ()) };
-    throw(
-        object,
-        &raw const TYPE_BAD_ALLOC,
-        exception_destructor as usize,
-    )
+    throw(object, type_info, exception_destructor as usize)
+}
+
+fn throw_bad_alloc() -> ! {
+    throw_standard(&BAD_ALLOC_VTABLE, &raw const TYPE_BAD_ALLOC)
+}
+
+extern "C" fn throw_bad_cast() -> ! {
+    throw_standard(&BAD_CAST_VTABLE, &raw const TYPE_BAD_CAST)
+}
+
+extern "C" fn throw_bad_typeid() -> ! {
+    throw_standard(&BAD_TYPEID_VTABLE, &raw const TYPE_BAD_TYPEID)
+}
+
+extern "C" fn bad_cast_construct(this: *mut usize) {
+    if !this.is_null() {
+        // SAFETY: the caller's `std::bad_cast` object, its first word the vtable pointer.
+        unsafe { this.write(address_point(&BAD_CAST_VTABLE)) };
+    }
+}
+
+extern "C" fn bad_typeid_construct(this: *mut usize) {
+    if !this.is_null() {
+        // SAFETY: the caller's `std::bad_typeid` object, its first word the vtable pointer.
+        unsafe { this.write(address_point(&BAD_TYPEID_VTABLE)) };
+    }
 }
 
 extern "C" fn operator_new(size: usize) -> *mut u8 {
@@ -272,7 +323,25 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
             exception_deleting_destructor as *const () as usize
         }
         b"___dynamic_cast" => dynamic_cast as *const () as usize,
-        b"___cxa_bad_cast" | b"___cxa_bad_typeid" => terminate as *const () as usize,
+        b"___cxa_bad_cast" => throw_bad_cast as *const () as usize,
+        b"___cxa_bad_typeid" => throw_bad_typeid as *const () as usize,
+        b"__ZTVSt8bad_cast" => &raw const BAD_CAST_VTABLE as usize,
+        b"__ZTVSt10bad_typeid" => &raw const BAD_TYPEID_VTABLE as usize,
+        b"__ZTISt8bad_cast" => &raw const TYPE_BAD_CAST as usize,
+        b"__ZTISt10bad_typeid" => &raw const TYPE_BAD_TYPEID as usize,
+        b"__ZNKSt8bad_cast4whatEv" => bad_cast_what as *const () as usize,
+        b"__ZNKSt10bad_typeid4whatEv" => bad_typeid_what as *const () as usize,
+        b"__ZNSt8bad_castC1Ev" | b"__ZNSt8bad_castC2Ev" => bad_cast_construct as *const () as usize,
+        b"__ZNSt10bad_typeidC1Ev" | b"__ZNSt10bad_typeidC2Ev" => {
+            bad_typeid_construct as *const () as usize
+        }
+        b"__ZNSt8bad_castD1Ev"
+        | b"__ZNSt8bad_castD2Ev"
+        | b"__ZNSt10bad_typeidD1Ev"
+        | b"__ZNSt10bad_typeidD2Ev" => exception_destructor as *const () as usize,
+        b"__ZNSt8bad_castD0Ev" | b"__ZNSt10bad_typeidD0Ev" => {
+            exception_deleting_destructor as *const () as usize
+        }
         b"__ZNKSt9exception4whatEv" => exception_what as *const () as usize,
         b"__ZNKSt9bad_alloc4whatEv" => bad_alloc_what as *const () as usize,
         b"__ZNSt9bad_allocC1Ev" | b"__ZNSt9bad_allocC2Ev" => {

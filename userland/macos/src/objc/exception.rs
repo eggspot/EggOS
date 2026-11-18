@@ -174,12 +174,14 @@ pub struct Raised {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct CxxThrown {
     type_info: u64,
     destructor: usize,
     handlers: usize,
     adjusted: u64,
+    references: AtomicUsize,
+    primary: *mut Raised,
 }
 
 impl CxxThrown {
@@ -188,7 +190,20 @@ impl CxxThrown {
         destructor: 0,
         handlers: 0,
         adjusted: 0,
+        references: AtomicUsize::new(0),
+        primary: core::ptr::null_mut(),
     };
+
+    fn primary(type_info: u64, destructor: usize, object: *mut u8) -> Self {
+        Self {
+            type_info,
+            destructor,
+            handlers: 0,
+            adjusted: object as u64,
+            references: AtomicUsize::new(0),
+            primary: core::ptr::null_mut(),
+        }
+    }
 }
 
 /// The bytes before a C++ exception's object: its record, rounded to 16.
@@ -725,17 +740,119 @@ extern "C" fn cxa_throw(
             handler_boundary: 0,
             rethrown: false,
             next: core::ptr::null_mut(),
-            cxx: CxxThrown {
-                type_info,
-                destructor,
-                handlers: 0,
-                adjusted: object as u64,
-            },
+            cxx: CxxThrown::primary(type_info, destructor, object),
         })
     };
     // SAFETY: as in `throw_from`.
     let start = unsafe { *registers };
     raise(raised, start)
+}
+
+/// `__cxa_init_primary_exception`: makes `object`, from `__cxa_allocate_exception`, an
+/// exception of type `type_info` that no `throw` raised yet, for `std::make_exception_ptr`.
+pub extern "C" fn cxa_init_primary_exception(object: *mut u8, type_info: u64, destructor: usize) -> *mut u8 {
+    if object.is_null() {
+        return object;
+    }
+    let raised = record_of(object);
+    // SAFETY: `object` came from `cxa_allocate_exception`, which left room for the record.
+    unsafe {
+        raised.write(Raised {
+            object: object.cast(),
+            handler_frame: 0,
+            handler_boundary: 0,
+            rethrown: false,
+            next: core::ptr::null_mut(),
+            cxx: CxxThrown::primary(type_info, destructor, object),
+        })
+    };
+    raised.cast()
+}
+
+/// `__cxa_increment_exception_refcount`: one more `std::exception_ptr` holds the C++ exception
+/// whose object is `object`.
+pub extern "C" fn cxa_increment_exception_refcount(object: *mut u8) {
+    if !object.is_null() {
+        // SAFETY: a thrown or initialized C++ exception's object, its record before it.
+        unsafe { (*record_of(object)).cxx.references.fetch_add(1, Ordering::AcqRel) };
+    }
+}
+
+fn release_reference(primary: *mut Raised) {
+    // SAFETY: a primary exception's record, alive while any reference holds it.
+    let references = unsafe { &(*primary).cxx.references };
+    let released = references.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        count.checked_sub(1)
+    });
+    if released != Ok(1) {
+        return;
+    }
+    // SAFETY: as above.
+    let handled = unsafe { (*primary).cxx.handlers } > 0;
+    if !handled && !is_caught_anywhere(primary) {
+        destroy_cxx(primary);
+    }
+}
+
+/// `__cxa_decrement_exception_refcount`: a `std::exception_ptr` lets go of the exception whose
+/// object is `object`; the last reference outside every handler destroys it.
+pub extern "C" fn cxa_decrement_exception_refcount(object: *mut u8) {
+    if !object.is_null() {
+        release_reference(record_of(object));
+    }
+}
+
+fn primary_of(raised: *mut Raised) -> *mut Raised {
+    // SAFETY: a live C++ exception record.
+    match unsafe { (*raised).cxx.primary } {
+        primary if primary.is_null() => raised,
+        primary => primary,
+    }
+}
+
+/// `__cxa_current_primary_exception`: the object of the C++ exception the innermost handler
+/// is handling, with one more reference, or null.
+pub extern "C" fn cxa_current_primary_exception() -> *mut u8 {
+    let top = caught();
+    if top.is_null() || !is_cxx(top) {
+        return core::ptr::null_mut();
+    }
+    let primary = primary_of(top);
+    // SAFETY: as above.
+    let object = unsafe { (*primary).object }.cast::<u8>();
+    cxa_increment_exception_refcount(object);
+    object
+}
+
+extern "C" fn cxa_rethrow_primary_exception(object: *mut u8, registers: *const Registers) {
+    if object.is_null() {
+        return;
+    }
+    let primary = record_of(object);
+    let dependent = heap::allocate(core::mem::size_of::<Raised>(), true).cast::<Raised>();
+    if dependent.is_null() {
+        crate::libsystem::write_error(b"libc++abi: out of memory rethrowing an exception\n");
+        crate::libsystem::abort()
+    }
+    // SAFETY: the primary's record, alive while the reference the dependent takes holds it.
+    let type_info = unsafe { (*primary).cxx.type_info };
+    cxa_increment_exception_refcount(object);
+    let mut cxx = CxxThrown::primary(type_info, 0, object);
+    cxx.primary = primary;
+    // SAFETY: a new block of the record's size.
+    unsafe {
+        dependent.write(Raised {
+            object: object.cast(),
+            handler_frame: 0,
+            handler_boundary: 0,
+            rethrown: false,
+            next: core::ptr::null_mut(),
+            cxx,
+        })
+    };
+    // SAFETY: as in `throw_from`.
+    let start = unsafe { *registers };
+    raise(dependent, start)
 }
 
 extern "C" fn cxa_rethrow(registers: *const Registers) -> ! {
@@ -788,8 +905,31 @@ extern "C" fn cxa_current_exception_type() -> u64 {
     }
 }
 
+fn is_caught_anywhere(raised: *mut Raised) -> bool {
+    let mut at = caught();
+    while !at.is_null() {
+        if at == raised || primary_of(at) == raised {
+            return true;
+        }
+        // SAFETY: a record on the calling thread's chain of handled exceptions.
+        at = unsafe { (*at).next };
+    }
+    false
+}
+
 fn destroy_cxx(raised: *mut Raised) {
     // SAFETY: a C++ exception's record no handler holds any more.
+    let primary = unsafe { (*raised).cxx.primary };
+    if !primary.is_null() {
+        heap::release(raised.cast());
+        release_reference(primary);
+        return;
+    }
+    // SAFETY: as above.
+    if unsafe { (*raised).cxx.references.load(Ordering::Acquire) } > 0 {
+        return;
+    }
+    // SAFETY: as above.
     let (object, destructor) = unsafe { ((*raised).object, (*raised).cxx.destructor) };
     if destructor != 0 {
         let destructor = crate::callback::native_callable(destructor);
@@ -1070,6 +1210,103 @@ capture!(eggos_objc_exception_rethrow => rethrow, "x1", "rsi");
 capture!(eggos_unwind_resume => resume, "x1", "rsi");
 capture!(eggos_cxa_throw => cxa_throw, "x3", "rcx");
 capture!(eggos_cxa_rethrow => cxa_rethrow, "x0", "rdi");
+capture!(eggos_cxa_rethrow_primary_exception => cxa_rethrow_primary_exception, "x1", "rsi");
+capture!(eggos_rethrow_exception => rethrow_exception, "x1", "rsi");
+
+extern "C" fn rethrow_exception(holder: *const usize, registers: *const Registers) {
+    let object = match holder.is_null() {
+        true => 0,
+        // SAFETY: libc++'s `rethrow_exception` takes its `exception_ptr` by reference.
+        false => unsafe { holder.read() },
+    };
+    if object == 0 {
+        crate::libsystem::write_error(b"libc++abi: terminating: rethrow of a null exception_ptr\n");
+        crate::libsystem::abort()
+    }
+    cxa_rethrow_primary_exception(object as *mut u8, registers)
+}
+
+extern "C" fn exception_ptr_destroy(holder: *mut usize) {
+    // SAFETY: the `exception_ptr` being destroyed.
+    let object = unsafe { holder.read() };
+    cxa_decrement_exception_refcount(object as *mut u8);
+}
+
+extern "C" fn exception_ptr_copy(holder: *mut usize, other: *const usize) {
+    // SAFETY: the `exception_ptr` copied from, alive for the call.
+    let object = unsafe { other.read() };
+    cxa_increment_exception_refcount(object as *mut u8);
+    // SAFETY: the `exception_ptr` being made.
+    unsafe { holder.write(object) };
+}
+
+extern "C" fn exception_ptr_assign(holder: *mut usize, other: *const usize) -> *mut usize {
+    // SAFETY: as in `exception_ptr_copy`.
+    let object = unsafe { other.read() };
+    // SAFETY: the `exception_ptr` assigned to.
+    let previous = unsafe { holder.read() };
+    if previous != object {
+        cxa_increment_exception_refcount(object as *mut u8);
+        cxa_decrement_exception_refcount(previous as *mut u8);
+        // SAFETY: as above.
+        unsafe { holder.write(object) };
+    }
+    holder
+}
+
+extern "C" fn current_exception_into(out: *mut usize) -> *mut usize {
+    // SAFETY: the `exception_ptr` the caller returns, its `sret` slot.
+    unsafe { out.write(cxa_current_primary_exception() as usize) };
+    out
+}
+
+extern "C" fn from_native_exception_pointer(out: *mut usize, object: *mut u8) -> *mut usize {
+    cxa_increment_exception_refcount(object);
+    // SAFETY: as in `current_exception_into`.
+    unsafe { out.write(object as usize) };
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".text",
+    ".p2align 2",
+    ".globl eggos_current_exception",
+    ".hidden eggos_current_exception",
+    "eggos_current_exception:",
+    "mov x0, x8",
+    "b {current}",
+    ".globl eggos_from_native_exception_pointer",
+    ".hidden eggos_from_native_exception_pointer",
+    "eggos_from_native_exception_pointer:",
+    "mov x1, x0",
+    "mov x0, x8",
+    "b {native}",
+    current = sym current_exception_into,
+    native = sym from_native_exception_pointer,
+);
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn eggos_current_exception();
+    fn eggos_from_native_exception_pointer();
+}
+
+#[cfg(target_arch = "aarch64")]
+fn returning_by_value() -> (usize, usize) {
+    (
+        eggos_current_exception as *const () as usize,
+        eggos_from_native_exception_pointer as *const () as usize,
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+fn returning_by_value() -> (usize, usize) {
+    (
+        current_exception_into as *const () as usize,
+        from_native_exception_pointer as *const () as usize,
+    )
+}
 
 #[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
@@ -1301,6 +1538,31 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"___cxa_end_catch" => end_catch as *const () as usize,
         b"___cxa_get_exception_ptr" => cxa_get_exception_ptr as *const () as usize,
         b"___cxa_current_exception_type" => cxa_current_exception_type as *const () as usize,
+        b"___cxa_init_primary_exception" => cxa_init_primary_exception as *const () as usize,
+        b"___cxa_increment_exception_refcount" => {
+            cxa_increment_exception_refcount as *const () as usize
+        }
+        b"___cxa_decrement_exception_refcount" => {
+            cxa_decrement_exception_refcount as *const () as usize
+        }
+        b"___cxa_current_primary_exception" => {
+            cxa_current_primary_exception as *const () as usize
+        }
+        b"___cxa_rethrow_primary_exception" => {
+            eggos_cxa_rethrow_primary_exception as *const () as usize
+        }
+        b"__ZSt17rethrow_exceptionSt13exception_ptr" => {
+            eggos_rethrow_exception as *const () as usize
+        }
+        b"__ZNSt13exception_ptrD1Ev" | b"__ZNSt13exception_ptrD2Ev" => {
+            exception_ptr_destroy as *const () as usize
+        }
+        b"__ZNSt13exception_ptrC1ERKS_" | b"__ZNSt13exception_ptrC2ERKS_" => {
+            exception_ptr_copy as *const () as usize
+        }
+        b"__ZNSt13exception_ptraSERKS_" => exception_ptr_assign as *const () as usize,
+        b"__ZSt17current_exceptionv" => returning_by_value().0,
+        b"__ZNSt13exception_ptr31__from_native_exception_pointerEPv" => returning_by_value().1,
         b"___gxx_personality_v0" => personality as *const () as usize,
         _ => return None,
     };

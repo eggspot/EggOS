@@ -153,6 +153,24 @@ pub static TYPE_BAD_ALLOC: SingleBaseRecord = SingleBaseRecord {
     base: &raw const TYPE_EXCEPTION,
 };
 
+/// `std::bad_cast`'s record.
+pub static TYPE_BAD_CAST: SingleBaseRecord = SingleBaseRecord {
+    record: TypeRecord {
+        vtable: address_point(&VTABLES.single_base),
+        name: c"St8bad_cast".as_ptr().cast(),
+    },
+    base: &raw const TYPE_EXCEPTION,
+};
+
+/// `std::bad_typeid`'s record.
+pub static TYPE_BAD_TYPEID: SingleBaseRecord = SingleBaseRecord {
+    record: TypeRecord {
+        vtable: address_point(&VTABLES.single_base),
+        name: c"St10bad_typeid".as_ptr().cast(),
+    },
+    base: &raw const TYPE_EXCEPTION,
+};
+
 // SAFETY: the records are never written, and their pointers are to permanent statics.
 unsafe impl Sync for TypeRecord {}
 // SAFETY: as above.
@@ -161,7 +179,7 @@ unsafe impl Sync for SingleBaseRecord {}
 unsafe impl Sync for PointerRecord {}
 
 fn own(address: u64, length: u64) -> bool {
-    let ranges: [(u64, u64); 3] = [
+    let ranges: [(u64, u64); 5] = [
         (&raw const VTABLES as u64, size_of::<Vtables>() as u64),
         (
             &raw const TYPE_EXCEPTION as u64,
@@ -169,6 +187,14 @@ fn own(address: u64, length: u64) -> bool {
         ),
         (
             &raw const TYPE_BAD_ALLOC as u64,
+            size_of::<SingleBaseRecord>() as u64,
+        ),
+        (
+            &raw const TYPE_BAD_CAST as u64,
+            size_of::<SingleBaseRecord>() as u64,
+        ),
+        (
+            &raw const TYPE_BAD_TYPEID as u64,
             size_of::<SingleBaseRecord>() as u64,
         ),
     ];
@@ -244,6 +270,8 @@ fn name_byte(address: u64) -> Option<u8> {
             TYPE_VOID.name,
             TYPE_EXCEPTION.name,
             TYPE_BAD_ALLOC.record.name,
+            TYPE_BAD_CAST.record.name,
+            TYPE_BAD_TYPEID.record.name,
             TYPE_CONST_CHAR_POINTER.record.name,
             TYPE_CHAR_POINTER.record.name,
             TYPE_VOID_POINTER.record.name,

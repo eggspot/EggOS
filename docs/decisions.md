@@ -28939,3 +28939,8 @@ the license, by an explicit instruction recorded here.
     The staged file is checked against the store's digest either way.
 - **Not yet.** Building and running; deltas from releases older than the previous one; the
   progress the Components pane shows counting delta bytes.
+
+
+## D700 macOS C++: `std::exception_ptr`, `std::rethrow_exception`, and `std::bad_cast`/`std::bad_typeid` thrown (M15 macOS; follow-up of D380 and D408; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the Itanium C++ ABI and libc++abi's documented entry points)
+- **Decision.** A C++ exception's record gains a reference count and, for a dependent record, its primary. `__cxa_increment_exception_refcount`, `__cxa_decrement_exception_refcount`, `__cxa_current_primary_exception`, `__cxa_init_primary_exception` and `__cxa_rethrow_primary_exception` (a dependent record thrown from the caller's frame) are answered; an exception is destroyed only when no handler and no `exception_ptr` holds it. libc++'s `exception_ptr` copy, assignment and destructor, `std::current_exception`, `std::rethrow_exception` and `__from_native_exception_pointer` (by-value returns through `sret`, a two-instruction shim on aarch64) are bound. `__cxa_bad_cast` and `__cxa_bad_typeid` now throw `std::bad_cast` and `std::bad_typeid`, with their vtables, type records, constructors, destructors and `what`.
+- **Not yet.** Building and running; `std::nested_exception`; ambiguous and non-public bases in `__dynamic_cast`.
