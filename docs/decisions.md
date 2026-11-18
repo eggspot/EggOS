@@ -28893,3 +28893,28 @@ the license, by an explicit instruction recorded here.
 - **Deviation.** The translation keeps no tag word, so `fxam` never answers "empty" (101); a
   program that examines an empty register sees its stale value classified.
 - **Not yet.** Building and running; the tag word.
+
+
+## D698 Component updates: binary deltas inside a changed file, the format and its codec (M14; follow-up of D293; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** `eggos_components::delta` defines the delta a release store will send for a
+  changed file instead of its whole bytes:
+  - **Format 1.** `EGGDELTA`, the format byte, the old and new lengths (little-endian
+    64-bit) and SHA-256s, then steps: `COPY` (1) with a varint offset and length into the old
+    copy, `INSERT` (2) with a varint length and the bytes, and `END` (0) as the last byte.
+  - **Encoding** (`encode`, run by the release tooling on the host) indexes the old copy's
+    16-byte blocks in an open-addressing table and slides a rolling hash over the new copy;
+    each candidate (at most eight) is checked byte by byte, the longest kept, and a match is
+    extended backwards over the bytes not yet sent. Unmatched bytes become inserts.
+  - **Applying** (`apply`, on the machine) refuses a delta made from another copy (length and
+    digest), any step that reads outside the old copy or overruns the new length, a delta
+    that ends early or carries bytes after `END`, more than 2^24 steps, and a result whose
+    digest is not the new one; nothing is written until all of that holds.
+- **Decided by research.** A block-index delta (as rsync's matching) over a suffix-array one
+  (as bsdiff): it encodes in linear time and memory in the release tooling and applies in one
+  pass with no allocation beyond the new copy, and component files change by whole functions
+  and data runs, which 16-byte blocks catch. Compressing the inserted bytes is left to the
+  transport.
+- **Not yet.** Building and running; the store's index naming a delta per (installed digest,
+  new digest) and the release tooling writing them (`cargo xtask components`); `component
+  update` fetching a delta instead of the file when the installed digest matches, applying it
+  and staging the result as today.
