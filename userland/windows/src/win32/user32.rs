@@ -43,6 +43,7 @@ const DOUBLE_CLICK_SQUARE: i32 = 8;
 const MOUSE_BUTTONS: i32 = 3;
 const ICON_SIZE: i32 = 32;
 const CONTEXT_MENU: u32 = 0x007b;
+const NC_HIT_TEST: u32 = 0x0084;
 const SMALL_ICON_SIZE: i32 = 16;
 
 #[repr(C)]
@@ -928,6 +929,19 @@ pub extern "efiapi" fn def_window_proc_w(
             0
         }
         message::NC_CREATE => 1,
+        NC_HIT_TEST => {
+            let (x, y) = (
+                lparam as u16 as i16 as i32,
+                (lparam >> 16) as u16 as i16 as i32,
+            );
+            match super::placement::client_origin(handle) {
+                Ok((left, top)) => with(|gui| {
+                    super::window_scroll_bars::hit_test(gui, handle, (x - left, y - top))
+                })
+                .unwrap_or(0),
+                Err(_) => 0,
+            }
+        }
         super::hover::SET_CURSOR => super::hover::default_set_cursor(handle, wparam, lparam),
         number if super::controls::control_colour::is(number) => {
             super::controls::default_control_colour(number, wparam)

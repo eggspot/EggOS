@@ -221,7 +221,7 @@ and is not listed per item.
 - [ ] macOS libSystem: extended locales (`newlocale`, `uselocale`, `freelocale`, `*_l` functions), `strcoll`, `strxfrm`, `wcwidth`, `wcswidth` (D190)
 - [ ] Windows menus: extended templates (`MENUEX`, `LoadMenuIndirectW`) (D336)
 - [ ] Windows edits: word wrap in multi-line edits, `EM_SETRECT`, `EM_SETTABSTOPS`, `EM_FMTLINES`, Windows' 30,000-character default limit (D341)
-- [ ] Windows scroll bars: `EnableScrollBar`, `ScrollWindowEx`, `ScrollWindow`, `WM_NCHITTEST` answering `HTVSCROLL`/`HTHSCROLL`, the arrows' repeat while held (D342, D343)
+- [ ] Windows scroll bars: the arrows' repeat while held, copying scrolled pixels (D342, D343; `EnableScrollBar`, `ScrollWindowEx`, `WM_NCHITTEST` code written, unbuilt: D687)
 - [ ] Windows menus: Alt pressed and released alone selects the bar; mnemonic underlines only once Alt is pressed (D338)
 - [ ] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340; the two messages code written, unbuilt: D682)
 - [ ] Windows: `SetThreadStackGuarantee` and `GetThreadStackLimits`; the main thread's overflow as `STATUS_STACK_OVERFLOW` (D346; `GetCurrentThreadStackLimits` code written, unbuilt: D681)

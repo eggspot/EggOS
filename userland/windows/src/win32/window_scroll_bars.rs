@@ -134,6 +134,32 @@ fn post_scroll(gui: &mut Gui, held: Held, scroll: Option<Scroll>) {
     let _ = gui.post(held.window, thread, number, wparam, 0);
 }
 
+const HTNOWHERE: usize = 0;
+const HTCLIENT: usize = 1;
+const HTMENU: usize = 5;
+const HTHSCROLL: usize = 6;
+const HTVSCROLL: usize = 7;
+
+/// `DefWindowProc`'s `WM_NCHITTEST` for a point `local` to window `handle`'s client area:
+/// `HTCLIENT`, `HTVSCROLL` or `HTHSCROLL` over its own bars, `HTMENU` over a top-level
+/// window's menu bar, else `HTNOWHERE` (the shell draws the frame and caption).
+pub fn hit_test(gui: &Gui, handle: usize, local: (i32, i32)) -> usize {
+    let Some(entry) = gui.windows.get(handle) else {
+        return HTNOWHERE;
+    };
+    let (x, y) = local;
+    if x >= 0 && y >= 0 && x < entry.width as i32 && y < entry.height as i32 {
+        return HTCLIENT;
+    }
+    let on_bar = |vertical: bool| entry.bar_rect(vertical).is_some_and(|rect| rect.contains(x, y));
+    match () {
+        () if on_bar(true) => HTVSCROLL,
+        () if on_bar(false) => HTHSCROLL,
+        () if !entry.is_child() && y < 0 && y >= -entry.menu_height && x >= 0 && x < entry.width as i32 => HTMENU,
+        () => HTNOWHERE,
+    }
+}
+
 fn local_point(gui: &Gui, window: usize, point: (i32, i32)) -> Option<(i32, i32)> {
     let origin = windows::client_placement(&gui.windows, window)?.origin;
     Some((point.0 - origin.0, point.1 - origin.1))

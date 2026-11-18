@@ -422,6 +422,47 @@ unsafe extern "efiapi" fn get_update_rect(
     Bool::from(!update.is_empty())
 }
 
+const SW_SCROLLCHILDREN: u32 = 0x0001;
+const SW_INVALIDATE: u32 = 0x0002;
+const NULL_REGION: i32 = 1;
+const SIMPLE_REGION: i32 = 2;
+const REGION_ERROR: i32 = 0;
+
+struct ScrollRequest {
+    window: usize,
+    by: (i32, i32),
+    rect: Option<Rect>,
+    clip: Option<Rect>,
+    move_children: bool,
+    invalidate: bool,
+}
+
+fn scroll(gui: &mut Gui, request: &ScrollRequest) -> Result<Rect, u32> {
+    let client = gui.window(request.window)?.client();
+    let (dx, dy) = request.by;
+    if request.move_children {
+        let (kids, count) = windows::children(&gui.windows, request.window);
+        for &kid in &kids[..count] {
+            let Some(entry) = gui.windows.get_mut(kid) else {
+                continue;
+            };
+            let inside = request.rect.is_none_or(|rect| !rect.intersection(&entry.bounds).is_empty());
+            if inside {
+                entry.bounds = entry.bounds.offset(dx, dy);
+            }
+        }
+    }
+    let area = request
+        .rect
+        .unwrap_or(client)
+        .intersection(&request.clip.unwrap_or(client))
+        .intersection(&client);
+    if request.invalidate && !area.is_empty() {
+        windows::invalidate_tree(&mut gui.windows, request.window, Some(area), true);
+    }
+    Ok(area)
+}
+
 unsafe extern "efiapi" fn scroll_window(
     window: usize,
     dx: i32,
@@ -429,32 +470,69 @@ unsafe extern "efiapi" fn scroll_window(
     rect: *const Win32Rect,
     clip: *const Win32Rect,
 ) -> Bool {
-    let (rect, clip) = (rect_from(rect), rect_from(clip));
-    let scrolled = try_with(|gui| {
-        let client = gui.window(window)?.client();
-        if rect.is_none() {
-            let (kids, count) = windows::children(&gui.windows, window);
-            for &kid in &kids[..count] {
-                if let Some(entry) = gui.windows.get_mut(kid) {
-                    entry.bounds = entry.bounds.offset(dx, dy);
-                }
-            }
-        }
-        let area = rect
-            .unwrap_or(client)
-            .intersection(&clip.unwrap_or(client))
-            .intersection(&client);
-        if !area.is_empty() {
-            windows::invalidate_tree(&mut gui.windows, window, Some(area), true);
-        }
-        Ok(())
-    });
-    match scrolled {
-        Ok(()) => {
+    let rect = rect_from(rect);
+    let request = ScrollRequest {
+        window,
+        by: (dx, dy),
+        rect,
+        clip: rect_from(clip),
+        move_children: rect.is_none(),
+        invalidate: true,
+    };
+    match try_with(|gui| scroll(gui, &request)) {
+        Ok(_) => {
             gui::wake();
             TRUE
         }
         Err(code) => fail(code, FALSE),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "efiapi" fn scroll_window_ex(
+    window: usize,
+    dx: i32,
+    dy: i32,
+    rect: *const Win32Rect,
+    clip: *const Win32Rect,
+    update_region: usize,
+    update_rect: *mut Win32Rect,
+    flags: u32,
+) -> i32 {
+    let request = ScrollRequest {
+        window,
+        by: (dx, dy),
+        rect: rect_from(rect),
+        clip: rect_from(clip),
+        move_children: flags & SW_SCROLLCHILDREN != 0,
+        invalidate: flags & SW_INVALIDATE != 0,
+    };
+    let scrolled = try_with(|gui| {
+        let area = scroll(gui, &request)?;
+        if update_region != 0 && !super::gdi::set_region(gui, update_region, area) {
+            return Err(error::INVALID_HANDLE);
+        }
+        Ok(area)
+    });
+    let area = match scrolled {
+        Ok(area) => area,
+        Err(code) => return fail(code, REGION_ERROR),
+    };
+    if !update_rect.is_null() {
+        // SAFETY: the caller passes a writable `RECT` or null.
+        unsafe {
+            update_rect.write_unaligned(Win32Rect {
+                left: area.left,
+                top: area.top,
+                right: area.right,
+                bottom: area.bottom,
+            })
+        };
+    }
+    gui::wake();
+    match area.is_empty() {
+        true => NULL_REGION,
+        false => SIMPLE_REGION,
     }
 }
 
@@ -536,6 +614,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"RedrawWindow" => redraw_window,
     b"GetUpdateRect" => get_update_rect,
     b"ScrollWindow" => scroll_window,
+    b"ScrollWindowEx" => scroll_window_ex,
     b"SetPropW" => set_prop_w,
     b"GetPropW" => get_prop_w,
     b"RemovePropW" => remove_prop_w,

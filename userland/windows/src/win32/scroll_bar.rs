@@ -14,6 +14,7 @@ pub const SBM_SETPOS: u32 = 0x00e0;
 const SBM_GETPOS: u32 = 0x00e1;
 const SBM_SETRANGE: u32 = 0x00e2;
 const SBM_GETRANGE: u32 = 0x00e3;
+const SBM_ENABLE_ARROWS: u32 = 0x00e4;
 const SBM_SETRANGEREDRAW: u32 = 0x00e6;
 const SBM_SETSCROLLINFO: u32 = 0x00e9;
 pub const SBM_GETSCROLLINFO: u32 = 0x00ea;
@@ -96,7 +97,7 @@ pub(super) fn control_message(window: usize, number: u32, wparam: usize, lparam:
 fn changes(number: u32) -> bool {
     matches!(
         number,
-        SBM_SETPOS | SBM_SETRANGE | SBM_SETRANGEREDRAW | SBM_SETSCROLLINFO
+        SBM_SETPOS | SBM_SETRANGE | SBM_SETRANGEREDRAW | SBM_SETSCROLLINFO | SBM_ENABLE_ARROWS
     )
 }
 
@@ -123,6 +124,12 @@ fn bar_message(
         position,
     };
     match number {
+        SBM_ENABLE_ARROWS => {
+            let wanted = (wparam & 3) as u8;
+            let changed = bar.disabled_arrows != wanted;
+            bar.disabled_arrows = wanted;
+            usize::from(changed)
+        }
         SBM_SETPOS => {
             bar.set_info(mask::POSITION, &given(0, 0, wparam as i32));
             previous as usize
@@ -371,6 +378,25 @@ extern "efiapi" fn show_scroll_bar(window: usize, bar: i32, show: Bool) -> Bool 
     TRUE
 }
 
+extern "efiapi" fn enable_scroll_bar(window: usize, bar: i32, arrows: u32) -> Bool {
+    let targets: [Option<Target>; 2] = match bar {
+        SB_BOTH if is_window(window) => [Some(Target::Window(window, false)), Some(Target::Window(window, true))],
+        SB_BOTH => return fail(error::INVALID_WINDOW_HANDLE, FALSE),
+        _ => match target_of(window, bar) {
+            Ok(target) => [Some(target), None],
+            Err(code) => return fail(code, FALSE),
+        },
+    };
+    let changed = targets
+        .into_iter()
+        .flatten()
+        .fold(false, |changed, target| send_to(target, SBM_ENABLE_ARROWS, arrows as usize, 0) != 0 || changed);
+    match changed {
+        true => TRUE,
+        false => FALSE,
+    }
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"SetScrollInfo" => set_scroll_info,
     b"GetScrollInfo" => get_scroll_info,
@@ -379,4 +405,5 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SetScrollRange" => set_scroll_range,
     b"GetScrollRange" => get_scroll_range,
     b"ShowScrollBar" => show_scroll_bar,
+    b"EnableScrollBar" => enable_scroll_bar,
 ];

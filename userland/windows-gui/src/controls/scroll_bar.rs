@@ -274,6 +274,9 @@ struct Track {
 pub struct ScrollBar {
     pub info: ScrollInfo,
     pub vertical: bool,
+    /// The arrows `EnableScrollBar` turned off: `ESB_DISABLE_LTUP` (1), `ESB_DISABLE_RTDN` (2)
+    /// or both (3), which also hides the thumb and ignores the track.
+    pub disabled_arrows: u8,
     pressed: Option<Part>,
     hovered: Option<Part>,
     track: Option<Track>,
@@ -290,10 +293,21 @@ impl ScrollBar {
                 position: 0,
             },
             vertical,
+            disabled_arrows: 0,
             pressed: None,
             hovered: None,
             track: None,
             pointer: 0,
+        }
+    }
+
+    /// Whether `part` takes presses under the arrows `EnableScrollBar` turned off.
+    pub fn part_enabled(&self, part: Part) -> bool {
+        match (part, self.disabled_arrows & 3) {
+            (_, 3) => false,
+            (Part::LineUp, disabled) => disabled & 1 == 0,
+            (Part::LineDown, disabled) => disabled & 2 == 0,
+            _ => true,
         }
     }
 
@@ -354,7 +368,7 @@ impl ScrollBar {
     /// track a page, the thumb starts a drag (no request until it moves).
     pub fn button_down(&mut self, offset: i32, length: i32) -> Option<Scroll> {
         self.pointer = offset;
-        let part = self.part_at(offset, length)?;
+        let part = self.part_at(offset, length).filter(|&part| self.part_enabled(part))?;
         self.pressed = Some(part);
         let code = match part {
             Part::LineUp => request::LINE_UP,
@@ -473,7 +487,7 @@ pub fn paint(
         true => Rect::sized(rect.left, rect.top + start, rect.width(), size),
         false => Rect::sized(rect.left + start, rect.top, size, rect.height()),
     };
-    let placed = bar.shown_thumb(length).filter(|_| look.enabled);
+    let placed = bar.shown_thumb(length).filter(|_| look.enabled && bar.part_enabled(Part::Thumb));
     let arrow = WIDTH.min(length / 2);
     let (first, second, at) = match bar.vertical {
         true => (&CHEVRON_UP, &CHEVRON_DOWN, VERTICAL_CHEVRON_AT),
@@ -484,12 +498,13 @@ pub fn paint(
         (Part::LineDown, length - arrow, second),
     ] {
         let button = along(start, arrow);
-        let pressed = placed.is_some() && bar.pressed == Some(part);
-        let hovered = placed.is_some() && look.hovered && bar.hovered == Some(part);
-        let colour = match (placed, pressed) {
-            (None, _) => palette.scroll_arrow_disabled,
-            (Some(_), true) => palette.scroll_arrow_pressed_glyph,
-            (Some(_), false) => palette.scroll_arrow,
+        let live = placed.is_some() && bar.part_enabled(part);
+        let pressed = live && bar.pressed == Some(part);
+        let hovered = live && look.hovered && bar.hovered == Some(part);
+        let colour = match (live, pressed) {
+            (false, _) => palette.scroll_arrow_disabled,
+            (true, true) => palette.scroll_arrow_pressed_glyph,
+            (true, false) => palette.scroll_arrow,
         };
         match (pressed, hovered) {
             (true, _) => surface.fill(button, palette.scroll_arrow_pressed_fill),
@@ -529,6 +544,25 @@ pub fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_arrows_take_no_presses_and_both_disable_the_bar() {
+        let mut bar = ScrollBar::new(true);
+        let range = ScrollInfo {
+            minimum: 0,
+            maximum: 100,
+            page: 10,
+            position: 0,
+        };
+        bar.set_info(mask::RANGE | mask::PAGE, &range);
+        bar.disabled_arrows = 1;
+        assert_eq!(bar.button_down(2, 200), None);
+        assert_eq!(bar.button_down(198, 200), Some(Scroll::plain(request::LINE_DOWN)));
+        bar.button_up();
+        bar.disabled_arrows = 3;
+        assert_eq!(bar.button_down(150, 200), None);
+        assert!(!bar.part_enabled(Part::Thumb));
+    }
     use crate::controls::LIGHT;
 
     fn info(position: i32) -> ScrollInfo {

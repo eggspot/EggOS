@@ -851,6 +851,24 @@ extern "efiapi" fn create_rect_rgn(left: i32, top: i32, right: i32, bottom: i32)
     ))
 }
 
+pub(super) fn set_region(gui: &mut gui::Gui, region: usize, rect: Rect) -> bool {
+    match gui.objects.get_mut(region) {
+        Some(Object::Region(held)) => {
+            *held = rect.normalised();
+            true
+        }
+        _ => false,
+    }
+}
+
+extern "efiapi" fn set_rect_rgn(region: usize, left: i32, top: i32, right: i32, bottom: i32) -> Bool {
+    let set = with(|gui| set_region(gui, region, Rect::new(left, top, right, bottom))).unwrap_or(false);
+    match set {
+        true => TRUE,
+        false => fail(error::INVALID_HANDLE, FALSE),
+    }
+}
+
 unsafe extern "efiapi" fn create_rect_rgn_indirect(rect: *const Win32Rect) -> usize {
     if rect.is_null() {
         return fail(error::INVALID_PARAMETER, 0);
@@ -1898,6 +1916,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SelectClipRgn" => select_clip_rgn,
     b"GetClipBox" => get_clip_box,
     b"CreateRectRgn" => create_rect_rgn,
+    b"SetRectRgn" => set_rect_rgn,
     b"CreateRectRgnIndirect" => create_rect_rgn_indirect,
     b"CreatePolygonRgn" => create_polygon_rgn,
     b"CreateEllipticRgn" => create_elliptic_rgn,

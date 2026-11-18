@@ -28738,3 +28738,23 @@ the license, by an explicit instruction recorded here.
   on Windows, and `TB_SETMAXTEXTROWS 0` still gives every button's string. A button that
   draws its text gets no tip of its own string.
 - **Not yet.** Building and running.
+
+
+## D687 Windows scroll bars: `EnableScrollBar`, `ScrollWindowEx` and `WM_NCHITTEST` (M15 Windows; follow-up of D342; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented behaviour)
+- **Decision.**
+  - `EnableScrollBar` on `SB_CTL`, `SB_HORZ`, `SB_VERT` or `SB_BOTH` sends
+    `SBM_ENABLE_ARROWS` to each bar, which keeps the arrows turned off
+    (`ScrollBar::disabled_arrows`: `ESB_DISABLE_LTUP`, `ESB_DISABLE_RTDN` or both) and answers
+    whether that changed, as Windows does. A turned-off arrow is drawn grey and takes no
+    press; both turned off hide the thumb and ignore the track, like a disabled bar.
+  - `ScrollWindowEx` shares `ScrollWindow`'s work (`ScrollRequest`): children move only with
+    `SW_SCROLLCHILDREN` (those meeting the scrolled rectangle when there is one), the area is
+    invalidated only with `SW_INVALIDATE`, and the area to repaint goes to `prcUpdate` and
+    `hrgnUpdate` (through the new `SetRectRgn`). The layer does not copy the scrolled pixels,
+    so the update area is the whole scrolled rectangle, which a program repaints anyway; the
+    answer is `SIMPLEREGION` or `NULLREGION`.
+  - `DefWindowProc` answers `WM_NCHITTEST`: `HTCLIENT` in the client area, `HTVSCROLL` and
+    `HTHSCROLL` over the window's own bars, `HTMENU` over a top-level window's menu bar, and
+    `HTNOWHERE` elsewhere, since the shell draws the frame and the caption.
+- **Not yet.** Building and running; copying the scrolled pixels instead of repainting;
+  the arrows' repeat while held; `SW_SMOOTHSCROLL`.
