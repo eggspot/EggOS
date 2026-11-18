@@ -18,6 +18,8 @@ const TEXT_UNITS: usize = 255;
 const TITLE_UNITS: usize = 99;
 const TOOL_INFO_SIZE: usize = 72;
 const CALLBACK_TEXT: usize = usize::MAX;
+const ENUMERATED_TEXT_UNITS: usize = 80;
+const HIT_TEST_TOOL_OFFSET: usize = 16;
 const TTF_IDISHWND: u32 = 0x0001;
 const TTF_CENTERTIP: u32 = 0x0002;
 const TTF_TRACK: u32 = 0x0020;
@@ -56,6 +58,11 @@ pub mod code {
     pub const TTM_SETTOOLINFOW: u32 = 0x0436;
     pub const TTM_GETTEXTW: u32 = 0x0438;
     pub const TTM_UPDATETIPTEXTW: u32 = 0x0439;
+    pub const TTM_GETBUBBLESIZE: u32 = 0x041e;
+    pub const TTM_ADJUSTRECT: u32 = 0x041f;
+    pub const TTM_HITTESTW: u32 = 0x0437;
+    pub const TTM_ENUMTOOLSW: u32 = 0x043a;
+    pub const TTM_GETCURRENTTOOLW: u32 = 0x043b;
 }
 
 #[derive(Clone, Copy)]
@@ -598,6 +605,137 @@ fn pop(control: usize) {
     gui::wake();
 }
 
+fn answered_info(asked: &ToolInfo, tool: &Tool) -> ToolInfo {
+    ToolInfo {
+        size: asked.size,
+        flags: tool.flags,
+        owner: tool.owner,
+        id: tool.id,
+        rect: tool.rect,
+        instance: 0,
+        text: match tool.callback {
+            true => CALLBACK_TEXT,
+            false => asked.text,
+        },
+        lparam: tool.lparam,
+        reserved: 0,
+    }
+}
+
+fn write_tool_info(address: usize, info: &ToolInfo) {
+    let size = (info.size as usize).min(TOOL_INFO_SIZE);
+    // SAFETY: the program's `TOOLINFOW`, `cbSize` writable bytes.
+    unsafe { core::ptr::copy_nonoverlapping((&raw const *info).cast::<u8>(), address as *mut u8, size) };
+}
+
+fn answer_tool(address: usize, tool: &Tool) -> usize {
+    let Some(asked) = read_tool_info(address) else {
+        return 0;
+    };
+    let answered = answered_info(&asked, tool);
+    write_tool_info(address, &answered);
+    if !tool.callback && asked.text != 0 && asked.text != CALLBACK_TEXT && asked.text >= 0x1_0000 {
+        let length = tool.length.min(ENUMERATED_TEXT_UNITS - 1);
+        let out = core::ptr::slice_from_raw_parts_mut(asked.text as *mut u16, length + 1);
+        // SAFETY: `TTM_ENUMTOOLSW`'s contract: `lpszText` holds 80 units.
+        let out = unsafe { &mut *out };
+        out[..length].copy_from_slice(&tool.text[..length]);
+        out[length] = 0;
+    }
+    1
+}
+
+fn nth_tool(control: usize, index: usize) -> Option<Tool> {
+    with_state::<TipState, _>(control, |_, state| state.tools.iter().flatten().nth(index).copied()).flatten()
+}
+
+fn current_tool(control: usize) -> Option<usize> {
+    with(|gui| {
+        let shown = gui.tip.shown.map(|(shown, tool, _, _)| (shown, tool));
+        let resting = gui.tip.resting.map(|(resting, tool, _)| (resting, tool));
+        shown.or(resting).filter(|(shown, _)| *shown == control).map(|(_, tool)| tool)
+    })
+    .flatten()
+}
+
+fn hit_test(control: usize, lparam: usize) -> usize {
+    if lparam == 0 {
+        return 0;
+    }
+    // SAFETY: `TTM_HITTESTW`'s contract: a `TTHITTESTINFOW`, its window first, then its point.
+    let window = unsafe { (lparam as *const usize).read_unaligned() };
+    // SAFETY: as above.
+    let point = unsafe { ((lparam + 8) as *const [i32; 2]).read_unaligned() };
+    let [x, y] = point;
+    let hit = with(|gui| {
+        let state = state_of(gui, control)?;
+        state.tools.iter().flatten().rev().find_map(|tool| {
+            let inside = match tool.flags & TTF_IDISHWND != 0 {
+                true => {
+                    let entry = gui.windows.get(tool.id)?;
+                    tool.id == window && x >= 0 && y >= 0 && x < entry.width as i32 && y < entry.height as i32
+                }
+                false => {
+                    let [left, top, right, bottom] = tool.rect;
+                    tool.owner == window && x >= left && x < right && y >= top && y < bottom
+                }
+            };
+            inside.then_some(*tool)
+        })
+    })
+    .flatten();
+    hit.map_or(0, |tool| answer_tool(lparam + HIT_TEST_TOOL_OFFSET, &tool))
+}
+
+fn bubble_size(control: usize, lparam: usize) -> usize {
+    let Some(info) = read_tool_info(lparam) else {
+        return 0;
+    };
+    let Some(tool) = with_state::<TipState, _>(control, |_, state| find(state, info.owner, info.id)).flatten() else {
+        return 0;
+    };
+    let asked = with_state::<TipState, _>(control, |_, state| state.tools[tool].is_some_and(|tool| tool.callback))
+        .unwrap_or(false)
+        .then(|| asked_text(control, tool))
+        .flatten();
+    let size = with(|gui| {
+        let style = gui.windows.get(control)?.style;
+        let state = state_of(gui, control)?;
+        let entry = state.tools[tool]?;
+        let text = match &asked {
+            Some((text, length, _)) => &text[..*length],
+            None => &entry.text[..entry.length],
+        };
+        let mut stripped = [0u16; TEXT_UNITS];
+        let text = match style & TTS_NOPREFIX {
+            0 => model::without_prefixes(text, &mut stripped),
+            _ => text,
+        };
+        let laid = model::layout(&TipText {
+            text,
+            title: &state.title[..state.title_length],
+            icon: state.icon,
+            max_width: state.max_width,
+        });
+        Some((laid.width, laid.height))
+    })
+    .flatten();
+    size.map_or(0, |(width, height)| (width as u16 as usize) | ((height as u16 as usize) << 16))
+}
+
+fn adjust_rect(larger: bool, lparam: usize) -> usize {
+    if lparam == 0 {
+        return 0;
+    }
+    let cells = lparam as *mut [i32; 4];
+    // SAFETY: `TTM_ADJUSTRECT`'s contract: a `RECT` the control reads and rewrites.
+    let [left, top, right, bottom] = unsafe { cells.read_unaligned() };
+    let rect = model::adjusted(Rect::new(left, top, right, bottom), larger);
+    // SAFETY: as above.
+    unsafe { cells.write_unaligned([rect.left, rect.top, rect.right, rect.bottom]) };
+    1
+}
+
 fn tool_message(control: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     use code::*;
     let info = read_tool_info(lparam);
@@ -651,15 +789,7 @@ fn tool_message(control: usize, number: u32, wparam: usize, lparam: usize) -> us
                 answered.flags = tool.flags;
                 answered.rect = tool.rect;
                 answered.lparam = tool.lparam;
-                let size = (info.size as usize).min(TOOL_INFO_SIZE);
-                // SAFETY: the program's `TOOLINFOW`, `cbSize` writable bytes.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        (&raw const answered).cast::<u8>(),
-                        lparam as *mut u8,
-                        size,
-                    )
-                };
+                write_tool_info(lparam, &answered);
                 return 1;
             }
             if info.text != 0 && info.text != CALLBACK_TEXT {
@@ -798,16 +928,7 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
             0
         }
         TTM_POPUP | TTM_UPDATE => {
-            let current = with(|gui| {
-                let shown = gui.tip.shown.map(|(control, tool, _, _)| (control, tool));
-                let resting = gui.tip.resting.map(|(control, tool, _)| (control, tool));
-                shown
-                    .or(resting)
-                    .filter(|(control, _)| *control == window)
-                    .map(|(_, tool)| tool)
-            })
-            .flatten();
-            if let Some(tool) = current {
+            if let Some(tool) = current_tool(window) {
                 show(window, tool, None);
             }
             0
@@ -816,6 +937,19 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
             track_activate(window, wparam != 0, lparam);
             0
         }
+        TTM_ENUMTOOLSW => nth_tool(window, wparam).map_or(0, |tool| answer_tool(lparam, &tool)),
+        TTM_GETCURRENTTOOLW => {
+            let tool = current_tool(window)
+                .and_then(|at| with_state::<TipState, _>(window, |_, state| state.tools[at]).flatten());
+            match (tool, lparam) {
+                (None, _) => 0,
+                (Some(_), 0) => 1,
+                (Some(tool), address) => answer_tool(address, &tool),
+            }
+        }
+        TTM_HITTESTW => hit_test(window, lparam),
+        TTM_GETBUBBLESIZE => bubble_size(window, lparam),
+        TTM_ADJUSTRECT => adjust_rect(wparam != 0, lparam),
         TTM_TRACKPOSITION => {
             track_position(window, lparam);
             0

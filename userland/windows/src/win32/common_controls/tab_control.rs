@@ -8,7 +8,7 @@
 
 use super::super::dialog::{has_focus, set_focus};
 use super::super::gui::{self, Delivery, Gui, with};
-use super::super::user32::Win32Rect;
+use super::super::user32::{Win32Rect, create_child};
 use super::super::{FALSE, TRUE, thread_environment};
 use super::{
     Model, NotifyHeader, allocate, default_procedure, item_element, notify_parent, paint_with,
@@ -40,6 +40,8 @@ const TCM_SETITEMEXTRA: u32 = TCM_FIRST + 14;
 const TCM_ADJUSTRECT: u32 = TCM_FIRST + 40;
 const TCM_SETITEMSIZE: u32 = TCM_FIRST + 41;
 const TCM_GETROWCOUNT: u32 = TCM_FIRST + 44;
+const TCM_GETTOOLTIPS: u32 = TCM_FIRST + 45;
+const TCM_SETTOOLTIPS: u32 = TCM_FIRST + 46;
 const TCM_GETCURFOCUS: u32 = TCM_FIRST + 47;
 const TCM_SETCURFOCUS: u32 = TCM_FIRST + 48;
 const TCM_GETITEMW: u32 = TCM_FIRST + 60;
@@ -54,6 +56,9 @@ const TCIF_PARAM: u32 = 0x8;
 const TCIF_STATE: u32 = 0x10;
 const TCHT_NOWHERE: u32 = 0x1;
 const TCHT_ONITEM: u32 = 0x6;
+const TCS_TOOLTIPS: u32 = 0x4000;
+const WS_CHILD: u32 = 0x4000_0000;
+const TTN_GETDISPINFOW: u32 = -530i32 as u32;
 const TEXT_CALLBACK: usize = usize::MAX;
 const NONE: usize = usize::MAX;
 const VK_CONTROL: usize = 0x11;
@@ -83,6 +88,7 @@ pub(super) struct TabState {
     tabs: TabControl,
     image_list: usize,
     extra_bytes: usize,
+    tooltips: usize,
 }
 
 impl Model for TabState {
@@ -95,12 +101,62 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         tabs: TabControl::new(),
         image_list: 0,
         extra_bytes: LPARAM_BYTES,
+        tooltips: 0,
     })
 }
 
 fn refresh(window: usize) {
     with(|gui| windows::invalidate_tree(&mut gui.windows, window, None, true));
+    sync_tools(window);
     gui::wake();
+}
+
+fn make_tooltips(window: usize) {
+    let wanted = with(|gui| gui.windows.get(window).is_some_and(|entry| entry.style & TCS_TOOLTIPS != 0))
+        .unwrap_or(false);
+    if !wanted {
+        return;
+    }
+    let kind = windows::ControlKind::Common(CommonKind::Tooltip);
+    if let Some(tooltips) = create_child(window, kind, WS_CHILD, Rect::default(), 0, &[]) {
+        with_state::<TabState, _>(window, |_, state| state.tooltips = tooltips);
+    }
+}
+
+fn sync_tools(window: usize) {
+    let mut tools = [(0usize, Rect::default()); MAX_TABS];
+    let found = with_state::<TabState, _>(window, |entry, state| {
+        let mut count = 0;
+        for index in 0..state.tabs.count() {
+            if let Some(rect) = state.tabs.item_rect(index, entry.style) {
+                tools[count] = (index, rect);
+                count += 1;
+            }
+        }
+        (state.tooltips, count)
+    });
+    if let Some((tooltips, count)) = found.filter(|(tooltips, _)| *tooltips != 0) {
+        super::tooltip::replace_tools(tooltips, window, &tools[..count]);
+    }
+}
+
+fn is_from_tooltips(window: usize, lparam: usize) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    // SAFETY: `WM_NOTIFY`'s `lParam` is an `NMHDR` at least.
+    let header = unsafe { (lparam as *const NotifyHeader).read_unaligned() };
+    header.code == TTN_GETDISPINFOW
+        && with_state::<TabState, _>(window, |_, state| state.tooltips == header.from).unwrap_or(false)
+}
+
+fn forward_tip_request(window: usize, lparam: usize) {
+    // SAFETY: as in `is_from_tooltips`.
+    let header = unsafe { (lparam as *const NotifyHeader).read_unaligned() };
+    let parent = with(|gui| gui.windows.get(window).map(|entry| entry.parent)).flatten();
+    if let Some(parent) = parent.filter(|parent| *parent != 0) {
+        gui::send(parent, super::WM_NOTIFY, header.id, lparam);
+    }
 }
 
 fn repaint_siblings_above(window: usize) {
@@ -197,6 +253,14 @@ pub fn step_in_dialog(dialog: usize, backwards: bool) -> bool {
 /// The procedure of every tab control.
 pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     match number {
+        message::CREATE => {
+            make_tooltips(window);
+            default_procedure(window, number, wparam, lparam)
+        }
+        super::WM_NOTIFY if is_from_tooltips(window, lparam) => {
+            forward_tip_request(window, lparam);
+            0
+        }
         message::PAINT => {
             paint(window);
             repaint_siblings_above(window);
@@ -299,6 +363,11 @@ fn tab_message(
     let style = entry.style;
     match number {
         TCM_GETITEMCOUNT => (tabs.count(), false),
+        TCM_GETTOOLTIPS => (state.tooltips, false),
+        TCM_SETTOOLTIPS => {
+            state.tooltips = wparam;
+            (0, true)
+        }
         TCM_GETCURSEL | TCM_GETCURFOCUS => (index_result(tabs.selected()), false),
         TCM_SETCURSEL => match tabs.select((wparam as isize != -1).then_some(wparam)) {
             Some(previous) => (index_result(previous), true),

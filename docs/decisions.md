@@ -28696,3 +28696,25 @@ the license, by an explicit instruction recorded here.
   socket turning readable, posted once and re-enabled by the next `accept`, as on Windows.
 - **Not yet.** Building and running; `WSAEventSelect` and `WSAEnumNetworkEvents`, which need
   the wait functions to watch sockets; `FD_OOB`; IPv6.
+
+
+## D684 Tooltips answer `TTM_HITTESTW`, `TTM_ENUMTOOLSW`, `TTM_GETCURRENTTOOLW`, `TTM_GETBUBBLESIZE` and `TTM_ADJUSTRECT`; tab controls' `TCS_TOOLTIPS` (M15 Windows; follow-up of D355; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.**
+  - `TTM_ENUMTOOLSW` fills the program's `TOOLINFOW` with the tool at index `wParam`, counting
+    the tools held, and copies its text into `lpszText` when that is a buffer (at most 79 units
+    and a NUL, as comctl32 copies); a callback tool answers `LPSTR_TEXTCALLBACKW`.
+  - `TTM_GETCURRENTTOOLW` answers the tool shown or resting under the pointer; with a null
+    `lParam` it only says whether there is one.
+  - `TTM_HITTESTW` finds the newest tool of `TTHITTESTINFOW.hwnd` holding its point, in that
+    window's client coordinates (a `TTF_IDISHWND` tool holds its whole window), and fills
+    `ti`.
+  - `TTM_GETBUBBLESIZE` answers the tip's width and height (low and high words), laid out as
+    it would show, asking a callback tool for its text first.
+  - `TTM_ADJUSTRECT` grows a text rectangle into the tip's window rectangle (TRUE) or shrinks
+    one back, by the design's 8 px sides and 4 px top and bottom
+    (`eggos_windows_gui::controls::tooltip::adjusted`).
+  - A tab control made with `TCS_TOOLTIPS` makes its own tooltip control, as a toolbar does
+    (D356): one tool per tab, named by its index, kept with the tabs' rectangles, and the
+    tip's `TTN_GETDISPINFOW` goes on to the tab control's parent, its `idFrom` the tab's
+    index. `TCM_GETTOOLTIPS` and `TCM_SETTOOLTIPS` read and replace it.
+- **Not yet.** Building and running; `TBSTYLE_EX_MIXEDBUTTONS`; tips longer than 79 units.

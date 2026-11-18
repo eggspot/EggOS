@@ -156,6 +156,16 @@ fn shown_cells(line: &[u16]) -> usize {
     line.iter().filter(|&&unit| unit != CARRIAGE_RETURN).count()
 }
 
+/// `TTM_ADJUSTRECT`: the tip's window rectangle around text rectangle `rect` when `larger`,
+/// else the text rectangle inside window rectangle `rect`.
+pub fn adjusted(rect: Rect, larger: bool) -> Rect {
+    let (across, down) = match larger {
+        true => (PADDING, TEXT_TOP),
+        false => (-PADDING, -TEXT_TOP),
+    };
+    Rect::new(rect.left - across, rect.top - down, rect.right + across, rect.bottom + down)
+}
+
 /// Where a tip goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
@@ -299,6 +309,14 @@ pub fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjusting_a_rectangle_adds_or_takes_the_tips_margins() {
+        let text = Rect::new(10, 10, 74, 26);
+        let window = adjusted(text, true);
+        assert_eq!(window, Rect::new(2, 6, 82, 30));
+        assert_eq!(adjusted(window, false), text);
+    }
     use crate::controls::LIGHT;
 
     fn units(text: &str) -> Vec<u16> {

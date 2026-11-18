@@ -232,7 +232,7 @@ and is not listed per item.
 - [ ] WinINet: `INTERNET_FLAG_IGNORE_CERT_*`, `InternetSetOption` security flags, TLS 1.2 servers (with a TLS 1.2 client in `eggos-tls`) (D352)
 - [ ] Common controls: per-subitem custom draw (`CDRF_NOTIFYSUBITEMDRAW`), `CDRF_NEWFONT`, custom draw for trackbars, toolbar item states and `TBCDRF_*` (D353, D367, D368)
 - [ ] Common controls: label editing started by a slow second click, the edit growing with its text (D354, D361)
-- [ ] Tooltips: `TTM_HITTESTW`, `TTM_ENUMTOOLSW`, `TTM_GETCURRENTTOOLW`, `TTM_GETBUBBLESIZE`, `TTM_ADJUSTRECT`, tab controls' `TCS_TOOLTIPS`, `TBSTYLE_EX_MIXEDBUTTONS`, tips longer than 79 units (D355, D356, D362, D363)
+- [ ] Tooltips: `TBSTYLE_EX_MIXEDBUTTONS`, tips longer than 79 units (D356, D362, D363; the TTM_* messages and `TCS_TOOLTIPS` are D684)
 - [ ] Tray: `NIN_POPUPOPEN` and `WM_MOUSEMOVE` (version 4), double clicks, `NIN_KEYSELECT`/`NIM_SETFOCUS`, `Shell_NotifyIconGetRect`, `NIN_BALLOONTIMEOUT`/`NIN_BALLOONHIDE`, submenus in shell menus (D357, D364, D370, D371)
 - [ ] Layered windows: `UpdateLayeredWindowIndirect` with `prcDirty`, `AlphaBlend` writing alpha, child layered windows (D366, D369)
 - [ ] Foundation: an index for NSSet and NSCountedSet and the `nsdictionary_lookup` benchmark (D359)
