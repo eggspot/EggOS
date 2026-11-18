@@ -195,8 +195,7 @@ fn unwind_states(
 ) {
     for (action, reached) in cxx_walk::unwind_steps(*function, from, to) {
         if let Some(progress) = progress {
-            // SAFETY: the scope index of the dispatcher context the unwind called this handler
-            // with, alive for the call.
+            // SAFETY: the calling dispatcher context's scope index, alive for this call.
             unsafe { progress.write(cxx_walk::scope_index_of_state(reached)) };
         }
         let mut bridge = Bridge::new(None, None);
