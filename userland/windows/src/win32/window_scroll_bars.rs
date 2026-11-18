@@ -11,6 +11,8 @@ use eggos_windows_gui::surface::{Rect, Surface};
 
 const WM_HSCROLL: u32 = 0x0114;
 const WM_VSCROLL: u32 = 0x0115;
+/// The layer's own timer that repeats a held arrow or track of a window's own bar.
+pub const REPEAT_TIMER: usize = 0xffff_0228;
 
 /// The window's bar the pointer holds, from the press to the release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,42 @@ fn along(entry: &Window, vertical: bool, local: (i32, i32)) -> (i32, i32) {
     }
 }
 
+fn repeat_after(gui: &mut Gui, window: usize, interval: u32) {
+    if let Some(thread) = gui.windows.get(window).map(|entry| entry.thread) {
+        let now = super::user32::now_ms();
+        gui.timers.set(window, REPEAT_TIMER, interval, 0, thread, now);
+    }
+}
+
+fn stop_repeat(gui: &mut Gui, window: usize) {
+    let thread = gui.windows.get(window).map_or(0, |entry| entry.thread);
+    gui.timers.kill(window, REPEAT_TIMER, thread);
+}
+
+/// [`REPEAT_TIMER`] fired for `window`: the held arrow or track scrolls again while the
+/// button stays down, as Windows' standard bars do.
+pub fn repeat(window: usize) {
+    with(|gui| {
+        let Some(held) = gui.held_bar.filter(|held| held.window == window) else {
+            stop_repeat(gui, window);
+            return;
+        };
+        let Some(entry) = gui.windows.get_mut(window) else {
+            return;
+        };
+        let length = along(entry, held.vertical, (0, 0)).1;
+        let bar = entry.bar_mut(held.vertical);
+        if bar.pressed().is_none() {
+            stop_repeat(gui, window);
+            return;
+        }
+        let scroll = bar.repeat(length);
+        repeat_after(gui, window, bar_model::REPEAT_INTERVAL_MS);
+        post_scroll(gui, held, scroll);
+    });
+    gui::wake();
+}
+
 fn post_scroll(gui: &mut Gui, held: Held, scroll: Option<Scroll>) {
     let Some(scroll) = scroll else {
         return;
@@ -202,6 +240,9 @@ pub fn input(gui: &mut Gui, root: usize, number: u32, point: (i32, i32)) -> Opti
             let (offset, length) = along(entry, held.vertical, local);
             let scroll = entry.bar_mut(held.vertical).button_down(offset, length);
             gui.held_bar = Some(held);
+            if scroll.is_some() {
+                repeat_after(gui, held.window, bar_model::REPEAT_DELAY_MS);
+            }
             post_scroll(gui, held, scroll);
             return Some(paint_window(gui, held.window));
         }
@@ -215,7 +256,9 @@ pub fn input(gui: &mut Gui, root: usize, number: u32, point: (i32, i32)) -> Opti
         message::MOUSE_MOVE => [bar.pointer_moved(offset, length), None],
         _ => {
             gui.held_bar = None;
-            bar.button_up()
+            let scrolls = bar.button_up();
+            stop_repeat(gui, held.window);
+            scrolls
         }
     };
     for scroll in scrolls {

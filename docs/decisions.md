@@ -28758,3 +28758,13 @@ the license, by an explicit instruction recorded here.
     `HTNOWHERE` elsewhere, since the shell draws the frame and the caption.
 - **Not yet.** Building and running; copying the scrolled pixels instead of repainting;
   the arrows' repeat while held; `SW_SMOOTHSCROLL`.
+
+
+## D688 A window's own scroll bars repeat while held (M15 Windows; follow-up of D342 and D687; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' standard scroll bar behaviour)
+- **Decision.** A press on an arrow or the track of a window's own bar starts the layer's
+  timer `window_scroll_bars::REPEAT_TIMER` on that window: after the scroll bar's 250 ms delay,
+  then every 50 ms, the held part scrolls again (`ScrollBar::repeat`, the same rule as
+  `SCROLLBAR` controls) and posts `WM_VSCROLL` or `WM_HSCROLL`, until the release stops it.
+  `DispatchMessage` takes that timer before the program's procedure, so the program never
+  sees it.
+- **Not yet.** Building and running; copying scrolled pixels; `SW_SMOOTHSCROLL`.

@@ -1096,6 +1096,10 @@ unsafe extern "efiapi" fn translate_message(message: *const Msg) -> Bool {
 /// `DispatchMessageW`'s work: a `WM_TIMER` with a registered timer procedure goes to it, any
 /// other message to its window's procedure.
 pub fn dispatch(message: &Message) -> usize {
+    if message.message == message::TIMER && message.wparam == super::window_scroll_bars::REPEAT_TIMER {
+        super::window_scroll_bars::repeat(message.window);
+        return 0;
+    }
     if message.message == message::TIMER
         && message.lparam != 0
         && super::timer::is_registered(message.window, message.wparam, message.lparam)
