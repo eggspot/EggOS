@@ -1013,18 +1013,115 @@ unsafe extern "efiapi" fn load_menu_w(module: usize, name: *const u16) -> usize 
     };
     // SAFETY: a resource's data is `size` bytes of the program's mapped image.
     let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size as usize) };
-    menu_from_template(bytes).unwrap_or_else(|| fail(error::RESOURCE_DATA_NOT_FOUND, 0))
-}
-
-fn menu_from_template(bytes: &[u8]) -> Option<usize> {
     let word = |at: usize| {
         bytes
             .get(at..at + 2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
     };
-    if word(0)? != 0 {
+    menu_from_template(word).unwrap_or_else(|| fail(error::RESOURCE_DATA_NOT_FOUND, 0))
+}
+
+const LARGEST_INDIRECT_TEMPLATE: usize = 0x1_0000;
+
+unsafe extern "efiapi" fn load_menu_indirect_w(template: *const u8) -> usize {
+    if template.is_null() {
+        return fail(error::INVALID_PARAMETER, 0);
+    }
+    let word = |at: usize| {
+        (at + 2 <= LARGEST_INDIRECT_TEMPLATE).then(|| {
+            // SAFETY: `LoadMenuIndirectW`'s contract: a whole menu template, which the parser
+            // reads no further than its last item.
+            unsafe { template.add(at).cast::<u16>().read_unaligned() }
+        })
+    };
+    menu_from_template(word).unwrap_or_else(|| fail(error::INVALID_PARAMETER, 0))
+}
+
+fn menu_from_template(word: impl Fn(usize) -> Option<u16>) -> Option<usize> {
+    match word(0)? {
+        0 => menu_from_standard_template(&word),
+        1 => menu_from_extended_template(&word),
+        _ => None,
+    }
+}
+
+const EXTENDED_POPUP: u16 = 0x01;
+const EXTENDED_LAST: u16 = 0x80;
+
+fn double_word(word: &impl Fn(usize) -> Option<u16>, at: usize) -> Option<u32> {
+    Some(u32::from(word(at)?) | (u32::from(word(at + 2)?) << 16))
+}
+
+fn label_at(word: &impl Fn(usize) -> Option<u16>, at: &mut usize, label: &mut [u16; 128]) -> Option<()> {
+    let start = *at;
+    while word(*at)? != 0 {
+        *at += 2;
+    }
+    let units = ((*at - start) / 2).min(label.len() - 1);
+    for (index, unit) in label.iter_mut().take(units).enumerate() {
+        *unit = word(start + index * 2)?;
+    }
+    label[units] = 0;
+    *at += 2;
+    Some(())
+}
+
+fn menu_from_extended_template(word: &impl Fn(usize) -> Option<u16>) -> Option<usize> {
+    let mut at = 4 + usize::from(word(2)?);
+    let root = create();
+    if root == 0 {
         return None;
     }
+    let mut levels = [(0usize, false); TEMPLATE_DEPTH];
+    levels[0] = (root, false);
+    let mut depth = 0;
+    loop {
+        let kind = double_word(word, at)?;
+        let state = double_word(word, at + 4)?;
+        let id = double_word(word, at + 8)? as usize;
+        let resource_info = word(at + 12)?;
+        at += 14;
+        let mut label = [0u16; 128];
+        label_at(word, &mut at, &mut label)?;
+        at = at.next_multiple_of(4);
+        let last = resource_info & EXTENDED_LAST != 0;
+        let item_flags = kind | state;
+        let parent = levels[depth].0;
+        if resource_info & EXTENDED_POPUP != 0 {
+            at += 4;
+            let child = create();
+            if child == 0 || depth + 1 >= TEMPLATE_DEPTH {
+                return None;
+            }
+            // SAFETY: `label` is NUL-terminated (`label_at` ends it).
+            if unsafe { append_menu_w(parent, item_flags | flag::POPUP, child, label.as_ptr()) } == FALSE {
+                return None;
+            }
+            depth += 1;
+            levels[depth] = (child, last);
+            continue;
+        }
+        // SAFETY: as above.
+        if unsafe { append_menu_w(parent, item_flags, id, label.as_ptr()) } == FALSE {
+            return None;
+        }
+        if !last {
+            continue;
+        }
+        loop {
+            if depth == 0 {
+                return Some(root);
+            }
+            let popup_was_last = levels[depth].1;
+            depth -= 1;
+            if !popup_was_last {
+                break;
+            }
+        }
+    }
+}
+
+fn menu_from_standard_template(word: &impl Fn(usize) -> Option<u16>) -> Option<usize> {
     let mut at = 4 + usize::from(word(2)?);
     let root = create();
     if root == 0 {
@@ -1308,6 +1405,7 @@ unsafe extern "efiapi" fn get_menu_item_rect(
 pub(super) const EXPORTS: &[Export] = exports![
     b"CheckMenuItem" => check_menu_item,
     b"LoadMenuW" => load_menu_w,
+    b"LoadMenuIndirectW" => load_menu_indirect_w,
     b"CheckMenuRadioItem" => check_menu_radio_item,
     b"EnableMenuItem" => enable_menu_item,
     b"GetMenuState" => get_menu_state,

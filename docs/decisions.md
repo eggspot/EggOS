@@ -28794,3 +28794,17 @@ the license, by an explicit instruction recorded here.
     the layer's one font needs. `EM_GETMARGINS` answers them as a pair of words.
 - **Not yet.** Building and running; `EM_SETTABSTOPS`; Windows' 30,000-character default
   limit (an edit holds 1,024 units).
+
+
+## D691 Windows menus: extended templates (`MENUEX`) and `LoadMenuIndirectW` (M15 Windows; follow-up of D336; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the documented `MENUEX_TEMPLATE_HEADER` and `MENUEX_TEMPLATE_ITEM` layouts)
+- **Decision.** A menu template is read through one word reader, so `LoadMenuW` (a resource's
+  bytes) and the new `LoadMenuIndirectW` (the program's pointer, read no further than the
+  template's last item and never past 64 KiB) share it. Version 0 is the standard template
+  as before; version 1 is the extended one: items start `wOffset` bytes after the offset
+  word, each item is `dwType`, `dwState`, `menuId`, `bResInfo` and its NUL-terminated text,
+  padded to a `DWORD`; `bResInfo`'s 0x01 makes it a popup, whose `dwHelpId` comes before
+  its own items, and 0x80 ends its level. An item's type and state become its flags as
+  `AppendMenuW` takes them (the `MFT_*` and `MFS_*` values are the `MF_*` bits). Other
+  versions fail as on Windows.
+- **Not yet.** Building and running; help ids (`GetMenuContextHelpId`); `MFT_OWNERDRAW`
+  items from a template (D145).

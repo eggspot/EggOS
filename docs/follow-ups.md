@@ -219,7 +219,6 @@ and is not listed per item.
 - [ ] Translation: the `translated_loop_ratio` benchmark (D191)
 - [ ] macOS libSystem: `sigwait`, `siginterrupt`, `sigqueue`, `pthread_atfork` with the layer's locks taken around `fork` (D190)
 - [ ] macOS libSystem: extended locales (`newlocale`, `uselocale`, `freelocale`, `*_l` functions), `strcoll`, `strxfrm`, `wcwidth`, `wcswidth` (D190)
-- [ ] Windows menus: extended templates (`MENUEX`, `LoadMenuIndirectW`) (D336)
 - [ ] Windows edits: `EM_SETTABSTOPS`, Windows' 30,000-character default limit (D341; word wrap is D351, `EM_SETRECT` D689, `EM_FMTLINES` and margins D690)
 - [ ] Windows scroll bars: copying scrolled pixels instead of repainting, combo lists' arrow repeat (D343; `EnableScrollBar`, `ScrollWindowEx`, `WM_NCHITTEST` and the window bars' repeat code written, unbuilt: D687, D688)
 - [ ] Windows menus: Alt pressed and released alone selects the bar; mnemonic underlines only once Alt is pressed (D338)
