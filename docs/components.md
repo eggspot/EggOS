@@ -36,6 +36,12 @@ linux-firmware's pinned release instead (D265, [firmware.md](firmware.md)). With
 attached, `component install` downloads only the store's index and the files it installs, through
 HTTP range requests, and the whole store only when the server will not send pieces (D271).
 
+`component update` fetches only the files that changed (D293). When the release also publishes
+`eggos-<version>-<arch>-components.deltas` (written by `cargo xtask release` when
+`EGGOS_PREVIOUS_STORES` names the previous release's stores), a changed file whose installed copy
+has a delta comes as that delta, applied to the installed copy and checked against both digests;
+anything else comes whole (D698, D699).
+
 ## Commands
 
 | Command | MCP tool | What it does |
