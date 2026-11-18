@@ -627,6 +627,10 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
         }
         Event::CloseRequest => Some(to_window(message::SYS_COMMAND, message::SC_CLOSE, 0)),
         Event::FocusIn => {
+            let previous = with(|gui| gui.active_root).unwrap_or(0);
+            if previous != handle {
+                super::hooks::activating(handle, previous);
+            }
             with(|gui| gui.active_root = handle);
             Some(to_window(message::SET_FOCUS, 0, 0))
         }

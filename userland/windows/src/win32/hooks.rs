@@ -28,8 +28,12 @@ pub mod kind {
 const MOST_HOOKS: usize = 32;
 const HC_ACTION: i32 = 0;
 const HC_NOREMOVE: i32 = 3;
+const HCBT_MINMAX: i32 = 1;
 const HCBT_CREATEWND: i32 = 3;
 const HCBT_DESTROYWND: i32 = 4;
+const HCBT_ACTIVATE: i32 = 5;
+const HCBT_SYSCOMMAND: i32 = 8;
+const HCBT_SETFOCUS: i32 = 9;
 const PM_REMOVE: usize = 1;
 const HTCLIENT: u32 = 1;
 const FIRST_KEY: u32 = 0x0100;
@@ -310,4 +314,38 @@ pub fn creation_refused(window: usize, create: usize) -> bool {
 /// `WH_CBT`'s `HCBT_DESTROYWND` for `window`, before its `WM_DESTROY`.
 pub fn destroying(window: usize) {
     call(kind::CBT, HCBT_DESTROYWND, window, 0);
+}
+
+#[repr(C)]
+struct CbtActivate {
+    mouse: i32,
+    active: usize,
+}
+
+/// `WH_CBT`'s `HCBT_ACTIVATE` for top-level window `window`, which the window server
+/// activated after `previous`; the shell decides activation, so the answer is not kept.
+pub fn activating(window: usize, previous: usize) {
+    let activate = CbtActivate {
+        mouse: 0,
+        active: previous,
+    };
+    call(kind::CBT, HCBT_ACTIVATE, window, &raw const activate as usize);
+}
+
+/// `WH_CBT`'s `HCBT_SETFOCUS` before `gaining` takes the keys from `losing`; whether a hook
+/// refused it.
+pub fn focus_refused(gaining: usize, losing: usize) -> bool {
+    call(kind::CBT, HCBT_SETFOCUS, gaining, losing).is_some_and(|answer| answer != 0)
+}
+
+/// `WH_CBT`'s `HCBT_MINMAX` before `ShowWindow` minimises, maximises or restores `window`
+/// with `command`; whether a hook refused it.
+pub fn min_max_refused(window: usize, command: i32) -> bool {
+    call(kind::CBT, HCBT_MINMAX, window, command as u16 as usize).is_some_and(|answer| answer != 0)
+}
+
+/// `WH_CBT`'s `HCBT_SYSCOMMAND` before `DefWindowProc` carries out `WM_SYSCOMMAND`
+/// `command`; whether a hook refused it.
+pub fn system_command_refused(command: usize, point: usize) -> bool {
+    call(kind::CBT, HCBT_SYSCOMMAND, command, point).is_some_and(|answer| answer != 0)
 }

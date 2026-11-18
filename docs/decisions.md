@@ -28808,3 +28808,20 @@ the license, by an explicit instruction recorded here.
   versions fail as on Windows.
 - **Not yet.** Building and running; help ids (`GetMenuContextHelpId`); `MFT_OWNERDRAW`
   items from a template (D145).
+
+
+## D692 Windows hooks: `WH_CBT`'s activation, focus, min/max and system-command codes (M15 Windows; follow-up of D349; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented `CBTProc` codes)
+- **Decision.**
+  - `HCBT_SETFOCUS` (the window gaining the keys, the one losing them) runs before every focus
+    change, the layer's own included; a nonzero answer keeps the focus where it was and
+    `SetFocus` answers 0.
+  - `HCBT_MINMAX` (the window, the `SW_*` command in the low word) runs before `ShowWindow`
+    minimises, maximises or restores; a nonzero answer leaves the window as it is.
+  - `HCBT_SYSCOMMAND` (the `SC_*` command, the point) runs as `DefWindowProc` takes
+    `WM_SYSCOMMAND`; a nonzero answer drops the command.
+  - `HCBT_ACTIVATE` (the window, a `CBTACTIVATESTRUCT` naming the window active before) runs
+    when the window server activates one of the process's top-level windows. **Deviation:**
+    the shell decides activation, so a nonzero answer cannot undo it and is not kept.
+- **Not yet.** Building and running; `HCBT_MOVESIZE` (the shell moves and sizes windows),
+  `HCBT_CLICKSKIPPED`, `HCBT_KEYSKIPPED`, `HCBT_QS`; low-level hooks on the installing
+  thread's loop; the injected-input flags.

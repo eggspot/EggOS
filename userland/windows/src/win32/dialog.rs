@@ -128,6 +128,16 @@ fn repaint_push_buttons(gui: &mut gui::Gui, root: usize) {
 /// gets `WM_KILLFOCUS` and `window` `WM_SETFOCUS`, unless it already had them. The previous
 /// one.
 pub fn set_focus(window: usize) -> usize {
+    let current = with(|gui| {
+        let root = windows::root_of(&gui.windows, window)?;
+        Some(gui.key_target(root))
+    })
+    .flatten();
+    if let Some(old) = current.filter(|&old| old != window)
+        && super::hooks::focus_refused(window, old)
+    {
+        return 0;
+    }
     let change = with(|gui| {
         let root = windows::root_of(&gui.windows, window)?;
         let old = gui.key_target(root);

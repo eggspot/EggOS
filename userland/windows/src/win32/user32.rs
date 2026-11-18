@@ -695,6 +695,10 @@ pub(super) extern "efiapi" fn show_window(handle: usize, command: i32) -> Bool {
         9 => Some(0),
         _ => None,
     };
+    if state.is_some() && super::hooks::min_max_refused(handle, command) {
+        let shown = with(|gui| gui.windows.get(handle).is_some_and(|window| window.shown));
+        return Bool::from(shown == Some(true));
+    }
     if let Ok(Some(result)) = try_with(|gui| Ok(show_child(gui, handle, command))) {
         gui::wake();
         return result;
@@ -950,6 +954,7 @@ pub extern "efiapi" fn def_window_proc_w(
             destroy_window(handle);
             0
         }
+        message::SYS_COMMAND if super::hooks::system_command_refused(wparam, lparam) => 0,
         message::SYS_COMMAND if wparam & 0xfff0 == message::SC_CLOSE => {
             send(handle, message::CLOSE, 0, 0);
             0
