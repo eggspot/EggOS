@@ -194,7 +194,6 @@ and is not listed per item.
 
 ## M14 Component manager
 
-- [ ] Binary deltas inside a changed file for component updates: the store index naming deltas, `cargo xtask components` writing them, `component update` fetching and applying them (D293; the format and codec code written, unbuilt: D698)
 
 ## M15 Compatibility layers
 

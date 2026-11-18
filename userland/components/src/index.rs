@@ -478,7 +478,7 @@ fn paths_clash(first: &str, second: &str) -> bool {
     first == second || inside(first, second) || inside(second, first)
 }
 
-fn parse_number(word: &str) -> Option<u64> {
+pub(crate) fn parse_number(word: &str) -> Option<u64> {
     if word.is_empty() || word.len() > 20 || !word.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -488,7 +488,7 @@ fn parse_number(word: &str) -> Option<u64> {
     word.parse().ok()
 }
 
-fn parse_digest(word: &str) -> Option<[u8; DIGEST_BYTES]> {
+pub(crate) fn parse_digest(word: &str) -> Option<[u8; DIGEST_BYTES]> {
     let bytes = word.as_bytes();
     if bytes.len() != DIGEST_BYTES * 2 {
         return None;

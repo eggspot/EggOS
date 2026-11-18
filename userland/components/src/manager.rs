@@ -90,6 +90,16 @@ pub fn store_url(version: &str, arch: &str) -> String {
     url
 }
 
+/// Where the deltas next to this version's store for `arch` are published (D698).
+pub fn deltas_url(version: &str, arch: &str) -> String {
+    let mut url = store_url(version, arch);
+    if let Some(stem) = url.strip_suffix(".img") {
+        url = String::from(stem);
+    }
+    url.push_str(".deltas");
+    url
+}
+
 /// Where one downloaded piece of this version's store for `arch` is kept: its index, or one
 /// component's file (D271).
 pub fn partial_piece_path(version: &str, arch: &str, piece: &str) -> String {

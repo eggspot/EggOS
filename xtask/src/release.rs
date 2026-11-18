@@ -64,6 +64,15 @@ pub fn run() -> Result<(), String> {
         let file_name = crate::components::store_name(arch);
         write(&dir.join(&file_name), &contents)?;
         let _ = writeln!(sums_text, "{}  {file_name}", sha256::hex_digest(&contents));
+        if let Some(previous) = previous_store(&file_name)? {
+            let deltas = crate::components::deltas_image(&previous, &contents)?;
+            let deltas_name = match file_name.strip_suffix(".img") {
+                Some(stem) => format!("{stem}.deltas"),
+                None => format!("{file_name}.deltas"),
+            };
+            write(&dir.join(&deltas_name), &deltas)?;
+            let _ = writeln!(sums_text, "{}  {deltas_name}", sha256::hex_digest(&deltas));
+        }
         eprintln!(
             "xtask: {file_name}: {} bytes (components_store_bytes), outside the base image",
             contents.len()
@@ -93,6 +102,31 @@ pub fn run() -> Result<(), String> {
     }
     eprintln!("xtask: wrote the release files to {}", dir.display());
     Ok(())
+}
+
+const PREVIOUS_STORES: &str = "EGGOS_PREVIOUS_STORES";
+
+fn previous_store(file_name: &str) -> Result<Option<Vec<u8>>, String> {
+    let Some(folder) = std::env::var_os(PREVIOUS_STORES) else {
+        return Ok(None);
+    };
+    let mut parts = file_name.rsplitn(3, '-');
+    let (Some(kind), Some(arch)) = (parts.next(), parts.next()) else {
+        return Ok(None);
+    };
+    let arch_suffix = format!("-{arch}-{kind}");
+    let entries = std::fs::read_dir(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(&arch_suffix) && name != file_name {
+            let path = entry.path();
+            return std::fs::read(&path)
+                .map(Some)
+                .map_err(|e| format!("{}: {e}", path.display()));
+        }
+    }
+    Ok(None)
 }
 
 struct PngBytes(Vec<u8>);

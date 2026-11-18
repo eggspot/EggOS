@@ -216,9 +216,74 @@ pub fn build_store(arch: &Arch) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn read_store(store: &[u8]) -> Result<index::Index, String> {
+    let header = index::Header::parse(store).map_err(|error| format!("{error:?}"))?;
+    let text = store
+        .get(index::SECTOR as usize..)
+        .and_then(|rest| rest.get(..header.index_bytes as usize))
+        .ok_or("the store ends inside its index")?;
+    index::parse_index(&header, text, store.len() as u64).map_err(|error| format!("{error:?}"))
+}
+
+fn file_bytes<'a>(store: &'a [u8], file: &File) -> Option<&'a [u8]> {
+    store.get(file.offset as usize..)?.get(..file.length as usize)
+}
+
+/// The deltas file (D698) that turns each file of the store `previous` into its copy in the
+/// store `current`: a delta for every changed file whose delta is under nine tenths of it.
+pub fn deltas_image(previous: &[u8], current: &[u8]) -> Result<Vec<u8>, String> {
+    let (old_index, new_index) = (read_store(previous)?, read_store(current)?);
+    let mut deltas = Vec::new();
+    for component in &new_index.components {
+        let Some(old_component) = old_index.component(&component.name) else {
+            continue;
+        };
+        for file in &component.files {
+            let changed = old_component
+                .files
+                .iter()
+                .find(|old| old.path == file.path && old.sha256 != file.sha256);
+            let Some(old_file) = changed else {
+                continue;
+            };
+            let (Some(old_bytes), Some(new_bytes)) =
+                (file_bytes(previous, old_file), file_bytes(current, file))
+            else {
+                continue;
+            };
+            let delta = eggos_components::delta::encode(old_bytes, new_bytes);
+            if (delta.len() as u64) * 10 < file.length * 9 {
+                deltas.push((file.path.clone(), old_file.sha256, file.sha256, delta));
+            }
+        }
+    }
+    Ok(eggos_components::delta::deltas_image(&deltas))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deltas_turn_the_previous_store_s_changed_files_into_the_current_ones() {
+        let first: Vec<u8> = (0..20_000u32).map(|at| (at.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+        let mut changed = first.clone();
+        changed[5000] ^= 0x5a;
+        let parts = |contents: &Vec<u8>| -> Vec<(&Offered, Vec<Vec<u8>>)> {
+            offered("x86_64")
+                .map(|offered| (offered, vec![contents.clone(); offered.files.len()]))
+                .collect()
+        };
+        let previous = store_image(&parts(&first), "x86_64");
+        let current = store_image(&parts(&changed), "x86_64");
+        let image = deltas_image(&previous, &current).unwrap();
+        let deltas = eggos_components::delta::parse_deltas(&image).unwrap();
+        assert!(!deltas.entries.is_empty());
+        for entry in &deltas.entries {
+            let delta = &image[entry.offset as usize..][..entry.length as usize];
+            assert_eq!(eggos_components::delta::apply(&first, delta), Ok(changed.clone()));
+        }
+    }
 
     #[test]
     fn the_store_xtask_writes_is_the_one_the_component_manager_reads() {

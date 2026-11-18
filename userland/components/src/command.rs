@@ -435,6 +435,14 @@ fn update_store<F: Files>(
     if whole.arch != arch {
         return None;
     }
+    let deltas_url = manager::deltas_url(manager::VERSION, arch);
+    let deltas_head = manager::partial_piece_path(manager::VERSION, arch, "deltas");
+    let deltas = match download_range(&deltas_url, &deltas_head, 0, index_end) {
+        true => read_whole(files, &deltas_head)
+            .and_then(|head| crate::delta::parse_deltas(&head).ok())
+            .unwrap_or_default(),
+        false => crate::delta::DeltaIndex::default(),
+    };
     let installed = manager::installed(files);
     let mut packed = Vec::new();
     for old in installed
@@ -457,15 +465,29 @@ fn update_store<F: Files>(
                 contents.push(Vec::new());
                 continue;
             }
-            let piece = manager::partial_piece_path(
-                manager::VERSION,
-                arch,
-                &format!("{}-update-{number}", available.name),
-            );
-            if !download_range(&url, &piece, file.offset, file.offset + file.length - 1) {
-                return None;
-            }
-            let bytes = read_whole(files, &piece)?;
+            let delta = old
+                .files
+                .iter()
+                .find(|installed| installed.path == file.path)
+                .and_then(|installed| deltas.find(&file.path, &installed.sha256, &file.sha256));
+            let patched = delta.and_then(|entry| {
+                let piece = format!("{}-delta-{number}", available.name);
+                patched_file(files, (&deltas_url, arch, &piece), &old.name, entry, download_range)
+            });
+            let bytes = match patched {
+                Some(bytes) => bytes,
+                None => {
+                    let piece = manager::partial_piece_path(
+                        manager::VERSION,
+                        arch,
+                        &format!("{}-update-{number}", available.name),
+                    );
+                    if !download_range(&url, &piece, file.offset, file.offset + file.length - 1) {
+                        return None;
+                    }
+                    read_whole(files, &piece)?
+                }
+            };
             if bytes.len() as u64 != file.length || index::sha256(&bytes) != file.sha256 {
                 return None;
             }
@@ -480,6 +502,25 @@ fn update_store<F: Files>(
     let path = manager::partial_store_path(manager::VERSION, arch, "update");
     write_whole(files, &path, &image)?;
     manager::read_store(files, &path, manager::Source::Downloaded, arch).ok()
+}
+
+fn patched_file<F: Files>(
+    files: &mut F,
+    (url, arch, piece): (&str, &str, &str),
+    component: &str,
+    entry: &crate::delta::DeltaEntry,
+    download_range: fn(&str, &str, u64, u64) -> bool,
+) -> Option<Vec<u8>> {
+    if entry.length == 0 {
+        return None;
+    }
+    let path = manager::partial_piece_path(manager::VERSION, arch, piece);
+    if !download_range(url, &path, entry.offset, entry.offset + entry.length - 1) {
+        return None;
+    }
+    let delta = read_whole(files, &path)?;
+    let installed = read_whole(files, &manager::installed_path(component, &entry.path))?;
+    crate::delta::apply(&installed, &delta).ok()
 }
 
 fn set_daily<F: Files, C: Console>(

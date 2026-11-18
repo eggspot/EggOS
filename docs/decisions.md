@@ -28918,3 +28918,24 @@ the license, by an explicit instruction recorded here.
   new digest) and the release tooling writing them (`cargo xtask components`); `component
   update` fetching a delta instead of the file when the installed digest matches, applying it
   and staging the result as today.
+
+
+## D699 Component updates fetch binary deltas (M14; follow-up of D293 and D698; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.**
+  - **The deltas file.** Next to each release's store, `eggos-<version>-<arch>-components.deltas`
+    (`manager::deltas_url`): a 512-byte header (`EGGOS-DELTAS-V1`, the index's length and
+    SHA-256), a text index of `delta <offset> <length> <old sha256> <new sha256> <path>` lines
+    (at most 512, each checked as the store's lines are), then each delta's bytes at a
+    sector-aligned offset (`delta::deltas_image`, `delta::parse_deltas`).
+  - **Writing it.** `cargo xtask release` writes it, and its line in `SHA256SUMS`, when
+    `EGGOS_PREVIOUS_STORES` names a folder holding the previous release's store of the same
+    architecture: a delta for each file that changed, kept only when it is under nine tenths
+    of the file (`components::deltas_image`).
+  - **Using it.** `component update` fetches the deltas index with one range request next to
+    the store's. For a changed file whose installed copy's digest has a delta to the new
+    digest, it fetches the delta's range, applies it to the installed file (`delta::apply`
+    checks both digests) and stages the result; any failure (no deltas file, no delta, a
+    damaged one, a changed installed file) falls back to fetching the whole file, as before.
+    The staged file is checked against the store's digest either way.
+- **Not yet.** Building and running; deltas from releases older than the previous one; the
+  progress the Components pane shows counting delta bytes.

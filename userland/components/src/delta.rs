@@ -5,7 +5,10 @@
 //! blocks and a rolling hash over the new one; [`apply`] checks everything a delta says
 //! against hard limits and both digests, so a damaged or hostile delta never yields a file.
 
-use crate::index::{MAX_FILE_BYTES, sha256};
+use crate::index::{
+    MAX_FILE_BYTES, MAX_INDEX_BYTES, SECTOR, is_component_path, parse_digest, parse_number, sha256,
+};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The first bytes of a delta.
@@ -262,9 +265,163 @@ pub fn apply(old: &[u8], delta: &[u8]) -> Result<Vec<u8>, DeltaError> {
     Err(DeltaError::Malformed)
 }
 
+/// The first bytes of a deltas file, the one a release store's deltas are published in.
+pub const DELTAS_MAGIC: &[u8; 16] = b"EGGOS-DELTAS-V1\0";
+/// The first line of a deltas file's index.
+pub const DELTAS_TAG: &str = "eggos-deltas 1";
+/// The most deltas one deltas file names.
+pub const MOST_DELTAS: usize = 512;
+
+const DELTAS_LENGTH: usize = 16;
+const DELTAS_DIGEST: usize = 24;
+
+/// One delta a deltas file holds: for the file `path`, from the copy whose SHA-256 is
+/// `old_digest` to the one whose SHA-256 is `new_digest`, at `offset` for `length` bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeltaEntry {
+    pub path: String,
+    pub old_digest: [u8; 32],
+    pub new_digest: [u8; 32],
+    pub offset: u64,
+    pub length: u64,
+}
+
+/// A deltas file's index.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeltaIndex {
+    pub entries: Vec<DeltaEntry>,
+}
+
+impl DeltaIndex {
+    /// The delta that turns `path`'s copy `old_digest` into its copy `new_digest`.
+    pub fn find(&self, path: &str, old_digest: &[u8; 32], new_digest: &[u8; 32]) -> Option<&DeltaEntry> {
+        self.entries.iter().find(|entry| {
+            entry.path == path && &entry.old_digest == old_digest && &entry.new_digest == new_digest
+        })
+    }
+}
+
+fn hex(out: &mut String, digest: &[u8; 32]) {
+    use core::fmt::Write;
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+}
+
+/// A deltas file: a [`SECTOR`]-byte header (magic, the index's length and SHA-256), the index
+/// (`delta <offset> <length> <old> <new> <path>` lines) and each delta's bytes.
+pub fn deltas_image(deltas: &[(String, [u8; 32], [u8; 32], Vec<u8>)]) -> Vec<u8> {
+    let mut data_start = SECTOR * 2;
+    let text = loop {
+        let mut text = String::from(DELTAS_TAG);
+        text.push('\n');
+        let mut offset = data_start;
+        for (path, old_digest, new_digest, bytes) in deltas {
+            use core::fmt::Write;
+            let _ = write!(text, "delta {offset} {} ", bytes.len());
+            hex(&mut text, old_digest);
+            text.push(' ');
+            hex(&mut text, new_digest);
+            let _ = writeln!(text, " {path}");
+            offset += (bytes.len() as u64).div_ceil(SECTOR).max(1) * SECTOR;
+        }
+        let needed = (SECTOR + text.len() as u64).div_ceil(SECTOR) * SECTOR;
+        if needed <= data_start {
+            break text;
+        }
+        data_start = needed;
+    };
+    let mut image = alloc::vec![0u8; SECTOR as usize];
+    image[..DELTAS_MAGIC.len()].copy_from_slice(DELTAS_MAGIC);
+    image[DELTAS_LENGTH..DELTAS_LENGTH + 4].copy_from_slice(&(text.len() as u32).to_le_bytes());
+    image[DELTAS_DIGEST..DELTAS_DIGEST + 32].copy_from_slice(&sha256(text.as_bytes()));
+    image.extend_from_slice(text.as_bytes());
+    image.resize(data_start as usize, 0);
+    for (_, _, _, bytes) in deltas {
+        image.extend_from_slice(bytes);
+        image.resize(image.len().next_multiple_of(SECTOR as usize), 0);
+    }
+    image
+}
+
+fn delta_line(line: &str) -> Option<DeltaEntry> {
+    let mut words = line.splitn(6, ' ');
+    if words.next()? != "delta" {
+        return None;
+    }
+    let offset = parse_number(words.next()?)?;
+    let length = parse_number(words.next()?)?;
+    let old_digest = parse_digest(words.next()?)?;
+    let new_digest = parse_digest(words.next()?)?;
+    let path = words.next()?;
+    let sound = offset % SECTOR == 0
+        && length <= MAX_FILE_BYTES
+        && offset.checked_add(length).is_some()
+        && is_component_path(path);
+    sound.then(|| DeltaEntry {
+        path: path.into(),
+        old_digest,
+        new_digest,
+        offset,
+        length,
+    })
+}
+
+/// Reads a deltas file's index from its first bytes (`head`, the header and at least the
+/// index); every line is checked against the format's limits.
+pub fn parse_deltas(head: &[u8]) -> Result<DeltaIndex, DeltaError> {
+    if head.len() < SECTOR as usize || &head[..DELTAS_MAGIC.len()] != DELTAS_MAGIC {
+        return Err(DeltaError::NotADelta);
+    }
+    let mut length = [0u8; 4];
+    length.copy_from_slice(&head[DELTAS_LENGTH..DELTAS_LENGTH + 4]);
+    let length = u32::from_le_bytes(length);
+    if length == 0 || length > MAX_INDEX_BYTES {
+        return Err(DeltaError::Malformed);
+    }
+    let text = head
+        .get(SECTOR as usize..SECTOR as usize + length as usize)
+        .ok_or(DeltaError::Malformed)?;
+    if sha256(text) != head[DELTAS_DIGEST..DELTAS_DIGEST + 32] {
+        return Err(DeltaError::Damaged);
+    }
+    let text = core::str::from_utf8(text).map_err(|_| DeltaError::Malformed)?;
+    let mut lines = text.lines();
+    if lines.next() != Some(DELTAS_TAG) {
+        return Err(DeltaError::NotADelta);
+    }
+    let mut index = DeltaIndex::default();
+    for line in lines {
+        let entry = delta_line(line).ok_or(DeltaError::Malformed)?;
+        if index.entries.len() == MOST_DELTAS {
+            return Err(DeltaError::Malformed);
+        }
+        index.entries.push(entry);
+    }
+    Ok(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deltas_file_names_each_delta_where_its_bytes_are() {
+        let old = sample(8192, 21);
+        let mut new = old.clone();
+        new[100] = new[100].wrapping_add(1);
+        let delta = encode(&old, &new);
+        let path = String::from("usr/lib/eggos/windows/ntdll.dll");
+        let image = deltas_image(&[(path.clone(), sha256(&old), sha256(&new), delta.clone())]);
+        let index = parse_deltas(&image).unwrap();
+        let entry = index.find(&path, &sha256(&old), &sha256(&new)).unwrap();
+        let start = entry.offset as usize;
+        assert_eq!(&image[start..start + entry.length as usize], delta.as_slice());
+        assert!(index.find(&path, &sha256(&new), &sha256(&old)).is_none());
+        let mut damaged = image.clone();
+        damaged[SECTOR as usize + 3] ^= 1;
+        assert_eq!(parse_deltas(&damaged), Err(DeltaError::Damaged));
+    }
 
     fn sample(length: usize, seed: u32) -> Vec<u8> {
         let mut state = seed;
