@@ -28780,3 +28780,17 @@ the license, by an explicit instruction recorded here.
   where it paints its text and caret, and where a click lands all follow the rectangle.
 - **Not yet.** Building and running; `EM_SETRECT`'s `wParam` 1 (a rectangle relative to the
   current one); `EM_SETMARGINS`.
+
+
+## D690 Windows edits: `EM_FMTLINES`, `EM_SETMARGINS` and `EM_GETMARGINS` (M15 Windows; follow-up of D341 and D689; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented edit behaviour)
+- **Decision.**
+  - `EM_FMTLINES` turns soft line breaks on or off (`Edit::soft_breaks`) and answers the
+    setting. While on, `WM_GETTEXT` and `WM_GETTEXTLENGTH` give a wrapping multi-line edit's
+    text with `\r\r\n` after each line that wraps (after the space it wrapped at), hard breaks
+    as typed (`Edit::formatted_units`); the text the edit holds does not change.
+  - `EM_SETMARGINS` sets the left and right margins (`EC_LEFTMARGIN`, `EC_RIGHTMARGIN`, the
+    pixels in `lParam`'s low and high words) inside the default text area, ignoring a margin
+    wider than half the edit, as Windows does; `EC_USEFONTINFO` sets both to 0, the margins
+    the layer's one font needs. `EM_GETMARGINS` answers them as a pair of words.
+- **Not yet.** Building and running; `EM_SETTABSTOPS`; Windows' 30,000-character default
+  limit (an edit holds 1,024 units).

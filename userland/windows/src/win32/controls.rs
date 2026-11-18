@@ -66,6 +66,9 @@ pub mod code {
     pub const EM_GETRECT: u32 = 0x00b2;
     pub const EM_SETRECT: u32 = 0x00b3;
     pub const EM_SETRECTNP: u32 = 0x00b4;
+    pub const EM_FMTLINES: u32 = 0x00c8;
+    pub const EM_SETMARGINS: u32 = 0x00d3;
+    pub const EM_GETMARGINS: u32 = 0x00d4;
     pub const EM_SETSEL: u32 = 0x00b1;
     pub const EM_SCROLLCARET: u32 = 0x00b7;
     pub const EM_LINESCROLL: u32 = 0x00b6;
@@ -860,7 +863,11 @@ pub fn procedure(
         message::GET_TEXT => get_text(window, kind, wparam, lparam),
         message::GET_TEXT_LENGTH => match kind {
             ControlKind::Edit => with_state(window, |_, state| match state {
-                State::Edit(edit) => edit.text().len(),
+                State::Edit(edit) => {
+                    let mut length = 0;
+                    edit.formatted_units(|_| length += 1);
+                    length
+                }
                 _ => 0,
             })
             .unwrap_or(0),
@@ -952,6 +959,9 @@ pub fn procedure(
         }
         code::EM_GETRECT | code::EM_SETRECT | code::EM_SETRECTNP if kind == ControlKind::Edit => {
             text_rect_message(window, number, lparam)
+        }
+        code::EM_FMTLINES | code::EM_SETMARGINS | code::EM_GETMARGINS if kind == ControlKind::Edit => {
+            margin_message(window, number, wparam, lparam)
         }
         code::EM_LINESCROLL
         | code::EM_SCROLLCARET
@@ -1047,11 +1057,59 @@ fn get_text(window: usize, kind: ControlKind, capacity: usize, buffer: usize) ->
         return unsafe { window_text::get_default(window, capacity, buffer) };
     }
     with_state(window, |_, state| match state {
-        // SAFETY: as above.
-        State::Edit(edit) => unsafe { window_text::copy_out(edit.text(), buffer, capacity) },
+        State::Edit(edit) => {
+            let mut formatted = [0u16; FORMATTED_UNITS];
+            let mut length = 0;
+            edit.formatted_units(|unit| {
+                if let Some(slot) = formatted.get_mut(length) {
+                    *slot = unit;
+                    length += 1;
+                }
+            });
+            // SAFETY: as above.
+            unsafe { window_text::copy_out(&formatted[..length], buffer, capacity) }
+        }
         _ => 0,
     })
     .unwrap_or(0)
+}
+
+const FORMATTED_UNITS: usize = edit::EDIT_CAPACITY * 4;
+const EC_LEFTMARGIN: usize = 0x1;
+const EC_RIGHTMARGIN: usize = 0x2;
+const EC_USEFONTINFO: usize = 0xffff;
+
+fn margin_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    let answer = with_state(window, |entry, state| {
+        let State::Edit(edit) = state else {
+            return 0;
+        };
+        match number {
+            code::EM_GETMARGINS => {
+                let (left, right) = edit.margins();
+                message::word_pair(left as usize, right as usize)
+            }
+            code::EM_FMTLINES => {
+                edit.soft_breaks = wparam != 0;
+                usize::from(edit.soft_breaks)
+            }
+            _ => {
+                let (left, right) = match wparam {
+                    EC_USEFONTINFO => (Some(0), Some(0)),
+                    flags => (
+                        (flags & EC_LEFTMARGIN != 0).then_some(i32::from(lparam as u16)),
+                        (flags & EC_RIGHTMARGIN != 0).then_some(i32::from((lparam >> 16) as u16)),
+                    ),
+                };
+                edit.set_margins(left, right, entry.width as i32);
+                0
+            }
+        }
+    });
+    if number == code::EM_SETMARGINS {
+        invalidate(window);
+    }
+    answer.unwrap_or(0)
 }
 
 fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {

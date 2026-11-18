@@ -79,6 +79,9 @@ pub struct Edit {
     pub wraps: bool,
     wrap_cells: usize,
     format: Option<Rect>,
+    margins: (i32, i32),
+    /// Whether `WM_GETTEXT` marks each wrapped line's end with `\r\r\n` (`EM_FMTLINES`).
+    pub soft_breaks: bool,
     /// Whether it draws a vertical and a horizontal scroll bar inside its border
     /// (`WS_VSCROLL`, `WS_HSCROLL` on a multi-line edit, D351).
     pub bars: (bool, bool),
@@ -132,6 +135,8 @@ impl Edit {
             wraps: false,
             wrap_cells: 0,
             format: None,
+            margins: (0, 0),
+            soft_breaks: false,
             bars: (false, false),
         }
     }
@@ -170,13 +175,55 @@ impl Edit {
     /// The formatting rectangle in an edit `width` by `height`, from its top left
     /// (`EM_GETRECT`): the one `EM_SETRECT` gave, else the text area inside the border.
     pub fn text_rect(&self, width: i32, height: i32) -> Rect {
+        let (left, right) = (TEXT_INSET + self.margins.0, width - TEXT_INSET - self.margins.1);
         self.format.unwrap_or_else(|| match self.multiline {
-            true => Rect::new(TEXT_INSET, LINES_TOP, width - TEXT_INSET, height - LINES_TOP),
+            true => Rect::new(left, LINES_TOP, right, height - LINES_TOP),
             false => {
                 let top = cell_top(0, height);
-                Rect::new(TEXT_INSET, top, width - TEXT_INSET, top + CELL_HEIGHT)
+                Rect::new(left, top, right, top + CELL_HEIGHT)
             }
         })
+    }
+
+    /// `EM_GETMARGINS`: the left and right margins inside the text area, in pixels.
+    pub fn margins(&self) -> (i32, i32) {
+        self.margins
+    }
+
+    /// `EM_SETMARGINS`: the margins `left` and `right` give replace the current ones; a
+    /// margin the edit cannot show (wider than half of `width`) is left as it was.
+    pub fn set_margins(&mut self, left: Option<i32>, right: Option<i32>, width: i32) {
+        let fits = |margin: i32| (0..=(width / 2).max(0)).contains(&margin);
+        if let Some(left) = left.filter(|&margin| fits(margin)) {
+            self.margins.0 = left;
+        }
+        if let Some(right) = right.filter(|&margin| fits(margin)) {
+            self.margins.1 = right;
+        }
+    }
+
+    /// The text `WM_GETTEXT` gives, a unit at a time: with [`Edit::soft_breaks`] on, a line
+    /// that wraps ends in `\r\r\n`.
+    pub fn formatted_units(&self, mut unit: impl FnMut(u16)) {
+        if !(self.soft_breaks && self.multiline && self.wrap_cells != 0) {
+            self.text().iter().copied().for_each(unit);
+            return;
+        }
+        let mut start = 0;
+        loop {
+            let (end, next) = self.row(start);
+            self.units[start..end].iter().copied().for_each(&mut unit);
+            let Some(next) = next.filter(|&next| next > start) else {
+                self.units[end..self.length].iter().copied().for_each(&mut unit);
+                return;
+            };
+            let gap = &self.units[end..next];
+            gap.iter().copied().for_each(&mut unit);
+            if !gap.contains(&LINE_FEED) {
+                [CARRIAGE_RETURN, CARRIAGE_RETURN, LINE_FEED].into_iter().for_each(&mut unit);
+            }
+            start = next;
+        }
     }
 
     /// `EM_SETRECT`: the text goes in `rect`, from the edit's top left; `None` is the text
@@ -1385,6 +1432,23 @@ mod tests {
 
     fn units(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
+    }
+
+    #[test]
+    fn fmtlines_marks_wrapped_line_ends_and_margins_move_the_text() {
+        let mut edit = Edit::with_style(style::MULTILINE);
+        edit.set_text(&units("hello big world\r\nend"));
+        edit.fit(View { cells: 8, rows: 4 });
+        let mut plain = Vec::new();
+        edit.formatted_units(|unit| plain.push(unit));
+        assert_eq!(plain, units("hello big world\r\nend"));
+        edit.soft_breaks = true;
+        let mut marked = Vec::new();
+        edit.formatted_units(|unit| marked.push(unit));
+        assert_eq!(marked, units("hello \r\r\nbig \r\r\nworld\r\nend"));
+        edit.set_margins(Some(6), Some(500), 200);
+        assert_eq!(edit.margins(), (6, 0));
+        assert_eq!(edit.text_rect(200, 100).left, 10);
     }
 
     #[test]
