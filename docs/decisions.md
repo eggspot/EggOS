@@ -28852,3 +28852,20 @@ the license, by an explicit instruction recorded here.
 - **Not yet.** Building and running; the layer's own locks (heap, stdio, dynamic loader)
   taken around `fork`, so a child forked while another thread held one does not find it
   locked.
+
+
+## D695 macOS libSystem: `wcwidth`, `wcswidth`, `strcoll` and `strxfrm` (M16 macOS; follow-up of D190; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Unicode's East Asian Width and general categories, and Darwin's documented behaviour)
+- **Decision.**
+  - `darwin_locale::width` (host-tested) gives the columns a character takes: 0 for NUL, the
+    nonspacing marks of the main blocks (combining diacritics, Hebrew, Arabic and Thai marks,
+    variation selectors, zero-width spaces and joiners), 2 for East Asian wide and full-width
+    ranges (Hangul, CJK, kana, full-width forms) and the emoji blocks, -1 for controls,
+    surrogates and values past U+10FFFF, 1 for the rest. The tables are sorted ranges, found
+    by binary search.
+  - `wcwidth` answers it in a UTF-8 locale and only ASCII's widths otherwise; `wcswidth` adds
+    up to `n` characters or the NUL, -1 if one has no width.
+  - `strcoll` compares by byte and `strxfrm` copies the string (answering its length), since
+    every locale the layer has (C, POSIX, C.UTF-8, en_US.UTF-8) collates by code point, as
+    Darwin's UTF-8 locales do.
+- **Not yet.** Building and running; the marks of every script (the full Mn and Me lists);
+  `newlocale`, `uselocale`, `freelocale` and the `*_l` functions; `wcscoll`, `wcsxfrm`.

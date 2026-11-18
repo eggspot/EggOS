@@ -217,6 +217,54 @@ pub extern "C" fn localeconv() -> *const Conventions {
     &raw const CONVENTIONS[numbers * 2 + money]
 }
 
+/// `wcwidth`: the columns `rune` takes in the terminal; in a locale that is not UTF-8, only
+/// ASCII has any.
+pub extern "C" fn wcwidth(rune: c_int) -> c_int {
+    match character_locale().is_utf8() {
+        true => crate::darwin_locale::width::columns(rune),
+        false if (0x20..0x7f).contains(&rune) => 1,
+        false if rune == 0 => 0,
+        false => -1,
+    }
+}
+
+/// # Safety
+/// `runes` must be readable for `count` wide characters or up to its NUL.
+pub unsafe extern "C" fn wcswidth(runes: *const c_int, count: usize) -> c_int {
+    let mut total: c_int = 0;
+    for index in 0..count {
+        // SAFETY: the caller's promise.
+        let rune = unsafe { runes.add(index).read() };
+        if rune == 0 {
+            break;
+        }
+        match wcwidth(rune) {
+            -1 => return -1,
+            width => total = total.saturating_add(width),
+        }
+    }
+    total
+}
+
+/// # Safety
+/// Both must be NUL-terminated strings.
+pub unsafe extern "C" fn strcoll(left: *const c_char, right: *const c_char) -> c_int {
+    // SAFETY: the caller's promise.
+    unsafe { super::string::strcmp(left, right) }
+}
+
+/// # Safety
+/// `source` must be a NUL-terminated string and `out` writable for `room` bytes.
+pub unsafe extern "C" fn strxfrm(out: *mut c_char, source: *const c_char, room: usize) -> usize {
+    // SAFETY: the caller's promise.
+    let length = unsafe { super::string::strlen(source) };
+    if length < room && !out.is_null() {
+        // SAFETY: the caller's promise; `length + 1` bytes fit in `room`.
+        unsafe { core::ptr::copy_nonoverlapping(source, out, length + 1) };
+    }
+    length
+}
+
 pub extern "C" fn mb_cur_max() -> c_int {
     MB_CUR_MAX.load(Ordering::Relaxed)
 }
