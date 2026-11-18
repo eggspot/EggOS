@@ -53,6 +53,7 @@ pub mod number {
     pub const SETRESUID: usize = 117;
     pub const SETRESGID: usize = 119;
     pub const RT_SIGPENDING: usize = 127;
+    pub const RT_SIGTIMEDWAIT: usize = 128;
     pub const RT_SIGSUSPEND: usize = 130;
     pub const SIGALTSTACK: usize = 131;
     pub const TGKILL: usize = 234;
@@ -108,6 +109,7 @@ pub mod number {
     pub const RT_SIGSUSPEND: usize = 133;
     pub const RT_SIGPROCMASK: usize = 135;
     pub const RT_SIGPENDING: usize = 136;
+    pub const RT_SIGTIMEDWAIT: usize = 137;
     pub const SETRESUID: usize = 147;
     pub const SETRESGID: usize = 149;
     pub const SETPGID: usize = 154;

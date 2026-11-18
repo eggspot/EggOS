@@ -494,6 +494,55 @@ pub unsafe extern "C" fn sigsuspend(set: *const u32) -> c_int {
 }
 
 /// # Safety
+/// `set` must be readable and `chosen` writable.
+pub unsafe extern "C" fn sigwait(set: *const u32, chosen: *mut c_int) -> c_int {
+    if set.is_null() || chosen.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: the caller's promise.
+    let mask = darwin_signals::linux_signal_set(unsafe { set.read() });
+    loop {
+        // SAFETY: `rt_sigtimedwait` reads the borrowed set; no record, no timeout.
+        let waited = unsafe {
+            linux::syscall(
+                linux::number::RT_SIGTIMEDWAIT,
+                [&raw const mask as usize, 0, 0, SIGSET_SIZE, 0, 0],
+            )
+        };
+        match waited {
+            Ok(linux_signal) => {
+                if let Some(signal) = darwin_signals::darwin_signal(linux_signal) {
+                    // SAFETY: the caller's promise.
+                    unsafe { chosen.write(signal) };
+                    return 0;
+                }
+            }
+            Err(Errno::EINTR) => {}
+            Err(errno) => return darwin::darwin_errno(errno.0),
+        }
+    }
+}
+
+/// `siginterrupt`: whether a call `signal` interrupts fails with `EINTR` (`interrupt` nonzero)
+/// or restarts (`SA_RESTART`).
+pub extern "C" fn siginterrupt(signal: c_int, interrupt: c_int) -> c_int {
+    let changed = change(signal, None).and_then(|mut current| {
+        match interrupt {
+            0 => current.flags |= action::RESTART,
+            _ => current.flags &= !action::RESTART,
+        }
+        change(signal, Some(current)).map(|_| ())
+    });
+    match changed {
+        Ok(()) => 0,
+        Err(errno) => {
+            set_errno(errno);
+            -1
+        }
+    }
+}
+
+/// # Safety
 /// `set` must be writable.
 pub unsafe extern "C" fn sigpending(set: *mut u32) -> c_int {
     let mut pending = 0u64;

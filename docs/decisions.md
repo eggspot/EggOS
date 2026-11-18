@@ -28837,3 +28837,18 @@ the license, by an explicit instruction recorded here.
   goes on from the recorded state, so no destructor runs twice and none is skipped.
 - **Not yet.** Building and running; a collided unwind inside a catch funclet's own locals
   (`FrameRole::FuncletLocals`) still starts from the funclet's state.
+
+
+## D694 macOS libSystem: `sigwait`, `siginterrupt` and `pthread_atfork` (M16 macOS; follow-up of D190; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Darwin's documented behaviour)
+- **Decision.**
+  - `sigwait` waits with Linux's `rt_sigtimedwait` (no record, no timeout) for one of the
+    set's signals, answers its Darwin number in `*sig` and returns 0, or the error number
+    itself (as POSIX says, not through `errno`); a wait a handler interrupted waits again.
+  - `siginterrupt` clears or sets the recorded action's `SA_RESTART` and installs it again.
+  - `pthread_atfork` keeps up to 32 handler triples. `fork` (and `vfork`, which is `fork`
+    here) runs the `prepare` handlers last registered first, then the `parent` or `child`
+    handlers first registered first, in the parent and in the child.
+  - `sigqueue` is left out: Darwin's libSystem has none.
+- **Not yet.** Building and running; the layer's own locks (heap, stdio, dynamic loader)
+  taken around `fork`, so a child forked while another thread held one does not find it
+  locked.

@@ -51,14 +51,65 @@ fn memoryless_call(number: usize, arguments: [usize; 6]) -> Result<usize, Errno>
     unsafe { linux::syscall(number, arguments) }
 }
 
+const MOST_FORK_HANDLERS: usize = 32;
+
+#[derive(Clone, Copy)]
+struct ForkHandlers {
+    prepare: usize,
+    parent: usize,
+    child: usize,
+}
+
+static FORK_HANDLERS: Exclusive<([Option<ForkHandlers>; MOST_FORK_HANDLERS], usize)> =
+    Exclusive::new(([None; MOST_FORK_HANDLERS], 0));
+
+fn fork_handlers() -> ([Option<ForkHandlers>; MOST_FORK_HANDLERS], usize) {
+    FORK_HANDLERS.with(|registered| *registered)
+}
+
+fn call_handler(address: usize) {
+    if address != 0 {
+        // SAFETY: a `void (*)(void)` the program registered with `pthread_atfork`.
+        let handler = unsafe { core::mem::transmute::<usize, extern "C" fn()>(address) };
+        handler();
+    }
+}
+
+/// `pthread_atfork`: `prepare` runs before each `fork` (the last registered first), `parent`
+/// and `child` after it in the parent and the child (the first registered first).
+pub extern "C" fn pthread_atfork(prepare: usize, parent: usize, child: usize) -> c_int {
+    FORK_HANDLERS.with(|(handlers, count)| match handlers.get_mut(*count) {
+        Some(slot) => {
+            *slot = Some(ForkHandlers {
+                prepare,
+                parent,
+                child,
+            });
+            *count += 1;
+            0
+        }
+        None => ENOMEM,
+    })
+}
+
 fn fork_process() -> Result<usize, Errno> {
-    // SAFETY: `clone` with only `SIGCHLD` copies the whole process, so the child goes on from
-    // here with its own copy of every page, as after `fork`.
-    let forked = unsafe { linux::syscall(linux::number::CLONE, [LINUX_SIGCHLD, 0, 0, 0, 0, 0]) }?;
-    if forked == 0 {
+    let (handlers, count) = fork_handlers();
+    let registered = handlers[..count].iter().flatten();
+    for handlers in registered.clone().rev() {
+        call_handler(handlers.prepare);
+    }
+    // SAFETY: `clone` with only `SIGCHLD` is `fork`: the child goes on with its own pages.
+    let forked = unsafe { linux::syscall(linux::number::CLONE, [LINUX_SIGCHLD, 0, 0, 0, 0, 0]) };
+    if forked == Ok(0) {
         thread::adopt_after_fork();
     }
-    Ok(forked)
+    for handlers in registered {
+        call_handler(match forked {
+            Ok(0) => handlers.child,
+            _ => handlers.parent,
+        });
+    }
+    forked
 }
 
 pub extern "C" fn fork() -> c_int {
