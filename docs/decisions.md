@@ -28869,3 +28869,15 @@ the license, by an explicit instruction recorded here.
     Darwin's UTF-8 locales do.
 - **Not yet.** Building and running; the marks of every script (the full Mn and Me lists);
   `newlocale`, `uselocale`, `freelocale` and the `*_l` functions; `wcscoll`, `wcsxfrm`.
+
+
+## D696 Translation: the x87 integer-operand forms (`fiadd`, `fimul`, `ficom`, `ficomp`, `fisub`, `fisubr`, `fidiv`, `fidivr`) (M16 translation; follow-up of D191; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's SDM opcode map)
+- **Decision.** `DA /0-7` (a 32-bit integer) and `DE /0-7` (a 16-bit integer) in their
+  memory forms decode as the eight integer mnemonics (`Mnemonic::has_integer_operand`). They
+  lower as their floating-point forms do, the operand read as `fild` reads it (sign-extended,
+  converted to a double, `x87_load_integer_memory`) instead of as a float: the arithmetic
+  ones into `st(0)`, `ficom` and `ficomp` into the condition codes, `ficomp` popping once.
+- **Not yet.** Building and running; `fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`,
+  `fyl2x`, `fyl2xp1` (they need a call out of translated code to our own routines, which the
+  code generator does not have yet); `fprem`, `fprem1`, `fscale`, `fxtract`, `fxam`, `ftst`;
+  `fnstenv`, `fldenv`, `fnsave`, `frstor`.

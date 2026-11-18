@@ -50,6 +50,7 @@ fn pops(mnemonic: Mnemonic) -> u8 {
         | M::Fdivp
         | M::Fdivrp
         | M::Fcomp
+        | M::Ficomp
         | M::Fucomp
         | M::Fcomip
         | M::Fucomip => 1,
@@ -87,6 +88,13 @@ impl Lowerer {
             M::Fsubr | M::Fsubrp => self.x87_arithmetic(instruction, Scalar::Fsub, true)?,
             M::Fdiv | M::Fdivp => self.x87_arithmetic(instruction, Scalar::Fdiv, false)?,
             M::Fdivr | M::Fdivrp => self.x87_arithmetic(instruction, Scalar::Fdiv, true)?,
+            M::Fiadd => self.x87_arithmetic(instruction, Scalar::Fadd, false)?,
+            M::Fimul => self.x87_arithmetic(instruction, Scalar::Fmul, false)?,
+            M::Fisub => self.x87_arithmetic(instruction, Scalar::Fsub, false)?,
+            M::Fisubr => self.x87_arithmetic(instruction, Scalar::Fsub, true)?,
+            M::Fidiv => self.x87_arithmetic(instruction, Scalar::Fdiv, false)?,
+            M::Fidivr => self.x87_arithmetic(instruction, Scalar::Fdiv, true)?,
+            M::Ficom | M::Ficomp => self.x87_compare_into_status(instruction)?,
             M::Fchs => self.x87_unary(ScalarUnary::Fneg),
             M::Fabs => self.x87_unary(ScalarUnary::Fabs),
             M::Fsqrt => self.x87_unary(ScalarUnary::Fsqrt),
@@ -434,19 +442,24 @@ impl Lowerer {
         Ok(())
     }
 
-    fn x87_load_integer(&mut self, instruction: &Instruction) -> Lowered {
-        let Operand::Memory(memory) = self.operand(instruction, 0)? else {
-            return Err(self.operands_error());
-        };
+    fn x87_load_integer_memory(&mut self, memory: &Memory, into: u8) -> Lowered {
         if !matches!(memory.width, Width::Word | Width::Dword | Width::Qword) {
             return Err(self.operands_error());
         }
-        let address = self.effective_address(&memory, ADDRESS, memory.segment);
+        let address = self.effective_address(memory, ADDRESS, memory.segment);
         self.load_memory(address, memory.width, T0);
         if memory.width != Width::Qword {
             self.sbfx(Size::X, T0, T0, 0, bits(memory.width));
         }
-        self.emit(simd::convert_to_float(Size::X, Float::Double, V0, T0));
+        self.emit(simd::convert_to_float(Size::X, Float::Double, into, T0));
+        Ok(())
+    }
+
+    fn x87_load_integer(&mut self, instruction: &Instruction) -> Lowered {
+        let Operand::Memory(memory) = self.operand(instruction, 0)? else {
+            return Err(self.operands_error());
+        };
+        self.x87_load_integer_memory(&memory, V0)?;
         self.x87_top();
         self.x87_push(V0);
         Ok(())
@@ -514,7 +527,10 @@ impl Lowerer {
                 Ok(0)
             }
             [Operand::Memory(memory)] => {
-                self.x87_load_memory(&memory, V0)?;
+                match instruction.mnemonic.has_integer_operand() {
+                    true => self.x87_load_integer_memory(&memory, V0)?,
+                    false => self.x87_load_memory(&memory, V0)?,
+                }
                 self.x87_top();
                 Ok(0)
             }

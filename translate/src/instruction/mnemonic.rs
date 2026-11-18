@@ -679,6 +679,39 @@ pub enum Mnemonic {
     Fldlg2,
     /// `fldln2`.
     Fldln2,
+    /// `fiadd`: adds a 16- or 32-bit integer in memory to `st(0)`.
+    Fiadd,
+    /// `fimul`.
+    Fimul,
+    /// `ficom`: compares `st(0)` with an integer in memory into the condition codes.
+    Ficom,
+    /// `ficomp`.
+    Ficomp,
+    /// `fisub`.
+    Fisub,
+    /// `fisubr`.
+    Fisubr,
+    /// `fidiv`.
+    Fidiv,
+    /// `fidivr`.
+    Fidivr,
+}
+
+impl Mnemonic {
+    /// An x87 instruction whose memory operand is an integer, not a floating-point value.
+    pub const fn has_integer_operand(self) -> bool {
+        matches!(
+            self,
+            Mnemonic::Fiadd
+                | Mnemonic::Fimul
+                | Mnemonic::Ficom
+                | Mnemonic::Ficomp
+                | Mnemonic::Fisub
+                | Mnemonic::Fisubr
+                | Mnemonic::Fidiv
+                | Mnemonic::Fidivr
+        )
+    }
 }
 
 impl Mnemonic {

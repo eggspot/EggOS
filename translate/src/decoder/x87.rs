@@ -38,7 +38,19 @@ fn memory_form(opcode: u8, operation: u8) -> Result<Form, DecodeErrorKind> {
         Some(Mnemonic::Fdiv),
         Some(Mnemonic::Fdivr),
     ];
+    const INTEGER_ARITHMETIC: [Mnemonic; 8] = [
+        Mnemonic::Fiadd,
+        Mnemonic::Fimul,
+        Mnemonic::Ficom,
+        Mnemonic::Ficomp,
+        Mnemonic::Fisub,
+        Mnemonic::Fisubr,
+        Mnemonic::Fidiv,
+        Mnemonic::Fidivr,
+    ];
     Ok(match (opcode, operation) {
+        (0xDA, _) => memory(INTEGER_ARITHMETIC[usize::from(operation & 7)], Dword),
+        (0xDE, _) => memory(INTEGER_ARITHMETIC[usize::from(operation & 7)], Word),
         (0xD8, _) => ARITHMETIC[usize::from(operation)]
             .map_or_else(|| refused(Refusal::X87), |mnemonic| memory(mnemonic, Dword)),
         (0xDC, _) => ARITHMETIC[usize::from(operation)]
