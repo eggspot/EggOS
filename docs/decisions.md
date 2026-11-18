@@ -28718,3 +28718,14 @@ the license, by an explicit instruction recorded here.
     tip's `TTN_GETDISPINFOW` goes on to the tab control's parent, its `idFrom` the tab's
     index. `TCM_GETTOOLTIPS` and `TCM_SETTOOLTIPS` read and replace it.
 - **Not yet.** Building and running; `TBSTYLE_EX_MIXEDBUTTONS`; tips longer than 79 units.
+
+
+## D685 Info tips longer than 79 units (M15 Windows; follow-up of D362 and D363; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** The layer's own controls no longer answer a tooltip's `TTN_GETDISPINFOW`
+  through its 80-unit buffer: the request the tooltip sends carries, after the
+  `NMTTDISPINFOW` a program sees, room for a whole tip (255 units, what a tool holds), and a
+  list view's `LVN_GETINFOTIPW` or a tree view's `TVN_GETINFOTIPW` answer is put there with
+  `lpszText` pointing at it, as comctl32 points it at the control's own buffer. Programs that
+  answer in the 80-unit buffer or with their own string are read as before.
+- **Not yet.** Building and running; tips past 255 units are cut; a toolbar's
+  `TBN_GETINFOTIPW` keeps its 80-unit buffer, as Windows gives it.

@@ -396,7 +396,7 @@ fn notify_tip(control: usize, tool: usize, code: i32) -> usize {
     answer
 }
 
-/// `NMTTDISPINFOW`.
+/// `NMTTDISPINFOW`, followed by room the layer's own controls answer longer tips in.
 #[repr(C)]
 pub(super) struct DisplayInfo {
     pub(super) header: NotifyHeader,
@@ -405,6 +405,16 @@ pub(super) struct DisplayInfo {
     pub(super) instance: usize,
     pub(super) flags: u32,
     pub(super) lparam: usize,
+    long: [u16; TEXT_UNITS + 1],
+}
+
+impl DisplayInfo {
+    pub(super) fn answer(&mut self, units: &[u16]) {
+        let length = units.len().min(TEXT_UNITS);
+        self.long[..length].copy_from_slice(&units[..length]);
+        self.long[length] = 0;
+        self.text = self.long.as_ptr() as usize;
+    }
 }
 
 fn asked_text(control: usize, tool: usize) -> Option<([u16; TEXT_UNITS], usize, bool)> {
@@ -423,6 +433,7 @@ fn asked_text(control: usize, tool: usize) -> Option<([u16; TEXT_UNITS], usize, 
         instance: 0,
         flags,
         lparam,
+        long: [0; TEXT_UNITS + 1],
     };
     info.text = info.buffer.as_ptr() as usize;
     gui::send(owner, super::WM_NOTIFY, id, &raw mut info as usize);

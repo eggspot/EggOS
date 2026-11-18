@@ -2138,7 +2138,6 @@ const TVS_INFOTIP: u32 = 0x0800;
 const TVN_GETINFOTIPW: i32 = -414;
 const TTN_GETDISPINFOW: u32 = -530i32 as u32;
 const INFO_TIP_UNITS: usize = 1024;
-const SHOWN_TIP_UNITS: usize = 79;
 
 fn make_info_tips(window: usize) {
     let wanted = with(|gui| {
@@ -2217,10 +2216,7 @@ fn info_tip(window: usize, lparam: usize) {
         .iter()
         .position(|&unit| unit == 0)
         .unwrap_or(INFO_TIP_UNITS);
-    let shown = length.min(SHOWN_TIP_UNITS);
-    // SAFETY: as above; its 80-unit buffer takes the text and a NUL.
+    // SAFETY: as above.
     let tip = unsafe { &mut *info };
-    tip.buffer[..shown].copy_from_slice(&buffer[..shown]);
-    tip.buffer[shown] = 0;
-    tip.text = tip.buffer.as_ptr() as usize;
+    tip.answer(&buffer[..length]);
 }
