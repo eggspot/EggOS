@@ -28729,3 +28729,12 @@ the license, by an explicit instruction recorded here.
   answer in the 80-unit buffer or with their own string are read as before.
 - **Not yet.** Building and running; tips past 255 units are cut; a toolbar's
   `TBN_GETINFOTIPW` keeps its 80-unit buffer, as Windows gives it.
+
+
+## D686 Toolbars' `TBSTYLE_EX_MIXEDBUTTONS` tips (M15 Windows; follow-up of D356; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering)
+- **Decision.** A toolbar's last answer to its tooltip, the button's own string, is given for
+  every button that does not draw its text (`Toolbar::shows_text`, now public): under
+  `TBSTYLE_EX_MIXEDBUTTONS` a button without `BTNS_SHOWTEXT` shows its string as its tip, as
+  on Windows, and `TB_SETMAXTEXTROWS 0` still gives every button's string. A button that
+  draws its text gets no tip of its own string.
+- **Not yet.** Building and running.

@@ -1078,15 +1078,15 @@ fn info_tip(window: usize, lparam: usize) {
     }
     let mut own = [0u16; INFO_TIP_UNITS];
     let own_length = with_state::<Toolbar, _>(window, |_, model| {
-        if model.max_text_rows != 0 {
-            return 0;
-        }
         let index = (0..model.count()).find(|&index| {
             model
                 .button(index)
                 .is_some_and(|button| button.command as usize == command)
         });
-        let text = index.map_or(&[][..], |index| model.text(index));
+        let Some(index) = index.filter(|&index| !model.shows_text(index)) else {
+            return 0;
+        };
+        let text = model.text(index);
         let length = text.len().min(INFO_TIP_UNITS);
         own[..length].copy_from_slice(&text[..length]);
         length

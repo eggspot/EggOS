@@ -358,7 +358,9 @@ impl Toolbar {
         }
     }
 
-    fn shows_text(&self, index: usize) -> bool {
+    /// Whether button `index` draws its text: it has some, the toolbar draws text rows, and
+    /// under `TBSTYLE_EX_MIXEDBUTTONS` the button has `BTNS_SHOWTEXT`.
+    pub fn shows_text(&self, index: usize) -> bool {
         let Some(button) = self.button(index) else {
             return false;
         };
@@ -711,6 +713,20 @@ mod tests {
             toolbar.insert(usize::MAX, button(command, index, AUTOSIZE), &[]);
         }
         toolbar
+    }
+
+    #[test]
+    fn mixed_buttons_show_text_only_with_show_text() {
+        let mut toolbar = example();
+        assert!(toolbar.shows_text(0));
+        toolbar.extended_style = extended::MIXED_BUTTONS;
+        assert!(!toolbar.shows_text(0));
+        if let Some(button) = toolbar.button_mut(1) {
+            button.style |= button_style::SHOW_TEXT;
+        }
+        assert!(toolbar.shows_text(1));
+        toolbar.max_text_rows = 0;
+        assert!(!toolbar.shows_text(1));
     }
 
     struct Squares;
