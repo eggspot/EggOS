@@ -63,6 +63,9 @@ pub mod code {
     pub const BM_SETSTYLE: u32 = 0x00f4;
     pub const BM_CLICK: u32 = 0x00f5;
     pub const EM_GETSEL: u32 = 0x00b0;
+    pub const EM_GETRECT: u32 = 0x00b2;
+    pub const EM_SETRECT: u32 = 0x00b3;
+    pub const EM_SETRECTNP: u32 = 0x00b4;
     pub const EM_SETSEL: u32 = 0x00b1;
     pub const EM_SCROLLCARET: u32 = 0x00b7;
     pub const EM_LINESCROLL: u32 = 0x00b6;
@@ -572,7 +575,8 @@ fn paint_control(window: usize) {
                 // SAFETY: as above; the lock held makes this the only reference, and fitting
                 // the view only sets where its lines wrap.
                 let model = unsafe { &mut *(address as *mut Edit) };
-                model.fit(edit::view(rect.width(), rect.height()));
+                let shown = model.view_in(rect.width(), rect.height());
+                model.fit(shown);
                 let look = EditLook {
                     focused,
                     enabled: entry.enabled(),
@@ -927,7 +931,7 @@ pub fn procedure(
         }
         message::CHAR => {
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => Some(edit.character(wparam as u32, edit_view(entry))),
+                State::Edit(edit) => Some(edit.character(wparam as u32, edit_view(entry, edit))),
                 _ => None,
             })
             .flatten();
@@ -945,6 +949,9 @@ pub fn procedure(
             if kind == ControlKind::Edit =>
         {
             selection_message(window, number, wparam, lparam)
+        }
+        code::EM_GETRECT | code::EM_SETRECT | code::EM_SETRECTNP if kind == ControlKind::Edit => {
+            text_rect_message(window, number, lparam)
         }
         code::EM_LINESCROLL
         | code::EM_SCROLLCARET
@@ -1075,7 +1082,7 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             let extend = held(VK_SHIFT);
             let outcome = with_state(window, |entry, state| match state {
                 State::Edit(edit) => {
-                    let view = edit_view(entry);
+                    let view = edit_view(entry, edit);
                     match edit.press_bar(entry.client(), (x, y), view) {
                         true => Some(EditOutcome::Moved),
                         false => Some(edit.click((x, y), extend, view)),
@@ -1197,7 +1204,7 @@ fn double_click(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
             }
             set_focus(window);
             let outcome = with_state(window, |entry, state| match state {
-                State::Edit(edit) => Some(edit.select_word((x, y), edit_view(entry))),
+                State::Edit(edit) => Some(edit.select_word((x, y), edit_view(entry, edit))),
                 _ => None,
             })
             .flatten();
@@ -1229,7 +1236,7 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
         State::Button(button) => {
             Effect::Button(button.pointer_moved(entry.client().contains(x, y)))
         }
-        State::Edit(edit) if captured => Effect::Edit(edit.drag((x, y), edit_view(entry))),
+        State::Edit(edit) if captured => Effect::Edit(edit.drag((x, y), edit_view(entry, edit))),
         State::ScrollBar(bar) if captured => {
             let (offset, length) = along(bar, entry, (x, y));
             Effect::Scroll(bar.pointer_moved(offset, length))
@@ -1265,7 +1272,7 @@ fn selection_message(window: usize, number: u32, wparam: usize, lparam: usize) -
         let State::Edit(edit) = state else {
             return (0, None);
         };
-        let visible = edit_view(entry);
+        let visible = edit_view(entry, edit);
         match number {
             code::EM_GETSEL => {
                 let (start, end) = edit.selection();
@@ -1295,8 +1302,46 @@ fn selection_message(window: usize, number: u32, wparam: usize, lparam: usize) -
     result
 }
 
-fn edit_view(entry: &Window) -> edit::View {
-    edit::view(entry.width as i32, entry.height as i32)
+fn edit_view(entry: &Window, edit: &Edit) -> edit::View {
+    edit.view_in(entry.width as i32, entry.height as i32)
+}
+
+fn text_rect_message(window: usize, number: u32, lparam: usize) -> usize {
+    let given = lparam as *mut super::user32::Win32Rect;
+    let answer = with_state(window, |entry, state| {
+        let State::Edit(edit) = state else {
+            return false;
+        };
+        match number {
+            code::EM_GETRECT if !given.is_null() => {
+                let rect = edit.text_rect(entry.width as i32, entry.height as i32);
+                // SAFETY: `EM_GETRECT`'s contract: `lParam` is a writable `RECT`.
+                unsafe {
+                    given.write_unaligned(super::user32::Win32Rect {
+                        left: rect.left,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                    })
+                };
+                false
+            }
+            code::EM_GETRECT => false,
+            _ => {
+                let rect = (!given.is_null()).then(|| {
+                    // SAFETY: `EM_SETRECT`'s contract: `lParam` is a readable `RECT` or null.
+                    let read = unsafe { given.read_unaligned() };
+                    Rect::new(read.left, read.top, read.right, read.bottom)
+                });
+                edit.set_text_rect(rect);
+                number == code::EM_SETRECT
+            }
+        }
+    });
+    if answer == Some(true) {
+        invalidate(window);
+    }
+    0
 }
 
 fn line_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
@@ -1333,7 +1378,7 @@ fn line_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usi
                 )
             }
             _ => {
-                edit.scroll_to_caret(edit_view(entry));
+                edit.scroll_to_caret(edit_view(entry, edit));
                 (0, Some(EditOutcome::Moved))
             }
         }
@@ -1420,7 +1465,7 @@ fn key(window: usize, down: bool, virtual_key: usize) {
         State::Edit(edit) if down => Effect::Edit(Some(edit.key_with(
             virtual_key as u32,
             modifiers,
-            edit_view(entry),
+            edit_view(entry, edit),
         ))),
         State::ScrollBar(bar) if down => Effect::Scroll(bar.key(virtual_key as u32)),
         State::ListBox(list) if down => {
@@ -1601,7 +1646,7 @@ pub fn start_edit_text(window: usize, text: &[u16]) {
 pub fn caret_to_end(window: usize) {
     with_state(window, |entry, state| {
         if let State::Edit(edit) = state {
-            edit.caret_to_end(edit_view(entry));
+            edit.caret_to_end(edit_view(entry, edit));
         }
     });
     invalidate(window);

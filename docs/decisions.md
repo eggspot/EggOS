@@ -28768,3 +28768,15 @@ the license, by an explicit instruction recorded here.
   `DispatchMessage` takes that timer before the program's procedure, so the program never
   sees it.
 - **Not yet.** Building and running; copying scrolled pixels; `SW_SMOOTHSCROLL`.
+
+
+## D689 Windows edits' formatting rectangle: `EM_GETRECT`, `EM_SETRECT` and `EM_SETRECTNP` (M15 Windows; follow-up of D341; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Windows' documented edit behaviour)
+- **Decision.** An edit keeps an optional formatting rectangle (`Edit::text_rect`,
+  `set_text_rect`), in its own client coordinates. `EM_GETRECT` answers it, or by default the
+  text area inside the border (4 px in from the sides; 2 px down for a multi-line edit, the
+  middle cell row for a single-line one). `EM_SETRECT` and `EM_SETRECTNP` set it (a null
+  `lParam` restores the default); `EM_SETRECT` repaints, `EM_SETRECTNP` does not. What the
+  edit shows (`Edit::view_in`: cells across and whole lines down, so where lines wrap),
+  where it paints its text and caret, and where a click lands all follow the rectangle.
+- **Not yet.** Building and running; `EM_SETRECT`'s `wParam` 1 (a rectangle relative to the
+  current one); `EM_SETMARGINS`.

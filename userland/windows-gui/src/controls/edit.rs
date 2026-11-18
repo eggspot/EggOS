@@ -78,6 +78,7 @@ pub struct Edit {
     /// Whether a multi-line edit wraps its lines (no `ES_AUTOHSCROLL`, D351).
     pub wraps: bool,
     wrap_cells: usize,
+    format: Option<Rect>,
     /// Whether it draws a vertical and a horizontal scroll bar inside its border
     /// (`WS_VSCROLL`, `WS_HSCROLL` on a multi-line edit, D351).
     pub bars: (bool, bool),
@@ -130,6 +131,7 @@ impl Edit {
             modified: false,
             wraps: false,
             wrap_cells: 0,
+            format: None,
             bars: (false, false),
         }
     }
@@ -162,6 +164,35 @@ impl Edit {
                 .cells
                 .saturating_sub(if self.bars.0 { BAR_CELLS } else { 0 }),
             rows: view.rows.saturating_sub(usize::from(self.bars.1)).max(1),
+        }
+    }
+
+    /// The formatting rectangle in an edit `width` by `height`, from its top left
+    /// (`EM_GETRECT`): the one `EM_SETRECT` gave, else the text area inside the border.
+    pub fn text_rect(&self, width: i32, height: i32) -> Rect {
+        self.format.unwrap_or_else(|| match self.multiline {
+            true => Rect::new(TEXT_INSET, LINES_TOP, width - TEXT_INSET, height - LINES_TOP),
+            false => {
+                let top = cell_top(0, height);
+                Rect::new(TEXT_INSET, top, width - TEXT_INSET, top + CELL_HEIGHT)
+            }
+        })
+    }
+
+    /// `EM_SETRECT`: the text goes in `rect`, from the edit's top left; `None` is the text
+    /// area inside the border again.
+    pub fn set_text_rect(&mut self, rect: Option<Rect>) {
+        self.format = rect.map(|rect| rect.normalised());
+    }
+
+    /// What an edit `width` by `height` shows in its formatting rectangle.
+    pub fn view_in(&self, width: i32, height: i32) -> View {
+        match self.format {
+            None => view(width, height),
+            Some(rect) => View {
+                cells: (rect.width().max(0) / CELL_WIDTH) as usize,
+                rows: (rect.height().max(0) / CELL_HEIGHT).max(1) as usize,
+            },
         }
     }
 
@@ -687,11 +718,12 @@ impl Edit {
     }
 
     fn position_at(&self, (x, y): (i32, i32)) -> usize {
-        let cells = ((x - TEXT_INSET + CELL_WIDTH / 2).max(0) / CELL_WIDTH) as usize;
+        let (inset, lines_top) = self.format.map_or((TEXT_INSET, LINES_TOP), |rect| (rect.left, rect.top));
+        let cells = ((x - inset + CELL_WIDTH / 2).max(0) / CELL_WIDTH) as usize;
         if !self.multiline {
             return (self.offset + cells).min(self.length);
         }
-        let row = ((y - LINES_TOP).max(0) / CELL_HEIGHT) as usize;
+        let row = ((y - lines_top).max(0) / CELL_HEIGHT) as usize;
         let line = (self.top + row).min(self.line_count() - 1);
         let start = self.line_index(line).unwrap_or(self.length);
         (start + self.offset + cells).min(self.line_end_at(start))
@@ -913,7 +945,8 @@ pub fn paint(
         ring(surface, rect.inset(DARK_FOCUS_INSET), palette.focus);
     }
     surface.clip_to(rect.inset(1));
-    let shown = edit.inner(view(rect.width(), rect.height()));
+    let shown = edit.inner(edit.view_in(rect.width(), rect.height()));
+    let text = edit.text_rect(rect.width(), rect.height()).offset(rect.left, rect.top);
     let selection_shown = look.enabled && (look.focused || edit.keep_selection);
     let run = Run {
         colour,
@@ -921,10 +954,10 @@ pub fn paint(
         password: edit.password,
         palette,
     };
-    let left = rect.left + TEXT_INSET;
+    let left = text.left;
     match edit.multiline {
         false => {
-            let top = cell_top(rect.top, rect.height());
+            let top = text.top;
             let first = edit.offset.min(edit.length);
             paint_run(
                 surface,
@@ -946,7 +979,7 @@ pub fn paint(
                     break;
                 };
                 let end = edit.line_end_at(line_start);
-                let top = rect.top + LINES_TOP + row as i32 * CELL_HEIGHT;
+                let top = text.top + row as i32 * CELL_HEIGHT;
                 let first = (line_start + edit.offset).min(end);
                 paint_run(surface, (left, top), edit, (first, end), shown.cells, run);
                 let next = edit.next_line_start(line_start);
@@ -968,7 +1001,7 @@ pub fn paint(
             let row = line.wrapping_sub(edit.top);
             if caret_shown && row < shown.rows && column >= edit.offset {
                 let x = left + (column - edit.offset) as i32 * CELL_WIDTH;
-                let top = rect.top + LINES_TOP + row as i32 * CELL_HEIGHT;
+                let top = text.top + row as i32 * CELL_HEIGHT;
                 surface.fill(Rect::sized(x, top, 1, CELL_HEIGHT), palette.caret);
             }
         }
@@ -988,6 +1021,21 @@ mod tests {
         for unit in text.encode_utf16() {
             edit.character(u32::from(unit), visible);
         }
+    }
+
+    #[test]
+    fn the_formatting_rectangle_sets_what_the_edit_shows() {
+        let mut edit = Edit::new();
+        edit.multiline = true;
+        assert_eq!(edit.text_rect(200, 100), Rect::new(4, 2, 196, 98));
+        assert_eq!(edit.view_in(200, 100), view(200, 100));
+        edit.set_text_rect(Some(Rect::new(90, 50, 10, 10)));
+        assert_eq!(edit.text_rect(200, 100), Rect::new(10, 10, 90, 50));
+        let shown = edit.view_in(200, 100);
+        assert_eq!(shown.cells, (80 / CELL_WIDTH) as usize);
+        assert_eq!(shown.rows, ((40 / CELL_HEIGHT).max(1)) as usize);
+        edit.set_text_rect(None);
+        assert_eq!(edit.view_in(200, 100), view(200, 100));
     }
 
     #[test]
