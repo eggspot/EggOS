@@ -561,7 +561,9 @@ fn fchs_negates_st0_in_the_state_block() {
 
 #[test]
 fn every_x87_form_lowers() {
-    let sequences: [&[u8]; 46] = [
+    let sequences: [&[u8]; 48] = [
+        &[0xD9, 0xE4],
+        &[0xD9, 0xE5],
         &[0xDA, 0x00],
         &[0xDE, 0x0C, 0x24],
         &[0xDA, 0x18],

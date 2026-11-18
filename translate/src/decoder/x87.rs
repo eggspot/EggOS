@@ -129,6 +129,8 @@ fn register_form(opcode: u8, modrm: u8) -> Result<Form, DecodeErrorKind> {
             (0xD9, 0xEC) => alone(M::Fldlg2),
             (0xD9, 0xED) => alone(M::Fldln2),
             (0xD9, 0xEE) => alone(M::Fldz),
+            (0xD9, 0xE4) => alone(M::Ftst),
+            (0xD9, 0xE5) => alone(M::Fxam),
             (0xD9, 0xFA) => alone(M::Fsqrt),
             (0xD9, 0xFC) => alone(M::Frndint),
             (0xDA, 0xE9) => alone(M::Fucompp),

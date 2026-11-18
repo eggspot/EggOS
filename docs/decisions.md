@@ -28881,3 +28881,15 @@ the license, by an explicit instruction recorded here.
   `fyl2x`, `fyl2xp1` (they need a call out of translated code to our own routines, which the
   code generator does not have yet); `fprem`, `fprem1`, `fscale`, `fxtract`, `fxam`, `ftst`;
   `fnstenv`, `fldenv`, `fnsave`, `frstor`.
+
+
+## D697 Translation: `ftst` and `fxam` (M16 translation; follow-up of D191 and D696; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from Intel's SDM)
+- **Decision.** `D9 E4` (`ftst`) compares `st(0)` with +0.0 and sets C3, C2 and C0 as `fcom`
+  does (greater 000, less 001, equal 100, unordered 111), C1 cleared; the compare-to-status
+  code is now shared (`x87_status_from_compare`). `D9 E5` (`fxam`) classifies `st(0)` by
+  three floating-point compares of its magnitude and its sign bit, all inline: C1 is the sign,
+  and C3 C2 C0 are 001 for a NaN, 010 for a normal number, 011 for an infinity, 100 for a
+  zero and 110 for a denormal. The guest's flags are saved around the compares when live.
+- **Deviation.** The translation keeps no tag word, so `fxam` never answers "empty" (101); a
+  program that examines an empty register sees its stale value classified.
+- **Not yet.** Building and running; the tag word.

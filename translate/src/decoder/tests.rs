@@ -956,6 +956,8 @@ fn x87_memory_and_register_forms_decode() {
         &[at(Gpr::RAX, 0, Width::Qword)],
     );
     check(&[0xD9, 0xC9], Mnemonic::Fxch, Width::Tbyte, &[st(1)]);
+    check(&[0xD9, 0xE4], Mnemonic::Ftst, Width::Tbyte, &[]);
+    check(&[0xD9, 0xE5], Mnemonic::Fxam, Width::Tbyte, &[]);
     check(
         &[0xDA, 0x00],
         Mnemonic::Fiadd,

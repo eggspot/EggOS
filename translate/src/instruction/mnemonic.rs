@@ -695,6 +695,10 @@ pub enum Mnemonic {
     Fidiv,
     /// `fidivr`.
     Fidivr,
+    /// `ftst`: compares `st(0)` with 0.0 into the condition codes.
+    Ftst,
+    /// `fxam`: classifies `st(0)` into the condition codes.
+    Fxam,
 }
 
 impl Mnemonic {

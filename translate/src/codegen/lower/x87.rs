@@ -32,6 +32,7 @@ const DOUBLE_EXPONENT_BITS: u8 = 11;
 const DOUBLE_FRACTION_BITS: u8 = 52;
 const DOUBLE_INFINITY: u64 = 0x7FF0_0000_0000_0000;
 const DOUBLE_QUIET_NAN: u64 = 0x7FF8_0000_0000_0000;
+const SMALLEST_NORMAL_DOUBLE: u64 = 0x0010_0000_0000_0000;
 const EXTENDED_EXPONENT_BITS: u8 = 15;
 const EXTENDED_INTEGER_BIT: u64 = 1 << 63;
 const EXTENDED_MINUS_DOUBLE_BIAS: i64 = 16383 - 1023;
@@ -95,6 +96,8 @@ impl Lowerer {
             M::Fidiv => self.x87_arithmetic(instruction, Scalar::Fdiv, false)?,
             M::Fidivr => self.x87_arithmetic(instruction, Scalar::Fdiv, true)?,
             M::Ficom | M::Ficomp => self.x87_compare_into_status(instruction)?,
+            M::Ftst => self.x87_test(),
+            M::Fxam => self.x87_examine(),
             M::Fchs => self.x87_unary(ScalarUnary::Fneg),
             M::Fabs => self.x87_unary(ScalarUnary::Fabs),
             M::Fsqrt => self.x87_unary(ScalarUnary::Fsqrt),
@@ -590,6 +593,51 @@ impl Lowerer {
     fn x87_compare_into_status(&mut self, instruction: &Instruction) -> Lowered {
         self.x87_source(instruction)?;
         self.x87_load_st0(V1);
+        self.x87_status_from_compare();
+        self.x87_pop(pops(instruction.mnemonic));
+        Ok(())
+    }
+
+    fn x87_test(&mut self) {
+        self.x87_top();
+        self.x87_load_st0(V1);
+        self.emit(simd::move_from_general(Size::X, V0, Reg::ZR));
+        self.x87_status_from_compare();
+    }
+
+    fn x87_examine(&mut self) {
+        self.x87_top();
+        self.x87_load_st0(V1);
+        let keep = self.live.any(Flags::NZCV);
+        if keep {
+            self.emit(encode::mrs_nzcv(T6));
+        }
+        self.emit(simd::scalar_unary(ScalarUnary::Fabs, Float::Double, V2, V1));
+        self.emit(simd::move_from_general(Size::X, V0, Reg::ZR));
+        self.emit(simd::fcmp(Float::Double, V2, V0));
+        self.emit(encode::cset(Size::W, T1, Cond::Gt));
+        self.move_immediate(Size::X, SCRATCH, DOUBLE_INFINITY);
+        self.emit(simd::move_from_general(Size::X, V0, SCRATCH));
+        self.emit(simd::fcmp(Float::Double, V2, V0));
+        self.emit(encode::cset(Size::W, T2, Cond::Cs));
+        self.move_immediate(Size::X, SCRATCH, SMALLEST_NORMAL_DOUBLE);
+        self.emit(simd::move_from_general(Size::X, V0, SCRATCH));
+        self.emit(simd::fcmp(Float::Double, V2, V0));
+        self.emit(encode::cset(Size::W, T0, Cond::Mi));
+        if keep {
+            self.emit(encode::msr_nzcv(T6));
+        }
+        self.emit(simd::move_to_general_low(Size::X, SCRATCH, V1));
+        self.shift_right(Size::X, SCRATCH, SCRATCH, 63);
+        self.emit(state_access(LoadStore::Ldrh, T5, state::X87_STATUS));
+        self.bfi(T5, T2, CONDITION_C0, 1);
+        self.bfi(T5, SCRATCH, CONDITION_C1, 1);
+        self.bfi(T5, T1, CONDITION_C2, 1);
+        self.bfi(T5, T0, CONDITION_C3, 1);
+        self.emit(state_access(LoadStore::Strh, T5, state::X87_STATUS));
+    }
+
+    fn x87_status_from_compare(&mut self) {
         let keep = self.live.any(Flags::NZCV);
         if keep {
             self.emit(encode::mrs_nzcv(T6));
@@ -617,8 +665,6 @@ impl Lowerer {
         self.bfi(T5, T2, CONDITION_C2, 1);
         self.bfi(T5, T1, CONDITION_C3, 1);
         self.emit(state_access(LoadStore::Strh, T5, state::X87_STATUS));
-        self.x87_pop(pops(instruction.mnemonic));
-        Ok(())
     }
 
     fn x87_load_control(&mut self, instruction: &Instruction) -> Lowered {
