@@ -883,6 +883,35 @@ fn set_event_state(handle: usize, state: bool) -> Bool {
     }
 }
 
+/// `WSACreateEvent`: a manual-reset event, not set (D714).
+pub(super) extern "efiapi" fn wsa_create_event() -> usize {
+    create_event(None, true, false)
+}
+
+/// `WSASetEvent`.
+pub(super) extern "efiapi" fn wsa_set_event(handle: usize) -> Bool {
+    set_event_state(handle, true)
+}
+
+/// `WSAResetEvent`.
+pub(super) extern "efiapi" fn wsa_reset_event(handle: usize) -> Bool {
+    set_event_state(handle, false)
+}
+
+/// `WSAWaitForMultipleEvents`: `WaitForMultipleObjectsEx` under Winsock's names, its results
+/// (`WSA_WAIT_EVENT_0`, `WSA_WAIT_TIMEOUT`, `WSA_WAIT_IO_COMPLETION`, `WSA_WAIT_FAILED`) the
+/// same numbers.
+pub(super) unsafe extern "efiapi" fn wsa_wait_for_multiple_events(
+    count: u32,
+    handles: *const usize,
+    wait_all: Bool,
+    milliseconds: u32,
+    alertable: Bool,
+) -> u32 {
+    // SAFETY: the same contract as `WaitForMultipleObjectsEx`, which the caller keeps.
+    unsafe { wait_for_multiple_objects_ex(count, handles, wait_all, milliseconds, alertable) }
+}
+
 extern "efiapi" fn set_event(handle: usize) -> Bool {
     set_event_state(handle, true)
 }
