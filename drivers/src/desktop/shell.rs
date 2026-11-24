@@ -916,6 +916,7 @@ impl Desktop {
             (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
             (PanelItem::Network, _) => self.network_indicator_name(),
             (PanelItem::Battery, _) => self.battery_indicator_name(),
+            (PanelItem::Tray(at), _) if self.tray_has_rich_popup(at) => None,
             (PanelItem::Tray(_) | PanelItem::TrayOverflow, _) => self.tray_name(item),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
             (PanelItem::DockApp(app), _) => Some(self.catalogue.name(app)),

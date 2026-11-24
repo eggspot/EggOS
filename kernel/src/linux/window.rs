@@ -743,6 +743,13 @@ pub fn ioctl<P: Platform>(
             };
             let hidden = flags & protocol::tray_flags::HIDDEN != 0;
             let remove = flags & protocol::tray_flags::REMOVE != 0;
+            let rich_popup = flags & protocol::tray_flags::RICH_POPUP != 0;
+            if flags & protocol::tray_flags::FOCUS != 0 {
+                on_windows::<P, _>(|desktop, _, damage, _| {
+                    desktop.focus_tray_icon(client, window, icon, damage)
+                })?;
+                return Ok(0);
+            }
             if flags & protocol::tray_flags::BALLOON != 0 {
                 let text = &text[..tip_length];
                 on_windows::<P, _>(|desktop, _, damage, events| {
@@ -755,7 +762,7 @@ pub fn ioctl<P: Platform>(
                     client,
                     window,
                     icon,
-                    (hidden, remove),
+                    (hidden, remove, rich_popup),
                     &text[..tip_length],
                     given,
                     damage,

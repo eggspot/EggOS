@@ -8,9 +8,9 @@
 use super::paint::{self, Canvas};
 use super::popups::with_shadow;
 use super::protocol::{
-    EventRecord, EventSink, TRAY_ICON_SIDE, TRAY_TIP_CAPACITY, WindowError, event,
+    EventRecord, EventSink, TRAY_ICON_SIDE, TRAY_PLACE, TRAY_TIP_CAPACITY, WindowError, event,
 };
-use super::shell::{PanelItem, TASKBAR_ITEM};
+use super::shell::{PanelItem, TASKBAR_ITEM, TOOLTIP_DELAY_MS};
 use super::windows::{cut_title, ellipsis};
 use super::{Action, Desktop, MENU_GAP, MENU_ITEM_HEIGHT, colour, contains};
 use crate::display::{Damage, Rect};
@@ -32,8 +32,16 @@ const WM_RBUTTONDOWN: i32 = 0x0204;
 const WM_RBUTTONUP: i32 = 0x0205;
 const WM_MBUTTONDOWN: i32 = 0x0207;
 const WM_MBUTTONUP: i32 = 0x0208;
+const WM_MOUSEMOVE: i32 = 0x0200;
+const WM_CONTEXTMENU: i32 = 0x007b;
+const NIN_KEYSELECT: i32 = 0x0401;
 const NIN_BALLOONSHOW: i32 = 0x0402;
+const NIN_BALLOONHIDE: i32 = 0x0403;
+const NIN_BALLOONTIMEOUT: i32 = 0x0404;
 const NIN_BALLOONUSERCLICK: i32 = 0x0405;
+const NIN_POPUPOPEN: i32 = 0x0406;
+const NIN_POPUPCLOSE: i32 = 0x0407;
+const PLACE_HALF_BITS: u32 = 16;
 const BALLOON_GLYPHS: usize = 36;
 /// The overflow popup's width (docs/ux/windows-tooltips-tray-v0.5.md section 11).
 pub const TRAY_OVERFLOW_WIDTH: u32 = 256;
@@ -49,6 +57,8 @@ struct TrayIcon {
     key: u32,
     order: u32,
     hidden: bool,
+    rich_popup: bool,
+    reported: Option<(u32, u32, u32)>,
     tip: [u8; TRAY_TIP_CAPACITY],
     tip_length: usize,
     pixels: Option<[u32; PIXELS]>,
@@ -65,6 +75,7 @@ pub(super) struct Tray {
     balloon: [u8; BALLOON_BYTES],
     balloon_length: usize,
     balloon_owner: Option<(usize, u32)>,
+    popup: Option<u8>,
 }
 
 impl Default for Tray {
@@ -78,21 +89,27 @@ impl Default for Tray {
             balloon: [0; BALLOON_BYTES],
             balloon_length: 0,
             balloon_owner: None,
+            popup: None,
         }
     }
 }
 
-/// Which mouse button a press on an icon was.
+/// Which mouse button a press on an icon was, or which key chose it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TrayButton {
     Left,
     Right,
     Middle,
+    /// Enter or Space on the icon (`NIN_KEYSELECT`).
+    KeySelect,
+    /// Shift+F10 or the Menu key on the icon (`WM_CONTEXTMENU`).
+    KeyMenu,
 }
 
 impl Desktop {
     /// `SET_TRAY_ICON` (D357): client `client`'s icon `key` of its window `window` added or
-    /// changed with `tip` (UTF-8) and its pixels (none: the generic tile), hidden or not, or
+    /// changed with `tip` (UTF-8) and its pixels (none: the generic tile), hidden or not, with
+    /// the program's own popup in place of the bar's tooltip (`rich_popup`, D719) or not, or
     /// removed with `remove`; the bar damaged.
     #[allow(clippy::too_many_arguments)]
     pub fn set_tray_icon(
@@ -100,7 +117,7 @@ impl Desktop {
         client: u16,
         window: u32,
         key: u32,
-        (hidden, remove): (bool, bool),
+        (hidden, remove, rich_popup): (bool, bool, bool),
         tip: &[u8],
         pixels: Option<&[u32; PIXELS]>,
         damage: &mut Damage,
@@ -119,6 +136,9 @@ impl Desktop {
             if let Some(at) = found {
                 self.close_tray_overflow(damage);
                 self.tray.icons[at] = None;
+                if self.tray.popup == Some(at as u8) {
+                    self.tray.popup = None;
+                }
             }
             self.damage_tray(damage);
             return Ok(());
@@ -132,11 +152,11 @@ impl Desktop {
                 .position(Option::is_none)
                 .ok_or(WindowError::TableFull)?,
         };
-        let order = match self.tray.icons[at] {
-            Some(icon) => icon.order,
+        let (order, reported) = match self.tray.icons[at] {
+            Some(icon) => (icon.order, icon.reported),
             None => {
                 self.tray.next_order += 1;
-                self.tray.next_order
+                (self.tray.next_order, None)
             }
         };
         let mut stored = [0u8; TRAY_TIP_CAPACITY];
@@ -147,6 +167,8 @@ impl Desktop {
             key,
             order,
             hidden,
+            rich_popup,
+            reported,
             tip: stored,
             tip_length: tip.len(),
             pixels: pixels.copied(),
@@ -170,6 +192,15 @@ impl Desktop {
                 if icon.is_some_and(|icon| icon.slot == slot) {
                     *icon = None;
                 }
+            }
+        }
+        if self.tray.popup.is_some_and(|at| self.tray.icons[usize::from(at)].is_none()) {
+            self.tray.popup = None;
+        }
+        if self.tray.balloon_owner.is_some_and(|(owner, _)| owner == slot) {
+            self.tray.balloon_owner = None;
+            if self.balloon_showing() {
+                self.close_notice(damage);
             }
         }
     }
@@ -266,6 +297,16 @@ impl Desktop {
     }
 
     /// The name of notification-area target `item`: its tip, which is also its tooltip.
+    /// Whether icon `at` shows its program's own popup instead of the bar's tooltip (D719).
+    pub(super) fn tray_has_rich_popup(&self, at: u8) -> bool {
+        self.tray
+            .icons
+            .get(usize::from(at))
+            .copied()
+            .flatten()
+            .is_some_and(|icon| icon.rich_popup)
+    }
+
     pub(super) fn tray_name(&self, item: PanelItem) -> Option<&str> {
         match item {
             PanelItem::Tray(at) => {
@@ -321,22 +362,177 @@ impl Desktop {
     }
 
     /// A press of `button` on notification-area icon `at`: the icon's window gets the button's
-    /// down and up messages at once, with the pointer's screen point.
+    /// down and up messages at once, with the pointer's screen point, or the key's one message;
+    /// a rich popup of the icon closes first.
     pub(super) fn tray_press(&mut self, at: u8, button: TrayButton, events: &mut dyn EventSink) {
+        if self.tray.icons.get(usize::from(at)).copied().flatten().is_none() {
+            return;
+        }
+        self.tray.last_pressed = Some(at);
+        if self.tray.popup == Some(at) {
+            self.tray.popup = None;
+            self.send_tray(at, NIN_POPUPCLOSE, events);
+        }
+        let messages: &[i32] = match button {
+            TrayButton::Left => &[WM_LBUTTONDOWN, WM_LBUTTONUP],
+            TrayButton::Right => &[WM_RBUTTONDOWN, WM_RBUTTONUP],
+            TrayButton::Middle => &[WM_MBUTTONDOWN, WM_MBUTTONUP],
+            TrayButton::KeySelect => &[NIN_KEYSELECT],
+            TrayButton::KeyMenu => &[WM_CONTEXTMENU],
+        };
+        for &message in messages {
+            self.send_tray(at, message, events);
+        }
+    }
+
+    fn send_tray(&mut self, at: u8, message: i32, events: &mut dyn EventSink) {
         let Some(icon) = self.tray.icons.get(usize::from(at)).copied().flatten() else {
             return;
         };
-        self.tray.last_pressed = Some(at);
-        let (down, up) = match button {
-            TrayButton::Left => (WM_LBUTTONDOWN, WM_LBUTTONUP),
-            TrayButton::Right => (WM_RBUTTONDOWN, WM_RBUTTONUP),
-            TrayButton::Middle => (WM_MBUTTONDOWN, WM_MBUTTONUP),
-        };
         let (x, y) = self.pointer;
-        for message in [down, up] {
-            let record = EventRecord::new(event::TRAY, 0, message, icon.key as i32, x, y);
+        let record = EventRecord::new(event::TRAY, 0, message, icon.key as i32, x, y);
+        self.send(icon.slot, record, events);
+    }
+
+    /// The pointer moved (D719): the icon under it gets `WM_MOUSEMOVE`, and an icon whose rich
+    /// popup is open gets `NIN_POPUPCLOSE` once the pointer is off it.
+    pub(super) fn tray_pointer_moved(&mut self, events: &mut dyn EventSink) {
+        let hover = self.panels.hover;
+        if let Some(at) = self.tray.popup
+            && hover != Some(PanelItem::Tray(at))
+        {
+            self.tray.popup = None;
+            self.send_tray(at, NIN_POPUPCLOSE, events);
+        }
+        if let Some(PanelItem::Tray(at)) = hover {
+            self.send_tray(at, WM_MOUSEMOVE, events);
+        }
+    }
+
+    /// The clock moved on (D719): a balloon whose notice timed out (`balloon_timed_out`, found
+    /// before the notice closed) tells its window `NIN_BALLOONTIMEOUT`, and one that went
+    /// otherwise (another notice in its place, its icon removed) `NIN_BALLOONHIDE`; an icon with
+    /// a rich popup the pointer rested on gets `NIN_POPUPOPEN`; and each icon whose place in the
+    /// bar changed has it reported.
+    pub(super) fn tick_tray(
+        &mut self,
+        balloon_timed_out: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
+        self.tick_tray_balloon(balloon_timed_out, damage, events);
+        self.tick_tray_popup(events);
+        self.report_tray_places(events);
+    }
+
+    fn tick_tray_balloon(
+        &mut self,
+        balloon_timed_out: bool,
+        damage: &mut Damage,
+        events: &mut dyn EventSink,
+    ) {
+        let Some((slot, key)) = self.tray.balloon_owner else {
+            return;
+        };
+        let icon_there = self
+            .tray
+            .icons
+            .iter()
+            .flatten()
+            .any(|icon| icon.slot == slot && icon.key == key);
+        let showing = self.balloon_showing();
+        let message = match (balloon_timed_out, showing && icon_there) {
+            (true, _) => NIN_BALLOONTIMEOUT,
+            (false, false) => NIN_BALLOONHIDE,
+            (false, true) => return,
+        };
+        if showing {
+            self.close_notice(damage);
+        }
+        self.tray.balloon_owner = None;
+        let (x, y) = self.pointer;
+        let record = EventRecord::new(event::TRAY, 0, message, key as i32, x, y);
+        self.send(slot, record, events);
+    }
+
+    fn tick_tray_popup(&mut self, events: &mut dyn EventSink) {
+        let Some(PanelItem::Tray(at)) = self.panels.hover else {
+            return;
+        };
+        if self.tray.popup == Some(at) {
+            return;
+        }
+        let rich = self
+            .tray
+            .icons
+            .get(usize::from(at))
+            .copied()
+            .flatten()
+            .is_some_and(|icon| icon.rich_popup);
+        let rested = self.now_ms.wrapping_sub(self.panels.hover_since_ms) >= TOOLTIP_DELAY_MS;
+        let blocked =
+            self.panels.tooltip_spent || self.tray_overflow_open() || self.shell_menu_open();
+        if !rich || !rested || blocked {
+            return;
+        }
+        self.tray.popup = Some(at);
+        self.send_tray(at, NIN_POPUPOPEN, events);
+    }
+
+    fn report_tray_places(&mut self, events: &mut dyn EventSink) {
+        let mut places = [None; MOST_TRAY_ICONS];
+        let mut overflow = None;
+        self.for_each_tray_item(|item, rect| match item {
+            PanelItem::Tray(at) => places[usize::from(at)] = Some(rect),
+            PanelItem::TrayOverflow => overflow = Some(rect),
+            _ => {}
+        });
+        for (at, place) in places.iter().enumerate() {
+            let Some(icon) = self.tray.icons[at] else {
+                continue;
+            };
+            let shown = match icon.hidden {
+                true => None,
+                false => place.or(overflow),
+            };
+            let reported = shown.map_or((0, 0, 0), |rect| (rect.x, rect.y, rect.width));
+            if icon.reported == Some(reported) {
+                continue;
+            }
+            if let Some(stored) = self.tray.icons[at].as_mut() {
+                stored.reported = Some(reported);
+            }
+            let (x, y, side) = reported;
+            let record = EventRecord::new(
+                event::TRAY,
+                0,
+                TRAY_PLACE,
+                icon.key as i32,
+                x | (side << PLACE_HALF_BITS),
+                y | (side << PLACE_HALF_BITS),
+            );
             self.send(icon.slot, record, events);
         }
+    }
+
+    /// `SET_TRAY_ICON` with `FOCUS` (D719, `NIM_SETFOCUS`): the bar's keyboard focus goes to
+    /// client `client`'s icon `key`, or to the overflow button when the icon is in its popup.
+    pub fn focus_tray_icon(
+        &mut self,
+        client: u16,
+        window: u32,
+        key: u32,
+        damage: &mut Damage,
+    ) -> Result<(), WindowError> {
+        self.owned(client, window)?;
+        let at = self
+            .tray
+            .icons
+            .iter()
+            .position(|icon| icon.is_some_and(|icon| icon.client == client && icon.key == key))
+            .ok_or(WindowError::Invalid)?;
+        self.focus_panel_item(PanelItem::Tray(at as u8), PanelItem::TrayOverflow, damage);
+        Ok(())
     }
 }
 
@@ -545,17 +741,17 @@ impl Desktop {
             }
             key::ENTER | key::KEYPAD_ENTER | key::SPACE => {
                 if let Some(index) = hover {
-                    self.press_tray_overflow_row(index, TrayButton::Left, damage, events);
+                    self.press_tray_overflow_row(index, TrayButton::KeySelect, damage, events);
                 }
             }
             key::F10 if shifted => {
                 if let Some(index) = hover {
-                    self.press_tray_overflow_row(index, TrayButton::Right, damage, events);
+                    self.press_tray_overflow_row(index, TrayButton::KeyMenu, damage, events);
                 }
             }
             key::COMPOSE => {
                 if let Some(index) = hover {
-                    self.press_tray_overflow_row(index, TrayButton::Right, damage, events);
+                    self.press_tray_overflow_row(index, TrayButton::KeyMenu, damage, events);
                 }
             }
             _ => {}
@@ -672,12 +868,21 @@ impl Desktop {
         if !known {
             return Err(WindowError::Invalid);
         }
+        let (x, y) = self.pointer;
         if text.is_empty() {
             if self.tray.balloon_owner == Some((slot, key)) {
                 self.close_notice(damage);
                 self.tray.balloon_owner = None;
+                let record = EventRecord::new(event::TRAY, 0, NIN_BALLOONHIDE, key as i32, x, y);
+                self.send(slot, record, events);
             }
             return Ok(());
+        }
+        if let Some((owner, owner_key)) = self.tray.balloon_owner
+            && (owner, owner_key) != (slot, key)
+        {
+            let record = EventRecord::new(event::TRAY, 0, NIN_BALLOONHIDE, owner_key as i32, x, y);
+            self.send(owner, record, events);
         }
         let mut length = 0;
         for (glyphs, character) in text.chars().enumerate() {
@@ -697,7 +902,6 @@ impl Desktop {
         self.tray.balloon_length = length;
         self.tray.balloon_owner = Some((slot, key));
         self.show_balloon_notice(damage);
-        let (x, y) = self.pointer;
         let record = EventRecord::new(event::TRAY, 0, NIN_BALLOONSHOW, key as i32, x, y);
         self.send(slot, record, events);
         Ok(())

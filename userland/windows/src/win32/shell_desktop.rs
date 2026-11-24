@@ -5,8 +5,9 @@
 //! on Windows programs' windows yet, so no such block comes. Icons are not read from files yet
 //! (`ExtractIconW` finds none). `Shell_NotifyIconW` puts a program's notification-area icons in
 //! the bar (D357, `docs/ux/windows-tooltips-tray-v0.5.md` sections 11 to 13) and posts the
-//! pointer's presses on them to the icon's window as its callback message, packed by the
-//! icon's version.
+//! pointer's presses, double clicks and moves on them, the keyboard's choices and the balloon
+//! and popup messages to the icon's window as its callback message, packed by the icon's
+//! version (D719); `Shell_NotifyIconGetRect` answers the place the bar reported.
 
 use super::gui::with;
 use super::{Bool, FALSE, SpinLock, TRUE, error, fail, heap};
@@ -128,6 +129,7 @@ const NIF_ICON: u32 = 0x02;
 const NIF_TIP: u32 = 0x04;
 const NIF_STATE: u32 = 0x08;
 const NIF_INFO: u32 = 0x10;
+const NIF_SHOWTIP: u32 = 0x80;
 const DATA_INFO: usize = 304;
 const DATA_INFO_TITLE: usize = 820;
 const INFO_UNITS: usize = 256;
@@ -135,9 +137,25 @@ const INFO_TITLE_UNITS: usize = 64;
 const TRAY_BALLOON: u32 = 4;
 const NIS_HIDDEN: u32 = 0x01;
 const NIN_SELECT: u32 = 0x0400;
+const NIN_KEYSELECT: u32 = 0x0401;
+const NIN_POPUPOPEN: u32 = 0x0406;
+const NIN_POPUPCLOSE: u32 = 0x0407;
+const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
+const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_RBUTTONUP: u32 = 0x0205;
+const WM_MBUTTONDOWN: u32 = 0x0207;
+const DOUBLE_CLICK_AFTER_DOWN: u32 = 2;
 const WM_CONTEXTMENU: u32 = 0x007b;
+const TRAY_PLACE: u32 = 0x0001_0000;
+const PLACE_HALF_BITS: u32 = 16;
+const PLACE_HALF_MASK: u32 = 0xffff;
+const S_OK: i32 = 0;
+const E_FAIL: i32 = 0x8000_4005_u32 as i32;
+const E_INVALIDARG: i32 = 0x8007_0057_u32 as i32;
+const IDENTIFIER_WINDOW: usize = 8;
+const IDENTIFIER_ID: usize = 16;
+const IDENTIFIER_MINIMUM_SIZE: usize = 20;
 const DATA_WINDOW: usize = 8;
 const DATA_ID: usize = 16;
 const DATA_FLAGS: usize = 20;
@@ -153,6 +171,8 @@ const MOST_ICONS: usize = 16;
 const TIP_BYTES: usize = TIP_UNITS * 3;
 const TRAY_HIDDEN: u32 = 1;
 const TRAY_REMOVE: u32 = 2;
+const TRAY_RICH_POPUP: u32 = 8;
+const TRAY_FOCUS: u32 = 16;
 const OPAQUE: u32 = 0xff00_0000;
 
 #[derive(Clone, Copy)]
@@ -164,12 +184,24 @@ struct TrayEntry {
     version: u32,
     icon: usize,
     hidden: bool,
+    show_tip: bool,
+    place: [i32; 4],
     tip: [u16; TIP_UNITS],
     tip_length: usize,
 }
 
+#[derive(Clone, Copy)]
+struct TrayClick {
+    key: u32,
+    down: u32,
+    time: u32,
+    point: (i32, i32),
+    doubled: bool,
+}
+
 static TRAY: SpinLock<[Option<TrayEntry>; MOST_ICONS]> = SpinLock::new([None; MOST_ICONS]);
 static NEXT_KEY: AtomicU32 = AtomicU32::new(1);
+static LAST_TRAY_CLICK: SpinLock<Option<TrayClick>> = SpinLock::new(None);
 
 unsafe fn field<T: Copy>(data: *const u8, offset: usize) -> T {
     // SAFETY: the callers' contract: a `NOTIFYICONDATAW` at least `offset + size_of::<T>()`
@@ -243,6 +275,9 @@ fn show(entry: &TrayEntry, remove: bool) -> Result<(), u32> {
     if entry.hidden {
         flags |= TRAY_HIDDEN;
     }
+    if entry.version == 4 && !entry.show_tip {
+        flags |= TRAY_RICH_POPUP;
+    }
     if remove {
         flags |= TRAY_REMOVE;
     }
@@ -283,6 +318,8 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
             version: 0,
             icon: 0,
             hidden: false,
+            show_tip: false,
+            place: [0; 4],
             tip: [0; TIP_UNITS],
             tip_length: 0,
         },
@@ -300,7 +337,13 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
             let _ = show(&entry, true);
             return TRUE;
         }
-        NIM_SETFOCUS => return TRUE,
+        NIM_SETFOCUS => {
+            let focused = server_window(entry.window).zip(super::gui::device().ok());
+            if let Some((server, device)) = focused {
+                let _ = device.set_tray_icon((server, entry.key, TRAY_FOCUS), "", None);
+            }
+            return TRUE;
+        }
         NIM_SETVERSION => {
             if size <= DATA_VERSION {
                 return fail(error::INVALID_PARAMETER, FALSE);
@@ -313,12 +356,14 @@ unsafe extern "efiapi" fn shell_notify_icon_w(message: u32, data: *const u8) -> 
             entry.version = version;
             if let Some(at) = found {
                 TRAY.with(|icons| icons[at] = Some(entry));
+                let _ = show(&entry, false);
             }
             return TRUE;
         }
         NIM_ADD | NIM_MODIFY => {}
         _ => return fail(error::INVALID_PARAMETER, FALSE),
     }
+    entry.show_tip = flags & NIF_SHOWTIP != 0;
     if flags & NIF_MESSAGE != 0 {
         // SAFETY: as above.
         entry.callback = unsafe { field::<u32>(data, DATA_CALLBACK) };
@@ -427,11 +472,98 @@ unsafe fn show_balloon(entry: &TrayEntry, data: *const u8) -> Result<(), u32> {
         .set_tray_icon((server, entry.key, TRAY_BALLOON), text, None)
         .map_err(|_| error::NOT_ENOUGH_MEMORY)
 }
-/// A press the server reported on icon `key` (D357): the icon's callback message posted to its
-/// window, packed by its version: `uID` and the message for versions 0 and 3 (3 adds
-/// `NIN_SELECT` after a left button's up), the point and `MAKELONG(message, uID)` for version
-/// 4, which adds `NIN_SELECT` after a left up and `WM_CONTEXTMENU` after a right up.
+unsafe extern "efiapi" fn shell_notify_icon_get_rect(
+    identifier: *const u8,
+    rect: *mut i32,
+) -> i32 {
+    if identifier.is_null() || rect.is_null() {
+        return E_INVALIDARG;
+    }
+    // SAFETY: the caller's `NOTIFYICONIDENTIFIER` starts with its size.
+    let size = unsafe { field::<u32>(identifier, 0) } as usize;
+    if size < IDENTIFIER_MINIMUM_SIZE {
+        return E_INVALIDARG;
+    }
+    // SAFETY: as above, the window and the id within the structure.
+    let (window, id) = unsafe {
+        (
+            field::<usize>(identifier, IDENTIFIER_WINDOW),
+            field::<u32>(identifier, IDENTIFIER_ID),
+        )
+    };
+    let place = TRAY.with(|icons| {
+        icons
+            .iter()
+            .flatten()
+            .find(|icon| icon.window == window && icon.id == id)
+            .map(|icon| icon.place)
+    });
+    let Some([left, top, width, height]) = place.filter(|place| place[2] > 0) else {
+        return E_FAIL;
+    };
+    for (at, value) in [left, top, left + width, top + height].into_iter().enumerate() {
+        // SAFETY: the caller's `RECT`, four `LONG`s.
+        unsafe { rect.add(at).write_unaligned(value) };
+    }
+    S_OK
+}
+
+fn record_place(key: u32, (packed_x, packed_y): (u32, u32)) {
+    let half = |packed: u32| {
+        (
+            (packed & PLACE_HALF_MASK) as i32,
+            (packed >> PLACE_HALF_BITS) as i32,
+        )
+    };
+    let ((left, width), (top, height)) = (half(packed_x), half(packed_y));
+    TRAY.with(|icons| {
+        if let Some(icon) = icons.iter_mut().flatten().find(|icon| icon.key == key) {
+            icon.place = [left, top, width, height];
+        }
+    });
+}
+
+fn is_second_click(key: u32, down: u32, point: (i32, i32)) -> bool {
+    let now = super::user32::now_ms();
+    LAST_TRAY_CLICK.with(|last| {
+        let second = last.is_some_and(|click| {
+            click.key == key
+                && click.down == down
+                && !click.doubled
+                && now.wrapping_sub(click.time) <= super::gui::DOUBLE_CLICK_MS
+                && (click.point.0 - point.0).abs() <= super::gui::DOUBLE_CLICK_DISTANCE
+                && (click.point.1 - point.1).abs() <= super::gui::DOUBLE_CLICK_DISTANCE
+        });
+        *last = Some(TrayClick {
+            key,
+            down,
+            time: now,
+            point,
+            doubled: second,
+        });
+        second
+    })
+}
+
+fn ends_double_click(key: u32, up: u32) -> bool {
+    LAST_TRAY_CLICK.with(|last| {
+        last.is_some_and(|click| click.key == key && click.doubled && click.down + 1 == up)
+    })
+}
+
+/// A message the server reported on icon `key` (D357, D719): the icon's callback message
+/// posted to its window, packed by its version: `uID` and the message for versions 0 and 3, the
+/// point and `MAKELONG(message, uID)` for version 4. A second press soon after the first, near
+/// it, is that button's double click. Versions 3 and 4 add `NIN_SELECT` after a left up that
+/// ends no double click and take the keyboard's choice as `NIN_KEYSELECT` and its menu key as
+/// `WM_CONTEXTMENU`, which version 0 gets as a left or right click; version 4 adds
+/// `WM_CONTEXTMENU` after a right up and gets `NIN_POPUPOPEN` and `NIN_POPUPCLOSE`. A
+/// `TRAY_PLACE` record is the icon's place in the bar, kept for `Shell_NotifyIconGetRect`.
 pub(super) fn tray_event(key: u32, message: u32, (x, y): (i32, i32)) {
+    if message == TRAY_PLACE {
+        record_place(key, (x as u32, y as u32));
+        return;
+    }
     let found = TRAY.with(|icons| icons.iter().flatten().find(|icon| icon.key == key).copied());
     let Some(entry) = found else {
         return;
@@ -450,11 +582,37 @@ pub(super) fn tray_event(key: u32, message: u32, (x, y): (i32, i32)) {
         };
         let _ = super::gui::post(entry.window, entry.callback, wparam, lparam);
     };
-    post(message);
-    match (entry.version, message) {
-        (3 | 4, WM_LBUTTONUP) => post(NIN_SELECT),
-        (4, WM_RBUTTONUP) => post(WM_CONTEXTMENU),
-        _ => {}
+    let modern = matches!(entry.version, 3 | 4);
+    match message {
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+            match is_second_click(key, message, (x, y)) {
+                true => post(message + DOUBLE_CLICK_AFTER_DOWN),
+                false => post(message),
+            }
+        }
+        WM_LBUTTONUP => {
+            post(message);
+            if modern && !ends_double_click(key, message) {
+                post(NIN_SELECT);
+            }
+        }
+        WM_RBUTTONUP => {
+            post(message);
+            if entry.version == 4 {
+                post(WM_CONTEXTMENU);
+            }
+        }
+        NIN_KEYSELECT | WM_CONTEXTMENU if modern => post(message),
+        NIN_KEYSELECT => {
+            post(WM_LBUTTONDOWN);
+            post(WM_LBUTTONUP);
+        }
+        WM_CONTEXTMENU => {
+            post(WM_RBUTTONDOWN);
+            post(WM_RBUTTONUP);
+        }
+        NIN_POPUPOPEN | NIN_POPUPCLOSE if entry.version != 4 => {}
+        _ => post(message),
     }
 }
 
@@ -464,4 +622,5 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"DragFinish" => drag_finish,
     b"ExtractIconW" => extract_icon_w,
     b"Shell_NotifyIconW" => shell_notify_icon_w,
+    b"Shell_NotifyIconGetRect" => shell_notify_icon_get_rect,
 ];

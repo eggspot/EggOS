@@ -1134,6 +1134,18 @@ impl Desktop {
             && y < rect.y + rect.height
     }
 
+    /// Whether the notice shows a balloon now.
+    pub(super) fn balloon_showing(&self) -> bool {
+        self.notice.is_some_and(|notice| notice.balloon)
+    }
+
+    /// Whether the notice shows a balloon whose time is up, so the next tick closes it.
+    pub(super) fn balloon_notice_due(&self) -> bool {
+        self.notice.is_some_and(|notice| {
+            notice.balloon && self.now_ms.wrapping_sub(notice.until_ms) as i32 >= 0
+        })
+    }
+
     pub(super) fn close_notice(&mut self, damage: &mut Damage) {
         if self.notice.take().is_some() {
             damage.add(with_shadow(self.notice_rect()));

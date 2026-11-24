@@ -501,7 +501,17 @@ pub mod tray_flags {
     pub const REMOVE: u32 = 2;
     /// The tip carries a balloon for the shell's notice instead (D364).
     pub const BALLOON: u32 = 4;
+    /// The program shows its own popup for the icon, so the bar shows no tooltip for it and
+    /// sends `NIN_POPUPOPEN` and `NIN_POPUPCLOSE` instead (D719).
+    pub const RICH_POPUP: u32 = 8;
+    /// The bar's keyboard focus goes to the icon (`NIM_SETFOCUS`, D719); nothing else changes.
+    pub const FOCUS: u32 = 16;
 }
+
+/// A `TRAY` event's message that is no Windows message but the icon's place in the bar
+/// (D719): its left edge in the low 16 bits of the third field and its width in the high 16,
+/// its top and height likewise in the fourth; all zero while the icon is not shown.
+pub const TRAY_PLACE: i32 = 0x0001_0000;
 
 /// The longest tip a notification-area icon carries, in bytes of UTF-8.
 pub const TRAY_TIP_CAPACITY: usize = 384;

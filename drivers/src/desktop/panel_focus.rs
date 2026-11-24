@@ -7,6 +7,7 @@ use super::paint::Canvas;
 use super::protocol::EventSink;
 use super::shell::PanelItem;
 use super::shortcuts::{Shortcut, shortcut};
+use super::tray::TrayButton;
 use super::{Action, Desktop, colour};
 use crate::display::{Damage, Rect};
 use crate::input::key;
@@ -121,10 +122,10 @@ impl Desktop {
         }
         let count = items.len();
         let index = focus.index.min(count - 1);
-        let back = modifiers.contains(Modifiers::SHIFT);
+        let shifted = modifiers.contains(Modifiers::SHIFT);
         let moved = match code {
             key::LEFT => Some((index + count - 1) % count),
-            key::TAB if back => Some((index + count - 1) % count),
+            key::TAB if shifted => Some((index + count - 1) % count),
             key::RIGHT | key::TAB => Some((index + 1) % count),
             _ => None,
         };
@@ -138,18 +139,46 @@ impl Desktop {
             );
             return Action::None;
         }
-        match code {
-            key::ENTER | key::KEYPAD_ENTER | key::SPACE => {
+        match (code, items[index].0) {
+            (key::ENTER | key::KEYPAD_ENTER | key::SPACE, PanelItem::Tray(at)) => {
+                self.end_panel_focus(damage);
+                self.tray_press(at, TrayButton::KeySelect, events);
+                Action::None
+            }
+            (key::COMPOSE | key::F10, PanelItem::Tray(at)) if code == key::COMPOSE || shifted => {
+                self.end_panel_focus(damage);
+                self.tray_press(at, TrayButton::KeyMenu, events);
+                Action::None
+            }
+            (key::ENTER | key::KEYPAD_ENTER | key::SPACE, _) => {
                 self.end_panel_focus(damage);
                 let action = self.panel_press(items[index].0, damage, events);
                 self.panel_release(damage);
                 action
             }
-            key::ESC => {
+            (key::ESC, _) => {
                 self.end_panel_focus(damage);
                 Action::None
             }
             _ => Action::None,
+        }
+    }
+
+    /// The bar's keyboard focus put on `item`, or on `fallback` when `item` is not one of the
+    /// bar's items now (D719).
+    pub(super) fn focus_panel_item(
+        &mut self,
+        item: PanelItem,
+        fallback: PanelItem,
+        damage: &mut Damage,
+    ) {
+        let items = self.panel_focus_items(false);
+        let index = items
+            .iter()
+            .position(|entry| entry.0 == item)
+            .or_else(|| items.iter().position(|entry| entry.0 == fallback));
+        if let Some(index) = index {
+            self.set_panel_focus(Some(PanelFocus { dock: false, index }), damage);
         }
     }
 

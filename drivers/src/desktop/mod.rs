@@ -2013,6 +2013,7 @@ impl Desktop {
         self.shell_menu_hover(x, y, damage);
         self.icon_menu_hover(x, y, damage);
         self.update_panel_hover(x, y, damage);
+        self.tray_pointer_moved(events);
         let hit = self.hit(x, y);
         let under = match (self.grab, self.drag.is_some() || self.resize.is_some()) {
             (Some(grab), _) => Some(grab),

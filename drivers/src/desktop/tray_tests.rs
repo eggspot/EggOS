@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 const CLIENT: u16 = 3;
 const WM_RBUTTONUP: i32 = 0x0205;
-const WM_LBUTTONUP: i32 = 0x0202;
+const NIN_KEYSELECT: i32 = 0x0401;
 
 #[derive(Default)]
 struct Recorded(Vec<(u16, EventRecord)>);
@@ -30,7 +30,7 @@ fn with_icons(profile: Profile, count: u32) -> (Desktop, WindowId) {
                 CLIENT,
                 window,
                 key,
-                (false, false),
+                (false, false, false),
                 b"Icon",
                 None,
                 &mut Damage::new(),
@@ -132,7 +132,7 @@ fn a_right_click_on_a_row_closes_the_popup_and_reaches_the_icon_s_window() {
 }
 
 #[test]
-fn keys_move_through_the_popup_and_enter_is_a_left_click() {
+fn keys_move_through_the_popup_and_enter_is_a_key_select() {
     let (mut desktop, _) = with_icons(Profile::Macos, 5);
     let button = overflow_button(&desktop).unwrap();
     press(&mut desktop, button::LEFT, button, &mut Recorded::default());
@@ -148,7 +148,7 @@ fn keys_move_through_the_popup_and_enter_is_a_left_click() {
         );
     }
     assert!(!desktop.tray_overflow_open());
-    assert!(tray_messages(&events).contains(&(WM_LBUTTONUP, 4)));
+    assert!(tray_messages(&events).contains(&(NIN_KEYSELECT, 4)));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn esc_closes_the_popup_and_a_removed_icon_closes_it_too() {
             CLIENT,
             u32::from(window),
             5,
-            (false, true),
+            (false, true, false),
             b"",
             None,
             &mut Damage::new(),

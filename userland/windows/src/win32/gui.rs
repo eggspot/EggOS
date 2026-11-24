@@ -41,8 +41,8 @@ const RECORDS_PER_READ: usize = 16;
 const NO_DESCRIPTOR: usize = usize::MAX;
 const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
 const CS_DBLCLKS: u32 = 0x8;
-const DOUBLE_CLICK_MS: u32 = 400;
-const DOUBLE_CLICK_DISTANCE: i32 = 4;
+pub(super) const DOUBLE_CLICK_MS: u32 = 400;
+pub(super) const DOUBLE_CLICK_DISTANCE: i32 = 4;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PendingCharacter {
