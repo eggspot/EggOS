@@ -232,7 +232,7 @@ pub fn set_up() -> bool {
             && layout::extend_views(runtime)
             && crate::uikit::define(runtime)
     });
-    defined && drawing::set_up()
+    defined && drawing::set_up() && core_graphics::set_up()
 }
 
 /// The address of the AppKit function, variable or class `name`, if the layer has it.

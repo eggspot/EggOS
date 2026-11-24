@@ -113,6 +113,47 @@ impl ClipMask {
         });
         self.coverage = kept;
     }
+
+    /// Softens the edges by averaging each pixel with those up to `radius` away, across and
+    /// then down, as a shadow's blur does.
+    pub fn blur(&mut self, radius: i32) {
+        let (width, height) = (self.area.width.max(0) as usize, self.area.height.max(0) as usize);
+        if radius <= 0 || width == 0 || height == 0 {
+            return;
+        }
+        let radius = radius as usize;
+        let mut line: Vec<u32> = Vec::new();
+        for row in 0..height {
+            line.clear();
+            line.extend((0..width).map(|x| u32::from(self.coverage[row * width + x])));
+            for (x, value) in box_average(&line, radius).into_iter().enumerate() {
+                self.coverage[row * width + x] = value;
+            }
+        }
+        for column in 0..width {
+            line.clear();
+            line.extend((0..height).map(|y| u32::from(self.coverage[y * width + column])));
+            for (y, value) in box_average(&line, radius).into_iter().enumerate() {
+                self.coverage[y * width + column] = value;
+            }
+        }
+    }
+}
+
+fn box_average(values: &[u32], radius: usize) -> Vec<u8> {
+    let window = (2 * radius + 1) as u32;
+    let mut sums = Vec::with_capacity(values.len() + 1);
+    sums.push(0u32);
+    for &value in values {
+        sums.push(sums[sums.len() - 1] + value);
+    }
+    (0..values.len())
+        .map(|index| {
+            let low = index.saturating_sub(radius);
+            let high = (index + radius + 1).min(values.len());
+            ((sums[high] - sums[low]) / window) as u8
+        })
+        .collect()
 }
 
 fn premultiplied(pixel: u32, alpha: u32) -> u32 {
@@ -428,6 +469,28 @@ impl Transform {
         }
     }
 
+    /// The transform undoing this one, or `None` when it squashes the plane flat.
+    pub fn inverse(&self) -> Option<Transform> {
+        let determinant = self.a * self.d - self.b * self.c;
+        if determinant.abs() < 1e-12 {
+            return None;
+        }
+        let (a, b, c, d) = (
+            self.d / determinant,
+            -self.b / determinant,
+            -self.c / determinant,
+            self.a / determinant,
+        );
+        Some(Transform {
+            a,
+            b,
+            c,
+            d,
+            tx: -(a * self.tx + c * self.ty),
+            ty: -(b * self.tx + d * self.ty),
+        })
+    }
+
     pub fn translated(&self, x: f64, y: f64) -> Transform {
         self.after(&Transform {
             tx: x,
@@ -525,6 +588,67 @@ impl Path {
         }
     }
 
+    /// A quadratic curve from the current point through `control` to `end`, as the cubic it is.
+    pub fn quad_to(&mut self, control: Point, end: Point) {
+        let Some(from) = self.current else {
+            return self.move_to(end);
+        };
+        let toward = |a: Point, b: Point| {
+            Point::new(a.x + (b.x - a.x) * 2.0 / 3.0, a.y + (b.y - a.y) * 2.0 / 3.0)
+        };
+        self.curve_to(toward(from, control), toward(end, control), end);
+    }
+
+    /// Adds every subpath of `other`, each point under `transform`.
+    pub fn append(&mut self, other: &Path, transform: &Transform) {
+        for (points, closed) in other.subpaths() {
+            let Some((&first, rest)) = points.split_first() else {
+                continue;
+            };
+            self.move_to(transform.apply(first));
+            for &point in rest {
+                self.line_to(transform.apply(point));
+            }
+            if closed {
+                self.close();
+            }
+        }
+    }
+
+    /// The smallest rectangle holding every point: left, bottom, width and height.
+    pub fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        let first = *self.points.first()?;
+        let (mut low, mut high) = (first, first);
+        for point in &self.points {
+            low = Point::new(low.x.min(point.x), low.y.min(point.y));
+            high = Point::new(high.x.max(point.x), high.y.max(point.y));
+        }
+        Some((low.x, low.y, high.x - low.x, high.y - low.y))
+    }
+
+    /// Whether `point` is inside the path filled with the even-odd rule when `even_odd`, else
+    /// non-zero.
+    pub fn contains(&self, point: Point, even_odd: bool) -> bool {
+        let mut winding = 0;
+        for (points, _) in self.subpaths() {
+            let count = points.len();
+            for index in 0..count {
+                let (a, b) = (points[index], points[(index + 1) % count]);
+                if (a.y <= point.y) == (b.y <= point.y) {
+                    continue;
+                }
+                let x = a.x + (point.y - a.y) * (b.x - a.x) / (b.y - a.y);
+                if x > point.x {
+                    winding += if b.y > a.y { 1 } else { -1 };
+                }
+            }
+        }
+        match even_odd {
+            true => winding % 2 != 0,
+            false => winding != 0,
+        }
+    }
+
     /// An arc of the circle at `centre` with `radius` from angle `start` to `end` (radians),
     /// clockwise or not, joined to the current point by a line, all under `transform`.
     pub fn arc(
@@ -597,6 +721,39 @@ impl Path {
         self.line_to(transform.apply(Point::new(x + width, y)));
         self.line_to(transform.apply(Point::new(x + width, y + height)));
         self.line_to(transform.apply(Point::new(x, y + height)));
+        self.close();
+    }
+
+    /// A rectangle whose corners are quarter ellipses `corner` wide and tall, as
+    /// `CGPathAddRoundedRect` draws.
+    pub fn rounded_rect(
+        &mut self,
+        transform: &Transform,
+        (x, y, width, height): (f64, f64, f64, f64),
+        (corner_width, corner_height): (f64, f64),
+    ) {
+        let rx = corner_width.clamp(0.0, fabs(width) / 2.0);
+        let ry = corner_height.clamp(0.0, fabs(height) / 2.0);
+        if rx == 0.0 || ry == 0.0 {
+            return self.rect(transform, (x, y, width, height));
+        }
+        let centres = [
+            (x + width - rx, y + ry),
+            (x + width - rx, y + height - ry),
+            (x + rx, y + height - ry),
+            (x + rx, y + ry),
+        ];
+        let steps = ELLIPSE_SEGMENTS / 4;
+        for (quarter, &(cx, cy)) in centres.iter().enumerate() {
+            for step in 0..=steps {
+                let angle = TAU * (quarter as f64 - 1.0 + step as f64 / steps as f64) / 4.0;
+                let point = transform.apply(Point::new(cx + rx * cos(angle), cy + ry * sin(angle)));
+                match quarter == 0 && step == 0 {
+                    true => self.move_to(point),
+                    false => self.line_to(point),
+                }
+            }
+        }
         self.close();
     }
 
@@ -961,6 +1118,38 @@ mod tests {
         assert_eq!(row[1], 0xff);
         assert_eq!(row[8], 0xff);
         assert_eq!(row[9], 0);
+    }
+
+    #[test]
+    fn a_transform_and_its_inverse_cancel_out() {
+        let moved = Transform::IDENTITY.translated(5.0, -2.0).scaled(2.0, 4.0);
+        let back = moved.inverse().unwrap();
+        assert_eq!(back.apply(moved.apply(Point::new(3.0, 7.0))), Point::new(3.0, 7.0));
+        assert_eq!(Transform::IDENTITY.scaled(0.0, 1.0).inverse(), None);
+    }
+
+    #[test]
+    fn a_blurred_mask_fades_at_its_edges() {
+        let mut mask = ClipMask::rect(Rect::new(0, 0, 9, 9));
+        let mut keep = Path::new();
+        keep.rect(&Transform::IDENTITY, (3.0, 3.0, 3.0, 3.0));
+        mask.intersect_path(&keep, 9, false);
+        mask.blur(1);
+        assert_eq!(mask.at(4, 4), 255);
+        assert!(mask.at(2, 4) > 0 && mask.at(2, 4) < 255);
+        assert_eq!(mask.at(0, 0), 0);
+    }
+
+    #[test]
+    fn a_path_knows_its_bounds_and_what_it_contains() {
+        let mut path = Path::new();
+        path.rect(&Transform::IDENTITY, (2.0, 3.0, 4.0, 5.0));
+        assert_eq!(path.bounds(), Some((2.0, 3.0, 4.0, 5.0)));
+        assert!(path.contains(Point::new(3.0, 4.0), false));
+        assert!(!path.contains(Point::new(7.0, 4.0), false));
+        let mut moved = Path::new();
+        moved.append(&path, &Transform::IDENTITY.translated(10.0, 0.0));
+        assert_eq!(moved.bounds(), Some((12.0, 3.0, 4.0, 5.0)));
     }
 
     #[test]

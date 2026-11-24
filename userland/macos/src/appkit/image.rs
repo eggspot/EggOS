@@ -1,12 +1,16 @@
 //! NSImage and NSImageView (D374, docs/ux/macos-gui-v0.3.md section 12): an image decoded once
 //! by our own `eggos-image` (PNG, JPEG, GIF, TIFF, BMP, `.ico`; D390) into premultiplied
-//! pixels, found by name in the bundle's resources or read from a file or data, drawn from `drawRect:` unscaled, cropped or scaled by nearest
-//! neighbour with a fraction of its alpha; and a view that shows one image in its frame by
-//! `imageScaling`, `imageAlignment` and `imageFrameStyle`, keeping the scaled pixels until
-//! the image, its pixels or the drawn size change. `lockFocus` points the drawing context at
-//! the image's own pixels until `unlockFocus`, and `TIFFRepresentation` writes them as an
-//! uncompressed TIFF (D727); `.icns` files decode through `eggos-image` too.
+//! pixels, found by name in the bundle's resources or read from a file or data, drawn from
+//! `drawRect:` unscaled, cropped or scaled by nearest neighbour with a fraction of its alpha;
+//! and a view that shows one image in its frame by `imageScaling`, `imageAlignment` and
+//! `imageFrameStyle`, keeping the scaled pixels until the image, its pixels or the drawn size
+//! change. `lockFocus` points the drawing context at the image's own pixels until
+//! `unlockFocus`, and `TIFFRepresentation` writes them as an uncompressed TIFF (D727); `.icns`
+//! files decode through `eggos-image` too. `CGImageForProposedRect:context:hints:` hands out a
+//! `CGImage` of the pixels, remade when they change, and `initWithCGImage:size:` makes an
+//! image from one (D739).
 
+use super::core_graphics::{self, CgImage};
 use super::{
     NSIMAGE, NSIMAGE_META, NSIMAGEVIEW, NSIMAGEVIEW_META, NSVIEW, drawing, store, store_copy,
     string, view, with_text,
@@ -41,6 +45,8 @@ struct ImageFields {
     name: Id,
     file_name: Id,
     generation: u32,
+    cg_image: usize,
+    cg_image_generation: u32,
 }
 
 #[repr(C)]
@@ -195,6 +201,7 @@ extern "C" fn init_with_size(this: Id, _: Sel, size: Size) -> Id {
 extern "C" fn dealloc(this: Id, _: Sel) {
     let fields = image(this);
     fields.pixels.free();
+    release_cg_image(fields);
     store(&mut fields.name, core::ptr::null_mut());
     store(&mut fields.file_name, core::ptr::null_mut());
     dispose(this);
@@ -250,6 +257,53 @@ extern "C" fn unlock_focus(_: Id, _: Sel) {
     }
     fields.generation = fields.generation.wrapping_add(1);
     objc_release(focus.image);
+}
+
+fn release_cg_image(fields: &mut ImageFields) {
+    if fields.cg_image != 0 {
+        core_graphics::image_release(fields.cg_image as *mut CgImage);
+        fields.cg_image = 0;
+    }
+}
+
+extern "C" fn cg_image_for_proposed_rect(
+    this: Id,
+    _: Sel,
+    _: *mut Frame,
+    _: Id,
+    _: Id,
+) -> *mut CgImage {
+    let fields = image(this);
+    if fields.cg_image != 0 && fields.cg_image_generation == fields.generation {
+        return fields.cg_image as *mut CgImage;
+    }
+    release_cg_image(fields);
+    if fields.width == 0 || fields.height == 0 {
+        return core::ptr::null_mut();
+    }
+    let made = core_graphics::new_image(fields.pixels.as_slice(), fields.width as usize);
+    fields.cg_image = made as usize;
+    fields.cg_image_generation = fields.generation;
+    made
+}
+
+extern "C" fn init_with_cg_image(this: Id, _: Sel, made: *mut CgImage, _: Size) -> Id {
+    let fields = image(this);
+    let copied = core_graphics::with_image_pixels(made, |pixels, width, height| {
+        let kept = pixels.iter().all(|&pixel| fields.pixels.push(pixel));
+        kept.then_some((width as u32, height as u32))
+    });
+    match copied.flatten() {
+        Some((width, height)) => {
+            fields.width = width;
+            fields.height = height;
+            this
+        }
+        None => {
+            objc_release(this);
+            core::ptr::null_mut()
+        }
+    }
 }
 
 extern "C" fn tiff_representation(this: Id, _: Sel) -> Id {
@@ -654,6 +708,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "lockFocus" => lock_focus,
         "unlockFocus" => unlock_focus,
         "TIFFRepresentation" => tiff_representation,
+        "CGImageForProposedRect:context:hints:" => cg_image_for_proposed_rect,
+        "initWithCGImage:size:" => init_with_cg_image,
         "setTemplate:" => ignore_word,
     ];
     let image_class_methods = methods![

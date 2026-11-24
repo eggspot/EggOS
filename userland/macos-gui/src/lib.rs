@@ -13,6 +13,7 @@ extern crate alloc;
 
 pub mod about;
 pub mod alert;
+pub mod bitmap;
 pub mod button;
 pub mod clicks;
 pub mod colour;
@@ -27,6 +28,7 @@ pub mod pasteboard;
 pub mod path;
 pub mod rtf;
 pub mod scroll_view;
+pub mod shading;
 pub mod slider;
 pub mod sound;
 pub mod table_view;
