@@ -136,7 +136,10 @@ impl FilesWindow {
             )
             .named(name.as_bytes())
             .valued(kind)
-            .flagged(when(self.selected == Some(index), flags::SELECTED));
+            .flagged(when(
+                self.selected == Some(index) || self.selection.contains(index),
+                flags::SELECTED,
+            ));
             if !tree.push(&item) {
                 return;
             }

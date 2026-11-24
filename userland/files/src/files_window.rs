@@ -39,6 +39,7 @@ use eggos_toolkit::damage::Damage;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::{Input, Modifiers, MouseButton, key};
 use eggos_toolkit::menu::{ContextMenu, Entry, Menu, MenuKey};
+use eggos_toolkit::table::{RowSet, SelectionChange};
 use eggos_toolkit::panel::{Panel, PanelResponse};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::PointerShape;
@@ -105,6 +106,7 @@ const WHEEL_ROWS: i32 = 3;
 const MAX_REQUESTS: usize = 4;
 const MAX_PLACES: usize = 10;
 const PROPERTIES_LINES: usize = 5;
+const SELECTION_WORDS: usize = crate::listing::MAX_ENTRIES.div_ceil(64);
 
 mod code {
     pub const N: u16 = 49;
@@ -323,6 +325,7 @@ struct Clip {
 #[allow(clippy::large_enum_variant)]
 enum Asked {
     DeletePermanently(Path),
+    DeleteSelectionPermanently,
     EmptyTrash,
     Properties,
     Working,
@@ -373,6 +376,9 @@ pub struct FilesWindow {
     rows_with_actions: alloc::vec::Vec<bool>,
     free_space: FreeSpace,
     selected: Option<usize>,
+    selection: RowSet<SELECTION_WORDS>,
+    anchor: Option<usize>,
+    deleting: alloc::vec::Vec<Path>,
     offset: i32,
     focus: Focus,
     place_ring: usize,
@@ -442,6 +448,9 @@ impl FilesWindow {
             rows_with_actions: alloc::vec::Vec::new(),
             free_space: FreeSpace::Unknown,
             selected: None,
+            selection: RowSet::EMPTY,
+            anchor: None,
+            deleting: alloc::vec::Vec::new(),
             offset: 0,
             focus: Focus::List,
             place_ring: 0,
@@ -519,9 +528,20 @@ impl FilesWindow {
         &self.listing
     }
 
-    /// The selected entry, by index in the listing.
+    /// The selected entry, by index in the listing: the current row, which the keys move from.
     pub fn selected(&self) -> Option<usize> {
         self.selected
+    }
+
+    /// Whether entry `index` is in the selection (D707): the current row and the rows Ctrl,
+    /// Super and Shift added.
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selection.contains(index)
+    }
+
+    /// How many entries are selected.
+    pub fn selection_count(&self) -> usize {
+        self.selection.count()
     }
 
     /// The text of the notice shown, if one is.
@@ -821,6 +841,12 @@ impl FilesWindow {
             .map(|index| self.is_installed_app(index) && self.offers_actions(files, index))
             .collect();
         self.selected = keep.and_then(|name| self.listing.find(name.as_bytes()));
+        let change = match self.selected {
+            Some(index) => SelectionChange::Only(index),
+            None => SelectionChange::Clear,
+        };
+        self.selection.apply(change, self.listing.len());
+        self.anchor = self.selected;
         if self
             .rename
             .is_some_and(|rename| self.listing.name(rename.index) != rename.original.as_bytes())
@@ -913,10 +939,36 @@ impl FilesWindow {
 
     fn select(&mut self, index: Option<usize>) {
         self.selected = index.filter(|&index| index < self.listing.len());
+        let change = match self.selected {
+            Some(index) => SelectionChange::Only(index),
+            None => SelectionChange::Clear,
+        };
+        self.selection.apply(change, self.listing.len());
+        self.anchor = self.selected;
         if let Some(index) = self.selected {
             self.keep_visible(index);
         }
         self.damage_middle();
+    }
+
+    /// Changes the selection as `change` says, `current` becoming the current row; the anchor a
+    /// range starts from moves there unless `keep_anchor` (docs/ux/toolkit-v0.6.md section 4.3).
+    fn change_selection(&mut self, change: SelectionChange, current: usize, keep_anchor: bool) {
+        if current >= self.listing.len() {
+            return;
+        }
+        self.selection.apply(change, self.listing.len());
+        self.selected = Some(current);
+        if !keep_anchor || self.anchor.is_none() {
+            self.anchor = Some(current);
+        }
+        self.keep_visible(current);
+        self.damage_middle();
+    }
+
+    /// The selected entries' indices, lowest first.
+    fn selected_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.listing.len()).filter(|&index| self.selection.contains(index))
     }
 
     fn go(&mut self, files: &mut impl Files, location: Location) {
@@ -1253,6 +1305,7 @@ impl FilesWindow {
         self.damage_middle();
         match asked {
             Asked::Working => {
+                self.deleting.clear();
                 if let Some(mut running) = self.running.take() {
                     running.job.cancel(files);
                     let verb = match running.job.work() {
@@ -1266,6 +1319,14 @@ impl FilesWindow {
                     ));
                     self.reload(files);
                 }
+            }
+            Asked::DeleteSelectionPermanently if button == 1 => {
+                let queued: alloc::vec::Vec<Path> = self
+                    .selected_indices()
+                    .filter_map(|index| self.entry_path(index))
+                    .collect();
+                self.deleting = queued;
+                self.delete_next_queued(files);
             }
             Asked::DeletePermanently(path) if button == 1 => {
                 let trashed = match self.is_trash() {
@@ -1577,6 +1638,21 @@ impl FilesWindow {
                 self.new_folder(files);
                 return;
             }
+            (code::A, true, false) if self.focus == Focus::List && !self.listing.is_empty() => {
+                let current = self.selected.unwrap_or(0);
+                let change = match shift {
+                    true => SelectionChange::Clear,
+                    false => SelectionChange::All,
+                };
+                self.change_selection(change, current, true);
+                return;
+            }
+            (key::SPACE, true, false) if self.focus == Focus::List => {
+                if let Some(current) = self.selected {
+                    self.change_selection(SelectionChange::Toggle(current), current, false);
+                }
+                return;
+            }
             (key::ENTER, false, true) | (code::I, true, false) => {
                 self.properties(files);
                 return;
@@ -1726,7 +1802,12 @@ impl FilesWindow {
             _ => None,
         };
         if let Some(index) = moved {
-            self.select(Some(index));
+            match (shift, self.anchor) {
+                (true, Some(anchor)) => {
+                    self.change_selection(SelectionChange::Range(anchor, index), index, true)
+                }
+                _ => self.select(Some(index)),
+            }
             return;
         }
         match code {
@@ -1877,8 +1958,24 @@ impl FilesWindow {
                 self.focus = Focus::List;
                 self.damage_all();
             }
-            match self.row_at(x, y) {
-                Some(index) => {
+            let held = self.modifiers.0;
+            let primary = held & (Modifiers::CTRL | Modifiers::SUPER) != 0;
+            let shift = self.modifiers.shift();
+            match (self.row_at(x, y), primary, shift) {
+                (Some(index), true, false) => {
+                    self.last_click = None;
+                    self.change_selection(SelectionChange::Toggle(index), index, false);
+                }
+                (Some(index), primary, true) => {
+                    self.last_click = None;
+                    let anchor = self.anchor.unwrap_or(index);
+                    let change = match primary {
+                        true => SelectionChange::AddRange(anchor, index),
+                        false => SelectionChange::Range(anchor, index),
+                    };
+                    self.change_selection(change, index, true);
+                }
+                (Some(index), ..) => {
                     let double = self.last_click.is_some_and(|(row, at)| {
                         row == index && self.now_ms.wrapping_sub(at) <= DOUBLE_CLICK_MS
                     });
@@ -1894,7 +1991,7 @@ impl FilesWindow {
                         }
                     }
                 }
-                None => {
+                (None, ..) => {
                     self.last_click = None;
                     self.select(None);
                 }
@@ -2419,6 +2516,10 @@ impl FilesWindow {
     }
 
     fn delete_selected(&mut self, files: &mut impl Files, permanently: bool) {
+        if self.selection.count() > 1 {
+            self.delete_selection(files, permanently);
+            return;
+        }
         let Some(index) = self.selected else {
             return;
         };
@@ -2467,6 +2568,75 @@ impl FilesWindow {
         let panel = Panel::new(&[first.as_str(), second], &["Cancel", "Delete"], Some(1), 0);
         self.panel = Some((panel, Asked::DeletePermanently(path)));
         self.damage_middle();
+    }
+
+    /// Deletes every selected entry (D707): into the Trash one after another where there is one,
+    /// otherwise after one question for them all, one delete job after another.
+    fn delete_selection(&mut self, files: &mut impl Files, permanently: bool) {
+        if self.on_share() {
+            self.show_notice(format_args!("The host share is read-only."));
+            return;
+        }
+        if self.selected_indices().any(|index| self.is_installed_app(index)) {
+            self.show_notice(format_args!(
+                "Apps are uninstalled one at a time: select only the app."
+            ));
+            return;
+        }
+        let count = self.selection.count();
+        if !permanently && !self.is_trash() && self.trashable() {
+            let mut paths = alloc::vec::Vec::new();
+            for index in self.selected_indices() {
+                if let Some(path) = self.entry_path(index) {
+                    paths.push(path);
+                }
+            }
+            let first = self.selected_indices().next().unwrap_or(0);
+            let mut failed = 0;
+            for path in &paths {
+                if self.trash.put(files, path.as_bytes(), self.clock).is_err() {
+                    failed += 1;
+                }
+            }
+            self.reload(files);
+            let next = first.min(self.listing.len().saturating_sub(1));
+            self.select((!self.listing.is_empty()).then_some(next));
+            if failed > 0 {
+                self.show_notice(format_args!(
+                    "Could not move {} to the Trash.",
+                    items_text(failed).as_str()
+                ));
+            }
+            return;
+        }
+        let mut first = Line::new();
+        let _ = write!(
+            first,
+            "Delete {} permanently?",
+            items_text(count).as_str()
+        );
+        let panel = Panel::new(
+            &[first.as_str(), "This cannot be undone."],
+            &["Cancel", "Delete"],
+            Some(1),
+            0,
+        );
+        self.panel = Some((panel, Asked::DeleteSelectionPermanently));
+        self.damage_middle();
+    }
+
+    /// Starts deleting the next path of the queue [`Self::delete_selection`] made, by path so
+    /// a reload meanwhile cannot change what it names: whether one was left.
+    fn delete_next_queued(&mut self, files: &mut impl Files) -> bool {
+        let Some(path) = self.deleting.pop() else {
+            return false;
+        };
+        let trashed = match self.is_trash() {
+            true => Name::from(path.file_name()),
+            false => None,
+        };
+        self.start(files, Job::delete(&path), After::Delete { trashed });
+        true
     }
 
     fn ask_to_empty(&mut self, files: &mut impl Files) {
@@ -2671,6 +2841,9 @@ impl FilesWindow {
             After::Delete { trashed } => {
                 if let Some(name) = trashed {
                     self.trash.forget(files, name.as_bytes());
+                }
+                if self.delete_next_queued(files) {
+                    return;
                 }
                 let index = self.selected;
                 self.reload(files);

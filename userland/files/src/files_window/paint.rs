@@ -321,7 +321,7 @@ impl FilesWindow {
         if row.intersection(&canvas.clip()).is_empty() {
             return;
         }
-        let chosen = self.selected == Some(index);
+        let chosen = self.selected == Some(index) || self.selection.contains(index);
         if chosen {
             canvas.fill(row, canvas.palette().selection);
             canvas.text(row.x + MARK_X, row.y + TEXT_TOP, ">", canvas.palette().accent, 1);

@@ -1357,3 +1357,54 @@ fn an_agent_reads_the_status_bar_s_texts() {
             .all(|element| element.id != FREE_SPACE_ELEMENT)
     );
 }
+
+#[test]
+fn ctrl_and_shift_clicks_select_several_entries_and_delete_trashes_them_all() {
+    let mut driver = Driver::new();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        driver.files.file(&format!("/home/root/{name}"), b"x", 1);
+    }
+    driver.press(code::F5, 0, '\0');
+    driver.select("a.txt");
+    driver.press(key::LEFT_CTRL, Modifiers::CTRL, '\0');
+    let c = driver.window.row_rect(driver.row("c.txt"));
+    driver.click(c);
+    assert_eq!(driver.window.selection_count(), 2);
+    driver.press(key::LEFT_CTRL, 0, '\0');
+    driver.press(key::LEFT_SHIFT, Modifiers::SHIFT, '\0');
+    let d = driver.window.row_rect(driver.row("d.txt"));
+    driver.click(d);
+    assert_eq!(driver.window.selection_count(), 2);
+    assert!(driver.window.is_selected(driver.row("c.txt")));
+    assert!(!driver.window.is_selected(driver.row("a.txt")));
+    assert_eq!(driver.window.selected(), Some(driver.row("d.txt")));
+    driver.press(key::LEFT_SHIFT, 0, '\0');
+    driver.press(code::A, Modifiers::CTRL, 'a');
+    assert_eq!(driver.window.selection_count(), 4);
+    driver.press(key::DELETE, 0, '\0');
+    assert!(driver.names().is_empty());
+    assert_eq!(
+        driver
+            .files
+            .contents("/home/root/.local/share/Trash/files/b.txt"),
+        Some(&b"x"[..])
+    );
+}
+
+#[test]
+fn several_entries_without_a_trash_are_deleted_after_one_question() {
+    let mut driver = Driver::new();
+    driver.files.file("/tmp/one", b"1", 1);
+    driver.files.file("/tmp/two", b"2", 1);
+    driver.place(Place::Tmp);
+    driver.select("one");
+    driver.press(key::DOWN, Modifiers::SHIFT, '\0');
+    assert_eq!(driver.window.selection_count(), 2);
+    driver.press(key::DELETE, 0, '\0');
+    assert_eq!(
+        driver.window.dialog_line(0),
+        Some("Delete 2 items permanently?")
+    );
+    driver.press(key::ENTER, 0, '\r');
+    assert!(driver.names().is_empty());
+}
