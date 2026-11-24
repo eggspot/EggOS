@@ -167,6 +167,22 @@ pub(super) fn string_value(path: &str, name: &[u16]) -> Option<Vec<u16>> {
     Some(units)
 }
 
+/// Writes `value` as the string value `name` of the key at `path`, making the key; false when
+/// it cannot (D745).
+pub(super) fn set_string_value(path: &str, name: &[u16], value: &[u16]) -> bool {
+    let Ok(path) = KeyPath::parse(path) else {
+        return false;
+    };
+    let data: Vec<u8> = value
+        .iter()
+        .chain(core::iter::once(&0))
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    with_registry(|registry| {
+        registry.create_key(&path).is_ok() && registry.set_value(&path, name, REG_SZ, data).is_ok()
+    })
+}
+
 fn key_of(handle: usize) -> Option<KeyPath> {
     let high = handle >> 32;
     if (high == 0 || high == 0xffff_ffff)

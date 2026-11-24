@@ -20,6 +20,7 @@ mod local_server;
 mod oleaut32;
 mod picture;
 mod proxy;
+mod type_info;
 
 pub(super) use local_server::{
     reported as reported_class_sockets, serve_ready as serve_class_requests,
@@ -163,6 +164,57 @@ static PROXY: Table<7> = Table([
     export_entry!(proxy::get_type_info),
     export_entry!(proxy::get_ids_of_names),
     export_entry!(proxy::invoke, two_stack_arguments),
+]);
+
+static TYPE_LIB: Table<13> = Table([
+    export_entry!(type_info::library_query_interface),
+    export_entry!(type_info::library_add_reference),
+    export_entry!(type_info::library_release),
+    export_entry!(type_info::library_type_count),
+    export_entry!(type_info::library_type_info),
+    export_entry!(type_info::library_type_kind),
+    export_entry!(type_info::library_type_of_guid),
+    export_entry!(type_info::library_attributes),
+    export_entry!(type_info::not_implemented),
+    export_entry!(type_info::library_documentation),
+    export_entry!(type_info::library_is_name),
+    export_entry!(type_info::library_find_name),
+    export_entry!(type_info::release_block),
+]);
+
+static TYPE_INFO: Table<22> = Table([
+    export_entry!(type_info::info_query_interface),
+    export_entry!(type_info::info_add_reference),
+    export_entry!(type_info::info_release),
+    export_entry!(type_info::info_type_attributes),
+    export_entry!(type_info::not_implemented),
+    export_entry!(type_info::info_function_description),
+    export_entry!(type_info::info_variable),
+    export_entry!(type_info::info_names),
+    export_entry!(type_info::info_implemented_reference),
+    export_entry!(type_info::info_implemented_flags),
+    export_entry!(type_info::info_ids_of_names),
+    export_entry!(type_info::info_invoke),
+    export_entry!(type_info::info_documentation),
+    export_entry!(type_info::info_dll_entry),
+    export_entry!(type_info::info_reference_type),
+    export_entry!(type_info::info_address_of_member),
+    export_entry!(type_info::info_create_instance),
+    export_entry!(type_info::info_mops),
+    export_entry!(type_info::info_containing_library),
+    export_entry!(type_info::release_block),
+    export_entry!(type_info::release_block),
+    export_entry!(type_info::release_block),
+]);
+
+static STANDARD_DISPATCH: Table<7> = Table([
+    export_entry!(type_info::standard_query_interface),
+    export_entry!(type_info::standard_add_reference),
+    export_entry!(type_info::standard_release),
+    export_entry!(type_info::standard_type_info_count),
+    export_entry!(type_info::standard_type_info),
+    export_entry!(type_info::standard_ids_of_names),
+    export_entry!(type_info::standard_invoke, two_stack_arguments),
 ]);
 
 static CONTAINER_PROXY: Table<5> = Table([

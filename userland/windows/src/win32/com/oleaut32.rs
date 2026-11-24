@@ -1,5 +1,6 @@
 //! oleaut32's exports: BSTRs, VARIANTs and their conversions, SAFEARRAYs (`crate::com`),
-//! `GetActiveObject` and `OleLoadPicture`, by name and by the ordinals of Microsoft's
+//! `GetActiveObject` and `OleLoadPicture`, type libraries and their dispatch helpers (D745),
+//! by name and by the ordinals of Microsoft's
 //! `oleaut32.dll`, which is how programs import them. There is no running object table, so
 //! `GetActiveObject` finds nothing (`MK_E_UNAVAILABLE`); `OleLoadPicture` reads the program's
 //! stream and makes a picture object of the image in it (`picture.rs`, D231), or reports data it
@@ -12,7 +13,7 @@ use crate::library::Export;
 const MK_E_UNAVAILABLE: HResult = 0x8004_01e3_u32 as i32;
 const LARGEST_PICTURE_FILE: usize = 64 << 20;
 
-const ORDINALS: [(u16, &[u8]); 30] = [
+const ORDINALS: [(u16, &[u8]); 39] = [
     (2, b"SysAllocString"),
     (3, b"SysReAllocString"),
     (4, b"SysAllocStringLen"),
@@ -37,11 +38,20 @@ const ORDINALS: [(u16, &[u8]); 30] = [
     (25, b"SafeArrayGetElement"),
     (26, b"SafeArrayPutElement"),
     (27, b"SafeArrayCopy"),
+    (29, b"DispGetIDsOfNames"),
+    (30, b"DispInvoke"),
+    (32, b"CreateStdDispatch"),
     (35, b"GetActiveObject"),
     (147, b"VariantChangeTypeEx"),
     (148, b"SafeArrayPtrOfIndex"),
     (149, b"SysStringByteLen"),
     (150, b"SysAllocStringByteLen"),
+    (161, b"LoadTypeLib"),
+    (162, b"LoadRegTypeLib"),
+    (163, b"RegisterTypeLib"),
+    (164, b"QueryPathOfRegTypeLib"),
+    (183, b"LoadTypeLibEx"),
+    (186, b"UnRegisterTypeLib"),
     (418, b"OleLoadPicture"),
 ];
 
@@ -116,6 +126,15 @@ pub(in crate::win32) const EXPORTS: &[Export] = exports![
     b"SafeArrayPtrOfIndex" => safe_array::safe_array_ptr_of_index,
     b"GetActiveObject" => get_active_object,
     b"OleLoadPicture" => ole_load_picture,
+    b"LoadTypeLib" => super::type_info::load_type_lib,
+    b"LoadTypeLibEx" => super::type_info::load_type_lib_ex,
+    b"LoadRegTypeLib" => super::type_info::load_reg_type_lib,
+    b"QueryPathOfRegTypeLib" => super::type_info::query_path_of_reg_type_lib,
+    b"RegisterTypeLib" => super::type_info::register_type_lib,
+    b"UnRegisterTypeLib" => super::type_info::un_register_type_lib,
+    b"DispGetIDsOfNames" => super::type_info::disp_get_ids_of_names,
+    b"DispInvoke" => super::type_info::disp_invoke,
+    b"CreateStdDispatch" => super::type_info::create_std_dispatch,
 ];
 
 /// The function oleaut32 exports as `ordinal`.

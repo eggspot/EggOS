@@ -20,6 +20,7 @@ pub mod guid;
 pub mod memory_stream;
 pub mod picture;
 pub mod safe_array;
+pub mod type_library;
 pub mod variant;
 pub mod wire;
 
