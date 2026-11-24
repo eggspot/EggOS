@@ -149,6 +149,50 @@ fn close(fd: usize) {
     let _ = syscall(number::CLOSE, [fd, 0, 0, 0, 0, 0]);
 }
 
+const LINK_ADAPTER: &[u8] = b"eth0";
+const AF_INET: usize = 2;
+const SOCK_DGRAM: usize = 2;
+const SIOCSIFMTU: usize = 0x8922;
+const SIOCETHTOOL: usize = 0x8946;
+const ETHTOOL_SET_WAKE: u32 = 6;
+const WAKE_MAGIC: u32 = 1 << 5;
+const IFREQ_NAME_BYTES: usize = 16;
+const IFREQ_BYTES: usize = 40;
+const WOLINFO_BYTES: usize = 20;
+
+/// A change to the wired adapter's link, as the Network pane asks for it (D734).
+#[derive(Debug, Clone, Copy)]
+enum LinkChange {
+    Mtu(u32),
+    Wake(bool),
+}
+
+/// Sets the wired adapter's link on a socket, as `ip link set` does.
+fn set_link(change: LinkChange) -> Result<(), Errno> {
+    let socket = syscall(number::SOCKET, [AF_INET, SOCK_DGRAM, 0, 0, 0, 0])?;
+    let mut ifreq = [0u8; IFREQ_BYTES];
+    ifreq[..LINK_ADAPTER.len()].copy_from_slice(LINK_ADAPTER);
+    let mut wolinfo = [0u8; WOLINFO_BYTES];
+    let request = match change {
+        LinkChange::Mtu(mtu) => {
+            ifreq[IFREQ_NAME_BYTES..IFREQ_NAME_BYTES + 4].copy_from_slice(&mtu.to_ne_bytes());
+            SIOCSIFMTU
+        }
+        LinkChange::Wake(on) => {
+            let wanted = if on { WAKE_MAGIC } else { 0 };
+            wolinfo[..4].copy_from_slice(&ETHTOOL_SET_WAKE.to_ne_bytes());
+            wolinfo[8..12].copy_from_slice(&wanted.to_ne_bytes());
+            let pointer = wolinfo.as_mut_ptr() as usize as u64;
+            ifreq[IFREQ_NAME_BYTES..IFREQ_NAME_BYTES + 8].copy_from_slice(&pointer.to_ne_bytes());
+            SIOCETHTOOL
+        }
+    };
+    let ifreq_at = ifreq.as_mut_ptr() as usize;
+    let result = syscall(number::IOCTL, [socket, request, ifreq_at, 0, 0, 0]).map(|_| ());
+    close(socket);
+    result
+}
+
 const DEVICES_TEXT_CAPACITY: usize = 32 * 1024;
 const INTERFACES_TEXT_CAPACITY: usize = 2048;
 
@@ -1275,6 +1319,17 @@ impl command::Machine for Machine {
         save_through_a_temporary_file(settings_file::SHELL_PROFILE, name).map_err(Errno::message)
     }
 
+    fn apply_link(&mut self, mtu: Option<u32>, wake: Option<bool>) -> Result<(), &'static [u8]> {
+        let change = match (mtu, wake) {
+            (Some(mtu), _) => LinkChange::Mtu(mtu),
+            (None, Some(on)) => LinkChange::Wake(on),
+            (None, None) => return Ok(()),
+        };
+        set_link(change).map_err(|errno| {
+            eggos_settings::network_pane::refusal_words(errno, mtu.is_some())
+        })
+    }
+
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]> {
         let opened;
         let server = match self.server.as_ref() {
@@ -1857,6 +1912,18 @@ impl Application<CAPACITY> for Settings {
                 });
                 self.window.wifi_join_saved(saved, now_ms);
                 self.window.show_wifi(wifi_status(), wifi_chosen());
+            }
+            Some(Request::SetMtu(mtu)) => {
+                if let Err(errno) = set_link(LinkChange::Mtu(mtu)) {
+                    self.window.link_refused(errno);
+                }
+                self.window.show_network_adapter(network_adapter());
+            }
+            Some(Request::SetWakeOnLan(on)) => {
+                if let Err(errno) = set_link(LinkChange::Wake(on)) {
+                    self.window.link_refused(errno);
+                }
+                self.window.show_network_adapter(network_adapter());
             }
             Some(Request::WifiForget) => {
                 let removed = syscall(

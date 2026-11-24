@@ -74,6 +74,9 @@ pub enum Key {
     NetworkRouter,
     NetworkDns,
     NetworkMac,
+    NetworkMtu,
+    NetworkWakeOnLan,
+    NetworkMaxMtu,
     PowerBattery,
     PowerLine,
     PowerLid,
@@ -235,7 +238,14 @@ pub enum Change {
     Device { device: u8, change: DeviceChange },
     /// How component updates are installed, from the next check (D658).
     UpdatePolicy(UpdatePolicy),
+    /// The wired adapter's MTU, set at once and not saved (the kernel keeps it, D734).
+    Mtu(u32),
+    /// The wired adapter's Wake-on-LAN, set at once and not saved (D734).
+    WakeOnLan(bool),
 }
+
+/// The largest MTU `network.mtu` takes before the adapter's own limit is checked.
+pub const MOST_MTU: u32 = 65_535;
 
 /// What the keyboard uses, all of it (D221): the layouts the switch key cycles through, the
 /// one in force (an index of the settings file's `KEYBOARD_LAYOUTS`, always in the set) and
@@ -609,7 +619,7 @@ pub const ZONE_CHOICES: &str = "an IANA zone such as Europe/Paris or America/New
 
 impl Key {
     /// Every setting, in the order `settings list` prints them.
-    pub const ALL: [Self; 60] = [
+    pub const ALL: [Self; 63] = [
         Self::ShellProfile,
         Self::ShellForm,
         Self::ShellFormInUse,
@@ -658,6 +668,9 @@ impl Key {
         Self::NetworkRouter,
         Self::NetworkDns,
         Self::NetworkMac,
+        Self::NetworkMtu,
+        Self::NetworkWakeOnLan,
+        Self::NetworkMaxMtu,
         Self::PowerBattery,
         Self::PowerLine,
         Self::PowerLid,
@@ -726,6 +739,9 @@ impl Key {
             Self::NetworkRouter => "network.router",
             Self::NetworkDns => "network.dns",
             Self::NetworkMac => "network.mac",
+            Self::NetworkMtu => "network.mtu",
+            Self::NetworkWakeOnLan => "network.wake_on_lan",
+            Self::NetworkMaxMtu => "network.max_mtu",
             Self::PowerBattery => "power.battery",
             Self::PowerLine => "power.line",
             Self::PowerLid => "power.lid",
@@ -817,6 +833,8 @@ impl Key {
                 | Self::MouseKeysSpeed
                 | Self::PowerLidAction
                 | Self::UpdatePolicy
+                | Self::NetworkMtu
+                | Self::NetworkWakeOnLan
         )
     }
 
@@ -853,8 +871,11 @@ impl Key {
                     let _ = write!(choices, ", {width}x{height}");
                 }
             }
-            Self::TimeAutomatic => {
+            Self::TimeAutomatic | Self::NetworkWakeOnLan => {
                 let _ = choices.write_str("on or off");
+            }
+            Self::NetworkMtu => {
+                let _ = choices.write_str("a number of bytes from 68 to the adapter's largest");
             }
             Self::AppearanceTheme => {
                 let _ = choices.write_str("dark or light");
@@ -1061,6 +1082,18 @@ impl Key {
             Self::NetworkMac => {
                 write_or_none(&mut value, facts.network_adapter.map(|status| status.mac))
             }
+            Self::NetworkMtu => {
+                write_or_none(&mut value, facts.network_adapter.map(|status| status.mtu))
+            }
+            Self::NetworkMaxMtu => {
+                write_or_none(&mut value, facts.network_adapter.map(|status| status.max_mtu))
+            }
+            Self::NetworkWakeOnLan => match facts.network_adapter.map(|status| status.wake_on_lan) {
+                Some(Some(true)) => value.write_str("on"),
+                Some(Some(false)) => value.write_str("off"),
+                Some(None) => value.write_str("not available"),
+                None => value.write_str(NETWORK_NONE),
+            },
             Self::PowerBattery => match facts.power.batteries().next() {
                 Some(battery) => {
                     let state = match facts.power.is_low() {
@@ -1129,6 +1162,17 @@ impl Key {
             Self::TimeZone => crate::facts::zone_index(value)
                 .map(Change::TimeZone)
                 .ok_or(Refusal::InvalidValue),
+            Self::NetworkMtu => value
+                .parse::<u32>()
+                .ok()
+                .filter(|mtu| (crate::network_pane::MIN_MTU..=MOST_MTU).contains(mtu))
+                .map(Change::Mtu)
+                .ok_or(Refusal::InvalidValue),
+            Self::NetworkWakeOnLan => match value {
+                "on" => Ok(Change::WakeOnLan(true)),
+                "off" => Ok(Change::WakeOnLan(false)),
+                _ => Err(Refusal::InvalidValue),
+            },
             Self::TimeAutomatic => match value {
                 "on" => Ok(Change::Automatic(true)),
                 "off" => Ok(Change::Automatic(false)),

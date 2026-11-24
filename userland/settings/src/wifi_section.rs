@@ -361,6 +361,7 @@ pub struct WifiSection {
     note: Option<usize>,
     hidden_note: Option<HiddenNote>,
     narrow: Option<i32>,
+    shift: i32,
 }
 
 fn at(x: i32, y: i32) -> Place {
@@ -384,29 +385,31 @@ fn ink(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, words: &str, colour: Token
 }
 
 impl WifiSection {
-    /// Builds the section in `pane` under the wired section; `default_button` is the window's,
-    /// given back when the passphrase note closes.
+    /// Builds the section in `pane` under the wired section, `shift` pixels lower than v0.4's
+    /// place (the wired adapter's link rows, D734); `default_button` is the window's, given back
+    /// when the passphrase note closes.
     pub fn build(
         tree: &mut WidgetTree<CAPACITY>,
         pane: WidgetId,
         default_button: WidgetId,
+        shift: i32,
     ) -> Self {
         let mut add = |place: Place, kind: Kind| add_to(tree, pane, place, kind);
-        let title = add(at(PADDING, SECTION_TOP), Kind::label("Wi-Fi", Token::Text));
+        let title = add(at(PADDING, SECTION_TOP + shift), Kind::label("Wi-Fi", Token::Text));
         let value = add(
-            Place::right(PADDING, SECTION_TOP),
+            Place::right(PADDING, SECTION_TOP + shift),
             Kind::label("", Token::Text),
         );
         let hint = add(
-            Place::at(PADDING, HINT_TOP, Length::Px(ROW_WIDTH), Length::Content),
+            Place::at(PADDING, HINT_TOP + shift, Length::Px(ROW_WIDTH), Length::Content),
             Kind::label("", Token::TextDim),
         );
         let components = add(
-            sized(PADDING, COMPONENTS_TOP, 144, BUTTON.1),
+            sized(PADDING, COMPONENTS_TOP + shift, 144, BUTTON.1),
             Kind::button("Open Components", false),
         );
         let rows = core::array::from_fn(|row| {
-            let top = FIRST_ROW + row as i32 * ROW_PITCH;
+            let top = FIRST_ROW + shift + row as i32 * ROW_PITCH;
             let panel = add_to(
                 tree,
                 pane,
@@ -440,7 +443,7 @@ impl WifiSection {
         });
         let mut add = |place: Place, kind: Kind| add_to(tree, pane, place, kind);
         let mark = add(
-            sized(PADDING, FIRST_ROW + 6, 4, 24),
+            sized(PADDING, FIRST_ROW + shift + 6, 4, 24),
             Kind::panel(Token::Accent),
         );
         let page = add(at(PADDING, 0), Kind::label("", Token::TextDim));
@@ -472,7 +475,7 @@ impl WifiSection {
         let other_panel = add_to(
             tree,
             pane,
-            sized(PADDING, FIRST_ROW, ROW_WIDTH, ROW_HEIGHT),
+            sized(PADDING, FIRST_ROW + shift, ROW_WIDTH, ROW_HEIGHT),
             Kind::panel(Token::Menu),
         );
         let other = RowWidgets {
@@ -545,6 +548,7 @@ impl WifiSection {
             note: None,
             hidden_note: None,
             narrow: None,
+            shift,
         };
         section.lay_out(tree);
         section
@@ -854,8 +858,8 @@ impl WifiSection {
         let first = self.page * ROWS;
         self.rows = all.iter().skip(first).take(ROWS).cloned().collect();
         let (row_width, row_height, row_pitch) = self.row_shape();
-        let mut top = FIRST_ROW;
-        let mut bottom = HINT_TOP + 16;
+        let mut top = FIRST_ROW + self.shift;
+        let mut bottom = HINT_TOP + self.shift + 16;
         let mut cannot = false;
         for (index, row_widgets) in widgets.rows.iter().enumerate() {
             let Some(row) = self.rows.get(index) else {
@@ -928,7 +932,7 @@ impl WifiSection {
         let connected = self.connected() && !self.rows.is_empty();
         tree.set_shown(widgets.mark, connected);
         if connected {
-            tree.set_place(widgets.mark, sized(PADDING, FIRST_ROW + 6, 4, 24));
+            tree.set_place(widgets.mark, sized(PADDING, FIRST_ROW + self.shift + 6, 4, 24));
         }
         let footer = bottom + 8;
         let paged = all.len() > ROWS;

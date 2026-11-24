@@ -1,12 +1,17 @@
 //! The Network pane (D225, docs/ux/network-v0.3.md sections 0-3): the wired adapter as
 //! `/proc/net/interfaces` reports it, through the parse `ip` and `net_status` use
 //! (`eggos_net::status`), read-only and in one of five states named once for the GUI, the CLI
-//! and MCP. Each of its 15 widgets has one place; a state only shows, hides and fills them in,
-//! so the pane fills in where it is as the machine connects. Not the Agents pane's
+//! and MCP. Each of its widgets has one place; a state only shows, hides and fills them in, so
+//! the pane fills in where it is as the machine connects. Under the traffic lines, the
+//! adapter's MTU (a field and `Set`), its Wake-on-LAN (a checkbox) and a status line set the
+//! link as `ip link set` does (D734, docs/ux/network-link-v0.1.md). Not the Agents pane's
 //! [`crate::network_view`], which is the MCP network server.
 
-use crate::settings_window::CAPACITY;
+use crate::settings_window::{CAPACITY, Request};
 use core::fmt::Write;
+use eggos_runtime::errno::Errno;
+use eggos_toolkit::tree::Response;
+use eggos_toolkit::widget::Escape;
 use eggos_net::dhcp::INFINITE_LEASE_S;
 use eggos_net::ipv4::Subnet;
 use eggos_net::status::{InterfaceStatus, State};
@@ -18,8 +23,20 @@ use eggos_toolkit::widget::{Kind, Length, Place};
 /// One of the pane's lines.
 pub type Line = Text<64>;
 
-/// The pane's widgets: the heading, then the design's widgets 2 to 15.
-pub const WIDGETS: usize = 15;
+/// The link rows' widgets (D734): the MTU label, field and `Set`, the Wake-on-LAN label and
+/// checkbox, and the status line.
+pub const LINK_WIDGETS: usize = 6;
+/// The pane's widgets: the heading, the design's widgets 2 to 15, then the link rows'.
+pub const WIDGETS: usize = 15 + LINK_WIDGETS;
+/// How much lower the Wi-Fi section sits when the wired section has its link rows.
+pub const LINK_ROWS_HEIGHT: i32 = 120;
+/// The smallest MTU an adapter takes (IPv4's).
+pub const MIN_MTU: u32 = 68;
+/// What the Wake-on-LAN checkbox says.
+pub const MAGIC_PACKET: &str = "Magic packet";
+/// What the status line says once Wake-on-LAN is on.
+pub const WAKE_ON_TEXT: &str =
+    "Wake-on-LAN on: a magic packet wakes this computer from sleep or power-off.";
 /// The first row's name for the adapter.
 pub const ETHERNET: &str = "Ethernet";
 /// The first row on a machine without an adapter.
@@ -44,6 +61,17 @@ const HEADING_TOP: i32 = 16;
 const FIRST_ROW_TEXT: i32 = 76;
 const ROW_PITCH: i32 = 40;
 const HARDWARE_LINE: i32 = 276;
+const MTU_ROW: i32 = 350;
+const WAKE_ROW: i32 = 390;
+const ROW_LABEL_DOWN: i32 = 6;
+const STATUS_TOP: i32 = 436;
+const STATUS_WIDTH: i32 = 432;
+const FIELD_PLACE: (i32, i32, i32, i32) = (272, MTU_ROW, 72, 28);
+const SET_PLACE: (i32, i32, i32, i32) = (352, MTU_ROW, 96, 28);
+const WAKE_X: i32 = 288;
+const CONTROL_HEIGHT: i32 = 28;
+const MOST_MTU_DIGITS: usize = 5;
+const STANDARD_MTU: u32 = 1500;
 const LINE_PITCH: i32 = 20;
 const DOT: &str = " \u{b7} ";
 const MINUTE_S: u32 = 60;
@@ -172,6 +200,109 @@ pub fn sent_text(adapter: &InterfaceStatus) -> Line {
     traffic_text("Sent", counters.sent_bytes, counters.sent_packets, 0)
 }
 
+/// The link status line's text.
+pub type Status = Text<128>;
+
+/// A link change asked of the kernel and not yet seen in its facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    Mtu(u32),
+    Wake(bool),
+}
+
+/// What the MTU field's text asks for (docs/ux/network-link-v0.1.md section 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MtuInput {
+    NotANumber,
+    OutOfRange,
+    Unchanged,
+    Set(u32),
+}
+
+/// Reads the MTU field's `text` against the adapter's `current` and `max_mtu`.
+pub fn mtu_input(text: &str, current: u32, max_mtu: u32) -> MtuInput {
+    let text = text.trim();
+    let digits = !text.is_empty()
+        && text.len() <= MOST_MTU_DIGITS
+        && text.bytes().all(|byte| byte.is_ascii_digit());
+    let Some(value) = text.parse::<u32>().ok().filter(|_| digits) else {
+        return MtuInput::NotANumber;
+    };
+    match value {
+        value if !(MIN_MTU..=max_mtu.max(MIN_MTU)).contains(&value) => MtuInput::OutOfRange,
+        value if value == current => MtuInput::Unchanged,
+        value => MtuInput::Set(value),
+    }
+}
+
+/// The status line at rest for an adapter taking up to `max_mtu`, waking or not.
+pub fn rest_text(max_mtu: u32, can_wake: bool) -> Status {
+    let mut text = Status::new();
+    let _ = match max_mtu > STANDARD_MTU {
+        true => write!(
+            text,
+            "MTU from {MIN_MTU} to {max_mtu} bytes on this adapter; 1500 is the standard."
+        ),
+        false => write!(
+            text,
+            "MTU from {MIN_MTU} to {max_mtu} bytes on this adapter, which takes no jumbo frames."
+        ),
+    };
+    if !can_wake {
+        let _ = write!(text, " It cannot wake the computer.");
+    }
+    text
+}
+
+/// The sentence for an MTU field that holds no number, or one out of `max_mtu`'s range.
+pub fn mtu_problem_text(input: MtuInput, max_mtu: u32) -> Option<Status> {
+    let mut text = Status::new();
+    let _ = match input {
+        MtuInput::NotANumber => write!(
+            text,
+            "Not a number. Type the MTU in bytes, {MIN_MTU} to {max_mtu}."
+        ),
+        MtuInput::OutOfRange => write!(
+            text,
+            "The MTU must be {MIN_MTU} to {max_mtu} on this adapter."
+        ),
+        MtuInput::Unchanged | MtuInput::Set(_) => return None,
+    };
+    Some(text)
+}
+
+/// What a refused link change says, by the kernel's `errno`, for the MTU `mtu` (`None`: the
+/// change was Wake-on-LAN's); shared by the pane and `settings set` (D734).
+pub fn refusal_text(errno: Errno, mtu: Option<u32>) -> Status {
+    let mut text = Status::new();
+    let words = core::str::from_utf8(errno.message()).unwrap_or("error");
+    let _ = match (errno, mtu) {
+        (Errno::EPERM, _) => write!(text, "Not allowed: this user may not change the adapter."),
+        (Errno::EINVAL, Some(mtu)) => write!(text, "The adapter does not take MTU {mtu}."),
+        (Errno::EOPNOTSUPP, Some(_)) => write!(text, "The adapter cannot do it."),
+        (Errno::EOPNOTSUPP | Errno::EINVAL, None) => {
+            write!(text, "This adapter cannot wake the computer.")
+        }
+        (Errno::ENODEV, _) => write!(text, "No such adapter any more."),
+        (_, Some(_)) => write!(text, "Could not set the MTU: {words}."),
+        (_, None) => write!(text, "Could not change Wake-on-LAN: {words}."),
+    };
+    text
+}
+
+/// What a refused link change says where no number can be filled in (`settings set`): by the
+/// kernel's `errno`, for the MTU when `mtu` says so, else for Wake-on-LAN.
+pub fn refusal_words(errno: Errno, mtu: bool) -> &'static [u8] {
+    match (errno, mtu) {
+        (Errno::EPERM, _) => b"not allowed: this user may not change the adapter",
+        (Errno::EINVAL, true) => b"the adapter does not take that MTU",
+        (Errno::EOPNOTSUPP, true) => b"the adapter cannot do it",
+        (Errno::EOPNOTSUPP | Errno::EINVAL, false) => b"this adapter cannot wake the computer",
+        (Errno::ENODEV, _) => b"no such adapter any more",
+        (other, _) => other.message(),
+    }
+}
+
 /// The Network pane's widgets and the adapter they show.
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkPane {
@@ -179,6 +310,9 @@ pub struct NetworkPane {
     shown: Option<Option<InterfaceStatus>>,
     wifi_adapter: bool,
     wifi_connected: bool,
+    field_value: Option<u32>,
+    pending: Option<Pending>,
+    result_shown: bool,
 }
 
 const ADAPTER_LINE: usize = 1;
@@ -188,6 +322,42 @@ const FIRST_ROW_NAME: usize = 4;
 const HARDWARE: usize = 12;
 const RECEIVED: usize = 13;
 const SENT: usize = 14;
+const MTU_LABEL: usize = 15;
+const MTU_FIELD: usize = 16;
+const SET_MTU: usize = 17;
+const WAKE_LABEL: usize = 18;
+const WAKE_BOX: usize = 19;
+const LINK_STATUS: usize = 20;
+const LINK_ROWS: [usize; LINK_WIDGETS] =
+    [MTU_LABEL, MTU_FIELD, SET_MTU, WAKE_LABEL, WAKE_BOX, LINK_STATUS];
+
+/// What a response did to the link rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkReply {
+    NotMine,
+    Done(Option<Request>),
+}
+
+fn set_ink(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, ink: Token) {
+    tree.change(id, |kind| {
+        if let Kind::Label { colour, .. } = kind {
+            *colour = ink;
+        }
+    });
+}
+
+fn set_checked(tree: &mut WidgetTree<CAPACITY>, id: WidgetId, wanted: bool) {
+    tree.change(id, |kind| {
+        if let Kind::Checkbox { checked, .. } = kind {
+            *checked = wanted;
+        }
+    });
+}
+
+fn field_number(tree: &WidgetTree<CAPACITY>, field: WidgetId) -> Option<u32> {
+    tree.text_of(field)
+        .and_then(|text| text.trim().parse::<u32>().ok())
+}
 
 impl NetworkPane {
     /// Builds the pane's widgets in `pane` under the heading `title`, showing `adapter` (`None`:
@@ -222,11 +392,35 @@ impl NetworkPane {
             let top = HARDWARE_LINE + line as i32 * LINE_PITCH;
             widgets[widget] = add(at(PADDING, top), Kind::label("", Token::Text));
         }
+        let sized = |(x, y, width, height): (i32, i32, i32, i32)| {
+            Place::at(x, y, Length::Px(width), Length::Px(height))
+        };
+        widgets[MTU_LABEL] = add(
+            at(PADDING, MTU_ROW + ROW_LABEL_DOWN),
+            Kind::label("MTU", Token::Text),
+        );
+        widgets[MTU_FIELD] = add(sized(FIELD_PLACE), Kind::text_field("", Escape::Clear));
+        widgets[SET_MTU] = add(sized(SET_PLACE), Kind::button("Set", false));
+        widgets[WAKE_LABEL] = add(
+            at(PADDING, WAKE_ROW + ROW_LABEL_DOWN),
+            Kind::label("Wake-on-LAN", Token::Text),
+        );
+        widgets[WAKE_BOX] = add(
+            Place::at(WAKE_X, WAKE_ROW, Length::Content, Length::Px(CONTROL_HEIGHT)),
+            Kind::checkbox(MAGIC_PACKET, false),
+        );
+        widgets[LINK_STATUS] = add(
+            Place::at(PADDING, STATUS_TOP, Length::Px(STATUS_WIDTH), Length::Content),
+            Kind::label("", Token::TextDim),
+        );
         let mut built = Self {
             widgets,
             shown: None,
             wifi_adapter: false,
             wifi_connected: false,
+            field_value: None,
+            pending: None,
+            result_shown: false,
         };
         built.show(tree, adapter);
         built
@@ -319,6 +513,157 @@ impl NetworkPane {
         for widget in [HARDWARE, RECEIVED, SENT] {
             tree.set_shown(self.widgets[widget], adapter.is_some());
         }
+        self.show_link(tree, adapter);
+    }
+
+    fn confirm_pending(&mut self, tree: &mut WidgetTree<CAPACITY>, adapter: &InterfaceStatus) {
+        let words = match self.pending {
+            Some(Pending::Mtu(wanted)) if adapter.mtu == wanted => {
+                let mut done = Status::new();
+                let _ = write!(done, "MTU set to {wanted}.");
+                done
+            }
+            Some(Pending::Wake(true)) if adapter.wake_on_lan == Some(true) => {
+                Status::from(WAKE_ON_TEXT)
+            }
+            Some(Pending::Wake(false)) if adapter.wake_on_lan == Some(false) => {
+                Status::from("Wake-on-LAN off.")
+            }
+            _ => return,
+        };
+        self.pending = None;
+        self.field_value = None;
+        self.say(tree, words.as_str());
+    }
+
+    fn show_link(&mut self, tree: &mut WidgetTree<CAPACITY>, adapter: Option<&InterfaceStatus>) {
+        for widget in LINK_ROWS {
+            tree.set_shown(self.widgets[widget], adapter.is_some());
+        }
+        let Some(adapter) = adapter else {
+            return;
+        };
+        self.confirm_pending(tree, adapter);
+        let can_wake = adapter.wake_on_lan.is_some();
+        let field = self.widgets[MTU_FIELD];
+        let empty = tree.text_of(field).is_none_or(|text| text.trim().is_empty());
+        let untouched = empty
+            || self
+                .field_value
+                .is_none_or(|value| field_number(tree, field) == Some(value));
+        if self.pending.is_none() && tree.focus() != Some(field) && untouched {
+            let mut value = Line::new();
+            let _ = write!(value, "{}", adapter.mtu);
+            tree.set_text(field, value.as_str());
+            self.field_value = Some(adapter.mtu);
+        }
+        let mtu_busy = matches!(self.pending, Some(Pending::Mtu(_)));
+        tree.set_enabled(field, !mtu_busy);
+        let typed = tree.text_of(field).is_some_and(|text| !text.trim().is_empty());
+        let differs = typed && field_number(tree, field) != Some(adapter.mtu);
+        tree.set_enabled(self.widgets[SET_MTU], !mtu_busy && differs);
+        let wake_busy = matches!(self.pending, Some(Pending::Wake(_)));
+        if !wake_busy {
+            set_checked(tree, self.widgets[WAKE_BOX], adapter.wake_on_lan == Some(true));
+        }
+        tree.set_enabled(self.widgets[WAKE_BOX], can_wake && !wake_busy);
+        let wake_ink = match can_wake {
+            true => Token::Text,
+            false => Token::TextDim,
+        };
+        set_ink(tree, self.widgets[WAKE_LABEL], wake_ink);
+        if !self.result_shown && self.pending.is_none() {
+            let rest = rest_text(adapter.max_mtu, can_wake);
+            tree.set_text(self.widgets[LINK_STATUS], rest.as_str());
+            set_ink(tree, self.widgets[LINK_STATUS], Token::TextDim);
+        }
+    }
+
+    fn say(&mut self, tree: &mut WidgetTree<CAPACITY>, words: &str) {
+        tree.set_text(self.widgets[LINK_STATUS], words);
+        set_ink(tree, self.widgets[LINK_STATUS], Token::Text);
+        self.result_shown = true;
+    }
+
+    /// The pane was shown again: a result or error gives way to the rest sentence.
+    pub fn reset_link(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        adapter: Option<&InterfaceStatus>,
+    ) {
+        self.result_shown = false;
+        self.show_link(tree, adapter);
+    }
+
+    /// What `response` does to the link rows of `adapter`: `Set` (or Enter in the field, which
+    /// reaches the window's `default_button`) checks the MTU and asks for it, the checkbox asks
+    /// for Wake-on-LAN on or off, an edit enables `Set` and an emptied field is filled again.
+    pub fn respond(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        response: Response,
+        adapter: Option<&InterfaceStatus>,
+        default_button: WidgetId,
+    ) -> LinkReply {
+        let field = self.widgets[MTU_FIELD];
+        let Some(adapter) = adapter else {
+            return LinkReply::NotMine;
+        };
+        match response {
+            Response::Edited(id) if id == field => {
+                self.show_link(tree, Some(adapter));
+                LinkReply::Done(None)
+            }
+            Response::Activated(id)
+                if id == self.widgets[SET_MTU]
+                    || (id == default_button && tree.focus() == Some(field)) =>
+            {
+                let typed = tree.text_of(field).unwrap_or("");
+                let input = mtu_input(typed, adapter.mtu, adapter.max_mtu);
+                if let Some(problem) = mtu_problem_text(input, adapter.max_mtu) {
+                    self.say(tree, problem.as_str());
+                    return LinkReply::Done(None);
+                }
+                let MtuInput::Set(mtu) = input else {
+                    return LinkReply::Done(None);
+                };
+                self.pending = Some(Pending::Mtu(mtu));
+                let mut words = Status::new();
+                let _ = write!(words, "Setting MTU {mtu}...");
+                self.say(tree, words.as_str());
+                tree.set_enabled(field, false);
+                tree.set_enabled(self.widgets[SET_MTU], false);
+                LinkReply::Done(Some(Request::SetMtu(mtu)))
+            }
+            Response::Toggled(id, on) if id == self.widgets[WAKE_BOX] => {
+                self.pending = Some(Pending::Wake(on));
+                tree.set_enabled(self.widgets[WAKE_BOX], false);
+                let words = match on {
+                    true => "Turning Wake-on-LAN on...",
+                    false => "Turning Wake-on-LAN off...",
+                };
+                self.say(tree, words);
+                LinkReply::Done(Some(Request::SetWakeOnLan(on)))
+            }
+            _ => LinkReply::NotMine,
+        }
+    }
+
+    /// The kernel refused the link change asked for: the status line says why, the field keeps
+    /// its text for correction and the checkbox goes back.
+    pub fn link_refused(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        errno: Errno,
+        adapter: Option<&InterfaceStatus>,
+    ) {
+        let mtu = match self.pending.take() {
+            Some(Pending::Mtu(mtu)) => Some(mtu),
+            _ => None,
+        };
+        let words = refusal_text(errno, mtu);
+        self.show_link(tree, adapter);
+        self.say(tree, words.as_str());
     }
 }
 

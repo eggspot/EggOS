@@ -84,6 +84,12 @@ pub trait Machine {
     }
     /// Applies the desktop profile `index` now; the error's text on failure.
     fn apply_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
+    /// Sets the wired adapter's MTU (`Some`) or Wake-on-LAN now, as `ip link set` does (D734);
+    /// the refusal's words.
+    fn apply_link(&mut self, mtu: Option<u32>, wake: Option<bool>) -> Result<(), &'static [u8]> {
+        let _ = (mtu, wake);
+        Err(b"not supported here")
+    }
     /// Saves the desktop's theme to the settings file as `appearance.theme` (D219).
     fn save_theme(&mut self, theme: Theme) -> Result<(), &'static [u8]>;
     /// Makes `theme` the desktop's now (`SET_PALETTE`): every window repaints in it.
@@ -593,6 +599,16 @@ fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i3
             return invalid_value(machine, name, quoted, reason.as_str());
         }
     };
+    if let Change::Mtu(mtu) = change
+        && let Some(adapter) = machine.facts().network_adapter
+        && mtu > adapter.max_mtu
+    {
+        let mut message = Message::new();
+        let max = adapter.max_mtu;
+        let _ = write!(message, "{name}: the MTU must be 68 to {max} on this adapter");
+        report(machine, false, &errors::INVALID_VALUE, message.as_str());
+        return INVALID_VALUE_STATUS;
+    }
     if dry_run {
         let facts = machine.facts();
         let mut message = Message::new();
@@ -629,6 +645,7 @@ fn save_and_apply(machine: &mut impl Machine, name: &str, change: Change) -> i32
         Change::LidAction(action) => machine.save_lid_action(action),
         Change::Device { device, change } => machine.save_device_input(device, change),
         Change::UpdatePolicy(policy) => machine.save_update_policy(policy),
+        Change::Mtu(_) | Change::WakeOnLan(_) => Ok(()),
     };
     if let Err(why) = saved {
         let mut message = Message::new();
@@ -669,6 +686,8 @@ fn save_and_apply(machine: &mut impl Machine, name: &str, change: Change) -> i32
         }
         Change::LidAction(action) => machine.apply_lid_action(action),
         Change::UpdatePolicy(_) => Ok(()),
+        Change::Mtu(mtu) => machine.apply_link(Some(mtu), None),
+        Change::WakeOnLan(on) => machine.apply_link(None, Some(on)),
         Change::Device { device, change } => {
             let facts = machine.facts();
             let own = facts

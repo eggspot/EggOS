@@ -62,7 +62,8 @@ pub const CAPACITY: usize = 283
     + windows_pane::WIDGETS
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
-    + crate::wifi_section::WIDGETS;
+    + crate::wifi_section::WIDGETS
+    + crate::network_pane::LINK_WIDGETS;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const BANNER_WIDGETS: usize = 5;
@@ -602,6 +603,11 @@ pub enum Request {
     WifiJoin(alloc::boxed::Box<WifiJoin>),
     /// Remove `/var/lib/eggos/wifi.conf`, as `wifi forget` does (D283).
     WifiForget,
+    /// Set the wired adapter's MTU with `SIOCSIFMTU`, as `ip link set` does (D734); a refusal
+    /// goes to [`SettingsWindow::link_refused`].
+    SetMtu(u32),
+    /// Turn the wired adapter's Wake-on-LAN on or off with `SIOCETHTOOL` (D734).
+    SetWakeOnLan(bool),
     /// Show the Components pane (D283: the Wi-Fi firmware is installed there).
     OpenComponents,
     /// Make the profile at this index of the settings file's `PROFILES` the desktop's and
@@ -1602,7 +1608,11 @@ impl SettingsWindow {
             PANES[NETWORK],
             facts.network_adapter.as_ref(),
         );
-        let wifi = WifiSection::build(&mut tree, panes[NETWORK], set_button);
+        let wifi_shift = match facts.network_adapter {
+            Some(_) => crate::network_pane::LINK_ROWS_HEIGHT,
+            None => 0,
+        };
+        let wifi = WifiSection::build(&mut tree, panes[NETWORK], set_button, wifi_shift);
         let zones = ZonePicker::build(
             &mut tree,
             panes[DATE_AND_TIME],
@@ -1893,6 +1903,10 @@ impl SettingsWindow {
         self.pane = pane;
         if self.banner_height() != banner_before {
             self.lay_out_frame();
+        }
+        if pane == NETWORK {
+            let adapter = self.facts.network_adapter;
+            self.network.reset_link(&mut self.tree, adapter.as_ref());
         }
         if pane == DATE_AND_TIME {
             self.reset_date_and_time();
@@ -2706,6 +2720,13 @@ impl SettingsWindow {
         self.wifi.join_saved(&mut self.tree, saved, now_ms);
     }
 
+    /// The kernel refused the link change the Network pane asked for (D734).
+    pub fn link_refused(&mut self, errno: Errno) {
+        let adapter = self.facts.network_adapter;
+        self.network
+            .link_refused(&mut self.tree, errno, adapter.as_ref());
+    }
+
     /// The program could not remove `wifi.conf`.
     pub fn wifi_forget_failed(&mut self, words: &str) {
         self.wifi.forget_failed(&mut self.tree, words);
@@ -3257,6 +3278,14 @@ impl SettingsWindow {
     pub fn respond(&mut self, response: Response, now_ms: u32) -> Option<Request> {
         if self.about.respond(&mut self.tree, response) {
             return None;
+        }
+        let adapter = self.facts.network_adapter;
+        let set_button = self.widgets.set_button;
+        if let crate::network_pane::LinkReply::Done(request) =
+            self.network
+                .respond(&mut self.tree, response, adapter.as_ref(), set_button)
+        {
+            return request;
         }
         if let wifi_section::Reply::Done(request) =
             self.wifi.respond(&mut self.tree, response, now_ms)
