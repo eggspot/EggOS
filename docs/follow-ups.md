@@ -221,7 +221,7 @@ and is not listed per item.
 - [ ] Windows edits: `EM_SETTABSTOPS`, Windows' 30,000-character default limit (D341; word wrap is D351, `EM_SETRECT` D689, `EM_FMTLINES` and margins D690; both wait on the edit model: it keeps one unit per cell and a fixed 1,024-unit array)
 - [ ] Windows scroll bars: copying scrolled pixels instead of repainting, combo lists' arrow repeat (D343; `EnableScrollBar`, `ScrollWindowEx`, `WM_NCHITTEST` and the window bars' repeat code written, unbuilt: D687, D688; copying scrolled pixels code written, unbuilt: D711; left: combo lists' arrow repeat)
 - [ ] Windows menus: Alt pressed and released alone selects the bar; mnemonic underlines only once Alt is pressed (D338)
-- [ ] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340; the two messages code written, unbuilt: D682)
+- [x] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340; the two messages code written, unbuilt: D682) — code written, unbuilt, D712 (the open list follows the field)
 - [ ] Windows: the main thread's overflow as `STATUS_STACK_OVERFLOW` (D346; `SetThreadStackGuarantee` is in `thread.rs`, `GetCurrentThreadStackLimits` code written, unbuilt: D681)
 - [ ] Winsock: `listen`/`accept` with `FD_ACCEPT`, `FD_OOB`, `WSAEventSelect`, `WSAEnumNetworkEvents` (D348; `bind`, `listen`, `accept` and `FD_ACCEPT` code written, unbuilt: D683)
 - [ ] Windows hooks: `WH_CBT`'s move and skipped codes; low-level hooks on the installing thread's loop; injected-input flags (D349; activation, focus, min/max and system commands are D692)

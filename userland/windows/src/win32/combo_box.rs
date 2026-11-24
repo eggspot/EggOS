@@ -168,6 +168,24 @@ fn edited(window: usize, outcome: eggos_windows_gui::controls::edit::EditOutcome
     }
 }
 
+/// Highlights the open list's first item the editable field's text begins (D712).
+fn follow_field_in_list(window: usize) {
+    let moved = with(|gui| {
+        let address = address_of(gui, window)?;
+        // SAFETY: as `model`; no other reference to the state is made meanwhile.
+        let combo = unsafe { model(address) };
+        let mut typed = [0u16; eggos_windows_gui::controls::edit::EDIT_CAPACITY];
+        let text = combo.edit.as_ref()?.text();
+        typed[..text.len()].copy_from_slice(text);
+        let length = text.len();
+        Some(combo.highlight_prefix(&typed[..length]))
+    })
+    .flatten();
+    if moved == Some(true) {
+        invalidate(window);
+    }
+}
+
 fn is_editable(window: usize) -> bool {
     reads(window, |combo| combo.edit.is_some())
 }
@@ -558,6 +576,9 @@ fn character(window: usize, character: usize) {
         field.character(character as u32, visible)
     }) {
         edited(window, outcome);
+        if outcome == eggos_windows_gui::controls::edit::EditOutcome::Changed {
+            follow_field_in_list(window);
+        }
         return;
     }
     let moved = with(|gui| {

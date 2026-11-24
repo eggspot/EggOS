@@ -179,13 +179,52 @@ impl ComboBox {
         valid
     }
 
-    /// Opens the list with the selection highlighted and in view.
+    /// Opens the list with the selection highlighted and in view; an editable box highlights
+    /// instead the first item its field's text begins, when one does (D712).
     pub fn open(&mut self) {
         self.open = true;
         self.at_opening = self.items.selected();
         self.highlighted = self.items.selected();
         self.top = 0;
         self.scroll_to_highlight();
+        let mut typed = [0u16; super::edit::EDIT_CAPACITY];
+        let length = match &self.edit {
+            Some(field) => {
+                let text = field.text();
+                typed[..text.len()].copy_from_slice(text);
+                text.len()
+            }
+            None => 0,
+        };
+        self.highlight_prefix(&typed[..length]);
+    }
+
+    /// Highlights, in the open list, the first item whose text begins with `typed` ignoring
+    /// ASCII case, as an editable box's field changes (D712): whether one did. Nothing for
+    /// empty text.
+    pub fn highlight_prefix(&mut self, typed: &[u16]) -> bool {
+        if typed.is_empty() || !self.open {
+            return false;
+        }
+        let fold = |unit: u16| match unit {
+            0x41..=0x5a => unit + 0x20,
+            unit => unit,
+        };
+        let found = (0..self.items.count()).find(|&index| {
+            self.items.text(index).is_some_and(|text| {
+                text.len() >= typed.len()
+                    && text
+                        .iter()
+                        .zip(typed)
+                        .all(|(&have, &want)| fold(have) == fold(want))
+            })
+        });
+        let Some(found) = found else {
+            return false;
+        };
+        self.highlighted = Some(found);
+        self.scroll_to_highlight();
+        true
     }
 
     /// Closes the list: `choose` selects the highlighted row, else the selection goes back to
@@ -717,6 +756,23 @@ mod tests {
         assert_eq!(surface.get(113, 11), Some(LIGHT.highlight));
         assert_eq!(surface.get(113, 31), Some(LIGHT.field_fill));
         assert_eq!(surface.get(351, 71), Some(LIGHT.field_border));
+    }
+
+    #[test]
+    fn an_editable_box_highlights_the_item_its_text_begins_when_open() {
+        let mut combo = ComboBox::editable(328);
+        for name in ["Cross", "Octagon", "Random"] {
+            combo.items.add(&units(name), false);
+        }
+        if let Some(field) = combo.edit.as_mut() {
+            field.set_text(&units("oc"));
+        }
+        combo.open();
+        assert_eq!(combo.highlighted(), Some(1));
+        assert!(combo.highlight_prefix(&units("RAN")));
+        assert_eq!(combo.highlighted(), Some(2));
+        assert!(!combo.highlight_prefix(&units("zebra")));
+        assert_eq!(combo.highlighted(), Some(2));
     }
 
     #[test]
