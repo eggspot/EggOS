@@ -29,6 +29,7 @@ mod menu;
 mod nib;
 mod open_panel;
 mod panel;
+mod paragraph_style;
 mod pasteboard;
 mod screen;
 mod scroll_view;
@@ -84,6 +85,8 @@ class_pairs! {
     NSSOUND, NSSOUND_META;
     NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META;
     NSMUTABLEATTRIBUTEDSTRING, NSMUTABLEATTRIBUTEDSTRING_META;
+    NSPARAGRAPHSTYLE, NSPARAGRAPHSTYLE_META;
+    NSMUTABLEPARAGRAPHSTYLE, NSMUTABLEPARAGRAPHSTYLE_META;
     NSGRIDVIEW, NSGRIDVIEW_META;
     NSGRIDROW, NSGRIDROW_META;
     NSGRIDCOLUMN, NSGRIDCOLUMN_META;
@@ -217,6 +220,7 @@ pub fn set_up() -> bool {
             && tracking::define(runtime)
             && sound::define(runtime)
             && attributed_string::define(runtime)
+            && paragraph_style::define(runtime)
             && grid_view::define(runtime)
             && core_graphics::define(runtime)
             && open_panel::define(runtime)
@@ -306,6 +310,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSAttributedString" => class(&NSATTRIBUTEDSTRING_META),
         b"_OBJC_CLASS_$_NSMutableAttributedString" => class(&NSMUTABLEATTRIBUTEDSTRING),
         b"_OBJC_METACLASS_$_NSMutableAttributedString" => class(&NSMUTABLEATTRIBUTEDSTRING_META),
+        b"_OBJC_CLASS_$_NSParagraphStyle" => class(&NSPARAGRAPHSTYLE),
+        b"_OBJC_METACLASS_$_NSParagraphStyle" => class(&NSPARAGRAPHSTYLE_META),
+        b"_OBJC_CLASS_$_NSMutableParagraphStyle" => class(&NSMUTABLEPARAGRAPHSTYLE),
+        b"_OBJC_METACLASS_$_NSMutableParagraphStyle" => class(&NSMUTABLEPARAGRAPHSTYLE_META),
         b"_OBJC_CLASS_$_NSGridView" => class(&NSGRIDVIEW),
         b"_OBJC_METACLASS_$_NSGridView" => class(&NSGRIDVIEW_META),
         b"_OBJC_CLASS_$_NSGridRow" => class(&NSGRIDROW),

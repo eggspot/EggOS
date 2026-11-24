@@ -237,7 +237,7 @@ and is not listed per item.
 - [ ] AppKit: NSImage decoding JPEG, GIF, TIFF, BMP, `.ico` and `.icns` through `eggos-image`, system images, `lockFocus`, `TIFFRepresentation`, `CGImage` (D374; JPEG to `.ico` D390; `.icns`, `lockFocus` and `TIFFRepresentation` code written, unbuilt: D727; left: the system images, which need Claude Fable's drawings, and `CGImage`, which waits on CoreGraphics images in the CoreGraphics follow-up)
 - [x] NSUserDefaults: suites, global and argument domains, `NSUserDefaultsDidChangeNotification`, `URLForKey:` (D381; D728)
 - [x] NSTrackingArea: cursor updates, enter/exit while dragging, `trackingArea`/`userData` on events; several screens in NSScreen (D382; D729)
-- [ ] NSAttributedString: paragraph styles, underline, links, `enumerateAttributesInRange:`, RTF import (D384)
+- [ ] NSAttributedString: paragraph styles, underline, links, `enumerateAttributesInRange:`, RTF import (D384; all but RTF code written, unbuilt: D730; left: RTF import, and a link colour from Claude Fable)
 - [ ] NSGridView: merged cells, padding, hidden rows and columns, inserting and moving rows and columns (D385)
 - [ ] CoreGraphics: clipping paths, dashes, caps and joins, alpha blending and anti-aliasing, `CGContextDrawImage`, gradients, shadows, `CGPath` objects (D386)
 - [ ] Swift: resilient class stubs, generic class metadata instantiation (`swift_allocateGenericClassMetadata`), `@objc` accessors through KVC (D387)

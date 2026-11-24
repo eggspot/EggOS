@@ -1,11 +1,16 @@
-//! NSAttributedString and NSMutableAttributedString (D384): a string and the attribute
+//! NSAttributedString and NSMutableAttributedString (D384, D730): a string and the attribute
 //! dictionaries of its runs, which cover it end to end in UTF-16 units, and AppKit's drawing
-//! of it, each run drawn with its own font and colour after the one before.
+//! of it: each paragraph (up to a line feed) on its own line, placed by the paragraph style of
+//! its first character, each run drawn with its own font and colour after the one before, and
+//! underlined or struck through when its attributes say so.
 
+use super::paragraph_style::{self, Layout, alignment};
 use super::{
     NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META, NSMUTABLEATTRIBUTEDSTRING,
-    NSMUTABLEATTRIBUTEDSTRING_META, store, string,
+    NSMUTABLEATTRIBUTEDSTRING_META, drawing, store, string,
 };
+use crate::objc::block::invoke_address;
+use eggos_macos_gui::geometry::pixel_rect;
 use crate::foundation::{NSDICTIONARY, autoreleased, class_pointer};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
@@ -13,6 +18,16 @@ use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, message, methods, sel, send, send1, send2};
 use eggos_macos_gui::geometry::{Frame, Point, Size};
+
+const REVERSE: usize = 1 << 1;
+const LINE_FEED: usize = 0x0a;
+const PARAGRAPH_SEPARATOR: usize = 0x2029;
+const GLYPH_HEIGHT: f64 = 16.0;
+const UNDERLINE_ABOVE_BOTTOM: f64 = 2.0;
+const STRIKE_ABOVE_BOTTOM: f64 = 8.0;
+const UNDERLINE_THICK: isize = 0x02;
+const UNDERLINE_DOUBLE: isize = 0x09;
+const DOUBLE_GAP: f64 = 2.0;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +210,168 @@ extern "C" fn attribute_at_index(
         effective,
     );
     send1(attributes, sel!("objectForKey:"), name as usize)
+}
+
+fn clipped(range: Range, limit: Range) -> Range {
+    let start = range.location.max(limit.location);
+    let end = range.end().min(limit.end()).max(start);
+    Range {
+        location: start,
+        length: end - start,
+    }
+}
+
+fn run_range(this: Id, index: usize) -> Range {
+    let start = fields(this).runs.as_slice()[index].start;
+    Range {
+        location: start,
+        length: run_end(this, index).saturating_sub(start),
+    }
+}
+
+fn same(first: Id, second: Id) -> bool {
+    first == second
+        || (!first.is_null() && crate::objc::send_bool(first, sel!("isEqual:"), second as usize))
+}
+
+fn longest(this: Id, at: usize, limit: Range, value: &dyn Fn(Id) -> Id) -> Range {
+    let Some(index) = run_at(this, at).filter(|_| at < length_of(this)) else {
+        return Range {
+            location: at,
+            length: 0,
+        };
+    };
+    let runs = fields(this).runs.as_slice();
+    let wanted = value(runs[index].attributes);
+    let mut first = index;
+    while first > 0
+        && run_range(this, first).location > limit.location
+        && same(value(runs[first - 1].attributes), wanted)
+    {
+        first -= 1;
+    }
+    let mut last = index;
+    while last + 1 < runs.len()
+        && run_range(this, last).end() < limit.end()
+        && same(value(runs[last + 1].attributes), wanted)
+    {
+        last += 1;
+    }
+    let whole = Range {
+        location: run_range(this, first).location,
+        length: run_range(this, last).end() - run_range(this, first).location,
+    };
+    clipped(whole, limit)
+}
+
+extern "C" fn attributes_longest(
+    this: Id,
+    _: Sel,
+    at: usize,
+    effective: *mut Range,
+    limit: Range,
+) -> Id {
+    let asking = sel!("attributesAtIndex:effectiveRange:");
+    let attributes = attributes_at_index(this, asking, at, core::ptr::null_mut());
+    write_range(effective, longest(this, at, limit, &|attributes| attributes));
+    attributes
+}
+
+extern "C" fn attribute_longest(
+    this: Id,
+    _: Sel,
+    name: Id,
+    at: usize,
+    effective: *mut Range,
+    limit: Range,
+) -> Id {
+    let value_of = |attributes: Id| send1(attributes, sel!("objectForKey:"), name as usize);
+    let asking = sel!("attributesAtIndex:effectiveRange:");
+    let attributes = attributes_at_index(this, asking, at, core::ptr::null_mut());
+    write_range(effective, longest(this, at, limit, &value_of));
+    value_of(attributes)
+}
+
+fn each_run_in(this: Id, limit: Range, reverse: bool, work: &mut dyn FnMut(Id, Range) -> bool) {
+    let count = fields(this).runs.len();
+    for step in 0..count {
+        let index = match reverse {
+            true => count - 1 - step,
+            false => step,
+        };
+        let range = clipped(run_range(this, index), limit);
+        if range.length == 0 {
+            continue;
+        }
+        let attributes = fields(this).runs.as_slice()[index].attributes;
+        if !work(attributes, range) {
+            return;
+        }
+    }
+}
+
+extern "C" fn enumerate_attributes(this: Id, _: Sel, limit: Range, options: usize, block: Id) {
+    if block.is_null() {
+        return;
+    }
+    // SAFETY: the program's block takes the block, the attributes, an `NSRange` and a `BOOL *`.
+    let function: extern "C" fn(Id, Id, Range, *mut u8) =
+        unsafe { core::mem::transmute(invoke_address(block)) };
+    let mut stop = 0u8;
+    each_run_in(this, limit, options & REVERSE != 0, &mut |attributes, range| {
+        function(block, attributes, range, &mut stop);
+        stop == 0
+    });
+}
+
+extern "C" fn enumerate_attribute(
+    this: Id,
+    _: Sel,
+    name: Id,
+    limit: Range,
+    options: usize,
+    block: Id,
+) {
+    if block.is_null() {
+        return;
+    }
+    // SAFETY: the program's block takes the block, the value, an `NSRange` and a `BOOL *`.
+    let function: extern "C" fn(Id, Id, Range, *mut u8) =
+        unsafe { core::mem::transmute(invoke_address(block)) };
+    let reverse = options & REVERSE != 0;
+    let mut pending: Option<(Id, Range)> = None;
+    let mut stop = 0u8;
+    each_run_in(this, limit, reverse, &mut |attributes, range| {
+        let value = send1(attributes, sel!("objectForKey:"), name as usize);
+        match pending {
+            Some((held, held_range)) if same(held, value) => {
+                let start = held_range.location.min(range.location);
+                let end = held_range.end().max(range.end());
+                pending = Some((
+                    held,
+                    Range {
+                        location: start,
+                        length: end - start,
+                    },
+                ));
+                true
+            }
+            Some((held, held_range)) => {
+                function(block, held, held_range, &mut stop);
+                pending = Some((value, range));
+                stop == 0
+            }
+            None => {
+                pending = Some((value, range));
+                true
+            }
+        }
+    });
+    if stop == 0
+        && let Some((held, held_range)) = pending
+    {
+        function(block, held, held_range, &mut stop);
+    }
 }
 
 extern "C" fn copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
@@ -442,70 +619,214 @@ extern "C" fn set_attributed_string(this: Id, _: Sel, other: Id) {
     }
 }
 
-fn each_run(this: Id, work: &mut dyn FnMut(Id, Id)) {
-    let count = fields(this).runs.len();
-    for index in 0..count {
-        let run = fields(this).runs.as_slice()[index];
-        let end = run_end(this, index);
-        if end <= run.start {
-            continue;
-        }
-        let range = Range {
-            location: run.start,
-            length: end - run.start,
-        };
-        let piece: extern "C" fn(Id, Sel, Range) -> Id = message::msg_send_as();
-        let text = piece(fields(this).string, sel!("substringWithRange:"), range);
-        work(text, run.attributes);
-    }
-}
-
 fn size_of_piece(text: Id, attributes: Id) -> Size {
     let measure: extern "C" fn(Id, Sel, Id) -> Size = message::msg_send_as();
     measure(text, sel!("sizeWithAttributes:"), attributes)
 }
 
-extern "C" fn draw_at_point(this: Id, _: Sel, at: Point) {
-    let mut x = at.x;
-    each_run(this, &mut |text, attributes| {
-        let draw: extern "C" fn(Id, Sel, Point, Id) = message::msg_send_as();
-        draw(
-            text,
-            sel!("drawAtPoint:withAttributes:"),
-            Point::new(x, at.y),
-            attributes,
-        );
-        x += size_of_piece(text, attributes).width;
+fn attribute(attributes: Id, name: &str) -> Id {
+    send1(attributes, sel!("objectForKey:"), string(name) as usize)
+}
+
+fn integer_attribute(attributes: Id, name: &str) -> isize {
+    let value = attribute(attributes, name);
+    match value.is_null() {
+        true => 0,
+        false => send(value, sel!("integerValue")) as isize,
+    }
+}
+
+fn line_colour(attributes: Id, own: &str) -> u32 {
+    let colour = [own, "NSColor"]
+        .iter()
+        .find_map(|name| drawing::colour_of(attribute(attributes, name)));
+    colour.map_or(0, |colour| colour.pixel)
+}
+
+fn decorate(frame: Frame, attributes: Id) {
+    let underline = match integer_attribute(attributes, "NSUnderline") {
+        0 if !attribute(attributes, "NSLink").is_null() => 1,
+        style => style,
+    };
+    let strike = integer_attribute(attributes, "NSStrikethrough");
+    if underline == 0 && strike == 0 {
+        return;
+    }
+    let scale = (frame.height / GLYPH_HEIGHT).max(1.0);
+    let mut lines: [(f64, f64, u32); 4] = [(0.0, 0.0, 0); 4];
+    let mut count = 0;
+    let mut add = |above: f64, style: isize, colour: u32| {
+        let thick = match style & UNDERLINE_THICK != 0 {
+            true => 2.0,
+            false => 1.0,
+        };
+        lines[count] = (frame.y + above * scale, thick * scale, colour);
+        count += 1;
+        if style & UNDERLINE_DOUBLE == UNDERLINE_DOUBLE {
+            lines[count] = (frame.y + (above - DOUBLE_GAP) * scale, thick * scale, colour);
+            count += 1;
+        }
+    };
+    if underline != 0 {
+        add(UNDERLINE_ABOVE_BOTTOM, underline, line_colour(attributes, "NSUnderlineColor"));
+    }
+    if strike != 0 {
+        add(STRIKE_ABOVE_BOTTOM, strike, line_colour(attributes, "NSStrikethroughColor"));
+    }
+    drawing::with_canvas(|canvas, height, origin, _, _| {
+        for &(y, thickness, colour) in &lines[..count] {
+            let line = Frame::new(origin.x + frame.x, origin.y + y, frame.width, thickness);
+            canvas.fill(pixel_rect(line, height), colour);
+        }
     });
 }
 
-extern "C" fn draw_in_rect(this: Id, _: Sel, rect: Frame) {
-    let mut x = rect.x;
-    each_run(this, &mut |text, attributes| {
-        let width = size_of_piece(text, attributes).width;
-        let draw: extern "C" fn(Id, Sel, Frame, Id) = message::msg_send_as();
-        let room = (rect.x + rect.width - x).max(0.0);
-        draw(
-            text,
-            sel!("drawInRect:withAttributes:"),
-            Frame::new(x, rect.y, room, rect.height),
-            attributes,
-        );
-        x += width;
+fn draw_piece(text: Id, attributes: Id, at: Point) -> f64 {
+    let draw: extern "C" fn(Id, Sel, Point, Id) = message::msg_send_as();
+    draw(text, sel!("drawAtPoint:withAttributes:"), at, attributes);
+    let size = size_of_piece(text, attributes);
+    decorate(Frame::new(at.x, at.y, size.width, size.height), attributes);
+    size.width
+}
+
+fn character_at(this: Id, at: usize) -> usize {
+    send1(fields(this).string, sel!("characterAtIndex:"), at) as usize & 0xffff
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Line {
+    range: Range,
+    width: f64,
+    height: f64,
+    layout: Layout,
+}
+
+fn piece_text(this: Id, range: Range) -> Id {
+    let piece: extern "C" fn(Id, Sel, Range) -> Id = message::msg_send_as();
+    piece(fields(this).string, sel!("substringWithRange:"), range)
+}
+
+fn measure_line(this: Id, range: Range) -> Line {
+    let layout = match run_at(this, range.location) {
+        Some(index) if range.location < length_of(this) => paragraph_style::layout_of(attribute(
+            fields(this).runs.as_slice()[index].attributes,
+            "NSParagraphStyle",
+        )),
+        _ => paragraph_style::layout_of(core::ptr::null_mut()),
+    };
+    let mut width = 0.0;
+    let mut height: f64 = GLYPH_HEIGHT;
+    each_run_in(this, range, false, &mut |attributes, piece| {
+        let size = size_of_piece(piece_text(this, piece), attributes);
+        width += size.width;
+        height = height.max(size.height);
+        true
+    });
+    if layout.line_height_multiple > 0.0 {
+        height *= layout.line_height_multiple;
+    }
+    if layout.minimum_line_height > 0.0 {
+        height = height.max(layout.minimum_line_height);
+    }
+    if layout.maximum_line_height > 0.0 {
+        height = height.min(layout.maximum_line_height);
+    }
+    Line {
+        range,
+        width,
+        height,
+        layout,
+    }
+}
+
+fn each_line(this: Id, work: &mut dyn FnMut(Line)) {
+    let length = length_of(this);
+    let mut start = 0;
+    for at in 0..=length {
+        let ends =
+            at == length || matches!(character_at(this, at), LINE_FEED | PARAGRAPH_SEPARATOR);
+        if !ends {
+            continue;
+        }
+        work(measure_line(
+            this,
+            Range {
+                location: start,
+                length: at - start,
+            },
+        ));
+        start = at + 1;
+        if at == length {
+            break;
+        }
+    }
+}
+
+fn line_x(line: &Line, left: f64, width: f64) -> f64 {
+    let start = left + line.layout.first_line_head_indent;
+    let right = match line.layout.tail_indent {
+        tail if tail > 0.0 => left + tail,
+        tail => left + width + tail,
+    };
+    match line.layout.alignment {
+        alignment::CENTER => start + ((right - start) - line.width).max(0.0) / 2.0,
+        alignment::RIGHT => (right - line.width).max(start),
+        _ => start,
+    }
+}
+
+fn draw_line(this: Id, line: &Line, x: f64, bottom: f64) {
+    let mut x = x;
+    each_run_in(this, line.range, false, &mut |attributes, piece| {
+        x += draw_piece(piece_text(this, piece), attributes, Point::new(x, bottom));
+        true
     });
 }
 
-extern "C" fn size(this: Id, _: Sel) -> Size {
+fn total_size(this: Id) -> Size {
     let mut total = Size {
         width: 0.0,
         height: 0.0,
     };
-    each_run(this, &mut |text, attributes| {
-        let piece = size_of_piece(text, attributes);
-        total.width += piece.width;
-        total.height = total.height.max(piece.height);
+    let mut first = true;
+    each_line(this, &mut |line| {
+        if !first {
+            total.height += line.layout.paragraph_spacing_before;
+        }
+        total.width = total.width.max(line.width + line.layout.first_line_head_indent);
+        total.height += line.height + line.layout.line_spacing + line.layout.paragraph_spacing;
+        first = false;
     });
     total
+}
+
+extern "C" fn draw_at_point(this: Id, _: Sel, at: Point) {
+    let size = total_size(this);
+    draw_in_rect(
+        this,
+        sel!("drawInRect:"),
+        Frame::new(at.x, at.y, size.width, size.height),
+    );
+}
+
+extern "C" fn draw_in_rect(this: Id, _: Sel, rect: Frame) {
+    let mut top = rect.y + rect.height;
+    let mut first = true;
+    each_line(this, &mut |line| {
+        if !first {
+            top -= line.layout.paragraph_spacing_before;
+        }
+        first = false;
+        let bottom = top - line.height;
+        if bottom + line.height >= rect.y {
+            draw_line(this, &line, line_x(&line, rect.x, rect.width), bottom);
+        }
+        top = bottom - line.layout.line_spacing - line.layout.paragraph_spacing;
+    });
+}
+
+extern "C" fn size(this: Id, _: Sel) -> Size {
+    total_size(this)
 }
 
 extern "C" fn mutable_string(this: Id, _: Sel) -> Id {
@@ -565,6 +886,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "length" => length,
         "attributesAtIndex:effectiveRange:" => attributes_at_index,
         "attribute:atIndex:effectiveRange:" => attribute_at_index,
+        "attributesAtIndex:longestEffectiveRange:inRange:" => attributes_longest,
+        "attribute:atIndex:longestEffectiveRange:inRange:" => attribute_longest,
+        "enumerateAttributesInRange:options:usingBlock:" => enumerate_attributes,
+        "enumerateAttribute:inRange:options:usingBlock:" => enumerate_attribute,
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,
         "isEqual:" => is_equal,
