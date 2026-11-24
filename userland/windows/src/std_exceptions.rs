@@ -13,7 +13,7 @@ use crate::unwind::Image;
 use core::mem::{offset_of, size_of};
 
 const NAME_LENGTH: usize = 32;
-const MAX_BASES: usize = 4;
+const MAX_BASES: usize = 5;
 const COUNT: usize = StdException::ALL.len();
 const IMAGE_RELATIVE: u32 = 1;
 const NO_VIRTUAL_BASE: u32 = u32::MAX;
@@ -42,11 +42,12 @@ pub enum StdException {
     OverflowError,
     SystemErrorBase,
     SystemError,
+    IosFailure,
 }
 
 impl StdException {
     /// Every class, in table order.
-    pub const ALL: [StdException; 16] = [
+    pub const ALL: [StdException; 17] = [
         StdException::Exception,
         StdException::BadAlloc,
         StdException::BadArrayNewLength,
@@ -63,6 +64,7 @@ impl StdException {
         StdException::OverflowError,
         StdException::SystemErrorBase,
         StdException::SystemError,
+        StdException::IosFailure,
     ];
 
     /// Its place in [`StdException::ALL`] and in the table.
@@ -90,6 +92,13 @@ impl StdException {
             OverflowError => &[OverflowError, RuntimeError, Exception],
             SystemErrorBase => &[SystemErrorBase, RuntimeError, Exception],
             SystemError => &[SystemError, SystemErrorBase, RuntimeError, Exception],
+            IosFailure => &[
+                IosFailure,
+                SystemError,
+                SystemErrorBase,
+                RuntimeError,
+                Exception,
+            ],
         }
     }
 
@@ -113,6 +122,7 @@ impl StdException {
             OverflowError => b".?AVoverflow_error@std@@",
             SystemErrorBase => b".?AV_System_error@std@@",
             SystemError => b".?AVsystem_error@std@@",
+            IosFailure => b".?AVfailure@ios_base@std@@",
         }
     }
 
@@ -136,6 +146,7 @@ impl StdException {
             OverflowError => b"class std::overflow_error\0",
             SystemErrorBase => b"class std::_System_error\0",
             SystemError => b"class std::system_error\0",
+            IosFailure => b"class std::ios_base::failure\0",
         }
     }
 
@@ -151,6 +162,7 @@ impl StdException {
             NonRttiObject => b"Access violation - no RTTI data!\0",
             BadFunctionCall => b"bad function call\0",
             BadException => b"bad exception\0",
+            IosFailure => b"ios_base::failbit set: iostream stream error\0",
             _ => b"Unknown exception\0",
         }
     }
@@ -168,7 +180,9 @@ impl StdException {
     /// The size of its objects.
     pub const fn size(self) -> u32 {
         match self {
-            StdException::SystemErrorBase | StdException::SystemError => SYSTEM_ERROR_SIZE,
+            StdException::SystemErrorBase
+            | StdException::SystemError
+            | StdException::IosFailure => SYSTEM_ERROR_SIZE,
             _ => EXCEPTION_SIZE,
         }
     }

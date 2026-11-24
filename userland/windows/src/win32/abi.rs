@@ -17,6 +17,9 @@
 
 #[cfg(target_arch = "x86_64")]
 macro_rules! export_entry {
+    ($function:path, throwing) => {
+        throwing_entry!($function)
+    };
     ($function:path, variadic_after_one) => {{
         #[unsafe(naked)]
         unsafe extern "C" fn entry() {
@@ -78,6 +81,9 @@ macro_rules! export_entry {
 
 #[cfg(target_arch = "aarch64")]
 macro_rules! export_entry {
+    ($function:path, throwing) => {
+        throwing_entry!($function)
+    };
     ($function:path, direct) => {
         $function as *const ()
     };

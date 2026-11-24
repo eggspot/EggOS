@@ -245,7 +245,7 @@ and is not listed per item.
 - [x] Windows shell namespace: `IFileDialog` (`FileOpenDialog`/`FileSaveDialog` COM classes) over the system picker, `IShellItemArray`, virtual folders (This PC, Recycle Bin) (D392, D399) — code written, unbuilt: D742
 - [x] COM out of process: interfaces other than `IDispatch` from type information, callbacks and connection points, `VT_ARRAY`, by-reference results (D400; `VT_ARRAY` and by-reference results code written, unbuilt: D743; callbacks, events and connection points: D744; type libraries, `ITypeInfo` and `Invoke` through it: D745; custom interfaces through their type information: D746)
 - [x] Common controls: `LVS_OWNERDATA` virtual lists with `LVN_ODCACHEHINT`; ANSI notifications to ANSI parents (D402, D403) — code written, unbuilt: D747
-- [ ] msvcp140 iostreams: `wchar_t` streams (`wcout`, `wcin`), `num_put`/`numpunct`/`codecvt` facets, `ios_base::failure` thrown when enabled (D405)
+- [x] msvcp140 iostreams: `wchar_t` streams (`wcout`, `wcin`), `num_put`/`numpunct`/`codecvt` facets, `ios_base::failure` thrown when enabled (D405) — code written, unbuilt: D748
 - [ ] macOS: storyboard segues (`performSegueWithIdentifier:sender:`, `prepareForSegue:`), split and tab view controllers, child view controllers (D406)
 - [ ] macOS: `NSDocument` with its window controllers (D406)
 - [ ] macOS: utility-panel and floating-panel window levels (D407)

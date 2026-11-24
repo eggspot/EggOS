@@ -31,7 +31,7 @@ pub(in crate::win32) use context::{Context, capturing_entry};
 pub use dispatch::deliver_fault;
 pub(in crate::win32) use dispatch::{NO_STATE, UnwindTarget, reaches_frame, resume, unwind};
 pub use frames::{in_layer, set_image};
-pub(in crate::win32) use thrown::{StdObject, throw, throw_object};
+pub(in crate::win32) use thrown::{StdObject, owe, throw, throw_object, throwing_entry};
 
 /// Exception flags (`EXCEPTION_RECORD.ExceptionFlags`).
 pub mod flag {

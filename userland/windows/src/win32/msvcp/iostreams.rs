@@ -9,9 +9,14 @@
 //! with `ctype<char>` its one facet, which inline `use_facet` reaches; and `_Fiopen`, which
 //! `basic_filebuf` opens files with. A program's own stream buffers (`basic_stringbuf`,
 //! `basic_filebuf`) are reached through their tables of virtual functions, so they work
-//! under every member here.
+//! under every member here. A stream whose exception mask holds a state it reaches throws
+//! `std::ios_base::failure` when the member returns (D748); the `wchar_t` streams
+//! (`wide.rs`) and the `numpunct`, `codecvt` and `num_put` facets (`facets.rs`) are D748's
+//! too.
 
 use super::super::crt::{self, File};
+use super::super::exception::{owe, throwing_entry};
+use crate::std_exceptions::StdException;
 use super::super::{call_program, heap};
 use crate::library::Export;
 use crate::stream_format::{self, Integer, Read, flags};
@@ -192,8 +197,10 @@ struct Position {
     state: u64,
 }
 
+const FACET_COUNT: usize = 8;
+
 #[repr(transparent)]
-struct Facets([*const CtypeChar; 2]);
+struct Facets([*const CtypeChar; FACET_COUNT]);
 
 // SAFETY: the facet pointers are fixed for the program's life.
 unsafe impl Sync for Facets {}
@@ -243,7 +250,7 @@ static NULL_CELL: Shared<*mut u8> = Shared::new(null_mut());
 static ZERO_COUNT: Shared<i32> = Shared::new(0);
 static OSTREAM_BASES: Offsets = Offsets([0, OSTREAM_BASE_OFFSET]);
 static ISTREAM_BASES: Offsets = Offsets([0, ISTREAM_BASE_OFFSET]);
-static ID_COUNT: Shared<i32> = Shared::new(1);
+static ID_COUNT: Shared<i32> = Shared::new(FACET_COUNT as i32 - 1);
 static CTYPE_ID: Shared<LocaleId> = Shared::new(LocaleId { id: 1 });
 static SYNC_WITH_STDIO: Shared<bool> = Shared::new(true);
 static INIT_COUNT: Shared<i32> = Shared::new(1);
@@ -261,14 +268,23 @@ static CTYPE: Shared<CtypeChar> = Shared::new(CtypeChar {
     locale_name: 0,
 });
 
-static FACETS: Facets = Facets([core::ptr::null(), shared_pointer!(CTYPE).cast_const()]);
+static FACETS: Facets = Facets([
+    core::ptr::null(),
+    shared_pointer!(CTYPE).cast_const(),
+    wide::CTYPE_FACET.cast(),
+    facets::NUMPUNCT_FACET.cast(),
+    facets::WIDE_NUMPUNCT_FACET.cast(),
+    facets::CODECVT_FACET.cast(),
+    facets::NUM_PUT_FACET.cast(),
+    facets::WIDE_NUM_PUT_FACET.cast(),
+]);
 
 static LOCIMP: Shared<Locimp> = Shared::new(Locimp {
     table: (&raw const FACET_TABLE.0).cast(),
     references: 1,
     reserved: 0,
     facets: (&raw const FACETS.0).cast(),
-    facet_count: 2,
+    facet_count: FACET_COUNT,
     categories: ALL_CATEGORIES,
     external_parent: false,
     reserved_tail: [0; 3],
@@ -630,6 +646,13 @@ unsafe fn set_state(ios: *mut BasicIos, bits: i32) {
             state |= BROKEN;
         }
         (*ios).base.state = state;
+        owe_failure(&(*ios).base);
+    }
+}
+
+fn owe_failure(base: &IosBase) {
+    if base.state & base.exceptions != 0 {
+        owe(StdException::IosFailure);
     }
 }
 
@@ -1272,6 +1295,7 @@ unsafe extern "efiapi" fn ios_clear(this: *mut BasicIos, state: i32, _reraise: u
             state |= BROKEN;
         }
         (*this).base.state = state;
+        owe_failure(&(*this).base);
     }
 }
 
@@ -2065,69 +2089,69 @@ pub(super) const DATA_EXPORTS: &[Export] = &[
 
 /// The members and functions the headers import.
 pub(super) const EXPORTS: &[Export] = exports![
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_N@Z" => put_bool,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@F@Z" => put_short,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@G@Z" => put_unsigned_short,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z" => put_int,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@I@Z" => put_unsigned_int,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@J@Z" => put_int,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@K@Z" => put_unsigned_int,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_J@Z" => put_long_long,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_K@Z" => put_unsigned_long_long,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@M@Z" => put_float,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@N@Z" => put_double,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@O@Z" => put_long_double,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEBX@Z" => put_pointer,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z" => put_buffer,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" => put_with_stream,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV?$basic_ios@DU?$char_traits@D@std@@@1@AEAV21@@Z@Z" => put_with_ios,
-    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z" => put_with_ios,
-    b"?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" => put,
-    b"?write@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEBD_J@Z" => write,
-    b"?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" => flush,
-    b"?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" => output_suffix,
-    b"?osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" => output_suffix,
-    b"?opfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA_NXZ" => output_prefix,
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_N@Z" => put_bool [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@F@Z" => put_short [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@G@Z" => put_unsigned_short [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z" => put_int [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@I@Z" => put_unsigned_int [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@J@Z" => put_int [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@K@Z" => put_unsigned_int [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_J@Z" => put_long_long [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_K@Z" => put_unsigned_long_long [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@M@Z" => put_float [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@N@Z" => put_double [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@O@Z" => put_long_double [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEBX@Z" => put_pointer [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z" => put_buffer [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z" => put_with_stream [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAV?$basic_ios@DU?$char_traits@D@std@@@1@AEAV21@@Z@Z" => put_with_ios [throwing],
+    b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z" => put_with_ios [throwing],
+    b"?put@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" => put [throwing],
+    b"?write@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEBD_J@Z" => write [throwing],
+    b"?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ" => flush [throwing],
+    b"?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" => output_suffix [throwing],
+    b"?osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ" => output_suffix [throwing],
+    b"?opfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA_NXZ" => output_prefix [throwing],
     b"??0?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z" => ostream_make,
     b"??1?$basic_ostream@DU?$char_traits@D@std@@@std@@UEAA@XZ" => stream_unmake,
-    b"?endl@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@1@AEAV21@@Z" => end_line,
-    b"?ends@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@1@AEAV21@@Z" => end_string,
-    b"?flush@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@1@AEAV21@@Z" => flush_manipulator,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_N@Z" => get_bool,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAF@Z" => get_short,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAG@Z" => get_unsigned_short,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAH@Z" => get_int,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAI@Z" => get_unsigned_int,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAJ@Z" => get_int,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAK@Z" => get_unsigned_int,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_J@Z" => get_long_long,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_K@Z" => get_unsigned_long_long,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAM@Z" => get_float,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAN@Z" => get_double,
-    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAO@Z" => get_double,
-    b"?get@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAHXZ" => get_one,
-    b"?peek@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAHXZ" => peek,
-    b"?getline@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z" => get_line,
-    b"?getline@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_JD@Z" => get_line_until,
-    b"?read@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z" => read,
-    b"?ignore@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@_JH@Z" => ignore,
-    b"?gcount@?$basic_istream@DU?$char_traits@D@std@@@std@@QEBA_JXZ" => gcount,
-    b"?putback@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" => put_back,
-    b"?_Ipfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA_N_N@Z" => input_prefix,
-    b"?ipfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA_N_N@Z" => input_prefix,
-    b"?isfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAXXZ" => input_suffix,
+    b"?endl@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@1@AEAV21@@Z" => end_line [throwing],
+    b"?ends@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@1@AEAV21@@Z" => end_string [throwing],
+    b"?flush@std@@YAAEAV?$basic_ostream@DU?$char_traits@D@std@@@1@AEAV21@@Z" => flush_manipulator [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_N@Z" => get_bool [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAF@Z" => get_short [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAG@Z" => get_unsigned_short [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAH@Z" => get_int [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAI@Z" => get_unsigned_int [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAJ@Z" => get_int [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAK@Z" => get_unsigned_int [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_J@Z" => get_long_long [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEA_K@Z" => get_unsigned_long_long [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAM@Z" => get_float [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAN@Z" => get_double [throwing],
+    b"??5?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@AEAO@Z" => get_double [throwing],
+    b"?get@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAHXZ" => get_one [throwing],
+    b"?peek@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAHXZ" => peek [throwing],
+    b"?getline@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z" => get_line [throwing],
+    b"?getline@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_JD@Z" => get_line_until [throwing],
+    b"?read@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@PEAD_J@Z" => read [throwing],
+    b"?ignore@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@_JH@Z" => ignore [throwing],
+    b"?gcount@?$basic_istream@DU?$char_traits@D@std@@@std@@QEBA_JXZ" => gcount [throwing],
+    b"?putback@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@D@Z" => put_back [throwing],
+    b"?_Ipfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA_N_N@Z" => input_prefix [throwing],
+    b"?ipfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA_N_N@Z" => input_prefix [throwing],
+    b"?isfx@?$basic_istream@DU?$char_traits@D@std@@@std@@QEAAXXZ" => input_suffix [throwing],
     b"??0?$basic_istream@DU?$char_traits@D@std@@@std@@QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z" => istream_make,
     b"??1?$basic_istream@DU?$char_traits@D@std@@@std@@UEAA@XZ" => stream_unmake,
-    b"?clear@ios_base@std@@QEAAXH_N@Z" => ios_clear,
-    b"?clear@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" => ios_clear,
-    b"?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" => ios_set_state,
+    b"?clear@ios_base@std@@QEAAXH_N@Z" => ios_clear [throwing],
+    b"?clear@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" => ios_clear [throwing],
+    b"?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z" => ios_set_state [throwing],
     b"?init@?$basic_ios@DU?$char_traits@D@std@@@std@@IEAAXPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@_N@Z" => ios_init,
     b"??0?$basic_ios@DU?$char_traits@D@std@@@std@@IEAA@XZ" => ios_make,
     b"??1?$basic_ios@DU?$char_traits@D@std@@@std@@UEAA@XZ" => ios_unmake,
     b"?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ" => ios_buffer,
     b"?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@PEAV32@@Z" => ios_set_buffer,
-    b"?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ" => ios_tie,
-    b"?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@PEAV32@@Z" => ios_set_tie,
+    b"?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@XZ" => ios_tie [throwing],
+    b"?tie@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAPEAV?$basic_ostream@DU?$char_traits@D@std@@@2@PEAV32@@Z" => ios_set_tie [throwing],
     b"?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADXZ" => ios_fill,
     b"?fill@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAADD@Z" => ios_set_fill,
     b"?widen@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBADD@Z" => ios_widen,
@@ -2203,3 +2227,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"?_Fiopen@std@@YAPEAU_iobuf@@PEBDHH@Z" => open_file,
     b"?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z" => open_wide_file,
 ];
+
+mod facets;
+pub(super) mod wide;
+
+pub(super) use facets::{DATA_EXPORTS as FACET_DATA_EXPORTS, EXPORTS as FACET_EXPORTS};

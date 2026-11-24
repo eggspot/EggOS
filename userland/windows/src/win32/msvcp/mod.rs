@@ -2,7 +2,8 @@
 //! name and those of its companions (`msvcp140_1`, `msvcp140_2`, `msvcp140_atomic_wait`): the
 //! throwers the headers call (`errors.rs`), the threads, mutexes, condition variables and
 //! clocks (`threads.rs`), `std::exception_ptr` and `std::uncaught_exceptions` (`win32/exception`),
-//! and iostreams for `char` (`iostreams.rs`, D405).
+//! and iostreams for `char` (`iostreams.rs`, D405) and `wchar_t`, with the classic locale's
+//! facets (D748).
 
 mod errors;
 mod iostreams;
@@ -16,6 +17,10 @@ pub(super) const MSVCP140: &[&[Export]] = &[
     threads::EXPORTS,
     iostreams::EXPORTS,
     iostreams::DATA_EXPORTS,
+    iostreams::wide::EXPORTS,
+    iostreams::wide::DATA_EXPORTS,
+    iostreams::FACET_EXPORTS,
+    iostreams::FACET_DATA_EXPORTS,
     super::exception::EXCEPTION_PTR_EXPORTS,
     super::exception::UNCAUGHT_EXPORTS,
 ];

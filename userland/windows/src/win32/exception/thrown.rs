@@ -55,6 +55,7 @@ static VIRTUAL_TABLES: [VirtualTable; StdException::ALL.len()] = virtual_tables!
     OverflowError,
     SystemErrorBase,
     SystemError,
+    IosFailure,
 ];
 
 /// An object of one of the layer's exception classes: `std::exception`'s virtual function
@@ -178,8 +179,14 @@ extern "C" fn throw_owed(_: u64, _: u64, _: u64, _: u64, context: *mut Context) 
         .ok()
         .and_then(|owed| StdException::ALL.get(owed.wrapping_sub(1)).copied())
         .unwrap_or(StdException::BadException);
-    throw(kind, kind.runtime_message().as_ptr(), context)
+    let mut object = StdObject::new(kind, kind.runtime_message().as_ptr());
+    if kind == StdException::IosFailure {
+        object.code = IO_STREAM_ERROR;
+    }
+    throw_object(kind, object, context)
 }
+
+const IO_STREAM_ERROR: i32 = 1;
 
 #[cfg(target_arch = "x86_64")]
 macro_rules! throwing_entry {
@@ -229,4 +236,4 @@ macro_rules! throwing_entry {
     }};
 }
 
-pub(super) use throwing_entry;
+pub(in crate::win32) use throwing_entry;
