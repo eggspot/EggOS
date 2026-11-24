@@ -2,7 +2,9 @@
 //! dictionaries of its runs, which cover it end to end in UTF-16 units, and AppKit's drawing
 //! of it: each paragraph (up to a line feed) on its own line, placed by the paragraph style of
 //! its first character, each run drawn with its own font and colour after the one before, and
-//! underlined or struck through when its attributes say so.
+//! underlined or struck through when its attributes say so. RTF documents are read into one
+//! (D731) through `eggos-macos-gui`'s reader: each style's run gets its font, colour,
+//! underline and strikethrough, each aligned paragraph a paragraph style.
 
 use super::paragraph_style::{self, Layout, alignment};
 use super::{
@@ -11,6 +13,7 @@ use super::{
 };
 use crate::objc::block::invoke_address;
 use eggos_macos_gui::geometry::pixel_rect;
+use eggos_macos_gui::rtf::{self, Alignment, Sink, Style};
 use crate::foundation::{NSDICTIONARY, autoreleased, class_pointer};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
@@ -28,6 +31,7 @@ const STRIKE_ABOVE_BOTTOM: f64 = 8.0;
 const UNDERLINE_THICK: isize = 0x02;
 const UNDERLINE_DOUBLE: isize = 0x09;
 const DOUBLE_GAP: f64 = 2.0;
+const UTF8_ENCODING: usize = 4;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -829,6 +833,217 @@ extern "C" fn size(this: Id, _: Sel) -> Size {
     total_size(this)
 }
 
+struct Collected {
+    units: Buffer<u16>,
+    runs: Buffer<(usize, Style)>,
+    paragraphs: Buffer<(usize, usize, Alignment)>,
+    paragraph_start: usize,
+}
+
+impl Sink for Collected {
+    fn unit(&mut self, unit: u16, style: &Style) {
+        let at = self.units.len();
+        if self.runs.as_slice().last().is_none_or(|&(_, last)| last != *style) {
+            self.runs.push((at, *style));
+        }
+        self.units.push(unit);
+    }
+
+    fn paragraph(&mut self, alignment: Alignment) {
+        let end = self.units.len();
+        self.paragraphs.push((self.paragraph_start, end, alignment));
+        self.paragraph_start = end;
+    }
+}
+
+impl Collected {
+    fn free(&mut self) {
+        self.units.free();
+        self.runs.free();
+        self.paragraphs.free();
+    }
+}
+
+fn class_named(name: &[u8]) -> Id {
+    crate::objc::class_named(name).cast()
+}
+
+fn style_attributes(style: &Style) -> Id {
+    let attributes = send(
+        send(class_named(b"NSMutableDictionary"), sel!("alloc")),
+        sel!("init"),
+    );
+    if attributes.is_null() {
+        return attributes;
+    }
+    let put = |name: &str, value: Id| {
+        if !value.is_null() {
+            send2(attributes, sel!("setObject:forKey:"), value as usize, string(name) as usize);
+        }
+    };
+    let size = f64::from(style.half_points) / 2.0;
+    let font_of: extern "C" fn(Id, Sel, f64) -> Id = message::msg_send_as();
+    let font_sel = match style.bold {
+        true => sel!("boldSystemFontOfSize:"),
+        false => sel!("systemFontOfSize:"),
+    };
+    put("NSFont", font_of(class_named(b"NSFont"), font_sel, size));
+    if let Some(colour) = style.colour {
+        let channel = |shift: u32| f64::from((colour >> shift) & 0xff) / 255.0;
+        let make: extern "C" fn(Id, Sel, f64, f64, f64, f64) -> Id = message::msg_send_as();
+        let colour = make(
+            class_named(b"NSColor"),
+            sel!("colorWithSRGBRed:green:blue:alpha:"),
+            channel(16),
+            channel(8),
+            channel(0),
+            1.0,
+        );
+        put("NSColor", colour);
+    }
+    let one = || send1(class_named(b"NSNumber"), sel!("numberWithInteger:"), 1);
+    if style.underline {
+        put("NSUnderline", one());
+    }
+    if style.strikethrough {
+        put("NSStrikethrough", one());
+    }
+    attributes
+}
+
+fn alignment_style(alignment: Alignment) -> Id {
+    let value = match alignment {
+        Alignment::Left => return core::ptr::null_mut(),
+        Alignment::Center => alignment::CENTER,
+        Alignment::Right => alignment::RIGHT,
+        Alignment::Justified => alignment::JUSTIFIED,
+    };
+    let style = send(
+        send(class_named(b"NSMutableParagraphStyle"), sel!("alloc")),
+        sel!("init"),
+    );
+    if !style.is_null() {
+        send1(style, sel!("setAlignment:"), value);
+    }
+    style
+}
+
+fn from_rtf(this: Id, bytes: &[u8]) -> Id {
+    if this.is_null() {
+        return this;
+    }
+    let mut collected = Collected {
+        units: Buffer::new(),
+        runs: Buffer::new(),
+        paragraphs: Buffer::new(),
+        paragraph_start: 0,
+    };
+    if rtf::read(bytes, &mut collected).is_err() {
+        collected.free();
+        objc_release(this);
+        return core::ptr::null_mut();
+    }
+    let units = collected.units.as_slice();
+    let text = send2(
+        class_named(b"NSString"),
+        sel!("stringWithCharacters:length:"),
+        units.as_ptr() as usize,
+        units.len(),
+    );
+    let made = set_up(this, text, core::ptr::null_mut());
+    if made.is_null() {
+        collected.free();
+        return made;
+    }
+    let total = units.len();
+    let runs = collected.runs.as_slice();
+    for (index, &(start, style)) in runs.iter().enumerate() {
+        let end = runs.get(index + 1).map_or(total, |&(next, _)| next);
+        let attributes = style_attributes(&style);
+        let range = Range {
+            location: start,
+            length: end - start,
+        };
+        set_attributes(made, sel!("setAttributes:range:"), attributes, range);
+        if !attributes.is_null() {
+            objc_release(attributes);
+        }
+    }
+    for &(start, end, alignment) in collected.paragraphs.as_slice() {
+        let style = alignment_style(alignment);
+        if style.is_null() {
+            continue;
+        }
+        let range = Range {
+            location: start,
+            length: end - start,
+        };
+        let name = string("NSParagraphStyle");
+        add_attribute(made, sel!("addAttribute:value:range:"), name, style, range);
+        objc_release(style);
+    }
+    collected.free();
+    made
+}
+
+fn no_document_attributes(out: *mut Id) {
+    if !out.is_null() {
+        let empty = send(class_named(b"NSDictionary"), sel!("dictionary"));
+        // SAFETY: the caller's `NSDictionary **`.
+        unsafe { out.write(empty) };
+    }
+}
+
+fn data_bytes(data: Id) -> &'static [u8] {
+    match data.is_null() {
+        true => &[],
+        false => crate::foundation::data_bytes(data),
+    }
+}
+
+extern "C" fn init_with_rtf(this: Id, _: Sel, data: Id, document: *mut Id) -> Id {
+    let made = from_rtf(this, data_bytes(data));
+    if !made.is_null() {
+        no_document_attributes(document);
+    }
+    made
+}
+
+extern "C" fn init_with_data(
+    this: Id,
+    _: Sel,
+    data: Id,
+    _: Id,
+    document: *mut Id,
+    error: *mut Id,
+) -> Id {
+    let bytes = data_bytes(data);
+    let made = match bytes.starts_with(b"{\\rtf") {
+        true => from_rtf(this, bytes),
+        false => {
+            let text = send2(
+                send(class_named(b"NSString"), sel!("alloc")),
+                sel!("initWithData:encoding:"),
+                data as usize,
+                UTF8_ENCODING,
+            );
+            let made = set_up(this, text, core::ptr::null_mut());
+            if !text.is_null() {
+                objc_release(text);
+            }
+            made
+        }
+    };
+    if !error.is_null() {
+        // SAFETY: the caller's `NSError **`.
+        unsafe { error.write(core::ptr::null_mut()) };
+    }
+    if !made.is_null() {
+        no_document_attributes(document);
+    }
+    made
+}
+
 extern "C" fn mutable_string(this: Id, _: Sel) -> Id {
     fields(this).string
 }
@@ -890,6 +1105,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "attribute:atIndex:longestEffectiveRange:inRange:" => attribute_longest,
         "enumerateAttributesInRange:options:usingBlock:" => enumerate_attributes,
         "enumerateAttribute:inRange:options:usingBlock:" => enumerate_attribute,
+        "initWithRTF:documentAttributes:" => init_with_rtf,
+        "initWithData:options:documentAttributes:error:" => init_with_data,
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,
         "isEqual:" => is_equal,
