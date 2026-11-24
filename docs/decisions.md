@@ -29114,3 +29114,11 @@ the license, by an explicit instruction recorded here.
   - **Notification.** Every change through the defaults posts `NSUserDefaultsDidChangeNotification` with the defaults as its object.
   - **URLs.** `setURL:forKey:` stores a file URL as its path and any other URL as its string; `URLForKey:` makes a URL of a string containing `://` and a file URL of any other string, a leading `~` expanded.
 - **Not yet.** Building and running; changes made by another process seen without restarting; macOS's archived form of URLs written by `setURL:forKey:`; the argument domain's values parsed as property lists.
+
+## D729 NSTrackingArea's cursor updates, drags and event fields; NSScreen per display (M15 macOS; follow-up of D382; code written, unbuilt, untested: code-only mode) — Decided by the code-only session (engineering, from the NSTrackingArea, NSEvent and NSScreen documentation)
+- **Decision.**
+  - **Cursor updates.** An area with `NSTrackingCursorUpdate` sends its owner `cursorUpdate:` (an `NSEventTypeCursorUpdate` event) as the pointer enters it.
+  - **Drags.** A left-button drag in a window checks only the areas with `NSTrackingEnabledDuringMouseDrag`, which hear `mouseEntered:` and `mouseExited:` as the drag crosses them; the other areas keep their state and catch up on the next plain move, and no `mouseMoved:` is sent during a drag.
+  - **Event fields.** Every tracking event carries its area (retained by the event): `trackingArea` answers it and `userData` its user info.
+  - **Screens.** `NSScreen screens` lists one screen per display the window server reports (`GET_SCREENS`, the main one first), each with the work area the server gives it, its scale as `backingScaleFactor` and `deviceDescription`'s `NSScreenNumber`; with no answer, one screen from the work area as before. Screens are made once and kept.
+- **Not yet.** Building and running; displays placed side by side (the server reports every display with the one work area it lays out); `NSScreenColorSpaceDidChangeNotification` and screen changes while running; `trackingNumber`.

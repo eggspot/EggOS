@@ -24,6 +24,7 @@ pub mod kind {
     pub const KEY_DOWN: usize = 10;
     pub const KEY_UP: usize = 11;
     pub const FLAGS_CHANGED: usize = 12;
+    pub const CURSOR_UPDATE: usize = 17;
     pub const SCROLL_WHEEL: usize = 22;
 }
 
@@ -48,6 +49,7 @@ pub struct EventFields {
     pub delta_x: f64,
     pub clicks: isize,
     pub time_ms: u32,
+    pub tracking_area: Id,
 }
 
 /// The fields of `event`.
@@ -211,12 +213,20 @@ extern "C" fn current_modifier_flags(_: Id, _: Sel) -> u64 {
 
 extern "C" fn dealloc(this: Id, _: Sel) {
     let fields = fields(this);
-    for string in [fields.characters, fields.ignoring] {
-        if !string.is_null() {
-            objc_release(string);
+    for owned in [fields.characters, fields.ignoring, fields.tracking_area] {
+        if !owned.is_null() {
+            objc_release(owned);
         }
     }
     dispose(this);
+}
+
+extern "C" fn tracking_area(this: Id, _: Sel) -> Id {
+    fields(this).tracking_area
+}
+
+extern "C" fn user_data(this: Id, _: Sel) -> Id {
+    super::tracking::user_info_of(fields(this).tracking_area)
 }
 
 pub fn define(runtime: &mut Runtime) -> bool {
@@ -236,6 +246,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "scrollingDeltaX" => delta_x,
         "scrollingDeltaY" => delta,
         "isARepeat" => no,
+        "trackingArea" => tracking_area,
+        "userData" => user_data,
         "dealloc" => dealloc,
     ];
     let class = methods![

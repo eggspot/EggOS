@@ -1,8 +1,10 @@
-//! NSTrackingArea (D382): a rectangle of a view whose owner hears `mouseEntered:` and
-//! `mouseExited:` as the pointer crosses its edge and `mouseMoved:` while it moves inside, as
-//! its options ask. The areas are kept in one table; each pointer move in a window checks the
-//! areas of that window's views, and the pointer leaving the window exits every area it was
-//! in.
+//! NSTrackingArea (D382, D729): a rectangle of a view whose owner hears `mouseEntered:` and
+//! `mouseExited:` as the pointer crosses its edge, `mouseMoved:` while it moves inside and
+//! `cursorUpdate:` as it enters, as its options ask; each event carries the area
+//! (`trackingArea`, `userData`). The areas are kept in one table; each pointer move in a
+//! window checks the areas of that window's views, a drag checks only the areas enabled during
+//! drags (the others catch up on the next move), and the pointer leaving the window exits
+//! every area it was in.
 
 use super::{NSTRACKINGAREA, NSTRACKINGAREA_META, NSVIEW, event, store, view};
 use crate::foundation::class_pointer;
@@ -16,7 +18,9 @@ use eggos_macos_gui::geometry::{Frame, Point};
 
 const ENTERED_AND_EXITED: usize = 0x01;
 const MOUSE_MOVED: usize = 0x02;
+const CURSOR_UPDATE: usize = 0x04;
 const IN_VISIBLE_RECT: usize = 0x200;
+const ENABLED_DURING_DRAG: usize = 0x400;
 const MOUSE_ENTERED_EVENT: usize = 8;
 const MOUSE_EXITED_EVENT: usize = 9;
 
@@ -77,20 +81,43 @@ fn tell(each: Id, kind: usize, location: Point, time_ms: u32) {
     let sel = match kind {
         MOUSE_ENTERED_EVENT => sel!("mouseEntered:"),
         MOUSE_EXITED_EVENT => sel!("mouseExited:"),
+        event::kind::CURSOR_UPDATE => sel!("cursorUpdate:"),
         _ => sel!("mouseMoved:"),
     };
     let event = event::mouse(kind, window, location, 0, 0.0, time_ms);
     if !event.is_null() {
+        event::fields(event).tracking_area = objc_retain(each);
         send1(owner, sel, event as usize);
+    }
+}
+
+/// The user info of area `object`, or nil when there is none.
+pub fn user_info_of(object: Id) -> Id {
+    match object.is_null() {
+        true => object,
+        false => area(object).user_info,
     }
 }
 
 /// The pointer moved to `location` in `window`: the areas of its views it entered, left or
 /// moved inside hear of it.
 pub fn pointer_moved(window: Id, location: Point, time_ms: u32) {
+    cross(window, location, time_ms, false);
+}
+
+/// The pointer was dragged to `location` in `window`: the areas enabled during drags that it
+/// entered or left hear of it.
+pub fn pointer_dragged(window: Id, location: Point, time_ms: u32) {
+    cross(window, location, time_ms, true);
+}
+
+fn cross(window: Id, location: Point, time_ms: u32, dragging: bool) {
     each_area(&mut |each| {
         let fields = area(each);
         if fields.view.is_null() || view::fields(fields.view).window != window {
+            return;
+        }
+        if dragging && fields.options & ENABLED_DURING_DRAG == 0 {
             return;
         }
         let Some(rect) = rect_in_window(each) else {
@@ -107,7 +134,10 @@ pub fn pointer_moved(window: Id, location: Point, time_ms: u32) {
             };
             tell(each, kind, location, time_ms);
         }
-        if options & MOUSE_MOVED != 0 && inside {
+        if options & CURSOR_UPDATE != 0 && inside && !was {
+            tell(each, event::kind::CURSOR_UPDATE, location, time_ms);
+        }
+        if options & MOUSE_MOVED != 0 && inside && !dragging {
             tell(each, event::kind::MOUSE_MOVED, location, time_ms);
         }
     });

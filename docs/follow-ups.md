@@ -236,7 +236,7 @@ and is not listed per item.
 - [ ] AppKit: view-based NSTableView, multiple selection with a full NSIndexSet, sorting, per-row heights, row hover through `mouseMoved:` (D373; multiple selection and the full NSIndexSet code written, unbuilt: D725; row hover: D726; left: view-based tables, sorting, per-row heights, designed by Claude Fable in docs/ux/macos-tables-v0.4.md)
 - [ ] AppKit: NSImage decoding JPEG, GIF, TIFF, BMP, `.ico` and `.icns` through `eggos-image`, system images, `lockFocus`, `TIFFRepresentation`, `CGImage` (D374; JPEG to `.ico` D390; `.icns`, `lockFocus` and `TIFFRepresentation` code written, unbuilt: D727; left: the system images, which need Claude Fable's drawings, and `CGImage`, which waits on CoreGraphics images in the CoreGraphics follow-up)
 - [x] NSUserDefaults: suites, global and argument domains, `NSUserDefaultsDidChangeNotification`, `URLForKey:` (D381; D728)
-- [ ] NSTrackingArea: cursor updates, enter/exit while dragging, `trackingArea`/`userData` on events; several screens in NSScreen (D382)
+- [x] NSTrackingArea: cursor updates, enter/exit while dragging, `trackingArea`/`userData` on events; several screens in NSScreen (D382; D729)
 - [ ] NSAttributedString: paragraph styles, underline, links, `enumerateAttributesInRange:`, RTF import (D384)
 - [ ] NSGridView: merged cells, padding, hidden rows and columns, inserting and moving rows and columns (D385)
 - [ ] CoreGraphics: clipping paths, dashes, caps and joins, alpha blending and anti-aliasing, `CGContextDrawImage`, gradients, shadows, `CGPath` objects (D386)

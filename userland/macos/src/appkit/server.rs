@@ -19,6 +19,11 @@ const SET_POINTER: usize = 0x4008_7707;
 const COMMIT: usize = 0x4088_7708;
 const DESTROY: usize = 0x4004_7709;
 const GET_WORK_AREA: usize = 0x8014_770a;
+const GET_SCREENS: usize = 0x80c4_773b;
+const SCREEN_ENTRY: usize = 24;
+const SCREENS_FIRST: usize = 4;
+/// The most displays [`screens`] lists.
+pub const MOST_SCREENS: usize = 8;
 const SET_MENU: usize = 0x4100_7715;
 const GET_PLACEMENT: usize = 0xc014_771c;
 const SET_CLIPBOARD: usize = 0x4010_7720;
@@ -251,6 +256,37 @@ pub fn work_area() -> Option<ScreenRect> {
         word(&area, 8) as i32,
         word(&area, 12) as i32,
     ))
+}
+
+/// One display the server shows: its number, the work area on it and its scale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Display {
+    pub number: u32,
+    pub area: ScreenRect,
+    pub scale: u32,
+}
+
+/// The displays the server shows, first the main one; their count.
+pub fn screens(out: &mut [Display; MOST_SCREENS]) -> usize {
+    let mut reply = [0u8; SCREENS_FIRST + MOST_SCREENS * SCREEN_ENTRY];
+    if request(GET_SCREENS, &mut reply).is_err() {
+        return 0;
+    }
+    let count = (word(&reply, 0) as usize).min(MOST_SCREENS);
+    for (index, slot) in out.iter_mut().enumerate().take(count) {
+        let at = SCREENS_FIRST + index * SCREEN_ENTRY;
+        *slot = Display {
+            number: word(&reply, at),
+            area: (
+                word(&reply, at + 4) as i32,
+                word(&reply, at + 8) as i32,
+                word(&reply, at + 12) as i32,
+                word(&reply, at + 16) as i32,
+            ),
+            scale: word(&reply, at + 20).max(1),
+        };
+    }
+    count
 }
 
 /// `window`'s outside rectangle on the screen, its border and title bar included.

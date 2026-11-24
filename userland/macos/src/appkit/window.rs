@@ -436,6 +436,7 @@ extern "C" fn send_event(this: Id, _: Sel, event: Id) {
             if !tracking.is_null() {
                 send1(tracking, sel!("mouseDragged:"), event as usize);
             }
+            super::tracking::pointer_dragged(this, location, event::fields(event).time_ms);
         }
         kind::RIGHT_MOUSE_DOWN | kind::RIGHT_MOUSE_UP | kind::SCROLL_WHEEL => {
             let sel = match event::fields(event).kind {
