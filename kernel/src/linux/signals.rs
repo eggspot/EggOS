@@ -401,6 +401,10 @@ pub mod info_offset {
     pub const SYSTEM_TIME: usize = USER_TIME + W;
     /// `si_value`, the `sigval` `sigqueue` sends: an `int` or a pointer.
     pub const VALUE: usize = PID + 8;
+    /// `si_band`, of a descriptor's readiness signal (D701): a `long`.
+    pub const BAND: usize = PID;
+    /// `si_fd`, after `si_band`.
+    pub const FD: usize = PID + W;
     /// `si_addr`, of a fault's signal.
     pub const ADDRESS: usize = PID;
 }
@@ -428,6 +432,16 @@ pub mod code {
     /// The kernel's own, never given to a program: a thread whose process another thread
     /// stopped stops with it (D181).
     pub const GROUP_STOP: i32 = 0x7fff_0001;
+    /// A descriptor's readiness signal (`F_SETSIG`, D701): data to read (`POLL_IN`).
+    pub const POLL_IN: i32 = 1;
+    /// Room to write (`POLL_OUT`).
+    pub const POLL_OUT: i32 = 2;
+    /// An error (`POLL_ERR`).
+    pub const POLL_ERR: i32 = 4;
+    /// Urgent data (`POLL_PRI`).
+    pub const POLL_PRI: i32 = 5;
+    /// A hang-up (`POLL_HUP`).
+    pub const POLL_HUP: i32 = 6;
 }
 
 /// A pending signal's `siginfo_t`, as the kernel keeps it ([`KEPT_INFO_SIZE`]).
@@ -472,6 +486,19 @@ impl Info {
     /// Signal `signal` raised by the kernel ([`code::KERNEL`]).
     pub fn from_kernel(signal: u32) -> Self {
         Self::without_sender(signal, code::KERNEL)
+    }
+
+    /// Signal `signal` telling a file's owner that descriptor `fd` became ready (`F_SETSIG`,
+    /// D701): `si_code` `code` ([`code::POLL_IN`] and the others) and `si_band` the poll events
+    /// `band`, a `long` of the program's width.
+    pub fn ready_descriptor(signal: u32, code: i32, band: u64, fd: u32) -> Self {
+        let mut info = Self::without_sender(signal, code);
+        match crate::linux::abi::WORD_BYTES {
+            8 => info.0[info_offset::BAND..][..8].copy_from_slice(&band.to_ne_bytes()),
+            _ => info.0[info_offset::BAND..][..4].copy_from_slice(&(band as u32).to_ne_bytes()),
+        }
+        info.0[info_offset::FD..][..4].copy_from_slice(&fd.to_ne_bytes());
+        info
     }
 
     fn group_stop() -> Self {
@@ -1707,6 +1734,39 @@ pub fn send_from_kernel_to_self<P: Platform>(
     signal: u32,
 ) {
     let _ = send_to_self(process, thread, u64::from(signal), Info::from_kernel);
+}
+
+/// Whether thread `id` is one of `process`'s threads that can still be sent a signal, its first
+/// included while it runs.
+pub fn has_live_thread<P: Platform>(process: &Process<P>, id: u32) -> bool {
+    let signals = process.signals().lock();
+    target(process, &signals, id) == Target::Live
+}
+
+/// Sends the signal `info` describes from outside `process` to its thread `id`, as a file's
+/// thread owner is sent `SIGIO` (`F_OWNER_TID`, D701): as [`send_from_outside`], but to one
+/// thread; nothing once that thread or the process has ended, nor for a real-time signal past
+/// `RLIMIT_SIGPENDING`.
+pub fn send_to_thread_from_outside<P: Platform>(process: &Process<P>, id: u32, info: Info) {
+    if process.has_ended() {
+        return;
+    }
+    let queue_limit = queue_limit(process);
+    let slot = {
+        let mut signals = process.signals().lock();
+        if target(process, &signals, id) != Target::Live {
+            return;
+        }
+        if signals.send_to_thread(id, info, queue_limit).is_err() {
+            return;
+        }
+        process.set_sent_signals_waiting(true);
+        signals.wait_slot(id, process.id().get())
+    };
+    process.record_signal_sent();
+    if let Some(slot) = slot {
+        super::futex::interrupt::<P>(&slot);
+    }
 }
 
 fn queue_limit<P: Platform>(process: &Process<P>) -> u64 {

@@ -410,6 +410,7 @@ pub fn init_boot_cpu<P: Platform>() {
     if cfg!(eggos_kernel) {
         crate::HEAP.set_cpu_index(current_index::<P>);
         crate::linux::leases::set_platform::<P>();
+        crate::linux::signal_driven_io::set_platform::<P>();
     }
 }
 

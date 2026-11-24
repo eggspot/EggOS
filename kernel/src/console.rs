@@ -101,6 +101,9 @@ fn receive<P: Platform>(mut typed: Option<&[u8]>) {
     if received.readable || received.interrupt || received.quit || received.suspend {
         wake_input_waiters::<P>();
     }
+    if received.readable {
+        crate::linux::signal_driven_io::input_arrived::<P>(false);
+    }
 }
 
 const INPUT_CHUNK: usize = 64;

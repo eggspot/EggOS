@@ -262,6 +262,11 @@ pub mod tty {
     pub const FIONCLEX: u32 = 0x6602;
     pub const FIOCLEX: u32 = 0x6601;
     pub const FIOASYNC: u32 = 0x667d;
+    pub const FIOGETOWN: u32 = 0x4004_667b;
+    pub const FIOSETOWN: u32 = 0x8004_667c;
+    pub const SIOCATMARK: u32 = 0x4004_7307;
+    pub const SIOCSPGRP: u32 = 0x8004_7308;
+    pub const SIOCGPGRP: u32 = 0x4004_7309;
     pub const TIOCSCTTY: u32 = 0x5480;
     pub const TIOCGPGRP: u32 = 0x4004_7477;
     pub const TIOCSPGRP: u32 = 0x8004_7476;

@@ -467,6 +467,9 @@ pub trait Buffers {
     fn held_ranges(&self, _out: &mut [(u32, u32)]) -> usize {
         0
     }
+    /// The urgent mark falls after everything taken in so far (D701): what comes next is past
+    /// the urgent data, the urgent byte itself with `SO_OOBINLINE`. Nothing by default.
+    fn urgent_mark(&mut self) {}
 }
 
 /// What [`Connection::set_extensions`] turns on.
@@ -735,6 +738,11 @@ impl Connection {
     /// Keeps urgent bytes in the stream (`SO_OOBINLINE`) instead of apart.
     pub fn set_urgent_inline(&mut self, inline: bool) {
         self.urgent_inline = inline;
+    }
+
+    /// Whether urgent bytes stay in the stream (`SO_OOBINLINE`).
+    pub fn urgent_is_inline(&self) -> bool {
+        self.urgent_inline
     }
 
     /// The urgent byte the peer sent, kept apart from the stream, taken unless `peek`
@@ -1363,7 +1371,6 @@ impl Connection {
     fn take_in_order(&mut self, fresh: &[u8], buffers: &mut (impl Buffers + ?Sized)) -> usize {
         let urgent_at = self
             .receive_urgent
-            .filter(|_| !self.urgent_inline)
             .map(|mark| mark.wrapping_sub(self.receive_next) as usize)
             .filter(|&at| at < fresh.len());
         let Some(at) = urgent_at else {
@@ -1375,6 +1382,13 @@ impl Connection {
         self.receive_next = self.receive_next.wrapping_add(before_mark as u32);
         if before_mark < at {
             return before_mark;
+        }
+        buffers.urgent_mark();
+        if self.urgent_inline {
+            self.receive_urgent = None;
+            let from_mark = buffers.received(&fresh[at..]);
+            self.receive_next = self.receive_next.wrapping_add(from_mark as u32);
+            return before_mark + from_mark;
         }
         self.urgent_byte = Some(fresh[at]);
         self.receive_urgent = None;

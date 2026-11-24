@@ -38,7 +38,7 @@ use crate::sync::SpinLock;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use eggos_hal::Platform;
 use eggos_hal::time::mul_div_ceil;
 use eggos_hal::user::UserContext;
@@ -67,6 +67,8 @@ pub mod event {
     pub const WRBAND: u16 = 0x200;
     /// The peer shut down writing or closed (a socket).
     pub const RDHUP: u16 = 0x2000;
+    /// A message to read: only in a readiness signal's `si_band` (D701).
+    pub const MSG: u16 = 0x400;
 }
 
 const POLLFD_SIZE: usize = 8;
@@ -106,12 +108,16 @@ pub trait Watcher: Send + Sync {
 /// The watchers of one file that can be waited on: see the module documentation. A change
 /// to the file, made under the lock its readiness is read under, is followed by [`Self::wake`]
 /// with no lock held; a watcher joins ([`Self::watch`]) before it reads the readiness, so a
-/// change it does not see wakes it.
+/// change it does not see wakes it. A file with `O_ASYNC` and an owner is also looked at for
+/// its owner's signal after each wake ([`super::signal_driven_io`], D701).
 #[derive(Debug)]
 pub struct WakeList {
     watchers: SpinLock<Vec<Arc<dyn Watcher>>>,
-    watched: AtomicBool,
+    interest: AtomicU8,
 }
+
+const WATCHED: u8 = 1;
+const SIGNALS_OWNERS: u8 = 2;
 
 impl Default for WakeList {
     fn default() -> Self {
@@ -151,7 +157,7 @@ impl WakeList {
     pub const fn new() -> Self {
         Self {
             watchers: SpinLock::new(Vec::new()),
-            watched: AtomicBool::new(false),
+            interest: AtomicU8::new(0),
         }
     }
 
@@ -160,27 +166,41 @@ impl WakeList {
         Arc::new(Self::new())
     }
 
-    /// Wakes every watcher: one relaxed load while nobody watches. Call it after the change,
-    /// with no lock held.
+    /// Wakes every watcher, then signals the file's owners if it has `O_ASYNC`: one relaxed
+    /// load while nobody watches. Call it after the change, with no lock held.
     #[inline]
     pub fn wake(&self) {
-        if self.watched.load(Ordering::Relaxed) {
-            self.wake_watchers();
+        if self.interest.load(Ordering::Relaxed) != 0 {
+            self.wake_interested();
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn wake_watchers(&self) {
-        let watchers = self.watchers.lock();
-        for watcher in watchers.iter() {
-            watcher.woken();
+    fn wake_interested(&self) {
+        let interest = self.interest.load(Ordering::Relaxed);
+        if interest & WATCHED != 0 {
+            let watchers = self.watchers.lock();
+            for watcher in watchers.iter() {
+                watcher.woken();
+            }
+        }
+        if interest & SIGNALS_OWNERS != 0 {
+            super::signal_driven_io::list_woken(self);
         }
     }
 
     /// Whether anybody watches.
     pub fn is_watched(&self) -> bool {
-        self.watched.load(Ordering::Relaxed)
+        self.interest.load(Ordering::Relaxed) & WATCHED != 0
+    }
+
+    /// Has each wake also look at the file for its owners' signals, or stop (D701).
+    pub fn set_signals_owners(&self, on: bool) {
+        match on {
+            true => self.interest.fetch_or(SIGNALS_OWNERS, Ordering::Relaxed),
+            false => self.interest.fetch_and(!SIGNALS_OWNERS, Ordering::Relaxed),
+        };
     }
 
     /// Adds `watcher`: `ENOMEM` without memory for it.
@@ -194,7 +214,7 @@ impl WakeList {
             watchers.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
         }
         watchers.push(Arc::clone(watcher));
-        self.watched.store(true, Ordering::Relaxed);
+        self.interest.fetch_or(WATCHED, Ordering::Relaxed);
         Ok(())
     }
 
@@ -206,7 +226,7 @@ impl WakeList {
             .position(|watching| core::ptr::addr_eq(Arc::as_ptr(watching), Arc::as_ptr(watcher)))?;
         let removed = watchers.swap_remove(index);
         if watchers.is_empty() {
-            self.watched.store(false, Ordering::Relaxed);
+            self.interest.fetch_and(!WATCHED, Ordering::Relaxed);
         }
         Some(removed)
     }

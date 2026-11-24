@@ -61,9 +61,12 @@ pub mod open_flag {
     pub const PATH: u32 = 0o10_000_000;
     /// An unnamed temporary file in the directory named: its own bit and [`DIRECTORY`].
     pub const TMPFILE: u32 = 0o20_000_000 | DIRECTORY;
-    /// The status flags kept and changed (`F_SETFL`): the others Linux lets `F_SETFL` change
-    /// (`O_ASYNC`, `O_DIRECT`, `O_NOATIME`) are ignored until something acts on them.
+    /// The status flags `open` keeps: [`ASYNC`] only `F_SETFL` and `FIOASYNC` set, as on Linux,
+    /// and the others Linux lets `F_SETFL` change (`O_DIRECT`, `O_NOATIME`) are ignored until
+    /// something acts on them.
     pub const STATUS: u32 = APPEND | NONBLOCK;
+    /// Signal the file's owner when it becomes ready (`O_ASYNC`, D701).
+    pub const ASYNC: u32 = 0o20_000;
 }
 
 /// `fcntl`'s commands answered (`F_*`), the generic values, which x86_64 shares.
@@ -102,7 +105,7 @@ pub mod request {
     pub const FIONCLEX: u32 = crate::linux::abi::tty::FIONCLEX;
     /// Set the descriptor's close-on-exec flag.
     pub const FIOCLEX: u32 = crate::linux::abi::tty::FIOCLEX;
-    /// Set or clear `O_ASYNC` (an `int`): read and ignored, as `F_SETFL` ignores `O_ASYNC`.
+    /// Set or clear `O_ASYNC` (an `int`, set if not 0), D701.
     pub const FIOASYNC: u32 = crate::linux::abi::tty::FIOASYNC;
 }
 
@@ -298,12 +301,25 @@ impl OpenFile {
         self.status.load(Ordering::Relaxed)
     }
 
-    /// Replaces its status flags with those of `flags` it keeps ([`open_flag::STATUS`]), as
-    /// `F_SETFL` does; the access mode stays.
+    /// Replaces its status flags with those of `flags` it keeps ([`open_flag::STATUS`] and
+    /// [`open_flag::ASYNC`]), as `F_SETFL` does; the access mode stays.
     pub fn set_status_flags(&self, flags: u32) {
         let access = self.status_flags() & open_flag::ACCMODE;
-        self.status
-            .store(access | flags & open_flag::STATUS, Ordering::Relaxed);
+        let kept = flags & (open_flag::STATUS | open_flag::ASYNC);
+        self.status.store(access | kept, Ordering::Relaxed);
+    }
+
+    /// Whether its owner is signalled when it becomes ready (`O_ASYNC`, D701).
+    pub fn is_asynchronous(&self) -> bool {
+        self.status_flags() & open_flag::ASYNC != 0
+    }
+
+    /// Sets or clears `O_ASYNC` (`FIOASYNC`).
+    pub fn set_asynchronous(&self, asynchronous: bool) {
+        match asynchronous {
+            true => self.status.fetch_or(open_flag::ASYNC, Ordering::Relaxed),
+            false => self.status.fetch_and(!open_flag::ASYNC, Ordering::Relaxed),
+        };
     }
 
     /// Sets or clears `O_NONBLOCK` (`FIONBIO`).
@@ -377,6 +393,9 @@ impl Drop for OpenFile {
             super::inotify::WATCHES.load(Ordering::Relaxed) != 0 || super::fanotify::active();
         if self.held || watched || super::file_locks::any_held() {
             self.report_close_and_release();
+        }
+        if super::signal_driven_io::any() {
+            super::signal_driven_io::file_dropped(self);
         }
     }
 }
@@ -798,7 +817,9 @@ fn duplicate_to<P: Platform>(
 /// - `F_GETFD` and `F_SETFD`: the descriptor's flags, `FD_CLOEXEC` the only one (other bits
 ///   set are ignored);
 /// - `F_GETFL` and `F_SETFL`: the open file description's access mode and status flags, of
-///   which `F_SETFL` changes `O_APPEND` and `O_NONBLOCK` and ignores the rest;
+///   which `F_SETFL` changes `O_APPEND`, `O_NONBLOCK` and `O_ASYNC` and ignores the rest;
+/// - `F_SETOWN`, `F_GETOWN`, `F_SETOWN_EX`, `F_GETOWN_EX`, `F_SETSIG` and `F_GETSIG`
+///   ([`super::signal_driven_io::fcntl`], D701);
 /// - `F_ADD_SEALS` and `F_GET_SEALS` on a memory file (D139, [`super::memfd::seal_command`]);
 /// - any other command: `EINVAL`.
 ///
@@ -813,6 +834,7 @@ pub fn fcntl<P: Platform>(
 ) -> Result<u64, Errno> {
     let fd = fd as u32;
     let open = |table: &DescriptorTable| table.get(fd).ok_or(Errno::EBADF).map(|_| ());
+    let address = argument;
     let argument = argument as u32;
     match command as u32 {
         command @ (command::DUPFD | command::DUPFD_CLOEXEC) => {
@@ -862,13 +884,33 @@ pub fn fcntl<P: Platform>(
             Ok(u64::from(flags))
         }
         command::SETFL => {
-            let table = files.lock();
-            let file = &table.get(fd).ok_or(Errno::EBADF)?.file;
+            let file = files.file(u64::from(fd))?;
             if file.is_location_only() {
                 return Err(Errno::EBADF);
             }
+            let asynchronous = argument & open_flag::ASYNC != 0;
+            if asynchronous != file.is_asynchronous() {
+                super::signal_driven_io::set_asynchronous(process, &file, fd, asynchronous)?;
+            }
             file.set_status_flags(argument);
             Ok(0)
+        }
+        command @ (super::signal_driven_io::command::SETOWN
+        | super::signal_driven_io::command::GETOWN
+        | super::signal_driven_io::command::SETSIG
+        | super::signal_driven_io::command::GETSIG
+        | super::signal_driven_io::command::SETOWN_EX
+        | super::signal_driven_io::command::GETOWN_EX) => {
+            let file = files.file(u64::from(fd))?;
+            if file.is_location_only() {
+                return Err(Errno::EBADF);
+            }
+            let argument = match command {
+                super::signal_driven_io::command::SETOWN_EX
+                | super::signal_driven_io::command::GETOWN_EX => address,
+                _ => u64::from(argument),
+            };
+            super::signal_driven_io::fcntl(process, &file, command, argument)
         }
         command @ (super::memfd::command::ADD_SEALS | super::memfd::command::GET_SEALS) => {
             let file = files.file(u64::from(fd))?;
@@ -934,12 +976,13 @@ pub fn close_range(
 /// The `ioctl`s every open descriptor answers ([`request`]): whether it is one, and its result
 /// if so. `FIOCLEX` and `FIONCLEX` set and clear descriptor `fd`'s close-on-exec flag; `FIONBIO`
 /// sets `O_NONBLOCK` on `file`, what `fd` names, if the `int` at `argument` is not 0 and clears
-/// it otherwise; `FIOASYNC` reads its `int` and changes nothing. `EFAULT` if the `int` is not the
-/// program's memory.
+/// it otherwise; `FIOASYNC` sets or clears `O_ASYNC` the same way (D701). `EFAULT` if the `int`
+/// is not the program's memory. A socket's owner `ioctl`s are answered here too
+/// ([`super::signal_driven_io::socket_ioctl`]).
 pub fn descriptor_ioctl<P: Platform>(
     process: &Process<P>,
     files: &Descriptors,
-    file: &OpenFile,
+    file: &Arc<OpenFile>,
     fd: u64,
     request: u64,
     argument: u64,
@@ -959,15 +1002,23 @@ pub fn descriptor_ioctl<P: Platform>(
             let mut value = [0; 4];
             Some(match process.read_user_memory(argument, &mut value) {
                 Ok(()) => {
-                    if request == request::FIONBIO {
-                        file.set_nonblocking(i32::from_ne_bytes(value) != 0);
+                    let on = i32::from_ne_bytes(value) != 0;
+                    match request {
+                        request::FIONBIO => {
+                            file.set_nonblocking(on);
+                            Ok(0)
+                        }
+                        _ => super::signal_driven_io::set_asynchronous(process, file, fd as u32, on)
+                            .map(|()| {
+                                file.set_asynchronous(on);
+                                0
+                            }),
                     }
-                    Ok(0)
                 }
                 Err(_) => Err(Errno::EFAULT),
             })
         }
-        _ => None,
+        request => super::signal_driven_io::socket_ioctl(process, file, request, argument),
     }
 }
 
@@ -1094,13 +1145,14 @@ mod tests {
     }
 
     #[test]
-    fn set_status_flags_keeps_the_access_mode_and_only_append_and_nonblock() {
+    fn set_status_flags_keeps_the_access_mode_and_only_append_nonblock_and_async() {
         let file = OpenFile::new(FileKind::Console, open_flag::WRONLY);
         file.set_status_flags(u32::MAX);
         assert_eq!(
             file.status_flags(),
-            open_flag::WRONLY | open_flag::APPEND | open_flag::NONBLOCK
+            open_flag::WRONLY | open_flag::APPEND | open_flag::NONBLOCK | open_flag::ASYNC
         );
+        assert!(file.is_asynchronous());
         assert!(file.is_writable() && !file.is_readable());
         file.set_status_flags(0);
         assert_eq!(file.status_flags(), open_flag::WRONLY);

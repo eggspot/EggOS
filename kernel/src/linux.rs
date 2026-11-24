@@ -94,6 +94,7 @@ pub mod random;
 pub mod reboot;
 pub mod render_node;
 pub mod rtc_device;
+pub mod signal_driven_io;
 pub mod signal_frame;
 pub mod signalfd;
 pub mod signals;

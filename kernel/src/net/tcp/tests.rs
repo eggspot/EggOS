@@ -138,3 +138,25 @@ fn a_queue_copies_across_its_two_slices_from_any_offset() {
     assert_eq!(copy_from(&queue, 6, &mut out), 1);
     assert_eq!(copy_from(&queue, 9, &mut out), 0);
 }
+
+#[test]
+fn a_read_stops_at_the_urgent_mark_which_siocatmark_then_reports() {
+    let listener = Listener::listen((Ipv4Address::UNSPECIFIED, 47_041), 4).unwrap();
+    let client = Stream::connect::<P>((LOOPBACK, 47_042), (LOOPBACK, 47_041)).unwrap();
+    run::<P>();
+    let server = listener.take_ready().unwrap();
+    assert_eq!(client.write(b"hello!"), 6);
+    client.mark_urgent();
+    run::<P>();
+    assert_eq!(client.write(b"more"), 4);
+    run::<P>();
+    assert!(!server.at_urgent_mark());
+    let mut out = [0u8; 16];
+    assert_eq!(server.read(&mut out, 0, false), 5);
+    assert_eq!(&out[..5], b"hello");
+    assert!(server.at_urgent_mark());
+    assert_eq!(server.take_urgent_byte(false), Some(b'!'));
+    assert_eq!(server.read(&mut out, 0, false), 4);
+    assert_eq!(&out[..4], b"more");
+    assert!(!server.at_urgent_mark());
+}

@@ -341,6 +341,11 @@ pub mod generic {
         pub const FIONCLEX: u32 = 0x5450;
         pub const FIOCLEX: u32 = 0x5451;
         pub const FIOASYNC: u32 = 0x5452;
+        pub const FIOSETOWN: u32 = 0x8901;
+        pub const SIOCSPGRP: u32 = 0x8902;
+        pub const FIOGETOWN: u32 = 0x8903;
+        pub const SIOCGPGRP: u32 = 0x8904;
+        pub const SIOCATMARK: u32 = 0x8905;
         pub const TIOCSCTTY: u32 = 0x540e;
         pub const TIOCGPGRP: u32 = 0x540f;
         pub const TIOCSPGRP: u32 = 0x5410;

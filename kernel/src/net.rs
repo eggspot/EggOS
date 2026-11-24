@@ -402,6 +402,7 @@ pub fn poll<P: Platform>() -> bool {
     if delivered {
         console::wake_input_waiters::<P>();
     }
+    crate::linux::signal_driven_io::input_arrived::<P>(delivered);
     delivered
 }
 

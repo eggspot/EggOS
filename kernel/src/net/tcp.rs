@@ -65,6 +65,7 @@ struct Queues {
     held: Vec<(u32, Vec<u8>)>,
     held_bytes: usize,
     last_held: Option<u32>,
+    unread_before_mark: Option<usize>,
 }
 
 impl Buffers for Queues {
@@ -208,7 +209,12 @@ impl Buffers for Queues {
 
 
 impl Queues {
+    fn urgent_mark(&mut self) {
+        self.unread_before_mark = Some(self.received.len());
+    }
+
     fn drop_received(&mut self) {
+        self.unread_before_mark = None;
         self.received.clear();
         self.held = Vec::new();
         self.held_bytes = 0;
@@ -337,8 +343,14 @@ impl Stream {
                 || connection.fin_received()
                 || connection.state() == State::Closed,
             send_room: room,
-            urgent: connection.has_urgent(),
+            urgent: connection.has_urgent()
+                || connection.urgent_is_inline() && state.queues.unread_before_mark.is_some(),
         }
+    }
+
+    /// Whether the next byte read is the first after the urgent mark (`SIOCATMARK`, D701).
+    pub fn at_urgent_mark(&self) -> bool {
+        self.state.lock().queues.unread_before_mark == Some(0)
     }
 
     /// Turns keep-alive probes on or off (`SO_KEEPALIVE`, D564) with the times last set.
@@ -420,15 +432,27 @@ impl Stream {
         count
     }
 
-    /// Copies received bytes from `skip` on into `out`, taking them unless `peek`: how many.
+    /// Copies received bytes from `skip` on into `out`, taking them unless `peek`: how many. A
+    /// read that starts before the urgent mark stops at it, as on Linux, so a program can ask
+    /// whether it is there (`SIOCATMARK`, D701).
     pub fn read(&self, out: &mut [u8], skip: usize, peek: bool) -> usize {
         let mut state = self.state.lock();
-        let copied = copy_from(&state.queues.received, skip, out);
+        let wanted = match state.queues.unread_before_mark {
+            Some(before) if before > skip => (before - skip).min(out.len()),
+            _ => out.len(),
+        };
+        let copied = copy_from(&state.queues.received, skip, &mut out[..wanted]);
         if !peek {
             state.queues.received.drain(..copied);
             if state.queues.received.is_empty() {
                 state.queues.received.shrink_to_fit();
             }
+            state.queues.unread_before_mark = match state.queues.unread_before_mark {
+                Some(before) if before > copied => Some(before - copied),
+                Some(before) if before == copied && copied > 0 => Some(0),
+                Some(before) if copied == 0 => Some(before),
+                _ => None,
+            };
         }
         copied
     }
@@ -944,6 +968,7 @@ pub fn run<P: Platform>() {
     drop(running);
     if changed {
         crate::console::wake_input_waiters::<P>();
+        crate::linux::signal_driven_io::input_arrived::<P>(true);
     }
 }
 

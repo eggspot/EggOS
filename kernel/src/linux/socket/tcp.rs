@@ -444,20 +444,25 @@ pub fn events(socket: &Socket, requested: u16) -> u16 {
     }
 }
 
-/// `ioctl` on a stream socket: `FIONREAD` the bytes waiting to be read, as an `int`; `None`
-/// for another request.
+/// `ioctl` on a stream socket: `FIONREAD` the bytes waiting to be read, and `SIOCATMARK`
+/// whether the next byte read is the first after the urgent mark (1 or 0, D701), each as an
+/// `int`; `None` for another request.
 pub fn ioctl<P: Platform>(
     process: &Process<P>,
     socket: &Socket,
     request: u64,
     argument: u64,
 ) -> Option<Result<u64, Errno>> {
-    if request as u32 != crate::linux::terminal::request::FIONREAD {
-        return None;
-    }
-    let readable = match socket.phase() {
-        Phase::Connected(stream) => stream.status().readable,
-        _ => 0,
+    let readable = match request as u32 {
+        crate::linux::terminal::request::FIONREAD => match socket.phase() {
+            Phase::Connected(stream) => stream.status().readable,
+            _ => 0,
+        },
+        crate::linux::abi::tty::SIOCATMARK => match socket.phase() {
+            Phase::Connected(stream) => usize::from(stream.at_urgent_mark()),
+            _ => 0,
+        },
+        _ => return None,
     };
     let readable = i32::try_from(readable).unwrap_or(i32::MAX);
     Some(
