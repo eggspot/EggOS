@@ -80,6 +80,7 @@ pub struct Edit {
     wrap_cells: usize,
     format: Option<Rect>,
     margins: (i32, i32),
+    held_bar: Option<(bool, ScrollBar)>,
     /// Whether `WM_GETTEXT` marks each wrapped line's end with `\r\r\n` (`EM_FMTLINES`).
     pub soft_breaks: bool,
     /// Whether it draws a vertical and a horizontal scroll bar inside its border
@@ -136,6 +137,7 @@ impl Edit {
             wrap_cells: 0,
             format: None,
             margins: (0, 0),
+            held_bar: None,
             soft_breaks: false,
             bars: (false, false),
         }
@@ -705,10 +707,15 @@ impl Edit {
             false => (at.0 - place.left, place.width()),
         };
         let scroll = bar.button_down(offset, length);
-        let _ = bar.button_up();
+        self.held_bar = Some((vertical, bar));
+        self.scroll_step(vertical, scroll.map(|scroll| scroll.code), view);
+        true
+    }
+
+    fn scroll_step(&mut self, vertical: bool, code: Option<u32>, view: View) {
         let shown = if vertical { view.rows } else { view.cells };
         let page = shown.max(2) as isize - 1;
-        let step = match scroll.map(|scroll| scroll.code) {
+        let step = match code {
             Some(scroll_bar::request::LINE_UP) => -1,
             Some(scroll_bar::request::LINE_DOWN) => 1,
             Some(scroll_bar::request::PAGE_UP) => -page,
@@ -719,7 +726,78 @@ impl Edit {
             true => self.scroll_by(0, step),
             false => self.scroll_by(step, 0),
         };
+    }
+
+    fn held_place(&self, rect: Rect, vertical: bool) -> Option<Rect> {
+        let (right, bottom) = self.bar_rects(rect);
+        match vertical {
+            true => right,
+            false => bottom,
+        }
+    }
+
+    /// Whether a press on one of its scroll bars is held (D716).
+    pub fn bar_held(&self) -> bool {
+        self.held_bar.is_some()
+    }
+
+    /// The pointer moved to `at` while a press on a bar is held: a dragged thumb scrolls the
+    /// edit to the line (or column) under it (D716); whether it scrolled.
+    pub fn drag_bar(&mut self, rect: Rect, at: (i32, i32), view: impl Into<View>) -> bool {
+        let _ = self.fit(view);
+        let Some((vertical, mut bar)) = self.held_bar else {
+            return false;
+        };
+        let Some(place) = self.held_place(rect, vertical) else {
+            return false;
+        };
+        let (offset, length) = match vertical {
+            true => (at.1 - place.top, place.height()),
+            false => (at.0 - place.left, place.width()),
+        };
+        let tracked = bar.pointer_moved(offset, length);
+        self.held_bar = Some((vertical, bar));
+        let Some(position) = tracked.map(|scroll| scroll.position.max(0) as usize) else {
+            return false;
+        };
+        let (columns, lines) = match vertical {
+            true => (0, position as isize - self.top as isize),
+            false => (position as isize - self.offset as isize, 0),
+        };
+        self.scroll_by(columns, lines)
+    }
+
+    /// The held arrow or track repeats now, as Windows does every 50 ms after the first 250
+    /// (D716): the edit scrolls a line or a page while the pointer stays on that part; whether
+    /// it did.
+    pub fn repeat_bar(&mut self, rect: Rect, view: impl Into<View>) -> bool {
+        let view = self.fit(view);
+        let Some((vertical, bar)) = self.held_bar else {
+            return false;
+        };
+        let Some(place) = self.held_place(rect, vertical) else {
+            return false;
+        };
+        let length = match vertical {
+            true => place.height(),
+            false => place.width(),
+        };
+        let Some(scroll) = bar.repeat(length) else {
+            return false;
+        };
+        self.scroll_step(vertical, Some(scroll.code), view);
         true
+    }
+
+    /// The button went up: the held press on a bar ends; whether there was one.
+    pub fn release_bar(&mut self) -> bool {
+        match self.held_bar.take() {
+            Some((_, mut bar)) => {
+                let _ = bar.button_up();
+                true
+            }
+            None => false,
+        }
     }
 
     fn line_moved(&self, lines: isize) -> usize {

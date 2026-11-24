@@ -1018,6 +1018,20 @@ pub fn procedure(
             repeat_scroll(window);
             0
         }
+        message::TIMER if kind == ControlKind::Edit && wparam == SCROLL_REPEAT_TIMER => {
+            let repeated = with_state(window, |entry, state| match state {
+                State::Edit(edit) => {
+                    let view = edit_view(entry, edit);
+                    edit.repeat_bar(entry.client(), view)
+                }
+                _ => false,
+            });
+            if repeated == Some(true) {
+                edit_outcome(window, Some(EditOutcome::Moved));
+            }
+            repeat_after(window, bar_model::REPEAT_INTERVAL_MS);
+            0
+        }
         ACT_ON_LIST_ITEM if kind == ControlKind::ListBox => {
             if let Some(action) = Action::from_value(lparam as u32) {
                 act_on_list_item(window, wparam, action);
@@ -1149,6 +1163,13 @@ fn left_button_down(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
                 _ => None,
             })
             .flatten();
+            let on_bar = with_state(window, |_, state| match state {
+                State::Edit(edit) => edit.bar_held(),
+                _ => false,
+            });
+            if on_bar == Some(true) {
+                repeat_after(window, bar_model::REPEAT_DELAY_MS);
+            }
             edit_outcome(window, outcome);
         }
         ControlKind::ScrollBar => {
@@ -1293,6 +1314,13 @@ fn pointer_moved(window: usize, (x, y): (i32, i32)) {
     let effect = with_state(window, |entry, state| match state {
         State::Button(button) => {
             Effect::Button(button.pointer_moved(entry.client().contains(x, y)))
+        }
+        State::Edit(edit) if captured && edit.bar_held() => {
+            let view = edit_view(entry, edit);
+            match edit.drag_bar(entry.client(), (x, y), view) {
+                true => Effect::Edit(EditOutcome::Moved),
+                false => Effect::Edit(EditOutcome::Unchanged),
+            }
         }
         State::Edit(edit) if captured => Effect::Edit(edit.drag((x, y), edit_view(entry, edit))),
         State::ScrollBar(bar) if captured => {
@@ -1471,6 +1499,13 @@ fn left_button_up(window: usize, kind: ControlKind, (x, y): (i32, i32)) {
     match kind {
         ControlKind::Edit => {
             release_capture();
+            let released = with_state(window, |_, state| match state {
+                State::Edit(edit) => edit.release_bar(),
+                _ => false,
+            });
+            if released == Some(true) {
+                stop_repeat(window);
+            }
         }
         ControlKind::ScrollBar => {
             release_capture();
