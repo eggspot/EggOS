@@ -4,7 +4,11 @@
 //! Every row's state change is a refusable `LVN_ITEMCHANGING` and an `LVN_ITEMCHANGED`, asked of
 //! the model one row at a time and sent with the GUI lock let go; `LVM_SORTITEMS` copies the
 //! rows' data out and calls the program's comparison function the same way. Its rows are
-//! elements of agents' tree, which `select`, `invoke` and `focus` as clicks would.
+//! elements of agents' tree, which `select`, `invoke` and `focus` as clicks would. An
+//! `LVS_OWNERDATA` list (D747) holds a window of its program's rows as callback rows
+//! (`crate::virtual_rows`), moved as the view scrolls, its program's row numbers translated
+//! at every message and notification, and asks `LVN_ODCACHEHINT` before each paint and
+//! `LVN_ODFINDITEMW` to find rows.
 
 use super::super::controls::point;
 use super::super::dialog::{has_focus, release_capture, set_capture, set_focus};
@@ -17,6 +21,7 @@ use super::{
     stop_label_timer, utf8, with_state,
 };
 use crate::gui::message;
+use crate::virtual_rows::{self, VirtualRows};
 use crate::gui::windows::{self, CommonKind, ControlKind, Window};
 use eggos_element_tree::{
     Action, Bounds, Element, MAX_LABEL_BYTES, Outcome, Role, TreeWriter, flags,
@@ -104,6 +109,12 @@ const LVN_DELETEALLITEMS: i32 = -104;
 const LVN_COLUMNCLICK: i32 = -108;
 const LVN_ITEMACTIVATE: i32 = -114;
 const LVN_KEYDOWN: i32 = -155;
+const LVN_ODCACHEHINT: i32 = -113;
+const LVN_ODFINDITEMW: i32 = -179;
+const LVS_OWNERDATA: u32 = 0x1000;
+const LVITEM_ITEM: usize = 4;
+const HIT_TEST_ITEM: usize = 12;
+const ALL_ROWS: usize = usize::MAX;
 const HDN_ITEMCLICKW: i32 = -322;
 
 const LVIF_TEXT: u32 = 0x1;
@@ -285,6 +296,7 @@ struct ListState {
     editing: Option<(usize, usize)>,
     label_click: Option<LabelClick>,
     tips: usize,
+    rows: Option<VirtualRows>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -298,7 +310,7 @@ impl Model for ListState {
 }
 
 /// A new list view's state; `None` without memory.
-pub(super) fn new_state(_style: u32) -> Option<usize> {
+pub(super) fn new_state(style: u32) -> Option<usize> {
     allocate(ListState {
         list: ListView::new(),
         header: 0,
@@ -308,7 +320,67 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         editing: None,
         label_click: None,
         tips: 0,
+        rows: (style & LVS_OWNERDATA != 0).then(VirtualRows::default),
     })
+}
+
+fn base_of(window: usize) -> usize {
+    with_state::<ListState, _>(window, |_, control| {
+        control.rows.as_ref().map_or(0, |rows| rows.base)
+    })
+    .unwrap_or(0)
+}
+
+fn owner_data(window: usize) -> bool {
+    with_state::<ListState, _>(window, |_, control| control.rows.is_some()).unwrap_or(false)
+}
+
+fn program_item(base: usize, item: i32) -> i32 {
+    match item {
+        item if item < 0 => item,
+        item => (item as usize + base) as i32,
+    }
+}
+
+fn move_rows(entry: &Window, control: &mut ListState, base: usize) {
+    let ListState { list, rows, .. } = control;
+    let Some(rows) = rows.as_mut() else {
+        return;
+    };
+    let shown = rows.base + list.top();
+    rows.remember(list);
+    rows.base = base;
+    let columns = list.columns().count().max(1);
+    virtual_rows::fill(list, rows, columns, (&CALLBACK_MARK, IMAGE_CALLBACK));
+    let visible = layout_of(entry, list).visible;
+    list.set_top(shown.saturating_sub(base), visible);
+}
+
+fn follow_view(window: usize) {
+    with_state::<ListState, _>(window, |entry, control| {
+        let Some(rows) = control.rows.as_ref() else {
+            return;
+        };
+        let visible = layout_of(entry, &control.list).visible;
+        if let Some(base) = rows.follow(control.list.top(), visible) {
+            move_rows(entry, control, base);
+        }
+    });
+}
+
+fn into_window(window: usize, index: usize) -> Option<usize> {
+    with_state::<ListState, _>(window, |entry, control| {
+        let rows = control.rows.as_ref()?;
+        if index >= rows.total {
+            return None;
+        }
+        if !rows.in_window(index) {
+            let base = rows.base_for(index);
+            move_rows(entry, control, base);
+        }
+        Some(index - control.rows.as_ref()?.base)
+    })
+    .flatten()
 }
 
 /// A list view's role in agents' tree: a focusable list.
@@ -607,6 +679,7 @@ fn custom_after(window: usize, hdc: usize, custom: &CustomRows) {
 
 fn paint(window: usize) {
     sync_info_tips(window);
+    follow_view(window);
     let asked = ask_callbacks(window);
     swap_asked(window, &asked, true);
     paint_rows(window);
@@ -649,9 +722,10 @@ fn paint_rows(window: usize) {
 }
 
 fn send_change(window: usize, code: i32, change: &StateChange) -> usize {
+    let base = base_of(window);
     notify_parent(window, code, |header| NmListView {
         header,
-        item: change.index as i32,
+        item: program_item(base, change.index as i32),
         sub_item: 0,
         new_state: change.new,
         old_state: change.old,
@@ -667,9 +741,10 @@ fn send_row(window: usize, code: i32, item: i32, sub_item: i32) -> usize {
         control.list.lparam(item.max(0) as usize)
     })
     .unwrap_or(0);
+    let base = base_of(window);
     notify_parent(window, code, |header| NmListView {
         header,
-        item,
+        item: program_item(base, item),
         sub_item,
         new_state: 0,
         old_state: 0,
@@ -698,9 +773,10 @@ fn send_activation(
         .unwrap_or((0, 0)),
         Err(_) => (0, 0),
     };
+    let base = base_of(window);
     notify_parent(window, code, |header| NmItemActivate {
         header,
-        item,
+        item: program_item(base, item),
         sub_item,
         new_state: row_state,
         old_state: row_state,
@@ -1422,6 +1498,22 @@ unsafe fn item_text_at<'a>(pointer: usize) -> &'a [u16] {
     }
 }
 
+#[repr(C)]
+struct CacheHint {
+    header: NotifyHeader,
+    from: i32,
+    to: i32,
+}
+
+#[repr(C)]
+struct FindRow {
+    header: NotifyHeader,
+    start: i32,
+    find: [u8; FIND_INFO_BYTES],
+}
+
+const FIND_INFO_BYTES: usize = 40;
+
 struct Asked {
     row: usize,
     column: usize,
@@ -1431,8 +1523,10 @@ struct Asked {
 }
 
 fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
-    let wanted = with_state::<ListState, _>(window, |entry, control| {
+    let (owner, base, range, wanted) = with_state::<ListState, _>(window, |entry, control| {
         let list = &control.list;
+        let owner = control.rows.is_some();
+        let base = control.rows.as_ref().map_or(0, |rows| rows.base);
         let layout = list.layout(entry.client(), entry.style);
         let top = list.top();
         let end = (top + layout.visible + 1).min(list.count());
@@ -1440,16 +1534,23 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
         let mut cells = alloc::vec::Vec::new();
         for row in top..end {
             for column in 0..columns {
-                let text = list.text(row, column) == CALLBACK_MARK;
-                let image = column == 0 && list.image(row) == IMAGE_CALLBACK;
+                let text = owner || list.text(row, column) == CALLBACK_MARK;
+                let image = column == 0 && (owner || list.image(row) == IMAGE_CALLBACK);
                 if text || image {
                     cells.push((row, column, text, image, list.lparam(row)));
                 }
             }
         }
-        cells
+        (owner, base, (top, end), cells)
     })
     .unwrap_or_default();
+    if owner && range.1 > range.0 {
+        notify_parent(window, LVN_ODCACHEHINT, |header| CacheHint {
+            header,
+            from: (base + range.0) as i32,
+            to: (base + range.1 - 1) as i32,
+        });
+    }
     let mut asked = alloc::vec::Vec::new();
     for (row, column, text, image, lparam) in wanted {
         let mut buffer = [0u16; ASKED_UNITS];
@@ -1464,7 +1565,7 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
                 header,
                 item: ItemHead {
                     mask,
-                    item: row as i32,
+                    item: (base + row) as i32,
                     sub_item: column as i32,
                     state: 0,
                     state_mask: 0,
@@ -1493,7 +1594,7 @@ fn ask_callbacks(window: usize) -> alloc::vec::Vec<Asked> {
             column,
             text: given,
             image: image.then_some(answer.item.image),
-            keep: answer.item.mask & LVIF_DI_SETITEM != 0,
+            keep: !owner && answer.item.mask & LVIF_DI_SETITEM != 0,
         });
     }
     asked
@@ -2188,7 +2289,175 @@ fn read(window: usize, work: impl FnOnce(&Window, &ListView) -> usize) -> usize 
     with_state::<ListState, _>(window, |entry, control| work(entry, &control.list)).unwrap_or(0)
 }
 
+fn rewrite_item(lparam: usize, offset: usize, item: i32) -> Option<i32> {
+    if lparam == 0 {
+        return None;
+    }
+    let place = (lparam + offset) as *mut i32;
+    // SAFETY: the program's structure, whose `iItem` is at `offset`.
+    let old = unsafe { place.read_unaligned() };
+    // SAFETY: as above.
+    unsafe { place.write_unaligned(item) };
+    Some(old)
+}
+
+fn owner_data_message(window: usize, number: u32, wparam: usize, lparam: usize) -> Option<usize> {
+    let base = base_of(window);
+    let index_in = |index: usize| match index {
+        ALL_ROWS => ALL_ROWS,
+        index => into_window(window, index).unwrap_or(FAILED),
+    };
+    let with_base = |answer: usize| match answer {
+        FAILED => FAILED,
+        answer => answer + base_of(window),
+    };
+    Some(match number {
+        LVM_SETITEMCOUNT => {
+            with_state::<ListState, _>(window, |entry, control| {
+                if let Some(rows) = control.rows.as_mut() {
+                    rows.remember(&control.list);
+                    rows.total = wparam;
+                    rows.set_selected((wparam, usize::MAX), false);
+                    let base = rows.base.min(rows.base_for(wparam));
+                    move_rows(entry, control, base);
+                }
+            });
+            refresh(window);
+            1
+        }
+        LVM_GETITEMCOUNT => with_state::<ListState, _>(window, |_, control| {
+            control.rows.as_ref().map_or(0, |rows| rows.total)
+        })
+        .unwrap_or(0),
+        LVM_DELETEALLITEMS => {
+            with_state::<ListState, _>(window, |_, control| {
+                if let Some(rows) = control.rows.as_mut() {
+                    rows.clear();
+                }
+                control.list.clear();
+            });
+            refresh(window);
+            1
+        }
+        LVM_INSERTITEMW | LVM_SORTITEMS | LVM_SORTITEMSEX => FAILED,
+        LVM_DELETEITEM => 0,
+        LVM_GETSELECTEDCOUNT => with_state::<ListState, _>(window, |_, control| {
+            let ListState { list, rows, .. } = control;
+            rows.as_mut().map_or(0, |rows| {
+                rows.remember(list);
+                rows.selected_count()
+            })
+        })
+        .unwrap_or(0),
+        LVM_GETTOPINDEX | LVM_GETSELECTIONMARK => {
+            with_base(list_message_plain(window, number, 0, 0))
+        }
+        LVM_SETSELECTIONMARK => {
+            let local = index_in(lparam);
+            with_base(list_message_plain(window, number, 0, local))
+        }
+        LVM_GETITEMSTATE | LVM_SETITEMSTATE | LVM_ENSUREVISIBLE | LVM_GETITEMRECT
+        | LVM_GETSUBITEMRECT | LVM_GETITEMTEXTW | LVM_SETITEMTEXTW | LVM_EDITLABELW => {
+            if number == LVM_SETITEMSTATE && wparam == ALL_ROWS {
+                all_rows_state(window, lparam);
+            }
+            list_message_plain(window, number, index_in(wparam), lparam)
+        }
+        LVM_REDRAWITEMS => list_message_plain(window, number, 0, 0),
+        LVM_GETNEXTITEM => {
+            let start = index_in(wparam);
+            with_base(list_message_plain(window, number, start, lparam))
+        }
+        LVM_GETITEMW | LVM_SETITEMW => item_message(window, number, wparam, lparam),
+        LVM_HITTEST | LVM_SUBITEMHITTEST => {
+            let answer = list_message_plain(window, number, wparam, lparam);
+            if lparam != 0 && answer != FAILED {
+                // SAFETY: the program's `LVHITTESTINFO`, its `iItem` at offset 12.
+                let item = unsafe { ((lparam + HIT_TEST_ITEM) as *const i32).read_unaligned() };
+                rewrite_item(lparam, HIT_TEST_ITEM, program_item(base, item));
+            }
+            with_base(answer)
+        }
+        LVM_FINDITEMW => find_owner_row(window, wparam, lparam),
+        _ => return None,
+    })
+}
+
+fn item_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    if lparam == 0 {
+        return 0;
+    }
+    // SAFETY: the program's `LVITEMW`, its `iItem` at offset 4.
+    let item = unsafe { ((lparam + LVITEM_ITEM) as *const i32).read_unaligned() };
+    let local = usize::try_from(item)
+        .ok()
+        .and_then(|item| into_window(window, item));
+    let Some(local) = local else {
+        return 0;
+    };
+    let old = rewrite_item(lparam, LVITEM_ITEM, local as i32);
+    let answer = list_message_plain(window, number, wparam, lparam);
+    if let Some(old) = old {
+        rewrite_item(lparam, LVITEM_ITEM, old);
+    }
+    answer
+}
+
+fn all_rows_state(window: usize, lparam: usize) {
+    if lparam == 0 {
+        return;
+    }
+    // SAFETY: `LVM_SETITEMSTATE`'s `LVITEMW`: its state at 12 and mask at 16.
+    let (wanted, mask) = unsafe {
+        (
+            ((lparam + 12) as *const u32).read_unaligned(),
+            ((lparam + 16) as *const u32).read_unaligned(),
+        )
+    };
+    if mask & state::SELECTED == 0 {
+        return;
+    }
+    with_state::<ListState, _>(window, |_, control| {
+        if let Some(rows) = control.rows.as_mut() {
+            let total = rows.total;
+            rows.set_selected((0, total), wanted & state::SELECTED != 0);
+        }
+    });
+}
+
+fn find_owner_row(window: usize, wparam: usize, lparam: usize) -> usize {
+    if lparam == 0 {
+        return FAILED;
+    }
+    let mut find = [0u8; FIND_INFO_BYTES];
+    let source = lparam as *const u8;
+    // SAFETY: `LVM_FINDITEMW`'s `LVFINDINFOW`, its 40 bytes.
+    unsafe { core::ptr::copy_nonoverlapping(source, find.as_mut_ptr(), FIND_INFO_BYTES) };
+    let start = match wparam as isize {
+        -1 => -1,
+        start => start as i32,
+    };
+    let answer = notify_parent(window, LVN_ODFINDITEMW, |header| FindRow {
+        header,
+        start,
+        find,
+    });
+    match answer as isize {
+        found if found < 0 => FAILED,
+        found => found as usize,
+    }
+}
+
 fn list_message(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
+    if owner_data(window)
+        && let Some(answer) = owner_data_message(window, number, wparam, lparam)
+    {
+        return answer;
+    }
+    list_message_plain(window, number, wparam, lparam)
+}
+
+fn list_message_plain(window: usize, number: u32, wparam: usize, lparam: usize) -> usize {
     match number {
         LVM_EDITLABELW => begin_label_edit(window, wparam),
         LVM_GETEDITCONTROL => with_state::<ListState, _>(window, |_, control| {
@@ -2426,7 +2695,7 @@ struct NmListDisplayInfo {
 fn label_item(control: &ListState, index: usize, text: usize) -> ItemHead {
     ItemHead {
         mask: LVIF_TEXT | LVIF_PARAM | LVIF_STATE,
-        item: index as i32,
+        item: program_item(control.rows.as_ref().map_or(0, |rows| rows.base), index as i32),
         sub_item: 0,
         state: control.list.state(index),
         state_mask: !0,
@@ -2696,7 +2965,7 @@ fn info_tip(window: usize, lparam: usize) {
         flags: 0,
         text: buffer.as_mut_ptr() as usize,
         room: INFO_TIP_UNITS as i32,
-        item: index as i32,
+        item: program_item(base_of(window), index as i32),
         sub_item: 0,
         lparam: row_lparam,
     });

@@ -902,6 +902,22 @@ extern "efiapi" fn set_window_long_w(handle: usize, index: i32, value: i32) -> i
 /// kept and read, a child passes system keys and `WM_CONTEXTMENU` to its parent, and the right
 /// button's release asks for a context menu (`WM_CONTEXTMENU` at the pointer on the screen,
 /// D178); the rest is 0.
+const NOTIFY_FORMAT: u32 = 0x0055;
+const NF_QUERY: usize = 3;
+const NFR_ANSI: usize = 1;
+const NFR_UNICODE: usize = 2;
+
+/// Whether `window`'s class was registered with `RegisterClassA` (D747).
+pub(super) fn class_is_ansi(window: usize) -> bool {
+    with(|gui| {
+        let atom = gui.windows.get(window)?.class_atom;
+        let (_, class) = gui.classes.find(ClassName::Atom(atom))?;
+        Some(class.ansi)
+    })
+    .flatten()
+    .unwrap_or(false)
+}
+
 pub extern "efiapi" fn def_window_proc_w(
     handle: usize,
     number: u32,
@@ -933,6 +949,10 @@ pub extern "efiapi" fn def_window_proc_w(
             0
         }
         message::NC_CREATE => 1,
+        NOTIFY_FORMAT if lparam == NF_QUERY => match class_is_ansi(handle) {
+            true => NFR_ANSI,
+            false => NFR_UNICODE,
+        },
         NC_HIT_TEST => {
             let (x, y) = (
                 lparam as u16 as i16 as i32,

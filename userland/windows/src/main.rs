@@ -123,6 +123,8 @@ mod user_shared_data;
 #[cfg(any(test, runs_windows_programs))]
 mod version_info;
 #[cfg(any(test, runs_windows_programs))]
+mod virtual_rows;
+#[cfg(any(test, runs_windows_programs))]
 mod wide_stream;
 #[cfg(runs_windows_programs)]
 mod win32;

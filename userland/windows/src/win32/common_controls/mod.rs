@@ -9,6 +9,7 @@
 //! agents' tree with ids from [`item_element`].
 
 mod ansi_messages;
+mod ansi_notify;
 mod header;
 mod image_list;
 mod list_view;
@@ -230,7 +231,7 @@ pub fn notify_parent<T>(window: usize, code: i32, build: impl FnOnce(NotifyHeade
         code: code as u32,
     };
     let mut data = build(header);
-    gui::send(parent, WM_NOTIFY, id, &raw mut data as usize)
+    ansi_notify::send(parent, id, (&raw mut data).cast(), code)
 }
 
 /// As [`notify_parent`], keeping the structure the parent got, so the caller reads what the
@@ -255,7 +256,7 @@ pub fn notify_parent_keeping<T>(
         code: code as u32,
     };
     let mut data = build(header);
-    let answer = gui::send(parent, WM_NOTIFY, id, &raw mut data as usize);
+    let answer = ansi_notify::send(parent, id, (&raw mut data).cast(), code);
     (answer, Some(data))
 }
 
