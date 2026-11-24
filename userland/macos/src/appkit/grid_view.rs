@@ -3,7 +3,9 @@
 //! its size, with the grid's spacing between them and each view placed in its cell by the x
 //! and y placements of the cell, else its column or row, else the grid. The grid lays its
 //! views out whenever they change and before it draws; a grid with no size takes the size its
-//! cells need.
+//! cells need. Rows and columns take padding, can be hidden (no room, no spacing, their views
+//! hidden), inserted, removed and moved, and a rectangle of cells can be merged into its first
+//! cell, whose view then spans it (D732).
 
 use super::{
     NSGRIDCELL, NSGRIDCELL_META, NSGRIDCOLUMN, NSGRIDCOLUMN_META, NSGRIDROW, NSGRIDROW_META,
@@ -23,6 +25,28 @@ const MOST_COLUMNS: usize = 64;
 const MOST_ROWS: usize = 256;
 const AUTOMATIC_BELOW: f64 = 1e-30;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Merge {
+    column: usize,
+    columns: usize,
+    row: usize,
+    rows: usize,
+}
+
+impl Merge {
+    fn holds(&self, column: usize, row: usize) -> bool {
+        (self.column..self.column + self.columns).contains(&column)
+            && (self.row..self.row + self.rows).contains(&row)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct GridRange {
+    location: usize,
+    length: usize,
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct GridFields {
@@ -41,6 +65,11 @@ struct GridFields {
     spacing_set: bool,
     x_placement: usize,
     y_placement: usize,
+    row_padding: [(f64, f64); MOST_ROWS],
+    column_padding: [(f64, f64); MOST_COLUMNS],
+    row_hidden: [bool; MOST_ROWS],
+    column_hidden: [bool; MOST_COLUMNS],
+    merges: Buffer<Merge>,
 }
 
 #[repr(C)]
@@ -95,6 +124,50 @@ fn track(value: f64) -> Track {
     (value >= AUTOMATIC_BELOW).then(|| round(value))
 }
 
+fn merge_at(this: Id, column: usize, row: usize) -> Option<Merge> {
+    grid(this)
+        .merges
+        .as_slice()
+        .iter()
+        .copied()
+        .find(|merge| merge.holds(column, row))
+}
+
+fn pixels(pair: (f64, f64)) -> (i32, i32) {
+    (round(pair.0), round(pair.1))
+}
+
+fn column_padding_of(this: Id, first: usize, last: usize) -> (i32, i32) {
+    let padding = &grid(this).column_padding;
+    pixels((padding[first].0, padding[last].1))
+}
+
+fn row_padding_of(this: Id, first: usize, last: usize) -> (i32, i32) {
+    let padding = &grid(this).row_padding;
+    pixels((padding[first].0, padding[last].1))
+}
+
+fn widen_span(
+    sizes: &mut [i32],
+    hidden: &[bool],
+    (first, count): (usize, usize),
+    needed: i32,
+    gap: i32,
+) {
+    let shown: usize = (first..first + count).filter(|&index| !hidden[index]).count();
+    let have: i32 = (first..first + count)
+        .filter(|&index| !hidden[index])
+        .map(|index| sizes[index])
+        .sum::<i32>()
+        + gap * (shown as i32 - 1).max(0);
+    let last = (first..first + count).rev().find(|&index| !hidden[index]);
+    if let Some(last) = last
+        && needed > have
+    {
+        sizes[last] += needed - have;
+    }
+}
+
 fn measure(this: Id) -> ([i32; MOST_COLUMNS], [i32; MOST_ROWS], (i32, i32)) {
     let fields = grid(this);
     let (columns, rows) = (fields.columns, fields.rows);
@@ -112,19 +185,61 @@ fn measure(this: Id) -> ([i32; MOST_COLUMNS], [i32; MOST_ROWS], (i32, i32)) {
         }
         tracks
     };
-    let widths: [i32; MOST_COLUMNS] =
-        layout::sizes(column_tracks.as_slice(), rows, |column, row| {
-            view_size(cell_view(this, column, row)).0
-        });
-    let heights: [i32; MOST_ROWS] = layout::sizes(row_tracks.as_slice(), columns, |row, column| {
-        view_size(cell_view(this, column, row)).1
-    });
+    let own_size = |column: usize, row: usize| match merge_at(this, column, row) {
+        Some(_) => (0, 0),
+        None => view_size(cell_view(this, column, row)),
+    };
+    let mut widths: [i32; MOST_COLUMNS] =
+        layout::sizes(column_tracks.as_slice(), rows, |column, row| own_size(column, row).0);
+    let mut heights: [i32; MOST_ROWS] =
+        layout::sizes(row_tracks.as_slice(), columns, |row, column| own_size(column, row).1);
     column_tracks.free();
     row_tracks.free();
+    let fields = grid(this);
+    let columns_info = fields.column_padding.iter().zip(&fields.column_hidden);
+    for (width, (&padding, &hidden)) in widths[..columns].iter_mut().zip(columns_info) {
+        let (leading, trailing) = pixels(padding);
+        *width = match hidden {
+            true => 0,
+            false => *width + leading + trailing,
+        };
+    }
+    let rows_info = fields.row_padding.iter().zip(&fields.row_hidden);
+    for (height, (&padding, &hidden)) in heights[..rows].iter_mut().zip(rows_info) {
+        let (top, bottom) = pixels(padding);
+        *height = match hidden {
+            true => 0,
+            false => *height + top + bottom,
+        };
+    }
     let (column_gap, row_gap) = spacing(this);
+    let merges: &[Merge] = grid(this).merges.as_slice();
+    for merge in merges {
+        let (width, height) = view_size(cell_view(this, merge.column, merge.row));
+        let fields = grid(this);
+        let last_column = merge.column + merge.columns - 1;
+        let last_row = merge.row + merge.rows - 1;
+        let across = column_padding_of(this, merge.column, last_column);
+        let down = row_padding_of(this, merge.row, last_row);
+        widen_span(
+            &mut widths[..columns],
+            &fields.column_hidden[..columns],
+            (merge.column, merge.columns),
+            width + across.0 + across.1,
+            column_gap,
+        );
+        widen_span(
+            &mut heights[..rows],
+            &fields.row_hidden[..rows],
+            (merge.row, merge.rows),
+            height + down.0 + down.1,
+            row_gap,
+        );
+    }
+    let fields = grid(this);
     let total = (
-        layout::total(&widths[..columns], column_gap),
-        layout::total(&heights[..rows], row_gap),
+        layout::shown_total(&widths[..columns], &fields.column_hidden[..columns], column_gap),
+        layout::shown_total(&heights[..rows], &fields.row_hidden[..rows], row_gap),
     );
     (widths, heights, total)
 }
@@ -147,8 +262,10 @@ fn lay_out(this: Id) {
     let (column_gap, row_gap) = spacing(this);
     let fields = grid(this);
     let (columns, rows) = (fields.columns, fields.rows);
-    let lefts: [i32; MOST_COLUMNS] = layout::starts(&widths[..columns], column_gap);
-    let tops: [i32; MOST_ROWS] = layout::starts(&heights[..rows], row_gap);
+    let lefts: [i32; MOST_COLUMNS] =
+        layout::shown_starts(&widths[..columns], &fields.column_hidden[..columns], column_gap);
+    let tops: [i32; MOST_ROWS] =
+        layout::shown_starts(&heights[..rows], &fields.row_hidden[..rows], row_gap);
     for row in 0..rows {
         for column in 0..columns {
             let shown = cell_view(this, column, row);
@@ -157,6 +274,19 @@ fn lay_out(this: Id) {
             }
             let index = row * columns + column;
             let fields = grid(this);
+            let merge = merge_at(this, column, row);
+            let head = merge.is_none_or(|merge| merge.column == column && merge.row == row);
+            let hidden = fields.row_hidden[row] || fields.column_hidden[column] || !head;
+            send1(shown, sel!("setHidden:"), usize::from(hidden));
+            if hidden {
+                continue;
+            }
+            let area = merge.unwrap_or(Merge {
+                column,
+                columns: 1,
+                row,
+                rows: 1,
+            });
             let x = placement_of(
                 fields.cell_x.as_slice().get(index).copied().unwrap_or(0),
                 fields.column_x[column],
@@ -167,7 +297,16 @@ fn lay_out(this: Id) {
                 fields.row_y[row],
                 fields.y_placement,
             );
-            let cell = Rect::new(lefts[column], tops[row], widths[column], heights[row]);
+            let (left, width) = layout::span(&lefts, &widths, area.column, area.columns);
+            let (top, height) = layout::span(&tops, &heights, area.row, area.rows);
+            let last_column = area.column + area.columns - 1;
+            let last_row = area.row + area.rows - 1;
+            let fields = grid(this);
+            let cell = layout::padded(
+                Rect::new(left, top, width, height),
+                column_padding_of(this, area.column, last_column),
+                row_padding_of(this, area.row, last_row),
+            );
             let placed = layout::place(cell, view_size(shown), (x, y));
             view::fields(shown).frame = Frame::new(
                 f64::from(placed.x),
@@ -273,7 +412,287 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     fields.cells.free();
     fields.cell_x.free();
     fields.cell_y.free();
+    fields.merges.free();
     view::dispose(this);
+}
+
+fn rebuilt<T: Copy>(
+    old: &Buffer<T>,
+    old_columns: usize,
+    (rows, columns): (usize, usize),
+    from: Origin<'_>,
+    fill: T,
+) -> Buffer<T> {
+    let mut made = Buffer::new();
+    made.reserve(rows * columns);
+    for row in 0..rows {
+        for column in 0..columns {
+            let kept = from(row, column)
+                .and_then(|(old_row, old_column)| {
+                    old.as_slice().get(old_row * old_columns + old_column)
+                })
+                .copied();
+            made.push(kept.unwrap_or(fill));
+        }
+    }
+    made
+}
+
+type Origin<'a> = &'a dyn Fn(usize, usize) -> Option<(usize, usize)>;
+
+fn reshape(this: Id, (rows, columns): (usize, usize), from: Origin<'_>) {
+    let fields = grid(this);
+    let old_columns = fields.columns;
+    let shape = (rows, columns);
+    let mut cells = rebuilt(&fields.cells, old_columns, shape, from, core::ptr::null_mut());
+    let mut cell_x = rebuilt(&fields.cell_x, old_columns, (rows, columns), from, 0);
+    let mut cell_y = rebuilt(&fields.cell_y, old_columns, (rows, columns), from, 0);
+    core::mem::swap(&mut fields.cells, &mut cells);
+    core::mem::swap(&mut fields.cell_x, &mut cell_x);
+    core::mem::swap(&mut fields.cell_y, &mut cell_y);
+    cells.free();
+    cell_x.free();
+    cell_y.free();
+    fields.rows = rows;
+    fields.columns = columns;
+}
+
+fn insert_track<T: Copy>(tracks: &mut [T], count: usize, at: usize, fill: T) {
+    if count < tracks.len() {
+        tracks.copy_within(at..count, at + 1);
+        tracks[at] = fill;
+    }
+}
+
+fn remove_track<T: Copy>(tracks: &mut [T], count: usize, at: usize, fill: T) {
+    tracks.copy_within(at + 1..count, at);
+    tracks[count - 1] = fill;
+}
+
+fn move_track<T: Copy>(tracks: &mut [T], from: usize, to: usize) {
+    match from < to {
+        true => tracks[from..=to].rotate_left(1),
+        false => tracks[to..=from].rotate_right(1),
+    }
+}
+
+fn forget_merges(this: Id) {
+    let merges = &mut grid(this).merges;
+    while merges.pop().is_some() {}
+}
+
+fn insert_row(this: Id, at: usize, views: Id) -> bool {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    if rows == MOST_ROWS || at > rows {
+        return false;
+    }
+    if rows == 0 && columns == 0 {
+        return add_row(this, views);
+    }
+    reshape(this, (rows + 1, columns), &|row, column| match row {
+        row if row < at => Some((row, column)),
+        row if row == at => None,
+        row => Some((row - 1, column)),
+    });
+    let fields = grid(this);
+    insert_track(&mut fields.heights, rows, at, 0.0);
+    insert_track(&mut fields.row_y, rows, at, 0);
+    insert_track(&mut fields.row_padding, rows, at, (0.0, 0.0));
+    insert_track(&mut fields.row_hidden, rows, at, false);
+    forget_merges(this);
+    let (count, item) = array_items(views);
+    for column in 0..columns.min(count) {
+        let shown = item(column);
+        if !shown.is_null() && super::is(shown, &NSVIEW) {
+            grid(this).cells.as_mut_slice()[at * columns + column] = shown;
+            send1(this, sel!("addSubview:"), shown as usize);
+        }
+    }
+    true
+}
+
+fn insert_column(this: Id, at: usize, views: Id) -> bool {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    if columns == MOST_COLUMNS || at > columns {
+        return false;
+    }
+    reshape(this, (rows, columns + 1), &|row, column| match column {
+        column if column < at => Some((row, column)),
+        column if column == at => None,
+        column => Some((row, column - 1)),
+    });
+    let fields = grid(this);
+    insert_track(&mut fields.widths, columns, at, 0.0);
+    insert_track(&mut fields.column_x, columns, at, 0);
+    insert_track(&mut fields.column_padding, columns, at, (0.0, 0.0));
+    insert_track(&mut fields.column_hidden, columns, at, false);
+    forget_merges(this);
+    let (count, item) = array_items(views);
+    for row in 0..rows.min(count) {
+        let shown = item(row);
+        if !shown.is_null() && super::is(shown, &NSVIEW) {
+            grid(this).cells.as_mut_slice()[row * (columns + 1) + at] = shown;
+            send1(this, sel!("addSubview:"), shown as usize);
+        }
+    }
+    true
+}
+
+fn remove_views(this: Id, keep: &dyn Fn(usize, usize) -> bool) {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    for row in 0..rows {
+        for column in 0..columns {
+            let shown = cell_view(this, column, row);
+            if !keep(row, column) && !shown.is_null() {
+                send(shown, sel!("removeFromSuperview"));
+            }
+        }
+    }
+}
+
+extern "C" fn insert_row_at(this: Id, _: Sel, at: isize, views: Id) -> Id {
+    let at = at.max(0) as usize;
+    if !insert_row(this, at, views) {
+        return core::ptr::null_mut();
+    }
+    lay_out(this);
+    new_part(&NSGRIDROW, this, at, 0)
+}
+
+extern "C" fn add_column_with_views(this: Id, _: Sel, views: Id) -> Id {
+    let at = grid(this).columns;
+    insert_column_at(this, sel!("insertColumnAtIndex:withViews:"), at as isize, views)
+}
+
+extern "C" fn insert_column_at(this: Id, _: Sel, at: isize, views: Id) -> Id {
+    let at = at.max(0) as usize;
+    if !insert_column(this, at, views) {
+        return core::ptr::null_mut();
+    }
+    lay_out(this);
+    new_part(&NSGRIDCOLUMN, this, at, 0)
+}
+
+extern "C" fn remove_row_at(this: Id, _: Sel, at: isize) {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    let Some(at) = usize::try_from(at).ok().filter(|&at| at < rows) else {
+        return;
+    };
+    remove_views(this, &|row, _| row != at);
+    reshape(this, (rows - 1, columns), &|row, column| match row < at {
+        true => Some((row, column)),
+        false => Some((row + 1, column)),
+    });
+    let fields = grid(this);
+    remove_track(&mut fields.heights, rows, at, 0.0);
+    remove_track(&mut fields.row_y, rows, at, 0);
+    remove_track(&mut fields.row_padding, rows, at, (0.0, 0.0));
+    remove_track(&mut fields.row_hidden, rows, at, false);
+    forget_merges(this);
+    lay_out(this);
+}
+
+extern "C" fn remove_column_at(this: Id, _: Sel, at: isize) {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    let Some(at) = usize::try_from(at).ok().filter(|&at| at < columns) else {
+        return;
+    };
+    remove_views(this, &|_, column| column != at);
+    reshape(this, (rows, columns - 1), &|row, column| match column < at {
+        true => Some((row, column)),
+        false => Some((row, column + 1)),
+    });
+    let fields = grid(this);
+    remove_track(&mut fields.widths, columns, at, 0.0);
+    remove_track(&mut fields.column_x, columns, at, 0);
+    remove_track(&mut fields.column_padding, columns, at, (0.0, 0.0));
+    remove_track(&mut fields.column_hidden, columns, at, false);
+    forget_merges(this);
+    lay_out(this);
+}
+
+fn moved_index(index: usize, from: usize, to: usize) -> usize {
+    match index {
+        index if index == to => from,
+        index if from < to && (from..to).contains(&index) => index + 1,
+        index if to < from && (to + 1..=from).contains(&index) => index - 1,
+        index => index,
+    }
+}
+
+extern "C" fn move_row(this: Id, _: Sel, from: isize, to: isize) {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else {
+        return;
+    };
+    if from >= rows || to >= rows || from == to {
+        return;
+    }
+    reshape(this, (rows, columns), &|row, column| Some((moved_index(row, from, to), column)));
+    let fields = grid(this);
+    move_track(&mut fields.heights, from, to);
+    move_track(&mut fields.row_y, from, to);
+    move_track(&mut fields.row_padding, from, to);
+    move_track(&mut fields.row_hidden, from, to);
+    forget_merges(this);
+    lay_out(this);
+}
+
+extern "C" fn move_column(this: Id, _: Sel, from: isize, to: isize) {
+    let fields = grid(this);
+    let (rows, columns) = (fields.rows, fields.columns);
+    let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) else {
+        return;
+    };
+    if from >= columns || to >= columns || from == to {
+        return;
+    }
+    reshape(this, (rows, columns), &|row, column| Some((row, moved_index(column, from, to))));
+    let fields = grid(this);
+    move_track(&mut fields.widths, from, to);
+    move_track(&mut fields.column_x, from, to);
+    move_track(&mut fields.column_padding, from, to);
+    move_track(&mut fields.column_hidden, from, to);
+    forget_merges(this);
+    lay_out(this);
+}
+
+fn merge(this: Id, across: GridRange, down: GridRange) {
+    let fields = grid(this);
+    let fits = across.length > 0
+        && down.length > 0
+        && across.location + across.length <= fields.columns
+        && down.location + down.length <= fields.rows;
+    if !fits {
+        return;
+    }
+    let wanted = Merge {
+        column: across.location,
+        columns: across.length,
+        row: down.location,
+        rows: down.length,
+    };
+    let overlaps = |other: &Merge| {
+        other.column < wanted.column + wanted.columns
+            && wanted.column < other.column + other.columns
+            && other.row < wanted.row + wanted.rows
+            && wanted.row < other.row + other.rows
+    };
+    if fields.merges.as_slice().iter().any(overlaps) {
+        return;
+    }
+    fields.merges.push(wanted);
+    lay_out(this);
+}
+
+extern "C" fn merge_cells(this: Id, _: Sel, across: GridRange, down: GridRange) {
+    merge(this, across, down);
 }
 
 extern "C" fn add_row_with_views(this: Id, _: Sel, views: Id) -> Id {
@@ -441,6 +860,70 @@ extern "C" fn set_row_y_placement(this: Id, _: Sel, value: usize) {
     lay_out(fields.grid);
 }
 
+macro_rules! padding_accessors {
+    ($($getter:ident, $setter:ident, $tracks:ident, $side:tt;)*) => {
+        $(
+            extern "C" fn $getter(this: Id, _: Sel) -> f64 {
+                let fields = part(this);
+                grid(fields.grid).$tracks[fields.index].$side
+            }
+
+            extern "C" fn $setter(this: Id, _: Sel, value: f64) {
+                let fields = part(this);
+                grid(fields.grid).$tracks[fields.index].$side = value.max(0.0);
+                lay_out(fields.grid);
+            }
+        )*
+    };
+}
+
+padding_accessors! {
+    row_top_padding, set_row_top_padding, row_padding, 0;
+    row_bottom_padding, set_row_bottom_padding, row_padding, 1;
+    column_leading_padding, set_column_leading_padding, column_padding, 0;
+    column_trailing_padding, set_column_trailing_padding, column_padding, 1;
+}
+
+extern "C" fn row_is_hidden(this: Id, _: Sel) -> u8 {
+    let fields = part(this);
+    u8::from(grid(fields.grid).row_hidden[fields.index])
+}
+
+extern "C" fn set_row_hidden(this: Id, _: Sel, hidden: u8) {
+    let fields = part(this);
+    grid(fields.grid).row_hidden[fields.index] = hidden != 0;
+    lay_out(fields.grid);
+}
+
+extern "C" fn column_is_hidden(this: Id, _: Sel) -> u8 {
+    let fields = part(this);
+    u8::from(grid(fields.grid).column_hidden[fields.index])
+}
+
+extern "C" fn set_column_hidden(this: Id, _: Sel, hidden: u8) {
+    let fields = part(this);
+    grid(fields.grid).column_hidden[fields.index] = hidden != 0;
+    lay_out(fields.grid);
+}
+
+extern "C" fn row_merge_cells(this: Id, _: Sel, across: GridRange) {
+    let fields = part(this);
+    let down = GridRange {
+        location: fields.index,
+        length: 1,
+    };
+    merge(fields.grid, across, down);
+}
+
+extern "C" fn column_merge_cells(this: Id, _: Sel, down: GridRange) {
+    let fields = part(this);
+    let across = GridRange {
+        location: fields.index,
+        length: 1,
+    };
+    merge(fields.grid, across, down);
+}
+
 extern "C" fn row_number_of_cells(this: Id, _: Sel) -> isize {
     grid(part(this).grid).columns as isize
 }
@@ -599,6 +1082,14 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "initWithFrame:" => init_with_frame,
         "dealloc" => dealloc,
         "addRowWithViews:" => add_row_with_views,
+        "insertRowAtIndex:withViews:" => insert_row_at,
+        "addColumnWithViews:" => add_column_with_views,
+        "insertColumnAtIndex:withViews:" => insert_column_at,
+        "removeRowAtIndex:" => remove_row_at,
+        "removeColumnAtIndex:" => remove_column_at,
+        "moveRowAtIndex:toIndex:" => move_row,
+        "moveColumnAtIndex:toIndex:" => move_column,
+        "mergeCellsInHorizontalRange:verticalRange:" => merge_cells,
         "numberOfRows" => number_of_rows,
         "numberOfColumns" => number_of_columns,
         "rowAtIndex:" => row_at_index,
@@ -632,8 +1123,13 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setYPlacement:" => set_row_y_placement,
         "numberOfCells" => row_number_of_cells,
         "cellAtIndex:" => row_cell_at,
-        "setTopPadding:" => ignore_word,
-        "setBottomPadding:" => ignore_word,
+        "topPadding" => row_top_padding,
+        "setTopPadding:" => set_row_top_padding,
+        "bottomPadding" => row_bottom_padding,
+        "setBottomPadding:" => set_row_bottom_padding,
+        "isHidden" => row_is_hidden,
+        "setHidden:" => set_row_hidden,
+        "mergeCellsInRange:" => row_merge_cells,
     ];
     let column_methods = methods![
         "dealloc" => part_dealloc,
@@ -643,8 +1139,13 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setXPlacement:" => set_column_x_placement,
         "numberOfCells" => column_number_of_cells,
         "cellAtIndex:" => column_cell_at,
-        "setLeadingPadding:" => ignore_word,
-        "setTrailingPadding:" => ignore_word,
+        "leadingPadding" => column_leading_padding,
+        "setLeadingPadding:" => set_column_leading_padding,
+        "trailingPadding" => column_trailing_padding,
+        "setTrailingPadding:" => set_column_trailing_padding,
+        "isHidden" => column_is_hidden,
+        "setHidden:" => set_column_hidden,
+        "mergeCellsInRange:" => column_merge_cells,
     ];
     let cell_methods = methods![
         "dealloc" => part_dealloc,
