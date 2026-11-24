@@ -9,7 +9,8 @@
 //! pointer takes the hover fill (D726), through a tracking area the table keeps on itself.
 //! A column with a `sortDescriptorPrototype` sorts by a click on its title, which cycles the
 //! table's `sortDescriptors` and tells the data source; its title brightens and the toolkit's
-//! chevron shows the order (D735, docs/ux/macos-tables-v0.4.md section 1).
+//! chevron shows the order (D735, docs/ux/macos-tables-v0.4.md section 1). Rows take
+//! `rowHeight` or the delegate's `tableView:heightOfRow:`, kept as running tops (D736).
 
 use super::{
     NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META, NSTRACKINGAREA, NSVIEW,
@@ -26,7 +27,8 @@ use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, message, methods, sel, send, send1, send2};
 use eggos_macos_gui::geometry::{Frame, Point, pixel_rect, round};
 use eggos_macos_gui::table_view::{
-    self as geometry, DASHED_HORIZONTAL_GRID, HORIZONTAL_GRID, Move, VERTICAL_GRID,
+    self as geometry, DASHED_HORIZONTAL_GRID, HORIZONTAL_GRID, Heights, Move, TABLE_ROW_MIN,
+    VARIABLE_HEIGHT_ROWS, VERTICAL_GRID, clamped_height, text_top,
 };
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::colour;
@@ -38,7 +40,6 @@ use eggos_toolkit::widget::{
 
 const MOST_COLUMNS: usize = 16;
 const DOUBLE_CLICK_MS: u32 = 400;
-const TEXT_TOP: i32 = 4;
 const HEADER_TEXT_TOP: i32 = 6;
 const HEADER_SEPARATOR: (i32, i32) = (6, 22);
 const DEFAULT_WIDTH: f64 = 100.0;
@@ -99,6 +100,9 @@ struct TableFields {
     header_hover: isize,
     header_pressed: isize,
     highlighted_column: Id,
+    row_height: f64,
+    tops: Buffer<u32>,
+    heights_known: bool,
     clicked_row: isize,
     clicked_column: isize,
     last_press: Option<(usize, u32)>,
@@ -190,11 +194,47 @@ fn changed(this: Id) {
     send1(target, sel!("setNeedsDisplay:"), 1);
 }
 
+fn uniform_height(this: Id) -> i32 {
+    let wanted = match table(this).row_height {
+        height if height > 0.0 => height,
+        _ => f64::from(TABLE_ROW_HEIGHT),
+    };
+    clamped_height(wanted, TABLE_ROW_MIN)
+}
+
+fn heights(this: Id) -> Heights<'static> {
+    let rows = row_count(this);
+    let delegate = table(this).delegate;
+    let asking = sel!("tableView:heightOfRow:");
+    if rows > VARIABLE_HEIGHT_ROWS || !responds(delegate, asking) {
+        return Heights::Uniform {
+            height: uniform_height(this),
+            rows,
+        };
+    }
+    if !table(this).heights_known {
+        let ask: extern "C" fn(Id, Sel, Id, isize) -> f64 = message::msg_send_as();
+        let mut tops: Buffer<u32> = Buffer::new();
+        tops.reserve(rows + 1);
+        tops.push(0);
+        let mut at: u32 = 0;
+        for row in 0..rows {
+            let height = clamped_height(ask(delegate, asking, this, row as isize), TABLE_ROW_MIN);
+            at = at.saturating_add(height as u32);
+            tops.push(at);
+        }
+        let mut old = core::mem::replace(&mut table(this).tops, tops);
+        old.free();
+        table(this).heights_known = true;
+    }
+    Heights::Varied(table(this).tops.as_slice())
+}
+
 fn fit_frame(this: Id) {
     let (_, (width, _)) = clip_of(this);
     let (widths, _, count) = shown_widths(this);
     let columns_width: i32 = widths[..count].iter().sum();
-    let height = geometry::table_height(table(this).header, row_count(this));
+    let height = geometry::body_top(table(this).header) + heights(this).total();
     let frame = &mut view::fields(this).frame;
     let wanted = (f64::from(width.max(columns_width)), f64::from(height));
     if (frame.width, frame.height) != wanted {
@@ -221,7 +261,7 @@ fn body_height(this: Id) -> i32 {
 
 fn reveal(this: Id, row: usize) {
     let ((x, y), _) = clip_of(this);
-    let moved = geometry::reveal_row(row, body_height(this), y, row_count(this));
+    let moved = heights(this).reveal(row, body_height(this), y);
     if moved != y {
         scroll_view::scroll_clip(view::fields(this).superview, (x, moved));
     }
@@ -404,6 +444,7 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     store(&mut fields.background, core::ptr::null_mut());
     store(&mut fields.sort_descriptors, core::ptr::null_mut());
     store(&mut fields.highlighted_column, core::ptr::null_mut());
+    fields.tops.free();
     objc_release(fields.selection);
     fields.selection = core::ptr::null_mut();
     objc_release(fields.tracking);
@@ -501,6 +542,7 @@ extern "C" fn delegate(this: Id, _: Sel) -> Id {
 
 extern "C" fn set_delegate(this: Id, _: Sel, delegate: Id) {
     table(this).delegate = delegate;
+    table(this).heights_known = false;
 }
 
 extern "C" fn target(this: Id, _: Sel) -> Id {
@@ -529,6 +571,7 @@ extern "C" fn set_double_action(this: Id, _: Sel, action: usize) {
 
 extern "C" fn reload_data(this: Id, _: Sel) {
     table(this).rows_known = false;
+    table(this).heights_known = false;
     let rows = row_count(this);
     if table(this).hover >= rows as isize {
         table(this).hover = NO_INDEX;
@@ -669,8 +712,19 @@ extern "C" fn set_header_view(this: Id, _: Sel, header: Id) {
     fit_frame(this);
 }
 
-extern "C" fn row_height(_: Id, _: Sel) -> f64 {
-    f64::from(TABLE_ROW_HEIGHT)
+extern "C" fn row_height(this: Id, _: Sel) -> f64 {
+    f64::from(uniform_height(this))
+}
+
+extern "C" fn set_row_height(this: Id, _: Sel, height: f64) {
+    table(this).row_height = height;
+    table(this).heights_known = false;
+    fit_frame(this);
+}
+
+extern "C" fn note_heights_changed(this: Id, _: Sel, _: Id) {
+    table(this).heights_known = false;
+    fit_frame(this);
 }
 
 extern "C" fn intercell_spacing(_: Id, _: Sel) -> Point {
@@ -729,7 +783,6 @@ extern "C" fn ignore_word(_: Id, _: Sel, _: usize) {}
 
 extern "C" fn ignore_size(_: Id, _: Sel, _: Point) {}
 
-extern "C" fn ignore_float(_: Id, _: Sel, _: f64) {}
 
 fn header_column_at(this: Id, x: i32) -> Option<usize> {
     let (widths, which, count) = shown_widths(this);
@@ -877,8 +930,7 @@ extern "C" fn mouse_down(this: Id, _: Sel, event: Id) {
         header_press(this, x);
         return;
     }
-    let rows = row_count(this);
-    let Some(row) = geometry::row_at(clip_y, header, offset, rows) else {
+    let Some(row) = heights(this).row_at(clip_y, header, offset) else {
         if !table(this).refuses_empty {
             select(this, NO_INDEX, false);
         }
@@ -928,7 +980,7 @@ extern "C" fn mouse_moved(this: Id, _: Sel, event: Id) {
     let in_header = header && clip_y < TABLE_HEADER_HEIGHT;
     let row = match in_header {
         true => None,
-        false => geometry::row_at(clip_y, header, offset, row_count(this)),
+        false => heights(this).row_at(clip_y, header, offset),
     };
     set_hover(this, row.map_or(NO_INDEX, |row| row as isize));
     let over = header_column_at(this, x).filter(|&index| in_header && sortable(this, index));
@@ -1048,7 +1100,8 @@ extern "C" fn key_down(this: Id, _: Sel, event: Id) {
             return;
         }
     };
-    let visible = (body_height(this) / TABLE_ROW_HEIGHT).max(1) as usize;
+    let ((_, offset), _) = clip_of(this);
+    let visible = heights(this).whole_rows(body_height(this), offset);
     let extending = table(this).multiple && event::fields(event).flags & SHIFT_FLAG != 0;
     if let Some(row) = geometry::moved(table(this).selected, step, row_count(this), visible) {
         match extending {
@@ -1080,7 +1133,7 @@ fn draw_cells(
         let space = width - start - TABLE_CELL_PADDING;
         let right = column(each).alignment == RIGHT_ALIGNED;
         cell_text(this, each, row, |cell| {
-            let at = place(Rect::new(left + start, rect.y + TEXT_TOP, space, 16));
+            let at = place(Rect::new(left + start, rect.y + text_top(rect.height), space, 16));
             let x = match right {
                 true => at.x + (space - cell.chars().count() as i32 * 8).max(0),
                 false => at.x,
@@ -1093,14 +1146,13 @@ fn draw_cells(
 extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
     let frame = view::fields(this).frame;
     let ((_, offset), (clip_width, clip_height)) = clip_of(this);
-    let rows = row_count(this);
     let header = table(this).header;
     let (widths, which, count) = shown_widths(this);
     let lefts: [i32; MOST_COLUMNS] = geometry::column_lefts(&widths[..count], 0);
     let (lefts, widths, which) = (&lefts[..count], &widths[..count], &which[..count]);
     let width = round(frame.width).max(clip_width);
-    let (first, last) =
-        geometry::shown_rows(rows, clip_height - geometry::body_top(header), offset);
+    let heights = heights(this);
+    let (first, last) = heights.shown(clip_height - geometry::body_top(header), offset);
     let fields = table(this);
     let (selected, selection, hover, alternating, grid, disabled) = (
         fields.selected,
@@ -1131,9 +1183,9 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
         for row in first..last {
             let rect = Rect::new(
                 0,
-                geometry::body_top(header) + row as i32 * TABLE_ROW_HEIGHT,
+                geometry::body_top(header) + heights.top(row),
                 width,
-                TABLE_ROW_HEIGHT,
+                heights.height(row),
             );
             let chosen = index_set::contains(selection, row);
             let fill = if chosen {
@@ -1155,23 +1207,18 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
             if grid & VERTICAL_GRID != 0 {
                 for (&left, &column_width) in lefts.iter().zip(widths) {
                     canvas.fill(
-                        place(Rect::new(
-                            left + column_width - 1,
-                            rect.y,
-                            1,
-                            TABLE_ROW_HEIGHT,
-                        )),
+                        place(Rect::new(left + column_width - 1, rect.y, 1, rect.height)),
                         colour::MENU_BORDER,
                     );
                 }
             }
             if chosen && !disabled {
-                let at = place(Rect::new(TABLE_MARK_X, rect.y + TEXT_TOP, 8, 16));
+                let at = place(Rect::new(TABLE_MARK_X, rect.y + text_top(rect.height), 8, 16));
                 let _ = canvas.text(at.x, at.y, MARK, colour::ACCENT, 1);
                 if focused && row as isize == selected {
                     focus_ring(
                         canvas,
-                        place(Rect::new(0, rect.y, clip_width, TABLE_ROW_HEIGHT)),
+                        place(Rect::new(0, rect.y, clip_width, rect.height)),
                         0,
                     );
                 }
@@ -1421,7 +1468,7 @@ pub fn summary(this: Id) -> (isize, usize, bool) {
 /// The rows shown now: first and one past the last.
 pub fn shown_rows(this: Id) -> (usize, usize) {
     let ((_, offset), _) = clip_of(this);
-    geometry::shown_rows(row_count(this), body_height(this), offset)
+    heights(this).shown(body_height(this), offset)
 }
 
 /// The header cells shown, each the column and its rect in the table's own pixels (top-left
@@ -1445,8 +1492,9 @@ pub fn header_cells(this: Id, work: &mut dyn FnMut(usize, Id, Rect) -> bool) -> 
 /// Row `row`'s rect in the table's own pixels.
 pub fn row_rect(this: Id, row: usize) -> Rect {
     let width = round(view::fields(this).frame.width);
-    let top = geometry::body_top(table(this).header) + row as i32 * TABLE_ROW_HEIGHT;
-    Rect::new(0, top, width, TABLE_ROW_HEIGHT)
+    let heights = heights(this);
+    let top = geometry::body_top(table(this).header) + heights.top(row);
+    Rect::new(0, top, width, heights.height(row))
 }
 
 /// The table's own pixel rect's top-left in its window's content pixels.
@@ -1581,7 +1629,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "headerView" => header_view,
         "setHeaderView:" => set_header_view,
         "rowHeight" => row_height,
-        "setRowHeight:" => ignore_float,
+        "setRowHeight:" => set_row_height,
+        "noteHeightOfRowsWithIndexesChanged:" => note_heights_changed,
         "intercellSpacing" => intercell_spacing,
         "setIntercellSpacing:" => ignore_size,
         "usesAlternatingRowBackgroundColors" => uses_alternating,

@@ -1,12 +1,147 @@
 //! NSTableView's geometry (D373, docs/ux/macos-gui-v0.3.md section 11): the header kept at
 //! the top of the clip view, the columns' places, the resize handles, the rows under the
 //! offset, the alternating fills and the grid, and how keys move the selection. Rectangles are
-//! in the clip view's pixels, top-left origin, the clip view's left edge at 0.
+//! in the clip view's pixels, top-left origin, the clip view's left edge at 0. Rows of their
+//! own heights ([`Heights`], D736) keep running tops, so finding a row is a binary search.
 
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::widget::{
     TABLE_HANDLE, TABLE_HEADER_HEIGHT, TABLE_MIN_COLUMN, TABLE_ROW_HEIGHT,
 };
+
+/// The shortest row on the desktop and the TV: one line of text (docs/ux/macos-tables-v0.4.md).
+pub const TABLE_ROW_MIN: i32 = 16;
+/// The tallest row.
+pub const TABLE_ROW_MAX: i32 = 1024;
+/// The most rows whose own heights are kept; past it every row is `rowHeight` tall.
+pub const VARIABLE_HEIGHT_ROWS: usize = 65_536;
+const TEXT_HEIGHT: i32 = 16;
+
+/// A row height as the app gave it, kept between `minimum` and [`TABLE_ROW_MAX`].
+pub fn clamped_height(answer: f64, minimum: i32) -> i32 {
+    let rounded = match answer.is_finite() {
+        true => (answer + 0.5) as i64,
+        false => i64::from(TABLE_ROW_HEIGHT),
+    };
+    rounded.clamp(i64::from(minimum), i64::from(TABLE_ROW_MAX)) as i32
+}
+
+/// Where a one-line cell's text starts below the top of a row `height` tall.
+pub fn text_top(height: i32) -> i32 {
+    ((height - TEXT_HEIGHT) / 2).max(0)
+}
+
+/// The rows' heights: one for every row, or each row's own as running tops from the body's top
+/// (one more than the rows: the last is the body's height).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heights<'a> {
+    Uniform { height: i32, rows: usize },
+    Varied(&'a [u32]),
+}
+
+impl Heights<'_> {
+    /// How many rows there are.
+    pub fn rows(&self) -> usize {
+        match self {
+            Self::Uniform { rows, .. } => *rows,
+            Self::Varied(tops) => tops.len().saturating_sub(1),
+        }
+    }
+
+    /// Row `row`'s top below the body's top.
+    pub fn top(&self, row: usize) -> i32 {
+        match self {
+            Self::Uniform { height, .. } => {
+                (row as i64 * i64::from(*height)).min(i64::from(i32::MAX / 2)) as i32
+            }
+            Self::Varied(tops) => tops.get(row).copied().unwrap_or(0) as i32,
+        }
+    }
+
+    /// Row `row`'s height.
+    pub fn height(&self, row: usize) -> i32 {
+        match self {
+            Self::Uniform { height, .. } => *height,
+            Self::Varied(tops) => match (tops.get(row), tops.get(row + 1)) {
+                (Some(&top), Some(&next)) => (next - top) as i32,
+                _ => 0,
+            },
+        }
+    }
+
+    /// Every row's height together.
+    pub fn total(&self) -> i32 {
+        self.top(self.rows())
+    }
+
+    /// The row at `inside` pixels below the body's top, if there is one.
+    pub fn row_at_depth(&self, inside: i32) -> Option<usize> {
+        if inside < 0 || inside >= self.total() {
+            return None;
+        }
+        let row = match self {
+            Self::Uniform { height, .. } => (inside / (*height).max(1)) as usize,
+            Self::Varied(tops) => tops.partition_point(|&top| top as i32 <= inside) - 1,
+        };
+        (row < self.rows()).then_some(row)
+    }
+
+    /// The row under clip-view point `y` at `offset`, if the point is on a row.
+    pub fn row_at(&self, y: i32, header: bool, offset: i32) -> Option<usize> {
+        if y < body_top(header) {
+            return None;
+        }
+        self.row_at_depth(y - body_top(header) + offset)
+    }
+
+    /// The rows a body `view` pixels tall shows at `offset`: first and one past the last.
+    pub fn shown(&self, view: i32, offset: i32) -> (usize, usize) {
+        let rows = self.rows();
+        let first = self.row_at_depth(offset.max(0)).unwrap_or(rows);
+        let last = match self.row_at_depth(offset.max(0) + view.max(0) - 1) {
+            Some(row) => row + 1,
+            None => rows,
+        };
+        (first.min(rows), last.min(rows).max(first.min(rows)))
+    }
+
+    /// How many rows fit whole in a body `view` tall from `offset`, at least one.
+    pub fn whole_rows(&self, view: i32, offset: i32) -> usize {
+        let (first, last) = self.shown(view, offset);
+        let whole = (first..last)
+            .filter(|&row| {
+                self.top(row) >= offset && self.top(row) + self.height(row) <= offset + view
+            })
+            .count();
+        whole.max(1)
+    }
+
+    /// The least offset that shows row `row` whole in a body `view` tall now at `offset`; a row
+    /// taller than the body shows its top.
+    pub fn reveal(&self, row: usize, view: i32, offset: i32) -> i32 {
+        let top = self.top(row);
+        let bottom = top + self.height(row);
+        let most = (self.total() - view).max(0);
+        let wanted = if top < offset || bottom - top > view {
+            top
+        } else if bottom > offset + view {
+            bottom - view
+        } else {
+            offset
+        };
+        wanted.clamp(0, most)
+    }
+}
+
+/// The running tops of rows of `heights`, from 0, one more than the rows.
+pub fn running_tops(heights: impl Iterator<Item = i32>, out: &mut impl Extend<u32>) {
+    let mut at = 0u32;
+    out.extend(core::iter::once(0));
+    for height in heights {
+        at = at.saturating_add(height.max(0) as u32);
+        out.extend(core::iter::once(at));
+    }
+}
 
 /// `NSTableViewSolidVerticalGridLineMask`.
 pub const VERTICAL_GRID: usize = 1;
@@ -171,6 +306,43 @@ mod tests {
         assert_eq!(row_at(150 - 17, true, 0, 20), Some(4));
         assert_eq!(row_at(10, true, 0, 20), None);
         assert_eq!(row_at(28 + 24 * 3, true, 0, 3), None);
+    }
+
+    #[test]
+    fn rows_of_their_own_heights_follow_their_running_tops() {
+        let mut tops: Vec<u32> = Vec::new();
+        running_tops([32, 24, 32, 24, 32].into_iter(), &mut tops);
+        let heights = Heights::Varied(&tops);
+        assert_eq!(heights.rows(), 5);
+        assert_eq!(heights.top(3), 88);
+        assert_eq!(heights.height(3), 24);
+        assert_eq!(heights.total(), 144);
+        assert_eq!(heights.row_at(150 - 17, true, 0), Some(3));
+        assert_eq!(heights.row_at(10, true, 0), None);
+        assert_eq!(heights.shown(60, 0), (0, 3));
+        assert_eq!(heights.reveal(4, 60, 0), 84);
+        assert_eq!(text_top(32), 8);
+        assert_eq!(text_top(24), 4);
+        assert_eq!(text_top(17), 0);
+    }
+
+    #[test]
+    fn row_heights_are_kept_between_their_bounds() {
+        assert_eq!(clamped_height(8.0, TABLE_ROW_MIN), 16);
+        assert_eq!(clamped_height(2000.0, TABLE_ROW_MIN), 1024);
+        assert_eq!(clamped_height(31.6, TABLE_ROW_MIN), 32);
+        assert_eq!(clamped_height(20.0, 40), 40);
+    }
+
+    #[test]
+    fn uniform_heights_agree_with_the_fixed_row_geometry() {
+        let heights = Heights::Uniform {
+            height: TABLE_ROW_HEIGHT,
+            rows: 20,
+        };
+        assert_eq!(heights.shown(258, 0), shown_rows(20, 258, 0));
+        assert_eq!(heights.row_at(150 - 17, true, 0), row_at(150 - 17, true, 0, 20));
+        assert_eq!(heights.reveal(19, 258, 0), reveal_row(19, 258, 0, 20));
     }
 
     #[test]
