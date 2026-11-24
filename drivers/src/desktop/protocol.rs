@@ -486,6 +486,12 @@ pub mod shell_menu_flags {
     pub const CHECKED: u8 = 2;
     pub const RADIO: u8 = 4;
     pub const SEPARATOR: u8 = 8;
+    /// The entry opens a submenu made of the entries after it, up to the `END` that closes it
+    /// (D720); at most three submenus deep.
+    pub const SUBMENU: u8 = 16;
+    /// No entry: the end of the innermost open submenu (D720). It counts in the numbering the
+    /// `SHELL_MENU` answer uses.
+    pub const END: u8 = 32;
 }
 
 /// The most entries a shell menu holds.
