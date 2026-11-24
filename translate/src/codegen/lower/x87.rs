@@ -31,6 +31,14 @@ const C0: u64 = 1 << CONDITION_C0;
 const C1: u64 = 1 << CONDITION_C1;
 const C2: u64 = 1 << CONDITION_C2;
 const C3: u64 = 1 << CONDITION_C3;
+const EXCEPTION_MASKS: u64 = 0x3F;
+const STATUS_TOP_FIELD: u64 = 0x3800;
+const ALL_TAGS_EMPTY: u64 = 0xFFFF;
+const ENVIRONMENT_STATUS: u16 = 4;
+const ENVIRONMENT_TAGS: u16 = 8;
+const ENVIRONMENT_POINTERS: [u16; 4] = [12, 16, 20, 24];
+const ENVIRONMENT_BYTES: u16 = 28;
+const EXTENDED_BYTES: u16 = 10;
 
 const DOUBLE_EXPONENT_BITS: u8 = 11;
 const DOUBLE_FRACTION_BITS: u8 = 52;
@@ -149,15 +157,20 @@ impl Lowerer {
                 self.logic_immediate(Logic::And, Size::W, T0, T0, STATUS_KEPT_BY_FNCLEX);
                 self.emit(state_access(LoadStore::Strh, T0, state::X87_STATUS));
             }
-            M::Fninit => {
-                self.move_immediate(Size::W, T0, CONTROL_AT_START);
+            M::Fninit => self.x87_initialize(),
+            M::Fnstenv => {
+                let address = self.x87_environment_address(instruction)?;
+                self.x87_store_environment(address);
+                self.emit(state_access(LoadStore::Ldrh, T0, state::X87_CONTROL));
+                self.logic_immediate(Logic::Orr, Size::W, T0, T0, EXCEPTION_MASKS);
                 self.emit(state_access(LoadStore::Strh, T0, state::X87_CONTROL));
-                self.emit(state_access(LoadStore::Strh, Reg::ZR, state::X87_STATUS));
-                self.emit(state_access(LoadStore::Strb, Reg::ZR, state::X87_TOP));
-                self.emit(simd::mrs_fpcr(SCRATCH));
-                self.bfi(SCRATCH, Reg::ZR, FPCR_ROUNDING_LOW, 2);
-                self.emit(simd::msr_fpcr(SCRATCH));
             }
+            M::Fldenv => {
+                let address = self.x87_environment_address(instruction)?;
+                self.x87_load_environment(address);
+            }
+            M::Fnsave => self.x87_save(instruction)?,
+            M::Frstor => self.x87_restore(instruction)?,
             M::Fwait => {}
             _ => return Ok(false),
         }
@@ -681,6 +694,101 @@ impl Lowerer {
         self.bfi(T5, T2, CONDITION_C2, 1);
         self.bfi(T5, T1, CONDITION_C3, 1);
         self.emit(state_access(LoadStore::Strh, T5, state::X87_STATUS));
+    }
+
+    fn x87_initialize(&mut self) {
+        self.move_immediate(Size::W, T0, CONTROL_AT_START);
+        self.emit(state_access(LoadStore::Strh, T0, state::X87_CONTROL));
+        self.emit(state_access(LoadStore::Strh, Reg::ZR, state::X87_STATUS));
+        self.emit(state_access(LoadStore::Strb, Reg::ZR, state::X87_TOP));
+        self.emit(simd::mrs_fpcr(SCRATCH));
+        self.bfi(SCRATCH, Reg::ZR, FPCR_ROUNDING_LOW, 2);
+        self.emit(simd::msr_fpcr(SCRATCH));
+    }
+
+    fn x87_environment_address(&mut self, instruction: &Instruction) -> Lowered<Reg> {
+        let Operand::Memory(memory) = self.operand(instruction, 0)? else {
+            return Err(self.operands_error());
+        };
+        Ok(self.effective_address(&memory, ADDRESS, memory.segment))
+    }
+
+    fn x87_field(&mut self, address: Reg, offset: u16, into: Reg) -> Reg {
+        if offset == 0 {
+            return address;
+        }
+        self.emit(encode::add_sub_immediate(
+            AddSub::Add,
+            Size::X,
+            into,
+            address,
+            offset,
+            false,
+        ));
+        into
+    }
+
+    fn x87_store_environment(&mut self, address: Reg) {
+        self.emit(state_access(LoadStore::Ldrh, T0, state::X87_CONTROL));
+        self.store_memory(address, Width::Dword, T0);
+        self.emit(state_access(LoadStore::Ldrh, T0, state::X87_STATUS));
+        self.emit(state_access(LoadStore::Ldrb, T1, state::X87_TOP));
+        self.bfi(T0, T1, STATUS_TOP_LOW, 3);
+        let field = self.x87_field(address, ENVIRONMENT_STATUS, T5);
+        self.store_memory(field, Width::Dword, T0);
+        self.move_immediate(Size::W, T0, ALL_TAGS_EMPTY);
+        let field = self.x87_field(address, ENVIRONMENT_TAGS, T5);
+        self.store_memory(field, Width::Dword, T0);
+        for offset in ENVIRONMENT_POINTERS {
+            let field = self.x87_field(address, offset, T5);
+            self.store_memory(field, Width::Dword, Reg::ZR);
+        }
+    }
+
+    fn x87_load_environment(&mut self, address: Reg) {
+        self.load_memory(address, Width::Word, T0);
+        self.emit(state_access(LoadStore::Strh, T0, state::X87_CONTROL));
+        self.emit(simd::mrs_fpcr(SCRATCH));
+        self.rounding_into_fpcr(SCRATCH, T0, CONTROL_ROUNDING_LOW);
+        self.emit(simd::msr_fpcr(SCRATCH));
+        let field = self.x87_field(address, ENVIRONMENT_STATUS, T5);
+        self.load_memory(field, Width::Word, T0);
+        self.ubfx(Size::W, T1, T0, STATUS_TOP_LOW, 3);
+        self.emit(state_access(LoadStore::Strb, T1, state::X87_TOP));
+        self.logic_immediate(Logic::And, Size::W, T0, T0, !STATUS_TOP_FIELD & 0xFFFF);
+        self.emit(state_access(LoadStore::Strh, T0, state::X87_STATUS));
+    }
+
+    fn x87_register_field(&mut self, address: Reg, index: u8) -> Reg {
+        let offset = ENVIRONMENT_BYTES + EXTENDED_BYTES * u16::from(index);
+        self.x87_field(address, offset, SLOT)
+    }
+
+    fn x87_save(&mut self, instruction: &Instruction) -> Lowered {
+        let address = self.x87_environment_address(instruction)?;
+        self.x87_store_environment(address);
+        self.x87_top();
+        for index in 0..8 {
+            self.x87_slot(index, OTHER_SLOT);
+            self.x87_access(VectorLoadStore::LdrD, V1, OTHER_SLOT);
+            let field = self.x87_register_field(address, index);
+            self.double_to_extended(V1, field);
+        }
+        self.x87_initialize();
+        Ok(())
+    }
+
+    fn x87_restore(&mut self, instruction: &Instruction) -> Lowered {
+        let address = self.x87_environment_address(instruction)?;
+        self.x87_load_environment(address);
+        self.x87_top();
+        for index in 0..8 {
+            let field = self.x87_register_field(address, index);
+            self.extended_to_double(field, V1);
+            self.x87_slot(index, OTHER_SLOT);
+            self.x87_access(VectorLoadStore::StrD, V1, OTHER_SLOT);
+        }
+        Ok(())
     }
 
     fn x87_merge_helper_status(&mut self, defined: u64) {

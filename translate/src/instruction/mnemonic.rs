@@ -723,6 +723,14 @@ pub enum Mnemonic {
     Fscale,
     /// `fxtract`: `st(0)` becomes its exponent and its significand is pushed.
     Fxtract,
+    /// `fnstenv`: the 28-byte environment to memory, then every exception masked.
+    Fnstenv,
+    /// `fldenv`: the environment from memory.
+    Fldenv,
+    /// `fnsave`: the environment and the eight registers (108 bytes) to memory, then `fninit`.
+    Fnsave,
+    /// `frstor`: the environment and the eight registers from memory.
+    Frstor,
 }
 
 impl Mnemonic {

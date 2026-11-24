@@ -1046,7 +1046,20 @@ fn x87_memory_and_register_forms_decode() {
     check(&[0xD9, 0xEB], Mnemonic::Fldpi, Width::Tbyte, &[]);
     assert_eq!(refused(&[0xD9, 0xF6]), Refusal::X87);
     assert_eq!(refused(&[0xDD, 0x08]), Refusal::Sse3);
-    assert_eq!(refused(&[0xD9, 0x30]), Refusal::X87);
+    assert_eq!(refused(&[0xDF, 0x20]), Refusal::X87);
+    for (bytes, mnemonic) in [
+        ([0xD9, 0x20], Mnemonic::Fldenv),
+        ([0xD9, 0x30], Mnemonic::Fnstenv),
+        ([0xDD, 0x20], Mnemonic::Frstor),
+        ([0xDD, 0x30], Mnemonic::Fnsave),
+    ] {
+        check(
+            &bytes,
+            mnemonic,
+            Width::Dword,
+            &[at(Gpr::RAX, 0, Width::Dword)],
+        );
+    }
     assert_eq!(error(&[0xD9, 0x08]), DecodeErrorKind::Invalid);
 }
 

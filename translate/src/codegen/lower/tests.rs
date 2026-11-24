@@ -622,6 +622,10 @@ fn every_x87_form_lowers() {
         &[0xD9, 0xFD],
         &[0xD9, 0xFE],
         &[0xD9, 0xFF],
+        &[0xD9, 0x20],
+        &[0xD9, 0x30],
+        &[0xDD, 0x20],
+        &[0xDD, 0x30],
     ];
     for mode in [ORDERED, TSO, CodegenMode::default()] {
         for bytes in sequences {
