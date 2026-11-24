@@ -8,21 +8,30 @@
 //! `initWithCoder:` with the unarchiver, whose `decode...ForKey:` read the keys of the object
 //! being decoded. Each object is decoded once and shared, so the graph keeps its sharing. An
 //! archive is untrusted input: every UID is checked, and a reference cycle through natively
-//! decoded objects ends as nil rather than recursing.
+//! decoded objects ends as nil rather than recursing. Data that is no keyed archive gives
+//! `NSCoderReadCorruptError` where an error can be returned (D724). Under secure coding with
+//! allowed classes (`unarchivedObjectOfClass(es):fromData:error:`,
+//! `decodeObjectOfClass(es):forKey:`), every object decoded from a class dictionary must be of
+//! an allowed class or a subclass of one, and a class of the program's own must support secure
+//! coding; property list values (strings, numbers, data) are always allowed. A refused object
+//! decodes as nil and fails the top-level call with the same error.
 
 use super::array::new_array;
+use super::constants::{self, COCOA_ERROR_DOMAIN};
 use super::{
     Definition, NSARRAY, NSCODER, NSCODER_META, NSDATA, NSDATE, NSDICTIONARY, NSKEYEDUNARCHIVER,
     NSKEYEDUNARCHIVER_META, NSMUTABLEARRAY, NSMUTABLEDICTIONARY, NSMUTABLESET, NSMUTABLESTRING,
-    NSSET, NSSTRING, autoreleased, class_pointer, define as define_class, new_instance,
+    NSERROR, NSSET, NSSTRING, autoreleased, class_pointer, define as define_class, is_set,
+    new_instance,
 };
 use crate::libsystem::heap;
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
+use crate::objc::message;
 use crate::objc::sel;
-use crate::objc::{Runtime, methods, send, send1};
+use crate::objc::{Runtime, methods, send, send_bool, send1};
 use eggos_plist::{Document, Kind, Object};
 
 const TOP: usize = usize::MAX;
@@ -30,6 +39,7 @@ const DECODING: Id = 1 as Id;
 const ROOT_KEY: &[u8] = b"root";
 const KEY_BYTES: usize = 256;
 const MOST_OBJECTS: usize = 1 << 20;
+const READ_CORRUPT_ERROR: isize = 4864;
 
 #[repr(C)]
 struct Unarchiver {
@@ -39,6 +49,8 @@ struct Unarchiver {
     objects: usize,
     current: usize,
     secure: bool,
+    allowed: Buffer<usize>,
+    refused: bool,
 }
 
 fn fields(this: Id) -> &'static mut Unarchiver {
@@ -266,6 +278,49 @@ fn decode_uid(this: Id, uid: u64) -> Id {
     decoded
 }
 
+fn class_allowed(this: Id, class: *mut ClassObject, native: bool) -> bool {
+    let unarchiver = fields(this);
+    if !unarchiver.secure || unarchiver.allowed.as_slice().is_empty() {
+        return true;
+    }
+    if class.is_null() {
+        return false;
+    }
+    let class_object: Id = class.cast();
+    let supports = native
+        || (send_bool(
+            class_object,
+            sel!("respondsToSelector:"),
+            sel!("supportsSecureCoding") as usize,
+        ) && send_bool(class_object, sel!("supportsSecureCoding"), 0));
+    supports
+        && unarchiver.allowed.as_slice().iter().any(|&allowed| {
+            send_bool(class_object, sel!("isSubclassOfClass:"), allowed)
+        })
+}
+
+fn with_allowed<R>(this: Id, classes: Id, work: impl FnOnce() -> R) -> R {
+    let mut allowed: Buffer<usize> = Buffer::new();
+    match !classes.is_null() && is_set(classes) {
+        true => {
+            let mut members = super::set::objects_of(classes);
+            for &member in members.as_slice() {
+                allowed.push(member as usize);
+            }
+            members.free();
+        }
+        false if !classes.is_null() => {
+            allowed.push(classes as usize);
+        }
+        false => {}
+    }
+    let mut outer = core::mem::replace(&mut fields(this).allowed, allowed);
+    let result = work();
+    core::mem::swap(&mut fields(this).allowed, &mut outer);
+    outer.free();
+    result
+}
+
 fn decode_class(this: Id, document: &Document<'_>, object: &Object<'_>, index: usize) -> Id {
     let Some(name) = class_name_of(document, object).and_then(|name| name.text()) else {
         return core::ptr::null_mut();
@@ -283,10 +338,29 @@ fn decode_class(this: Id, document: &Document<'_>, object: &Object<'_>, index: u
         length = end;
     }
     let name = &bytes[..length];
+    let class: *mut ClassObject = crate::objc::class_named(name);
+    let is_native = matches!(
+        name,
+        b"NSString"
+            | b"NSMutableString"
+            | b"NSArray"
+            | b"NSMutableArray"
+            | b"NSSet"
+            | b"NSMutableSet"
+            | b"NSDictionary"
+            | b"NSMutableDictionary"
+            | b"NSData"
+            | b"NSMutableData"
+            | b"NSDate"
+            | b"NSNull"
+    );
+    if !class_allowed(this, class, is_native) {
+        fields(this).refused = true;
+        return core::ptr::null_mut();
+    }
     if let Some(made) = native(this, object, name) {
         return made;
     }
-    let class: *mut ClassObject = crate::objc::class_named(name);
     if class.is_null() {
         return core::ptr::null_mut();
     }
@@ -339,23 +413,44 @@ extern "C" fn init_for_reading_with_data(this: Id, _: Sel, data: Id) -> Id {
     let unarchiver = fields(this);
     unarchiver.cache = cache.cast();
     unarchiver.objects = count;
+    unarchiver.allowed = Buffer::new();
+    unarchiver.refused = false;
     this
 }
 
-extern "C" fn init_for_reading_from_data(this: Id, sel: Sel, data: Id, error: *mut Id) -> Id {
+fn corrupt_error() -> Id {
+    let make: extern "C" fn(Id, Sel, Id, isize, Id) -> Id = message::msg_send_as();
+    make(
+        class_pointer(&NSERROR).cast(),
+        sel!("errorWithDomain:code:userInfo:"),
+        constants::string(COCOA_ERROR_DOMAIN),
+        READ_CORRUPT_ERROR,
+        core::ptr::null_mut(),
+    )
+}
+
+fn report(error: *mut Id, failure: Id) {
     if !error.is_null() {
         // SAFETY: the caller's `NSError **`.
-        unsafe { error.write(core::ptr::null_mut()) };
+        unsafe { error.write(failure) };
     }
+}
+
+extern "C" fn init_for_reading_from_data(this: Id, sel: Sel, data: Id, error: *mut Id) -> Id {
     let made = init_for_reading_with_data(this, sel, data);
-    if !made.is_null() {
-        fields(made).secure = true;
+    match made.is_null() {
+        true => report(error, corrupt_error()),
+        false => {
+            fields(made).secure = true;
+            report(error, core::ptr::null_mut());
+        }
     }
     made
 }
 
 extern "C" fn dealloc(this: Id, _: Sel) {
     release_cache(this);
+    fields(this).allowed.free();
     objc_release(fields(this).data);
     crate::objc::reference_count::dispose(this);
 }
@@ -371,8 +466,34 @@ extern "C" fn decode_object_for_key(this: Id, _: Sel, key: Id) -> Id {
     }
 }
 
-extern "C" fn decode_object_of_class_for_key(this: Id, sel: Sel, _: Id, key: Id) -> Id {
-    decode_object_for_key(this, sel, key)
+extern "C" fn decode_object_of_class_for_key(this: Id, sel: Sel, classes: Id, key: Id) -> Id {
+    with_allowed(this, classes, || decode_object_for_key(this, sel, key))
+}
+
+extern "C" fn decode_bytes_for_key(this: Id, _: Sel, key: Id, length: *mut usize) -> *const u8 {
+    let found = document(this)
+        .and_then(|document| value_for(this, &document, key))
+        .and_then(|value| {
+            let data = value.data()?;
+            Some(match data.as_raw() {
+                Some(bytes) => bytes,
+                None => {
+                    let made = autoreleased(data_of(&value));
+                    match made.is_null() {
+                        true => return None,
+                        false => super::data::bytes_of(made),
+                    }
+                }
+            })
+        });
+    let (pointer, count) = found.map_or((core::ptr::null(), 0), |bytes| {
+        (bytes.as_ptr(), bytes.len())
+    });
+    if !length.is_null() {
+        // SAFETY: the caller's `NSUInteger *`.
+        unsafe { length.write(count) };
+    }
+    pointer
 }
 
 extern "C" fn decode_integer_for_key(this: Id, _: Sel, key: Id) -> i64 {
@@ -459,19 +580,32 @@ fn root_of(this: Id) -> Id {
     root.map_or(core::ptr::null_mut(), |uid| decode_uid(this, uid))
 }
 
-fn unarchive(data: Id) -> Id {
+fn unarchive(data: Id, secure: bool, classes: Id) -> Result<Id, Id> {
     let class = class_pointer(&NSKEYEDUNARCHIVER);
     let unarchiver = init_for_reading_with_data(new_instance(class), sel!("init"), data);
     if unarchiver.is_null() {
-        return unarchiver;
+        return Err(corrupt_error());
     }
-    let root = objc_retain(root_of(unarchiver));
+    fields(unarchiver).secure = secure;
+    let root = with_allowed(unarchiver, classes, || objc_retain(root_of(unarchiver)));
+    let refused = fields(unarchiver).refused;
     objc_release(unarchiver);
-    autoreleased(root)
+    if refused {
+        objc_release(root);
+        return Err(corrupt_error());
+    }
+    Ok(autoreleased(root))
+}
+
+fn incomprehensible() -> ! {
+    super::raise_named(
+        b"NSInvalidArgumentException",
+        &[b"*** -[NSKeyedUnarchiver initForReadingWithData:]: incomprehensible archive"],
+    )
 }
 
 extern "C" fn unarchive_object_with_data(_: Id, _: Sel, data: Id) -> Id {
-    unarchive(data)
+    unarchive(data, false, core::ptr::null_mut()).unwrap_or_else(|_| incomprehensible())
 }
 
 extern "C" fn unarchive_object_with_file(_: Id, _: Sel, path: Id) -> Id {
@@ -480,23 +614,37 @@ extern "C" fn unarchive_object_with_file(_: Id, _: Sel, path: Id) -> Id {
         sel!("dataWithContentsOfFile:"),
         path as usize,
     );
-    unarchive(data)
+    if data.is_null() {
+        return data;
+    }
+    unarchive(data, false, core::ptr::null_mut()).unwrap_or_else(|_| incomprehensible())
 }
 
-extern "C" fn unarchived_object_of_class(_: Id, _: Sel, _: Id, data: Id, error: *mut Id) -> Id {
-    if !error.is_null() {
-        // SAFETY: the caller's `NSError **`.
-        unsafe { error.write(core::ptr::null_mut()) };
+fn answered(result: Result<Id, Id>, error: *mut Id) -> Id {
+    match result {
+        Ok(root) => {
+            report(error, core::ptr::null_mut());
+            root
+        }
+        Err(failure) => {
+            report(error, failure);
+            core::ptr::null_mut()
+        }
     }
-    unarchive(data)
+}
+
+extern "C" fn unarchived_object_of_class(
+    _: Id,
+    _: Sel,
+    classes: Id,
+    data: Id,
+    error: *mut Id,
+) -> Id {
+    answered(unarchive(data, true, classes), error)
 }
 
 extern "C" fn unarchive_top_level(_: Id, _: Sel, data: Id, error: *mut Id) -> Id {
-    if !error.is_null() {
-        // SAFETY: the caller's `NSError **`.
-        unsafe { error.write(core::ptr::null_mut()) };
-    }
-    unarchive(data)
+    answered(unarchive(data, false, core::ptr::null_mut()), error)
 }
 
 pub fn define(runtime: &mut Runtime) -> bool {
@@ -510,6 +658,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "decodeObjectForKey:" => decode_object_for_key,
         "decodeObjectOfClass:forKey:" => decode_object_of_class_for_key,
         "decodeObjectOfClasses:forKey:" => decode_object_of_class_for_key,
+        "decodeBytesForKey:returnedLength:" => decode_bytes_for_key,
         "decodeIntegerForKey:" => decode_integer_for_key,
         "decodeInt64ForKey:" => decode_integer_for_key,
         "decodeIntForKey:" => decode_int32_for_key,

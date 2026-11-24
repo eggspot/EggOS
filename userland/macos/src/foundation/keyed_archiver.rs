@@ -384,6 +384,16 @@ extern "C" fn encode_float_for_key(this: Id, _: Sel, value: f32, key: Id) {
     encode_value(this, key, Value::Real(f64::from(value)));
 }
 
+extern "C" fn encode_bytes_for_key(this: Id, _: Sel, bytes: *const u8, length: usize, key: Id) {
+    let given = match bytes.is_null() || length == 0 {
+        true => &[][..],
+        // SAFETY: the caller's `length` readable bytes.
+        false => unsafe { core::slice::from_raw_parts(bytes, length) },
+    };
+    let (start, stored_length) = stored(this, given);
+    encode_value(this, key, Value::Data(start, stored_length));
+}
+
 struct Writer {
     out: Buffer<u8>,
 }
@@ -850,6 +860,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "encodeBool:forKey:" => encode_bool_for_key,
         "encodeDouble:forKey:" => encode_double_for_key,
         "encodeFloat:forKey:" => encode_float_for_key,
+        "encodeBytes:length:forKey:" => encode_bytes_for_key,
         "dealloc" => dealloc,
     ];
     let class = methods![

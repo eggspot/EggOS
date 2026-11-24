@@ -232,7 +232,7 @@ and is not listed per item.
 - [x] Tray: `NIN_POPUPOPEN` and `WM_MOUSEMOVE` (version 4), double clicks, `NIN_KEYSELECT`/`NIM_SETFOCUS`, `Shell_NotifyIconGetRect`, `NIN_BALLOONTIMEOUT`/`NIN_BALLOONHIDE`, submenus in shell menus (D357, D364, D370, D371; D719, D720)
 - [x] Layered windows: `UpdateLayeredWindowIndirect` with `prcDirty`, `AlphaBlend` writing alpha, child layered windows (D366, D369; D721)
 - [ ] Foundation: an index for NSSet and NSCountedSet and the `nsdictionary_lookup` benchmark (D359; NSSet's own table predates it (D175), NSCountedSet on it code written, unbuilt: D722; left: the `nsdictionary_lookup` benchmark, which waits on the macOS benchmark images like the macOS benchmark item)
-- [ ] Foundation: binary property lists written (NSKeyedArchiver's default), `$classes` hierarchy, NSError for damaged archives, secure coding's allowed classes, `decodeBytesForKey:returnedLength:` (D360, D365; binary output and the `$classes` hierarchy code written, unbuilt: D723; left: the unarchiver's errors, allowed classes and `decodeBytesForKey:returnedLength:`)
+- [x] Foundation: binary property lists written (NSKeyedArchiver's default), `$classes` hierarchy, NSError for damaged archives, secure coding's allowed classes, `decodeBytesForKey:returnedLength:` (D360, D365; D723, D724)
 - [ ] AppKit: view-based NSTableView, multiple selection with a full NSIndexSet, sorting, per-row heights, row hover through `mouseMoved:` (D373)
 - [ ] AppKit: NSImage decoding JPEG, GIF, TIFF, BMP, `.ico` and `.icns` through `eggos-image`, system images, `lockFocus`, `TIFFRepresentation`, `CGImage` (D374)
 - [ ] NSUserDefaults: suites, global and argument domains, `NSUserDefaultsDidChangeNotification`, `URLForKey:` (D381)
