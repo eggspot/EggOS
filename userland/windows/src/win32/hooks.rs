@@ -28,7 +28,10 @@ pub mod kind {
 const MOST_HOOKS: usize = 32;
 const HC_ACTION: i32 = 0;
 const HC_NOREMOVE: i32 = 3;
+const HCBT_MOVESIZE: i32 = 0;
 const HCBT_MINMAX: i32 = 1;
+const HCBT_CLICKSKIPPED: i32 = 6;
+const HCBT_KEYSKIPPED: i32 = 7;
 const HCBT_CREATEWND: i32 = 3;
 const HCBT_DESTROYWND: i32 = 4;
 const HCBT_ACTIVATE: i32 = 5;
@@ -41,6 +44,8 @@ const LAST_KEY: u32 = 0x0109;
 const FIRST_MOUSE: u32 = 0x0200;
 const LAST_MOUSE: u32 = 0x020e;
 const LLKHF_EXTENDED: u32 = 0x01;
+const LLKHF_INJECTED: u32 = 0x10;
+const LLMHF_INJECTED: u32 = 0x01;
 const LLKHF_ALTDOWN: u32 = 0x20;
 const LLKHF_UP: u32 = 0x80;
 const FIRST_HANDLE: usize = 0x6_0001;
@@ -153,7 +158,13 @@ pub fn retrieved(out: *mut Msg, removed: bool) -> bool {
     let message = unsafe { super::user32::read_message(out) };
     let code = if removed { HC_ACTION } else { HC_NOREMOVE };
     let answer = match message.message {
-        FIRST_KEY..=LAST_KEY => call(kind::KEYBOARD, code, message.wparam, message.lparam),
+        FIRST_KEY..=LAST_KEY => {
+            let answer = call(kind::KEYBOARD, code, message.wparam, message.lparam);
+            if removed {
+                call(kind::CBT, HCBT_KEYSKIPPED, message.wparam, message.lparam);
+            }
+            answer
+        }
         FIRST_MOUSE..=LAST_MOUSE => {
             let info = MouseHook {
                 x: message.point.0,
@@ -162,16 +173,42 @@ pub fn retrieved(out: *mut Msg, removed: bool) -> bool {
                 hit_test: HTCLIENT,
                 extra: 0,
             };
-            call(
+            let answer = call(
                 kind::MOUSE,
                 code,
                 message.message as usize,
                 &raw const info as usize,
-            )
+            );
+            if removed {
+                call(
+                    kind::CBT,
+                    HCBT_CLICKSKIPPED,
+                    message.message as usize,
+                    &raw const info as usize,
+                );
+            }
+            answer
         }
         _ => None,
     };
     answer.is_some_and(|answer| answer != 0)
+}
+
+/// `WH_CBT`'s `HCBT_MOVESIZE` before `SetWindowPos`, `MoveWindow` or the window's own move or
+/// resize places `window` at `rect` (D715): whether a hook refused it, which leaves the window
+/// where it was.
+pub fn move_size_refused(window: usize, rect: eggos_windows_gui::surface::Rect) -> bool {
+    if INSTALLED.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    let rect = super::user32::Win32Rect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    };
+    call(kind::CBT, HCBT_MOVESIZE, window, &raw const rect as usize)
+        .is_some_and(|answer| answer != 0)
 }
 
 #[repr(C)]
@@ -245,24 +282,30 @@ struct MouseLowLevel {
 
 /// `WH_KEYBOARD_LL` or `WH_MOUSE_LL` for an input of the window server before it is routed:
 /// `number` its message, `wparam` and `lparam` as the message carries them, at `point` and
-/// `time`; whether a hook swallowed it.
+/// `time`, `injected` when the program sent it itself (`LLKHF_INJECTED`, `LLMHF_INJECTED`,
+/// D715); whether a hook swallowed it.
 pub fn input_swallowed(
     number: u32,
     wparam: usize,
     lparam: usize,
     point: (i32, i32),
     time: u32,
+    injected: bool,
 ) -> bool {
     if INSTALLED.load(Ordering::Acquire) == 0 {
         return false;
     }
+    let injected_flag = |flag: u32| if injected { flag } else { 0 };
     let answer = match number {
         message::KEY_DOWN | message::KEY_UP | message::SYS_KEY_DOWN | message::SYS_KEY_UP => {
             let flag = |bit: u32, set: u32| if lparam >> bit & 1 != 0 { set } else { 0 };
             let key = KeyboardLowLevel {
                 virtual_key: wparam as u32,
                 scan_code: (lparam >> 16 & 0xff) as u32,
-                flags: flag(24, LLKHF_EXTENDED) | flag(29, LLKHF_ALTDOWN) | flag(31, LLKHF_UP),
+                flags: flag(24, LLKHF_EXTENDED)
+                    | flag(29, LLKHF_ALTDOWN)
+                    | flag(31, LLKHF_UP)
+                    | injected_flag(LLKHF_INJECTED),
                 time,
                 extra: 0,
             };
@@ -278,7 +321,7 @@ pub fn input_swallowed(
                 x: point.0,
                 y: point.1,
                 data: (wparam >> 16) as u32 & 0xffff,
-                flags: 0,
+                flags: injected_flag(LLMHF_INJECTED),
                 time,
                 extra: 0,
             };

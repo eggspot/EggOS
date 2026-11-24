@@ -204,7 +204,15 @@ pub(super) fn place(
     position: Option<(i32, i32)>,
     size: Option<(i32, i32)>,
 ) -> Result<(), u32> {
-    let is_child = try_with(|gui| gui.window(window).map(|entry| entry.is_child()))?;
+    let (is_child, bounds) =
+        try_with(|gui| gui.window(window).map(|entry| (entry.is_child(), entry.bounds)))?;
+    if position.is_some() || size.is_some() {
+        let (left, top) = position.unwrap_or((bounds.left, bounds.top));
+        let (width, height) = size.unwrap_or((bounds.width(), bounds.height()));
+        if super::hooks::move_size_refused(window, Rect::sized(left, top, width, height)) {
+            return Ok(());
+        }
+    }
     match is_child {
         true => place_child(window, position, size),
         false => place_top_level(window, position, size),

@@ -585,6 +585,7 @@ fn handle_event(device: &Device, record: &Record) -> Option<Delivery> {
                 point,
                 character,
                 time: record.time,
+                injected: false,
             };
             input_event(device, handle, thread, &input)
         }
@@ -667,6 +668,9 @@ pub struct Input {
     pub point: (i32, i32),
     pub character: Option<u32>,
     pub time: u32,
+    /// The program sent it itself (`SendInput` and its kin): the low-level hooks see it flagged
+    /// injected (D715).
+    pub injected: bool,
 }
 
 fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Option<Delivery> {
@@ -676,6 +680,7 @@ fn input_event(device: &Device, root: usize, thread: u32, input: &Input) -> Opti
         input.lparam,
         input.point,
         input.time,
+        input.injected,
     ) {
         return None;
     }

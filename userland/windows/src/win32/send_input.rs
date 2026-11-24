@@ -143,6 +143,7 @@ fn send_key(root: usize, key: &KeyboardInput) {
         point: (0, 0),
         character,
         time: super::user32::now_ms(),
+        injected: true,
     };
     gui::inject(root, &input);
 }
@@ -183,6 +184,7 @@ fn send_mouse(root: usize, mouse: &MouseInput) -> Result<(), u32> {
             point,
             character: None,
             time: super::user32::now_ms(),
+            injected: true,
         };
         gui::inject(root, &input);
     };
