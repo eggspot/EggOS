@@ -32,6 +32,8 @@ mod exception;
 #[cfg(eggos_user)]
 pub mod index_set;
 #[cfg(eggos_user)]
+mod key_value_coding;
+#[cfg(eggos_user)]
 mod keyed_archiver;
 #[cfg(eggos_user)]
 mod keyed_unarchiver;
@@ -226,6 +228,7 @@ mod runtime {
                 && super::user_defaults::define(runtime)
                 && super::url::define(runtime)
                 && super::description::extend_object(runtime)
+                && super::key_value_coding::define(runtime)
         }) && number::set_up_booleans()
             && array::set_up_empty()
             && dictionary::set_up_empty()

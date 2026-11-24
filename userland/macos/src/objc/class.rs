@@ -626,3 +626,55 @@ pub fn load_in(list: *const ListHeader) -> Option<Imp> {
         .find(|method| register_selector(method.name) == Some(load))
         .map(|method| method.imp)
 }
+
+fn c_bytes(text: *const u8) -> &'static [u8] {
+    if text.is_null() {
+        return &[];
+    }
+    // SAFETY: names and type encodings of a mapped image's lists are permanent C strings.
+    unsafe { core::ffi::CStr::from_ptr(text.cast()) }.to_bytes()
+}
+
+/// The type encoding of the method `sel` in the compiled method list of `class` or its
+/// nearest superclass that has one (D741); the layer's own classes carry none.
+pub fn method_types(class: *mut ClassObject, sel: Sel) -> Option<&'static [u8]> {
+    let wanted = c_bytes(sel);
+    let mut record = record_of(class);
+    while let Some(found) = record {
+        let read_only = found.class().read_only();
+        if !read_only.is_null() {
+            // SAFETY: a registered class's `class_ro_t` and base method list, mapped.
+            let list = unsafe { &*read_only }.base_methods;
+            // SAFETY: as above.
+            let mut methods = unsafe { abi::methods(list) };
+            if let Some(method) = methods.find(|method| c_bytes(method.name) == wanted) {
+                return (!method.types.is_null()).then(|| c_bytes(method.types));
+            }
+        }
+        record = found.superclass();
+    }
+    None
+}
+
+/// The byte offset and type encoding of the instance variable `name` of `class` or a
+/// superclass (D741).
+pub fn ivar_named(class: *mut ClassObject, name: &[u8]) -> Option<(usize, &'static [u8])> {
+    let mut record = record_of(class);
+    while let Some(found) = record {
+        let read_only = found.class().read_only();
+        if !read_only.is_null() {
+            // SAFETY: a registered class's `class_ro_t` and ivar list, mapped.
+            let ivars = unsafe { abi::ivars((*read_only).ivars) };
+            if let Some(ivar) = ivars.iter().find(|ivar| c_bytes(ivar.name) == name) {
+                if ivar.offset.is_null() {
+                    return None;
+                }
+                // SAFETY: the ivar's offset variable, in the image's data.
+                let offset = unsafe { &*ivar.offset }.load(Ordering::Relaxed) as usize;
+                return Some((offset, c_bytes(ivar.kind)));
+            }
+        }
+        record = found.superclass();
+    }
+    None
+}

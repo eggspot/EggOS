@@ -83,10 +83,12 @@ const IVAR_SIZE: usize = 32;
 /// Lists longer than this are treated as malformed and skipped.
 pub const MAX_LIST_ENTRIES: u32 = 1 << 16;
 
-/// One method of a list: where its name is (a C string) and its implementation.
+/// One method of a list: where its name and its type encoding are (C strings; the types may
+/// be null) and its implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MethodEntry {
     pub name: *const u8,
+    pub types: *const u8,
     pub imp: Imp,
 }
 
@@ -137,6 +139,14 @@ impl MethodIter {
     };
 }
 
+fn relative_or_null(field: usize) -> usize {
+    // SAFETY: as in `relative_target`.
+    match unsafe { (field as *const i32).read_unaligned() } {
+        0 => 0,
+        _ => relative_target(field),
+    }
+}
+
 fn relative_target(field: usize) -> usize {
     // SAFETY: `methods`' caller promised the entry, so its 32-bit field, is mapped.
     let offset = unsafe { (field as *const i32).read_unaligned() };
@@ -159,14 +169,16 @@ impl Iterator for MethodIter {
                 // SAFETY: a relative entry's name is the selector reference it points at, which
                 // `methods`' caller promised is mapped.
                 name: unsafe { reference.read() },
+                types: relative_or_null(at + 4) as *const u8,
                 imp: relative_target(at + 8),
             }
         } else {
             let entry = at as *const [usize; 3];
             // SAFETY: `methods`' caller promised the 24-byte entry is mapped.
-            let [name, _types, imp] = unsafe { entry.read() };
+            let [name, types, imp] = unsafe { entry.read() };
             MethodEntry {
                 name: name as *const u8,
+                types: types as *const u8,
                 imp,
             }
         })
@@ -265,10 +277,12 @@ mod tests {
             [
                 MethodEntry {
                     name: names[0],
+                    types: core::ptr::null(),
                     imp: 0x1000
                 },
                 MethodEntry {
                     name: names[1],
+                    types: core::ptr::null(),
                     imp: 0x2000
                 }
             ]
@@ -304,7 +318,8 @@ mod tests {
         ];
         // SAFETY: as above.
         let decoded: Vec<_> = unsafe { methods(&image.header) }.collect();
-        assert_eq!(decoded, [MethodEntry { name, imp: code }]);
+        let types = core::ptr::null();
+        assert_eq!(decoded, [MethodEntry { name, types, imp: code }]);
     }
 
     #[test]

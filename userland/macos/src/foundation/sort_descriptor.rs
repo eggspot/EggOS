@@ -1,6 +1,9 @@
 //! NSSortDescriptor (D735): a key, an order and the selector or comparator that compares
 //! values, kept for whoever sorts (a table view's data source, `sortedArrayUsingDescriptors:`);
 //! `reversedSortDescriptor` gives the other order with the same key and selector.
+//! `compareObject:toObject:` reads both objects' values at the key path through key-value
+//! coding and compares them with the comparator, else the selector (`compare:`), nil first
+//! (D741).
 
 use super::{
     Definition, NSSORTDESCRIPTOR, NSSORTDESCRIPTOR_META, autoreleased, class_pointer,
@@ -10,7 +13,7 @@ use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::{self, NSOBJECT};
-use crate::objc::{Runtime, methods, sel, send, send_bool};
+use crate::objc::{Runtime, methods, sel, send, send1, send_bool};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -183,6 +186,46 @@ extern "C" fn description(this: Id, _: Sel) -> Id {
     text
 }
 
+type CompareBlock = extern "C" fn(Id, Id, Id) -> isize;
+
+fn value_at(object: Id, key: Id) -> Id {
+    match object.is_null() || key.is_null() {
+        true => object,
+        false => send1(object, sel!("valueForKeyPath:"), key as usize),
+    }
+}
+
+fn compare_with_block(block: Id, first: Id, second: Id) -> isize {
+    // SAFETY: a block object: its invoke function is its third word.
+    let invoke = unsafe { block.cast::<usize>().add(2).read() };
+    let invoke = crate::callback::native_callable(invoke);
+    // SAFETY: an NSComparator's invoke function: the block, then both objects.
+    let invoke: CompareBlock = unsafe { core::mem::transmute(invoke) };
+    invoke(block, first, second)
+}
+
+extern "C" fn compare_objects(this: Id, _: Sel, first: Id, second: Id) -> isize {
+    let fields = fields(this);
+    let (first, second) = (value_at(first, fields.key), value_at(second, fields.key));
+    let order = match (first.is_null(), second.is_null()) {
+        _ if !fields.comparator.is_null() => compare_with_block(fields.comparator, first, second),
+        (true, true) => 0,
+        (true, false) => -1,
+        (false, true) => 1,
+        (false, false) => {
+            let selector = match fields.selector {
+                0 => sel!("compare:"),
+                chosen => chosen as Sel,
+            };
+            send1(first, selector, second as usize) as isize
+        }
+    };
+    match fields.ascending {
+        true => order,
+        false => -order,
+    }
+}
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "initWithKey:ascending:" => init_with_key,
@@ -198,6 +241,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "isEqual:" => is_equal,
         "hash" => hash,
         "description" => description,
+        "compareObject:toObject:" => compare_objects,
     ];
     let class = methods![
         "sortDescriptorWithKey:ascending:" => with_key,

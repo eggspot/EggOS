@@ -8,6 +8,7 @@ pub mod cache;
 pub mod cxx_types;
 pub mod lsda;
 pub mod selector;
+pub mod type_encoding;
 pub mod unwind_dwarf;
 pub mod unwind_info;
 
@@ -203,6 +204,11 @@ mod runtime {
             // SAFETY: the callers pass names from the mapped image or the layer's statics.
             unsafe { table.register(name, &mut allocate) }
         })
+    }
+
+    /// The canonical selector of `name` (no NUL) if some class or program has registered it.
+    pub fn existing_selector(name: &[u8]) -> Option<Sel> {
+        SELECTORS.with(|table| table.find(name))
     }
 
     /// The canonical selector of `name` (no NUL), copying the name if it is new.

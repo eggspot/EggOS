@@ -240,7 +240,7 @@ and is not listed per item.
 - [x] NSAttributedString: paragraph styles, underline, links, `enumerateAttributesInRange:`, RTF import (D384; D730, D731; a link colour waits on Claude Fable's design, listed with D730)
 - [x] NSGridView: merged cells, padding, hidden rows and columns, inserting and moving rows and columns (D385; D732)
 - [x] CoreGraphics: clipping paths, dashes, caps and joins, alpha blending and anti-aliasing, `CGContextDrawImage`, gradients, shadows, `CGPath` objects (D386; clipping, dashes, caps, joins, alpha and anti-aliasing code written, unbuilt: D738; `CGPath` objects, gradients, shadows, transforms, colour spaces, `CGImage` and `CGContextDrawImage` code written, unbuilt: D739)
-- [ ] Swift: resilient class stubs, generic class metadata instantiation (`swift_allocateGenericClassMetadata`), `@objc` accessors through KVC (D387)
+- [x] Swift: resilient class stubs, generic class metadata instantiation (`swift_allocateGenericClassMetadata`), `@objc` accessors through KVC (D387) — code written, unbuilt: D740 (generic and singleton metadata, resilient class stubs), D741 (key-value coding)
 - [x] libc++abi: libc++'s other standard exceptions, `std::nested_exception` (D380; `exception_ptr` code written, unbuilt: D700) — code written, unbuilt, D710
 - [ ] Windows shell namespace: `IFileDialog` (`FileOpenDialog`/`FileSaveDialog` COM classes) over the system picker, `IShellItemArray`, virtual folders (This PC, Recycle Bin) (D392, D399)
 - [ ] COM out of process: interfaces other than `IDispatch` from type information, callbacks and connection points, `VT_ARRAY`, by-reference results (D400)
