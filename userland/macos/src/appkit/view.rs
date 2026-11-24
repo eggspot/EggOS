@@ -2,12 +2,14 @@
 //! after it, its window, and the walks the window makes over the tree: drawing each view's
 //! `drawRect:` clipped to its frame, finding the view under a point, and the text fields in the
 //! order Tab visits them. A view moving into or out of a window hears of it before and after
-//! (D175).
+//! (D175). A view's `identifier` is kept in a side table (D737); a press on a table view's cell
+//! view is the table's unless it lands on a button.
 
 use super::{
-    NSCONTROL, NSRESPONDER, NSRESPONDER_META, NSTEXTFIELD, NSVIEW, NSVIEW_META, ask, control,
-    drawing, send_frame, server, window,
+    NSBUTTON, NSCONTROL, NSRESPONDER, NSRESPONDER_META, NSTABLEVIEW, NSTEXTFIELD, NSVIEW,
+    NSVIEW_META, ask, control, drawing, send_frame, server, store, window,
 };
+use crate::libsystem::Exclusive;
 use crate::foundation::{NSARRAY, class_pointer};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::buffer::Buffer;
@@ -241,6 +243,7 @@ extern "C" fn set_frame_size(this: Id, _: Sel, size: Size) {
 /// Frees `view` as `-[NSView dealloc]` does: its subviews are let go of (each loses its
 /// superview and window), then its memory. A subclass's `dealloc` releases its own fields first.
 pub fn dispose(view: Id) {
+    forget_identifier(view);
     super::cursor::discard_rects(view);
     super::tracking::forget_view(view);
     let mut subviews = core::mem::replace(&mut fields(view).subviews, Buffer::new());
@@ -389,10 +392,65 @@ pub fn hit_test(view: Id, point: Point) -> Option<Id> {
     );
     for &child in fields.subviews.as_slice().iter().rev() {
         if let Some(found) = hit_test(child, inner) {
-            return Some(found);
+            let table_takes_it = super::is(view, &NSTABLEVIEW) && !within_button(found, view);
+            return Some(if table_takes_it { view } else { found });
         }
     }
     Some(view)
+}
+
+fn within_button(found: Id, stop: Id) -> bool {
+    let mut at = found;
+    while !at.is_null() && at != stop {
+        if super::is(at, &NSBUTTON) {
+            return true;
+        }
+        at = fields(at).superview;
+    }
+    false
+}
+
+static IDENTIFIERS: Exclusive<Buffer<(Id, Id)>> = Exclusive::new(Buffer::new());
+
+/// The `identifier` set on `view`, nil for none.
+pub fn identifier_of(view: Id) -> Id {
+    IDENTIFIERS.with(|identifiers| {
+        identifiers
+            .as_slice()
+            .iter()
+            .find(|(owner, _)| *owner == view)
+            .map_or(core::ptr::null_mut(), |&(_, identifier)| identifier)
+    })
+}
+
+fn forget_identifier(view: Id) {
+    let gone = IDENTIFIERS.with(|identifiers| {
+        let at = identifiers
+            .as_slice()
+            .iter()
+            .position(|(owner, _)| *owner == view)?;
+        let slice = identifiers.as_mut_slice();
+        let (_, identifier) = slice[at];
+        slice.copy_within(at + 1.., at);
+        identifiers.pop();
+        Some(identifier)
+    });
+    if let Some(identifier) = gone.filter(|identifier| !identifier.is_null()) {
+        objc_release(identifier);
+    }
+}
+
+extern "C" fn identifier(this: Id, _: Sel) -> Id {
+    identifier_of(this)
+}
+
+extern "C" fn set_identifier(this: Id, _: Sel, identifier: Id) {
+    forget_identifier(this);
+    let mut kept = core::ptr::null_mut();
+    store(&mut kept, identifier);
+    if !kept.is_null() {
+        IDENTIFIERS.with(|identifiers| identifiers.push((this, kept)));
+    }
 }
 
 /// Whether `view` is a text field the user can type in.
@@ -477,6 +535,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "frame" => frame,
         "bounds" => bounds,
         "setFrame:" => set_frame,
+        "identifier" => identifier,
+        "setIdentifier:" => set_identifier,
         "setFrameOrigin:" => set_frame_origin,
         "setFrameSize:" => set_frame_size,
         "addSubview:" => add_subview,

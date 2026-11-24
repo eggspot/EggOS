@@ -10,12 +10,14 @@
 //! A column with a `sortDescriptorPrototype` sorts by a click on its title, which cycles the
 //! table's `sortDescriptors` and tells the data source; its title brightens and the toolkit's
 //! chevron shows the order (D735, docs/ux/macos-tables-v0.4.md section 1). Rows take
-//! `rowHeight` or the delegate's `tableView:heightOfRow:`, kept as running tops (D736).
+//! `rowHeight` or the delegate's `tableView:heightOfRow:`, kept as running tops (D736). When the
+//! delegate answers `tableView:viewForTableColumn:row:`, the visible cells are its views, made
+//! for the rows in view only and reused by identifier (`NSTableCellView`, D737).
 
 use super::{
-    NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META, NSTRACKINGAREA, NSVIEW,
-    application, drawing, event, responds, scroll_view, store, store_copy, string, view, window,
-    with_text,
+    NSTABLECELLVIEW, NSTABLECELLVIEW_META, NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW,
+    NSTABLEVIEW_META, NSTRACKINGAREA, NSVIEW, application, drawing, event, responds, scroll_view,
+    send_frame, store, store_copy, string, view, window, with_text,
 };
 use crate::foundation::index_set;
 use crate::foundation::sort_descriptor;
@@ -62,6 +64,12 @@ const KEY_ENTER: u16 = 0x4c;
 const KEY_ESCAPE: u16 = 0x35;
 const NO_INDEX: isize = -1;
 const CHEVRON_TOP: i32 = 11;
+const VISIBLE_CELL_VIEWS: usize = 512;
+const MARK_COLUMN: i32 = 16;
+const CELL_INSET: f64 = 8.0;
+const CELL_PART: f64 = 16.0;
+const TEXT_AFTER_IMAGE: f64 = 32.0;
+const EMPHASIZED: isize = 1;
 const CHEVRON_WIDTH: i32 = 10;
 const SHIFT_FLAG: u64 = 1 << 17;
 const COMMAND_FLAG: u64 = 1 << 20;
@@ -69,6 +77,23 @@ const TRACK_ENTERED_AND_EXITED: usize = 0x01;
 const TRACK_MOUSE_MOVED: usize = 0x02;
 const TRACK_ACTIVE_ALWAYS: usize = 0x80;
 const TRACK_IN_VISIBLE_RECT: usize = 0x200;
+
+#[derive(Debug, Clone, Copy)]
+struct CellPlace {
+    row: usize,
+    column: usize,
+    view: Id,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct CellViewFields {
+    view: view::ViewFields,
+    text_field: Id,
+    image_view: Id,
+    object_value: Id,
+    background_style: isize,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Resize {
@@ -103,6 +128,8 @@ struct TableFields {
     row_height: f64,
     tops: Buffer<u32>,
     heights_known: bool,
+    cells: Buffer<CellPlace>,
+    reuse: Buffer<Id>,
     clicked_row: isize,
     clicked_column: isize,
     last_press: Option<(usize, u32)>,
@@ -392,6 +419,11 @@ fn send_action(this: Id, double: bool) {
 }
 
 fn cell_text(this: Id, column_object: Id, row: usize, work: impl FnOnce(&str)) {
+    if view_based(this) {
+        let index = columns(this).iter().position(|&each| each == column_object);
+        let text = index.map_or(core::ptr::null_mut(), |index| cell_view_text(this, row, index));
+        return with_text(text, work);
+    }
     let source = table(this).data_source;
     let asking = sel!("tableView:objectValueForTableColumn:row:");
     if !responds(source, asking) {
@@ -445,6 +477,14 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     store(&mut fields.sort_descriptors, core::ptr::null_mut());
     store(&mut fields.highlighted_column, core::ptr::null_mut());
     fields.tops.free();
+    for cell in fields.cells.as_slice() {
+        objc_release(cell.view);
+    }
+    fields.cells.free();
+    for &kept in fields.reuse.as_slice() {
+        objc_release(kept);
+    }
+    fields.reuse.free();
     objc_release(fields.selection);
     fields.selection = core::ptr::null_mut();
     objc_release(fields.tracking);
@@ -572,6 +612,7 @@ extern "C" fn set_double_action(this: Id, _: Sel, action: usize) {
 extern "C" fn reload_data(this: Id, _: Sel) {
     table(this).rows_known = false;
     table(this).heights_known = false;
+    retire_cells(this, &|_| false);
     let rows = row_count(this);
     if table(this).hover >= rows as isize {
         table(this).hover = NO_INDEX;
@@ -1143,7 +1184,225 @@ fn draw_cells(
     }
 }
 
+fn cell_fields(object: Id) -> &'static mut CellViewFields {
+    // SAFETY: the callers pass NSTableCellView instances, whose memory starts with these fields.
+    unsafe { &mut *object.cast::<CellViewFields>() }
+}
+
+fn view_based(this: Id) -> bool {
+    responds(table(this).delegate, sel!("tableView:viewForTableColumn:row:"))
+}
+
+fn retire_cells(this: Id, keep: &dyn Fn(CellPlace) -> bool) {
+    let mut cells = core::mem::replace(&mut table(this).cells, Buffer::new());
+    for &cell in cells.as_slice() {
+        if keep(cell) {
+            table(this).cells.push(cell);
+            continue;
+        }
+        send(cell.view, sel!("removeFromSuperview"));
+        match table(this).reuse.len() < VISIBLE_CELL_VIEWS {
+            true => {
+                table(this).reuse.push(cell.view);
+            }
+            false => objc_release(cell.view),
+        }
+    }
+    cells.free();
+}
+
+fn arrange_cell(cell: Id) {
+    if !super::is(cell, &NSTABLECELLVIEW) {
+        return;
+    }
+    let frame = view::fields(cell).frame;
+    let middle = ((frame.height - CELL_PART) / 2.0).max(0.0);
+    let (image, text) = (cell_fields(cell).image_view, cell_fields(cell).text_field);
+    let unframed = |part: Id| {
+        !part.is_null() && {
+            let own = view::fields(part).frame;
+            own.width <= 0.0 && own.height <= 0.0
+        }
+    };
+    if unframed(image) {
+        send_frame(image, sel!("setFrame:"), Frame::new(CELL_INSET, middle, CELL_PART, CELL_PART));
+    }
+    if unframed(text) {
+        let left = match image.is_null() {
+            true => CELL_INSET,
+            false => TEXT_AFTER_IMAGE,
+        };
+        let width = (frame.width - left - CELL_INSET).max(0.0);
+        send_frame(text, sel!("setFrame:"), Frame::new(left, middle, width, CELL_PART));
+    }
+}
+
+fn lay_out_cells(this: Id) {
+    if !view_based(this) {
+        return;
+    }
+    let ((_, offset), (_, clip_height)) = clip_of(this);
+    let header = table(this).header;
+    let heights = heights(this);
+    let (first, last) = heights.shown(clip_height - geometry::body_top(header), offset);
+    let (widths, which, count) = shown_widths(this);
+    let lefts: [i32; MOST_COLUMNS] = geometry::column_lefts(&widths[..count], 0);
+    retire_cells(this, &|cell| {
+        (first..last).contains(&cell.row) && which[..count].contains(&cell.column)
+    });
+    let delegate = table(this).delegate;
+    let asking = sel!("tableView:viewForTableColumn:row:");
+    let ask: extern "C" fn(Id, Sel, Id, Id, isize) -> Id = message::msg_send_as();
+    let source = table(this).data_source;
+    let value_asked = sel!("tableView:objectValueForTableColumn:row:");
+    let table_height = round(view::fields(this).frame.height);
+    for row in first..last {
+        let top = geometry::body_top(header) + heights.top(row);
+        let height = heights.height(row);
+        let under_header = header && top < offset + TABLE_HEADER_HEIGHT;
+        let chosen = index_set::contains(table(this).selection, row);
+        for shown in 0..count {
+            let index = which[shown];
+            let each = columns(this)[index];
+            let existing = table(this)
+                .cells
+                .as_slice()
+                .iter()
+                .find(|cell| cell.row == row && cell.column == index)
+                .map(|cell| cell.view);
+            let cell = match existing {
+                Some(cell) => cell,
+                None if table(this).cells.len() >= VISIBLE_CELL_VIEWS => continue,
+                None => {
+                    let made = ask(delegate, asking, this, each, row as isize);
+                    if made.is_null() {
+                        continue;
+                    }
+                    objc_retain(made);
+                    send1(this, sel!("addSubview:"), made as usize);
+                    table(this).cells.push(CellPlace {
+                        row,
+                        column: index,
+                        view: made,
+                    });
+                    made
+                }
+            };
+            let inset = if shown == 0 { MARK_COLUMN } else { 0 };
+            let frame = Frame::new(
+                f64::from(lefts[shown] + inset),
+                f64::from(table_height - top - height),
+                f64::from((widths[shown] - inset).max(0)),
+                f64::from(height),
+            );
+            send_frame(cell, sel!("setFrame:"), frame);
+            view::fields(cell).hidden = under_header;
+            if responds(source, value_asked) && responds(cell, sel!("setObjectValue:")) {
+                let value_of: extern "C" fn(Id, Sel, Id, Id, isize) -> Id = message::msg_send_as();
+                let value = value_of(source, value_asked, this, each, row as isize);
+                send1(cell, sel!("setObjectValue:"), value as usize);
+            }
+            if responds(cell, sel!("setBackgroundStyle:")) {
+                let style = if chosen { EMPHASIZED } else { 0 };
+                send1(cell, sel!("setBackgroundStyle:"), style as usize);
+            }
+            arrange_cell(cell);
+        }
+    }
+}
+
+fn equal_objects(first: Id, second: Id) -> bool {
+    !first.is_null() && crate::objc::send_bool(first, sel!("isEqual:"), second as usize)
+}
+
+extern "C" fn make_view_with_identifier(this: Id, _: Sel, identifier: Id, _: Id) -> Id {
+    let same = |own: Id| own == identifier || equal_objects(own, identifier);
+    let at = table(this)
+        .reuse
+        .as_slice()
+        .iter()
+        .position(|&kept| same(view::identifier_of(kept)));
+    let Some(at) = at else {
+        return core::ptr::null_mut();
+    };
+    let reuse = table(this).reuse.as_mut_slice();
+    let found = reuse[at];
+    reuse.copy_within(at + 1.., at);
+    table(this).reuse.pop();
+    if responds(found, sel!("prepareForReuse")) {
+        send(found, sel!("prepareForReuse"));
+    }
+    crate::foundation::autoreleased(found)
+}
+
+extern "C" fn view_at_column_row(this: Id, _: Sel, column_index: isize, row: isize, _: u8) -> Id {
+    table(this)
+        .cells
+        .as_slice()
+        .iter()
+        .find(|cell| cell.column as isize == column_index && cell.row as isize == row)
+        .map_or(core::ptr::null_mut(), |cell| cell.view)
+}
+
+extern "C" fn cell_text_field(this: Id, _: Sel) -> Id {
+    cell_fields(this).text_field
+}
+
+extern "C" fn cell_set_text_field(this: Id, _: Sel, field: Id) {
+    cell_fields(this).text_field = field;
+}
+
+extern "C" fn cell_image_view(this: Id, _: Sel) -> Id {
+    cell_fields(this).image_view
+}
+
+extern "C" fn cell_set_image_view(this: Id, _: Sel, image: Id) {
+    cell_fields(this).image_view = image;
+}
+
+extern "C" fn cell_object_value(this: Id, _: Sel) -> Id {
+    cell_fields(this).object_value
+}
+
+extern "C" fn cell_set_object_value(this: Id, _: Sel, value: Id) {
+    store(&mut cell_fields(this).object_value, value);
+}
+
+extern "C" fn cell_background_style(this: Id, _: Sel) -> isize {
+    cell_fields(this).background_style
+}
+
+extern "C" fn cell_set_background_style(this: Id, _: Sel, style: isize) {
+    cell_fields(this).background_style = style;
+}
+
+extern "C" fn cell_dealloc(this: Id, _: Sel) {
+    store(&mut cell_fields(this).object_value, core::ptr::null_mut());
+    view::dispose(this);
+}
+
+/// The text a cell of a view-based table shows: its cell view's `textField`'s, or none.
+pub fn cell_view_text(this: Id, row: usize, column_index: usize) -> Id {
+    let cell = view_at_column_row(
+        this,
+        sel!("viewAtColumn:row:makeIfNecessary:"),
+        column_index as isize,
+        row as isize,
+        0,
+    );
+    if cell.is_null() || !super::is(cell, &NSTABLECELLVIEW) {
+        return core::ptr::null_mut();
+    }
+    let field = cell_fields(cell).text_field;
+    match field.is_null() {
+        true => field,
+        false => send(field, sel!("stringValue")),
+    }
+}
+
 extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
+    lay_out_cells(this);
+    let view_cells = view_based(this);
     let frame = view::fields(this).frame;
     let ((_, offset), (clip_width, clip_height)) = clip_of(this);
     let header = table(this).header;
@@ -1223,14 +1482,16 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
                     );
                 }
             }
-            draw_cells(
-                this,
-                canvas,
-                &place,
-                (row, rect),
-                (lefts, widths, which),
-                text,
-            );
+            if !view_cells {
+                draw_cells(
+                    this,
+                    canvas,
+                    &place,
+                    (row, rect),
+                    (lefts, widths, which),
+                    text,
+                );
+            }
         }
         if !header {
             return;
@@ -1629,6 +1890,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "headerView" => header_view,
         "setHeaderView:" => set_header_view,
         "rowHeight" => row_height,
+        "makeViewWithIdentifier:owner:" => make_view_with_identifier,
+        "viewAtColumn:row:makeIfNecessary:" => view_at_column_row,
         "setRowHeight:" => set_row_height,
         "noteHeightOfRowsWithIndexesChanged:" => note_heights_changed,
         "intercellSpacing" => intercell_spacing,
@@ -1691,6 +1954,17 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "sortDescriptorPrototype" => column_sort_prototype,
         "setSortDescriptorPrototype:" => column_set_sort_prototype,
     ];
+    let cell_methods = methods![
+        "dealloc" => cell_dealloc,
+        "textField" => cell_text_field,
+        "setTextField:" => cell_set_text_field,
+        "imageView" => cell_image_view,
+        "setImageView:" => cell_set_image_view,
+        "objectValue" => cell_object_value,
+        "setObjectValue:" => cell_set_object_value,
+        "backgroundStyle" => cell_background_style,
+        "setBackgroundStyle:" => cell_set_background_style,
+    ];
     super::define(
         runtime,
         b"NSTableView\0",
@@ -1706,6 +1980,14 @@ pub fn define(runtime: &mut Runtime) -> bool {
         &NSOBJECT,
         core::mem::size_of::<ColumnFields>(),
         &column_methods,
+        &[],
+    ) && super::define(
+        runtime,
+        b"NSTableCellView\0",
+        (&NSTABLECELLVIEW, &NSTABLECELLVIEW_META),
+        &NSVIEW,
+        core::mem::size_of::<CellViewFields>(),
+        &cell_methods,
         &[],
     )
 }
