@@ -457,10 +457,65 @@ fn scroll(gui: &mut Gui, request: &ScrollRequest) -> Result<Rect, u32> {
         .unwrap_or(client)
         .intersection(&request.clip.unwrap_or(client))
         .intersection(&client);
-    if request.invalidate && !area.is_empty() {
-        windows::invalidate_tree(&mut gui.windows, request.window, Some(area), true);
+    let exposed = match area.is_empty() {
+        true => area,
+        false => copy_scrolled(gui, request.window, area, request.by),
+    };
+    if request.invalidate && !exposed.is_empty() {
+        windows::invalidate_tree(&mut gui.windows, request.window, Some(exposed), true);
     }
-    Ok(area)
+    Ok(exposed)
+}
+
+/// Moves the pixels of `area` (client coordinates of `window`) by `by` inside its top-level
+/// window's buffer, as Windows' `ScrollWindowEx` does (D711), and marks the area to show at the
+/// next commit: the part the scroll uncovered, which the program paints, as one rectangle (the
+/// whole area for a diagonal scroll or when nothing could move).
+fn copy_scrolled(gui: &mut Gui, window: usize, area: Rect, (dx, dy): (i32, i32)) -> Rect {
+    if (dx, dy) == (0, 0) {
+        return Rect::default();
+    }
+    let Some(placement) = windows::client_placement(&gui.windows, window) else {
+        return area;
+    };
+    let Some(root) = gui.windows.get_mut(placement.root) else {
+        return area;
+    };
+    let pixels = root.pixels();
+    let buffer = Rect::sized(0, 0, pixels.width as i32, pixels.height as i32);
+    let (x, y) = placement.origin;
+    let moved = area
+        .offset(x, y)
+        .intersection(&placement.clip)
+        .intersection(&buffer);
+    let destination = moved.offset(dx, dy).intersection(&moved);
+    if destination.is_empty() || pixels.address == 0 {
+        return area;
+    }
+    let source = destination.offset(-dx, -dy);
+    let stride = pixels.width as usize;
+    let width = destination.width() as usize;
+    let base = pixels.address as *mut u32;
+    let rows = destination.height();
+    for step in 0..rows {
+        let row = match dy > 0 {
+            true => rows - 1 - step,
+            false => step,
+        };
+        let from = (source.top + row) as usize * stride + source.left as usize;
+        let to = (destination.top + row) as usize * stride + destination.left as usize;
+        // SAFETY: both runs lie inside the top-level window's mapped buffer; `copy` allows overlap.
+        unsafe { core::ptr::copy(base.add(from), base.add(to), width) };
+    }
+    root.pending = root.pending.union(&moved);
+    let kept = destination.offset(-x, -y);
+    match (dx, dy) {
+        (0, dy) if dy > 0 => Rect::new(area.left, area.top, area.right, kept.top),
+        (0, _) => Rect::new(area.left, kept.bottom, area.right, area.bottom),
+        (dx, 0) if dx > 0 => Rect::new(area.left, area.top, kept.left, area.bottom),
+        (_, 0) => Rect::new(kept.right, area.top, area.right, area.bottom),
+        _ => area,
+    }
 }
 
 unsafe extern "efiapi" fn scroll_window(
