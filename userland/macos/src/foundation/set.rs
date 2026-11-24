@@ -1,13 +1,16 @@
 //! NSSet and NSMutableSet (D175): distinct objects, each retained, found through a hash table
 //! of the objects' `hash`, compared with `isEqual:`, kept in the order they were added (which
 //! is the order enumeration and `allObjects` give). The table is open-addressed with linear
-//! probing, at most half full, and rebuilt when an object is removed.
+//! probing, at most half full, and rebuilt when an object is removed. NSCountedSet (D722) is an
+//! NSMutableSet that also counts how often each object was added, the counts kept beside the
+//! objects in the same order: adding a present object raises its count, removing it lowers
+//! the count and takes the object out at zero.
 
 use super::array::{FastEnumerationState, count_of, item};
 use super::{
-    Definition, NSARRAY, NSMUTABLESET, NSMUTABLESET_META, NSSET, NSSET_META, autoreleased,
-    class_pointer, define as define_class, is_array, is_set, new_instance, string_from_utf8,
-    with_utf8,
+    Definition, NSARRAY, NSCOUNTEDSET, NSCOUNTEDSET_META, NSMUTABLESET, NSMUTABLESET_META, NSSET,
+    NSSET_META, autoreleased, class_pointer, define as define_class, is_array, is_set,
+    new_instance, string_from_utf8, with_utf8,
 };
 use crate::format::Arguments;
 use crate::libsystem::variadic::{RawVaList, VaList, variadic};
@@ -478,6 +481,285 @@ extern "C" fn set_with_capacity(this: Id, _: Sel, _: usize) -> Id {
     autoreleased(new_set(this_class(this), &[]))
 }
 
+#[repr(C)]
+#[derive(Debug)]
+struct CountedSetObject {
+    set: SetObject,
+    counts: Buffer<usize>,
+}
+
+fn counts(object: Id) -> &'static mut Buffer<usize> {
+    // SAFETY: an NSCountedSet starts with these fields, used by one thread at a time.
+    unsafe { &mut (*object.cast::<CountedSetObject>()).counts }
+}
+
+fn fill_counts(this: Id) {
+    while counts(this).len() < fields(this).items.len() {
+        if !counts(this).push(1) {
+            return;
+        }
+    }
+}
+
+fn count_up(this: Id, object: Id) {
+    fill_counts(this);
+    match position(this, object) {
+        Some(index) => {
+            if let Some(count) = counts(this).as_mut_slice().get_mut(index) {
+                *count += 1;
+            }
+        }
+        None => {
+            if add(this, object) && !counts(this).push(1) {
+                remove(this, object);
+            }
+        }
+    }
+}
+
+fn count_down(this: Id, object: Id, all: bool) {
+    fill_counts(this);
+    let Some(index) = position(this, object) else {
+        return;
+    };
+    if let Some(count) = counts(this).as_mut_slice().get_mut(index)
+        && *count > 1
+        && !all
+    {
+        *count -= 1;
+        return;
+    }
+    let kept = counts(this).as_mut_slice();
+    if index < kept.len() {
+        kept.copy_within(index + 1.., index);
+        counts(this).pop();
+    }
+    remove(this, object);
+}
+
+fn clear_counted(this: Id) {
+    clear(this);
+    let mut old = core::mem::replace(counts(this), Buffer::new());
+    old.free();
+}
+
+fn new_counted(class: *mut ClassObject, objects: &[Id]) -> Id {
+    let set = new_instance(class);
+    if !set.is_null() {
+        for &object in objects {
+            count_up(set, object);
+        }
+    }
+    set
+}
+
+fn counted_copy(this: Id) -> Id {
+    let copy = new_instance(class_pointer(&NSCOUNTEDSET));
+    if copy.is_null() {
+        return copy;
+    }
+    let mut objects = snapshot(this);
+    for (index, &object) in objects.as_slice().iter().enumerate() {
+        count_up(copy, object);
+        let times = counts(this).as_slice().get(index).copied().unwrap_or(1);
+        if let Some(count) = counts(copy).as_mut_slice().get_mut(index) {
+            *count = times;
+        }
+    }
+    objects.free();
+    copy
+}
+
+extern "C" fn counted_with_capacity(this: Id, _: Sel, _: usize) -> Id {
+    autoreleased(new_counted(this_class(this), &[]))
+}
+
+extern "C" fn counted_with_collection(this: Id, _: Sel, other: Id) -> Id {
+    let mut objects = objects_of(other);
+    let set = new_counted(this_class(this), objects.as_slice());
+    objects.free();
+    autoreleased(set)
+}
+
+extern "C" fn counted_init_with_collection(this: Id, _: Sel, other: Id) -> Id {
+    if !this.is_null() {
+        let mut objects = objects_of(other);
+        for &object in objects.as_slice() {
+            count_up(this, object);
+        }
+        objects.free();
+    }
+    this
+}
+
+extern "C" fn counted_init_with_objects_count(
+    this: Id,
+    _: Sel,
+    objects: *const Id,
+    count: usize,
+) -> Id {
+    if !this.is_null() {
+        for &object in objects_slice(objects, count) {
+            count_up(this, object);
+        }
+    }
+    this
+}
+
+extern "C" fn counted_dealloc(this: Id, _: Sel) {
+    clear_counted(this);
+    dispose(this);
+}
+
+extern "C" fn count_for_object(this: Id, _: Sel, object: Id) -> usize {
+    position(this, object)
+        .and_then(|index| counts(this).as_slice().get(index).copied())
+        .unwrap_or(0)
+}
+
+extern "C" fn counted_add_object(this: Id, _: Sel, object: Id) {
+    count_up(this, object);
+}
+
+extern "C" fn counted_remove_object(this: Id, _: Sel, object: Id) {
+    count_down(this, object, false);
+}
+
+extern "C" fn counted_remove_all_objects(this: Id, _: Sel) {
+    clear_counted(this);
+}
+
+extern "C" fn counted_union_with(this: Id, _: Sel, other: Id) {
+    let mut objects = objects_of(other);
+    for &object in objects.as_slice() {
+        count_up(this, object);
+    }
+    objects.free();
+}
+
+extern "C" fn counted_minus_set(this: Id, _: Sel, other: Id) {
+    let mut objects = objects_of(other);
+    for &object in objects.as_slice() {
+        count_down(this, object, false);
+    }
+    objects.free();
+}
+
+extern "C" fn counted_intersect_set(this: Id, _: Sel, other: Id) {
+    let mut others = objects_of(other);
+    let mut objects = snapshot(this);
+    for &object in objects.as_slice() {
+        if !others.as_slice().iter().any(|&each| equal(each, object)) {
+            count_down(this, object, true);
+        }
+    }
+    objects.free();
+    others.free();
+}
+
+extern "C" fn counted_copy_with_zone(this: Id, _: Sel, _: usize) -> Id {
+    counted_copy(this)
+}
+
+fn push_hex(out: &mut Buffer<u8>, value: usize) {
+    out.push(b'0');
+    out.push(b'x');
+    let digits = (usize::BITS - value.leading_zeros()).div_ceil(4).max(1);
+    for digit in (0..digits).rev() {
+        let nibble = (value >> (digit * 4)) & 0xf;
+        out.push(b"0123456789abcdef"[nibble]);
+    }
+}
+
+fn push_decimal(out: &mut Buffer<u8>, value: usize) {
+    let mut digits = [0u8; 20];
+    let mut length = 0;
+    let mut rest = value;
+    loop {
+        digits[length] = b'0' + (rest % 10) as u8;
+        length += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    for &digit in digits[..length].iter().rev() {
+        out.push(digit);
+    }
+}
+
+extern "C" fn counted_description(this: Id, _: Sel) -> Id {
+    let mut out = Buffer::new();
+    for &byte in b"<NSCountedSet: " {
+        out.push(byte);
+    }
+    push_hex(&mut out, this as usize);
+    for &byte in b"> (" {
+        out.push(byte);
+    }
+    let mut objects = snapshot(this);
+    for (index, &object) in objects.as_slice().iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+            out.push(b' ');
+        }
+        let text = send(object, sel!("description"));
+        with_utf8(text, &mut |bytes: &[u8]| {
+            for &byte in bytes {
+                out.push(byte);
+            }
+        });
+        out.push(b' ');
+        out.push(b'[');
+        push_decimal(&mut out, counts(this).as_slice().get(index).copied().unwrap_or(1));
+        out.push(b']');
+    }
+    objects.free();
+    out.push(b')');
+    let string = string_from_utf8(out.as_slice());
+    out.free();
+    string
+}
+
+fn define_counted(runtime: &mut Runtime) -> bool {
+    let instance = methods![
+        "initWithCapacity:" => init_with_capacity,
+        "initWithArray:" => counted_init_with_collection,
+        "initWithSet:" => counted_init_with_collection,
+        "initWithObjects:count:" => counted_init_with_objects_count,
+        "dealloc" => counted_dealloc,
+        "countForObject:" => count_for_object,
+        "addObject:" => counted_add_object,
+        "removeObject:" => counted_remove_object,
+        "removeAllObjects" => counted_remove_all_objects,
+        "addObjectsFromArray:" => counted_union_with,
+        "unionSet:" => counted_union_with,
+        "minusSet:" => counted_minus_set,
+        "intersectSet:" => counted_intersect_set,
+        "copyWithZone:" => counted_copy_with_zone,
+        "mutableCopyWithZone:" => counted_copy_with_zone,
+        "description" => counted_description,
+    ];
+    let class = methods![
+        "setWithCapacity:" => counted_with_capacity,
+        "setWithArray:" => counted_with_collection,
+        "setWithSet:" => counted_with_collection,
+    ];
+    define_class(
+        runtime,
+        &Definition {
+            name: b"NSCountedSet\0",
+            class: &NSCOUNTEDSET,
+            meta: &NSCOUNTEDSET_META,
+            superclass: &NSMUTABLESET,
+            instance_size: core::mem::size_of::<CountedSetObject>(),
+            flags: 0,
+            instance_methods: &instance,
+            class_methods: &class,
+        },
+    )
+}
+
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![
         "init" => init,
@@ -547,5 +829,5 @@ pub fn define(runtime: &mut Runtime) -> bool {
             instance_methods: &mutable_instance,
             class_methods: &mutable_class,
         },
-    )
+    ) && define_counted(runtime)
 }

@@ -104,6 +104,7 @@ mod runtime {
         NSMUTABLEDATA, NSMUTABLEDATA_META;
         NSSET, NSSET_META;
         NSMUTABLESET, NSMUTABLESET_META;
+        NSCOUNTEDSET, NSCOUNTEDSET_META;
         NSTIMER, NSTIMER_META;
         NSRUNLOOP, NSRUNLOOP_META;
         NSNOTIFICATION, NSNOTIFICATION_META;
@@ -264,6 +265,8 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSSet" => class(&NSSET_META),
             b"_OBJC_CLASS_$_NSMutableSet" => class(&NSMUTABLESET),
             b"_OBJC_METACLASS_$_NSMutableSet" => class(&NSMUTABLESET_META),
+            b"_OBJC_CLASS_$_NSCountedSet" => class(&NSCOUNTEDSET),
+            b"_OBJC_METACLASS_$_NSCountedSet" => class(&NSCOUNTEDSET_META),
             b"_OBJC_CLASS_$_NSTimer" => class(&NSTIMER),
             b"_OBJC_METACLASS_$_NSTimer" => class(&NSTIMER_META),
             b"_OBJC_CLASS_$_NSRunLoop" => class(&NSRUNLOOP),
