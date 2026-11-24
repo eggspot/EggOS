@@ -1751,7 +1751,8 @@ impl Dropdown {
     }
 }
 
-pub(crate) fn chevron(canvas: &mut Canvas<'_>, left: i32, top: i32, down: bool, colour: u32) {
+/// The toolkit's chevron, 10 pixels wide and 6 tall from (`left`, `top`), pointing down or up.
+pub fn chevron(canvas: &mut Canvas<'_>, left: i32, top: i32, down: bool, colour: u32) {
     for index in 0..9 {
         let from_tip = 4 - (index - 4i32).abs();
         let y = match down {

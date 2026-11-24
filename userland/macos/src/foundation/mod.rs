@@ -48,6 +48,8 @@ mod property_list;
 #[cfg(eggos_user)]
 mod set;
 #[cfg(eggos_user)]
+pub mod sort_descriptor;
+#[cfg(eggos_user)]
 mod string;
 #[cfg(eggos_user)]
 mod timer;
@@ -65,7 +67,7 @@ pub use runtime::*;
 mod runtime {
     use super::{
         array, bundle, constants, data, date, dictionary, error, exception, index_set, log,
-        notification, number, process_info, set, string, timer,
+        notification, number, process_info, set, sort_descriptor, string, timer,
     };
     use crate::objc::abi::{ClassObject, Id};
     use crate::objc::class::{self, BuiltinClass};
@@ -109,6 +111,7 @@ mod runtime {
         NSCOUNTEDSET, NSCOUNTEDSET_META;
         NSINDEXSET, NSINDEXSET_META;
         NSMUTABLEINDEXSET, NSMUTABLEINDEXSET_META;
+        NSSORTDESCRIPTOR, NSSORTDESCRIPTOR_META;
         NSTIMER, NSTIMER_META;
         NSRUNLOOP, NSRUNLOOP_META;
         NSNOTIFICATION, NSNOTIFICATION_META;
@@ -213,6 +216,7 @@ mod runtime {
                 && data::define(runtime)
                 && set::define(runtime)
                 && index_set::define(runtime)
+                && sort_descriptor::define(runtime)
                 && timer::define(runtime)
                 && notification::define(runtime)
                 && super::uuid::define(runtime)
@@ -276,6 +280,8 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSIndexSet" => class(&NSINDEXSET_META),
             b"_OBJC_CLASS_$_NSMutableIndexSet" => class(&NSMUTABLEINDEXSET),
             b"_OBJC_METACLASS_$_NSMutableIndexSet" => class(&NSMUTABLEINDEXSET_META),
+            b"_OBJC_CLASS_$_NSSortDescriptor" => class(&NSSORTDESCRIPTOR),
+            b"_OBJC_METACLASS_$_NSSortDescriptor" => class(&NSSORTDESCRIPTOR_META),
             b"_OBJC_CLASS_$_NSTimer" => class(&NSTIMER),
             b"_OBJC_METACLASS_$_NSTimer" => class(&NSTIMER_META),
             b"_OBJC_CLASS_$_NSRunLoop" => class(&NSRUNLOOP),

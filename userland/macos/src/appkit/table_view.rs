@@ -7,6 +7,9 @@
 //! `allowsMultipleSelection`, Command-click toggles a row, Shift-click and Shift with the
 //! arrow keys extend from the anchor row, and `selectAll:` takes every row. The row under the
 //! pointer takes the hover fill (D726), through a tracking area the table keeps on itself.
+//! A column with a `sortDescriptorPrototype` sorts by a click on its title, which cycles the
+//! table's `sortDescriptors` and tells the data source; its title brightens and the toolkit's
+//! chevron shows the order (D735, docs/ux/macos-tables-v0.4.md section 1).
 
 use super::{
     NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META, NSTRACKINGAREA, NSVIEW,
@@ -14,6 +17,7 @@ use super::{
     with_text,
 };
 use crate::foundation::index_set;
+use crate::foundation::sort_descriptor;
 use crate::foundation::{NSARRAY, class_pointer, notification_with_name, post};
 use crate::objc::buffer::Buffer;
 use crate::objc::abi::{Id, Sel};
@@ -28,8 +32,8 @@ use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::colour;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::widget::{
-    TABLE_CELL_PADDING, TABLE_FIRST_TEXT_X, TABLE_HEADER_HEIGHT, TABLE_MARK_X, TABLE_ROW_HEIGHT,
-    clipped_text, focus_ring,
+    TABLE_ARROW_ROOM, TABLE_CELL_PADDING, TABLE_FIRST_TEXT_X, TABLE_HEADER_HEIGHT, TABLE_MARK_X,
+    TABLE_ROW_HEIGHT, chevron, clipped_text, focus_ring,
 };
 
 const MOST_COLUMNS: usize = 16;
@@ -56,6 +60,8 @@ const KEY_RETURN: u16 = 0x24;
 const KEY_ENTER: u16 = 0x4c;
 const KEY_ESCAPE: u16 = 0x35;
 const NO_INDEX: isize = -1;
+const CHEVRON_TOP: i32 = 11;
+const CHEVRON_WIDTH: i32 = 10;
 const SHIFT_FLAG: u64 = 1 << 17;
 const COMMAND_FLAG: u64 = 1 << 20;
 const TRACK_ENTERED_AND_EXITED: usize = 0x01;
@@ -89,6 +95,10 @@ struct TableFields {
     multiple: bool,
     hover: isize,
     tracking: Id,
+    sort_descriptors: Id,
+    header_hover: isize,
+    header_pressed: isize,
+    highlighted_column: Id,
     clicked_row: isize,
     clicked_column: isize,
     last_press: Option<(usize, u32)>,
@@ -114,6 +124,8 @@ struct ColumnFields {
     alignment: usize,
     hidden: bool,
     table: Id,
+    sort_prototype: Id,
+    indicator_image: Id,
 }
 
 fn table(object: Id) -> &'static mut TableFields {
@@ -377,6 +389,8 @@ extern "C" fn init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
     fields.clicked_row = NO_INDEX;
     fields.clicked_column = NO_INDEX;
     fields.header = true;
+    fields.header_hover = NO_INDEX;
+    fields.header_pressed = NO_INDEX;
     this
 }
 
@@ -388,6 +402,8 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     }
     fields.column_count = 0;
     store(&mut fields.background, core::ptr::null_mut());
+    store(&mut fields.sort_descriptors, core::ptr::null_mut());
+    store(&mut fields.highlighted_column, core::ptr::null_mut());
     objc_release(fields.selection);
     fields.selection = core::ptr::null_mut();
     objc_release(fields.tracking);
@@ -715,7 +731,120 @@ extern "C" fn ignore_size(_: Id, _: Sel, _: Point) {}
 
 extern "C" fn ignore_float(_: Id, _: Sel, _: f64) {}
 
+fn header_column_at(this: Id, x: i32) -> Option<usize> {
+    let (widths, which, count) = shown_widths(this);
+    let lefts: [i32; MOST_COLUMNS] = geometry::column_lefts(&widths[..count], 0);
+    if geometry::handle_at(x, &lefts[..count], &widths[..count]).is_some() {
+        return None;
+    }
+    geometry::column_at(x, &lefts[..count], &widths[..count]).map(|shown| which[shown])
+}
+
+fn sortable(this: Id, index: usize) -> bool {
+    columns(this)
+        .get(index)
+        .is_some_and(|&each| !column(each).sort_prototype.is_null())
+}
+
+fn first_descriptor(this: Id) -> Id {
+    let descriptors = table(this).sort_descriptors;
+    let count = match descriptors.is_null() {
+        true => 0,
+        false => send(descriptors, sel!("count")) as usize,
+    };
+    match count {
+        0 => core::ptr::null_mut(),
+        _ => send1(descriptors, sel!("objectAtIndex:"), 0),
+    }
+}
+
+fn sorted_column(this: Id) -> Option<(usize, bool)> {
+    let first = first_descriptor(this);
+    let key = sort_descriptor::key_of(first);
+    if key.is_null() {
+        return None;
+    }
+    let index = columns(this).iter().position(|&each| {
+        let wanted = sort_descriptor::key_of(column(each).sort_prototype);
+        !wanted.is_null() && crate::objc::send_bool(wanted, sel!("isEqual:"), key as usize)
+    })?;
+    Some((index, sort_descriptor::is_ascending(first)))
+}
+
+fn change_sort(this: Id, descriptors: Id) {
+    let old = table(this).sort_descriptors;
+    if !old.is_null() {
+        objc_retain(old);
+    }
+    let copy = match descriptors.is_null() {
+        true => descriptors,
+        false => send(descriptors, sel!("copy")),
+    };
+    store(&mut table(this).sort_descriptors, copy);
+    if !copy.is_null() {
+        objc_release(copy);
+    }
+    changed(this);
+    let source = table(this).data_source;
+    let asking = sel!("tableView:sortDescriptorsDidChange:");
+    if responds(source, asking) {
+        let old_array = match old.is_null() {
+            true => send(class_pointer(&NSARRAY).cast(), sel!("array")),
+            false => old,
+        };
+        send2(source, asking, this as usize, old_array as usize);
+    }
+    if !old.is_null() {
+        objc_release(old);
+    }
+}
+
+fn header_click(this: Id, index: usize) {
+    let each = columns(this)[index];
+    let prototype = column(each).sort_prototype;
+    if !prototype.is_null() {
+        let descriptors = match sorted_column(this) {
+            Some((sorted, _)) if sorted == index => {
+                let mutable = send(table(this).sort_descriptors, sel!("mutableCopy"));
+                let reversed = send(first_descriptor(this), sel!("reversedSortDescriptor"));
+                let replace: extern "C" fn(Id, Sel, usize, Id) = message::msg_send_as();
+                replace(mutable, sel!("replaceObjectAtIndex:withObject:"), 0, reversed);
+                crate::foundation::autoreleased(mutable)
+            }
+            _ => send1(
+                class_pointer(&NSARRAY).cast(),
+                sel!("arrayWithObject:"),
+                prototype as usize,
+            ),
+        };
+        change_sort(this, descriptors);
+    }
+    let delegate = table(this).delegate;
+    let clicked = sel!("tableView:didClickTableColumn:");
+    if responds(delegate, clicked) {
+        send2(delegate, clicked, this as usize, each as usize);
+    }
+}
+
+fn set_header_hover(this: Id, index: isize) {
+    if table(this).header_hover != index {
+        table(this).header_hover = index;
+        changed(this);
+    }
+}
+
 fn header_press(this: Id, x: i32) {
+    if let Some(index) = header_column_at(this, x) {
+        table(this).header_pressed = index as isize;
+        changed(this);
+        let delegate = table(this).delegate;
+        let asking = sel!("tableView:mouseDownInHeaderOfTableColumn:");
+        if responds(delegate, asking) {
+            let each = columns(this)[index];
+            send2(delegate, asking, this as usize, each as usize);
+        }
+        return;
+    }
     let (widths, which, count) = shown_widths(this);
     let lefts: [i32; MOST_COLUMNS] = geometry::column_lefts(&widths[..count], 0);
     let Some(shown) = geometry::handle_at(x, &lefts[..count], &widths[..count]) else {
@@ -792,19 +921,23 @@ extern "C" fn mouse_moved(this: Id, _: Sel, event: Id) {
         set_hover(this, NO_INDEX);
         return;
     }
-    let (_, y) = local_pixel(this, event);
+    let (x, y) = local_pixel(this, event);
     let ((_, offset), _) = clip_of(this);
     let header = table(this).header;
     let clip_y = y - offset;
-    let row = match header && clip_y < TABLE_HEADER_HEIGHT {
+    let in_header = header && clip_y < TABLE_HEADER_HEIGHT;
+    let row = match in_header {
         true => None,
         false => geometry::row_at(clip_y, header, offset, row_count(this)),
     };
     set_hover(this, row.map_or(NO_INDEX, |row| row as isize));
+    let over = header_column_at(this, x).filter(|&index| in_header && sortable(this, index));
+    set_header_hover(this, over.map_or(NO_INDEX, |index| index as isize));
 }
 
 extern "C" fn mouse_exited(this: Id, _: Sel, _: Id) {
     set_hover(this, NO_INDEX);
+    set_header_hover(this, NO_INDEX);
 }
 
 fn track_hover(this: Id) {
@@ -850,7 +983,18 @@ extern "C" fn mouse_dragged(this: Id, _: Sel, event: Id) {
     fit_frame(this);
 }
 
-extern "C" fn mouse_up(this: Id, _: Sel, _: Id) {
+extern "C" fn mouse_up(this: Id, _: Sel, event: Id) {
+    let pressed = core::mem::replace(&mut table(this).header_pressed, NO_INDEX);
+    if pressed >= 0 {
+        changed(this);
+        let (x, y) = local_pixel(this, event);
+        let ((_, offset), _) = clip_of(this);
+        let in_header = (0..TABLE_HEADER_HEIGHT).contains(&(y - offset));
+        if in_header && header_column_at(this, x) == Some(pressed as usize) {
+            header_click(this, pressed as usize);
+        }
+        return;
+    }
     if table(this).resize.take().is_some() {
         notify(
             this,
@@ -966,6 +1110,8 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
         fields.grid,
         fields.disabled,
     );
+    let (header_pressed, header_hover) = (fields.header_pressed, fields.header_hover);
+    let sorted = sorted_column(this);
     let focused = {
         let window = view::fields(this).window;
         !window.is_null() && window::first_responder(window) == this
@@ -1058,9 +1204,37 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
                 1,
                 HEADER_SEPARATOR.1 - HEADER_SEPARATOR.0,
             );
+            let index = which[shown];
+            let each = columns(this)[index];
+            let can_sort = !column(each).sort_prototype.is_null();
+            let header_fill = match (can_sort, header_pressed, header_hover) {
+                (true, pressed, _) if pressed == index as isize => Some(colour::BUTTON_PRESSED),
+                (true, _, hover) if hover == index as isize => Some(colour::MENU_HOVER),
+                _ => None,
+            };
+            if let Some(fill) = header_fill {
+                let cell = Rect::new(left, top, column_width - 1, TABLE_HEADER_HEIGHT - 1);
+                canvas.fill(place(cell), fill);
+            }
             canvas.fill(place(separator), colour::MENU_BORDER);
-            let each = columns(this)[which[shown]];
-            let space = column_width - 2 * TABLE_CELL_PADDING;
+            let right_aligned = column(each).alignment == RIGHT_ALIGNED;
+            let order = sorted.filter(|&(column_index, _)| column_index == index);
+            let space = match (order, right_aligned) {
+                (Some(_), false) => column_width - TABLE_CELL_PADDING - TABLE_ARROW_ROOM,
+                _ => column_width - 2 * TABLE_CELL_PADDING,
+            };
+            if let Some((_, ascending)) = order {
+                let chevron_left = match right_aligned {
+                    true => left + TABLE_CELL_PADDING,
+                    false => left + column_width - TABLE_CELL_PADDING - CHEVRON_WIDTH,
+                };
+                let at = place(Rect::new(chevron_left, top + CHEVRON_TOP, CHEVRON_WIDTH, 6));
+                chevron(canvas, at.x, at.y, !ascending, colour::ACCENT);
+            }
+            let ink = match order {
+                Some(_) => colour::TEXT,
+                None => colour::TEXT_DIM,
+            };
             with_text(column(each).title, |title| {
                 let at = place(Rect::new(
                     left + TABLE_CELL_PADDING,
@@ -1068,14 +1242,58 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
                     space,
                     16,
                 ));
-                let x = match column(each).alignment == RIGHT_ALIGNED {
+                let x = match right_aligned {
                     true => at.x + (space - title.chars().count() as i32 * 8).max(0),
                     false => at.x,
                 };
-                clipped_text(canvas, x, at.y, space, title, colour::TEXT_DIM);
+                clipped_text(canvas, x, at.y, space, title, ink);
             });
         }
     });
+}
+
+extern "C" fn sort_descriptors(this: Id, _: Sel) -> Id {
+    match table(this).sort_descriptors.is_null() {
+        true => send(class_pointer(&NSARRAY).cast(), sel!("array")),
+        false => table(this).sort_descriptors,
+    }
+}
+
+extern "C" fn set_sort_descriptors(this: Id, _: Sel, descriptors: Id) {
+    change_sort(this, descriptors);
+}
+
+extern "C" fn highlighted_table_column(this: Id, _: Sel) -> Id {
+    match sorted_column(this) {
+        Some((index, _)) => columns(this)[index],
+        None => table(this).highlighted_column,
+    }
+}
+
+extern "C" fn set_highlighted_table_column(this: Id, _: Sel, chosen: Id) {
+    store(&mut table(this).highlighted_column, chosen);
+}
+
+extern "C" fn indicator_image_in_column(_: Id, _: Sel, each: Id) -> Id {
+    match each.is_null() {
+        true => each,
+        false => column(each).indicator_image,
+    }
+}
+
+extern "C" fn set_indicator_image(_: Id, _: Sel, image: Id, each: Id) {
+    if !each.is_null() {
+        store(&mut column(each).indicator_image, image);
+    }
+}
+
+extern "C" fn column_sort_prototype(this: Id, _: Sel) -> Id {
+    column(this).sort_prototype
+}
+
+extern "C" fn column_set_sort_prototype(this: Id, _: Sel, prototype: Id) {
+    store(&mut column(this).sort_prototype, prototype);
+    column_changed(this);
 }
 
 extern "C" fn view_did_move_to_window(this: Id, _: Sel) {
@@ -1105,6 +1323,8 @@ extern "C" fn column_dealloc(this: Id, _: Sel) {
     let fields = column(this);
     store(&mut fields.identifier, core::ptr::null_mut());
     store(&mut fields.title, core::ptr::null_mut());
+    store(&mut fields.sort_prototype, core::ptr::null_mut());
+    store(&mut fields.indicator_image, core::ptr::null_mut());
     crate::objc::reference_count::dispose(this);
 }
 
@@ -1377,7 +1597,12 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setColumnAutoresizingStyle:" => ignore_word,
         "setSelectionHighlightStyle:" => ignore_word,
         "setGridColor:" => ignore_word,
-        "setSortDescriptors:" => ignore_word,
+        "sortDescriptors" => sort_descriptors,
+        "setSortDescriptors:" => set_sort_descriptors,
+        "highlightedTableColumn" => highlighted_table_column,
+        "setHighlightedTableColumn:" => set_highlighted_table_column,
+        "indicatorImageInTableColumn:" => indicator_image_in_column,
+        "setIndicatorImage:inTableColumn:" => set_indicator_image,
         "backgroundColor" => background_colour,
         "setBackgroundColor:" => set_background_colour,
         "acceptsFirstResponder" => accepts_first_responder,
@@ -1414,7 +1639,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "alignment" => column_alignment,
         "setAlignment:" => column_set_alignment,
         "setEditable:" => ignore_word,
-        "setSortDescriptorPrototype:" => ignore_word,
+        "sortDescriptorPrototype" => column_sort_prototype,
+        "setSortDescriptorPrototype:" => column_set_sort_prototype,
     ];
     super::define(
         runtime,
