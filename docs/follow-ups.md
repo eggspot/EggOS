@@ -241,7 +241,7 @@ and is not listed per item.
 - [ ] NSGridView: merged cells, padding, hidden rows and columns, inserting and moving rows and columns (D385)
 - [ ] CoreGraphics: clipping paths, dashes, caps and joins, alpha blending and anti-aliasing, `CGContextDrawImage`, gradients, shadows, `CGPath` objects (D386)
 - [ ] Swift: resilient class stubs, generic class metadata instantiation (`swift_allocateGenericClassMetadata`), `@objc` accessors through KVC (D387)
-- [ ] libc++abi: libc++'s other standard exceptions, `std::nested_exception` (D380; `exception_ptr` code written, unbuilt: D700)
+- [x] libc++abi: libc++'s other standard exceptions, `std::nested_exception` (D380; `exception_ptr` code written, unbuilt: D700) — code written, unbuilt, D710
 - [ ] Windows shell namespace: `IFileDialog` (`FileOpenDialog`/`FileSaveDialog` COM classes) over the system picker, `IShellItemArray`, virtual folders (This PC, Recycle Bin) (D392, D399)
 - [ ] COM out of process: interfaces other than `IDispatch` from type information, callbacks and connection points, `VT_ARRAY`, by-reference results (D400)
 - [ ] Common controls: `LVS_OWNERDATA` virtual lists with `LVN_ODCACHEHINT`; ANSI notifications to ANSI parents (D402, D403)

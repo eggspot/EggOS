@@ -171,6 +171,44 @@ pub static TYPE_BAD_TYPEID: SingleBaseRecord = SingleBaseRecord {
     base: &raw const TYPE_EXCEPTION,
 };
 
+macro_rules! standard_exceptions {
+    ($($name:ident = $text:literal, $base:expr;)*) => {
+        $(
+            pub static $name: SingleBaseRecord = SingleBaseRecord {
+                record: TypeRecord {
+                    vtable: address_point(&VTABLES.single_base),
+                    name: $text.as_ptr().cast(),
+                },
+                base: $base,
+            };
+        )*
+
+        /// libc++'s standard exceptions beyond `std::exception`, `bad_alloc`, `bad_cast` and
+        /// `bad_typeid` (D710).
+        pub const STANDARD_EXCEPTIONS: &[&SingleBaseRecord] = &[$(&$name),*];
+    };
+}
+
+standard_exceptions! {
+    TYPE_LOGIC_ERROR = c"St11logic_error", &raw const TYPE_EXCEPTION;
+    TYPE_RUNTIME_ERROR = c"St13runtime_error", &raw const TYPE_EXCEPTION;
+    TYPE_DOMAIN_ERROR = c"St12domain_error", (&raw const TYPE_LOGIC_ERROR).cast();
+    TYPE_INVALID_ARGUMENT = c"St16invalid_argument", (&raw const TYPE_LOGIC_ERROR).cast();
+    TYPE_LENGTH_ERROR = c"St12length_error", (&raw const TYPE_LOGIC_ERROR).cast();
+    TYPE_OUT_OF_RANGE = c"St12out_of_range", (&raw const TYPE_LOGIC_ERROR).cast();
+    TYPE_RANGE_ERROR = c"St11range_error", (&raw const TYPE_RUNTIME_ERROR).cast();
+    TYPE_OVERFLOW_ERROR = c"St14overflow_error", (&raw const TYPE_RUNTIME_ERROR).cast();
+    TYPE_UNDERFLOW_ERROR = c"St15underflow_error", (&raw const TYPE_RUNTIME_ERROR).cast();
+    TYPE_BAD_EXCEPTION = c"St13bad_exception", &raw const TYPE_EXCEPTION;
+    TYPE_BAD_ARRAY_NEW_LENGTH = c"St20bad_array_new_length", (&raw const TYPE_BAD_ALLOC).cast();
+}
+
+/// `std::nested_exception`'s record: a polymorphic class with no base (D710).
+pub static TYPE_NESTED_EXCEPTION: TypeRecord = TypeRecord {
+    vtable: address_point(&VTABLES.class),
+    name: c"St16nested_exception".as_ptr().cast(),
+};
+
 // SAFETY: the records are never written, and their pointers are to permanent statics.
 unsafe impl Sync for TypeRecord {}
 // SAFETY: as above.
@@ -222,7 +260,14 @@ fn own(address: u64, length: u64) -> bool {
         &raw const TYPE_CONST_VOID_POINTER as u64,
     ];
     let inside = |(start, size): (u64, u64)| address >= start && address + length <= start + size;
-    ranges.into_iter().any(inside)
+    let standard = STANDARD_EXCEPTIONS
+        .iter()
+        .map(|record| (*record as *const SingleBaseRecord as u64, size_of::<SingleBaseRecord>() as u64))
+        .chain(core::iter::once((
+            &raw const TYPE_NESTED_EXCEPTION as u64,
+            size_of::<TypeRecord>() as u64,
+        )));
+    ranges.into_iter().chain(standard).any(inside)
         || records
             .into_iter()
             .any(|start| inside((start, size_of::<TypeRecord>() as u64)))
@@ -449,6 +494,18 @@ mod tests {
         assert_eq!(dynamic_cast(at, exception), at);
         assert_eq!(dynamic_cast(at, &raw const TYPE_INT as u64), 0);
         assert_eq!(dynamic_cast(0, exception), 0);
+    }
+
+    #[test]
+    fn a_handler_for_logic_error_or_exception_catches_out_of_range_but_not_runtime_error() {
+        let object = 0x2000;
+        let thrown = &raw const TYPE_OUT_OF_RANGE as u64;
+        assert_eq!(catches(&raw const TYPE_LOGIC_ERROR as u64, thrown, object), Some(object));
+        assert_eq!(catches(&raw const TYPE_EXCEPTION as u64, thrown, object), Some(object));
+        assert_eq!(catches(&raw const TYPE_RUNTIME_ERROR as u64, thrown, object), None);
+        let new_length = &raw const TYPE_BAD_ARRAY_NEW_LENGTH as u64;
+        assert_eq!(catches(&raw const TYPE_BAD_ALLOC as u64, new_length, object), Some(object));
+        assert_eq!(STANDARD_EXCEPTIONS.len(), 11);
     }
 
     #[test]

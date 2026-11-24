@@ -1212,6 +1212,33 @@ capture!(eggos_cxa_throw => cxa_throw, "x3", "rcx");
 capture!(eggos_cxa_rethrow => cxa_rethrow, "x0", "rdi");
 capture!(eggos_cxa_rethrow_primary_exception => cxa_rethrow_primary_exception, "x1", "rsi");
 capture!(eggos_rethrow_exception => rethrow_exception, "x1", "rsi");
+capture!(eggos_rethrow_nested => rethrow_nested, "x1", "rsi");
+
+/// `std::nested_exception::rethrow_nested`'s entry (D710).
+pub fn rethrow_nested_entry() -> usize {
+    eggos_rethrow_nested as *const () as usize
+}
+
+/// `nested_exception::rethrow_nested() const`: rethrows the exception its second word holds,
+/// or terminates when it holds none, as libc++ does.
+extern "C" fn rethrow_nested(this: *const usize, registers: *const Registers) {
+    let holder = match this.is_null() {
+        true => this,
+        false => this.wrapping_add(1),
+    };
+    let held = match holder.is_null() {
+        true => 0,
+        // SAFETY: the object's `exception_ptr` word, after its vtable pointer.
+        false => unsafe { holder.read() },
+    };
+    if held == 0 {
+        crate::libsystem::write_error(
+            b"libc++abi: terminating: rethrow_nested with no nested exception\n",
+        );
+        crate::libsystem::abort()
+    }
+    rethrow_exception(holder, registers)
+}
 
 extern "C" fn rethrow_exception(holder: *const usize, registers: *const Registers) {
     let object = match holder.is_null() {
