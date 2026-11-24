@@ -14,6 +14,7 @@
 //! is no running object table and no moniker: such calls fail as Windows reports an object or
 //! name it cannot find.
 
+mod carry;
 mod channel;
 mod local_server;
 mod oleaut32;

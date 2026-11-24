@@ -3,15 +3,17 @@
 //! from the registry's `LocalServer32` command line with `-Embedding` when nothing listens yet,
 //! and asks it for an object. The answer is a proxy: an `IDispatch` whose `GetIDsOfNames` and
 //! `Invoke` travel to the server and wait for its answer. Objects in results become proxies on
-//! the same connection, which closes when the last of them is released. The program's own
-//! objects cannot travel to the server yet (`DISP_E_TYPEMISMATCH`): the server would have to
-//! call back into the program.
+//! the same connection, which closes when the last of them is released. Arrays travel, and
+//! arguments passed by reference are written back with the values the server left in them
+//! (D743). The program's own objects cannot travel to the server yet (`DISP_E_TYPEMISMATCH`):
+//! the server would have to call back into the program.
 
 use super::super::{file, processes, registry};
+use super::carry::{self, Objects};
 use super::channel;
 use crate::com::guid::{self, Guid};
 use crate::com::variant::{self, Variant, kind};
-use crate::com::wire::{self, Value};
+use crate::com::wire::{self, Reference, Value};
 use crate::com::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER, HResult, S_OK, bstr};
 use crate::linux;
 use alloc::vec::Vec;
@@ -326,62 +328,32 @@ pub(super) unsafe extern "efiapi" fn get_ids_of_names(
     status
 }
 
-fn value_of(link: *mut Link, held: &Variant) -> Result<Value, HResult> {
-    // SAFETY: a valid VARIANT of the program's arguments.
-    let held = unsafe { variant::view(held) }?;
-    if held.kind & kind::ARRAY != 0 {
-        return Err(DISP_E_TYPEMISMATCH);
+struct LinkObjects {
+    link: *mut Link,
+}
+
+impl Objects for LinkObjects {
+    fn object_value(&mut self, kind: u16, object: usize) -> Result<Value, HResult> {
+        // SAFETY: a live COM object: its first word is its table.
+        let table = unsafe { (object as *const usize).read() };
+        if table != super::PROXY.address() {
+            return Err(DISP_E_TYPEMISMATCH);
+        }
+        // SAFETY: the layer's own proxy, as its table says.
+        let found = unsafe { proxy(object as *mut Proxy) };
+        match found.link == self.link {
+            true => Ok(Value::Object { kind, id: found.id }),
+            false => Err(DISP_E_TYPEMISMATCH),
+        }
     }
-    Ok(match held.kind {
-        kind::DECIMAL => Value::Decimal(variant::decimal_bytes(&held)),
-        kind::BSTR => match held.pointer() {
-            0 => Value::Text(None),
-            // SAFETY: the VARIANT holds a live BSTR.
-            text => Value::Text(Some(unsafe { bstr::units(text as *const u16) }.to_vec())),
-        },
-        kind::DISPATCH | kind::UNKNOWN => match held.pointer() {
-            0 => Value::Object {
-                kind: held.kind,
-                id: 0,
-            },
-            object => {
-                // SAFETY: a live COM object: its first word is its table.
-                let table = unsafe { (object as *const usize).read() };
-                // SAFETY: the layer's own proxy, when the table says so.
-                let on_link = table == super::PROXY.address()
-                    && unsafe { proxy(object as *mut Proxy) }.link == link;
-                if !on_link {
-                    return Err(DISP_E_TYPEMISMATCH);
-                }
-                Value::Object {
-                    kind: held.kind,
-                    // SAFETY: as above.
-                    id: unsafe { proxy(object as *mut Proxy) }.id,
-                }
-            }
-        },
-        other => Value::Plain {
-            kind: other,
-            word: held.data[0],
-        },
-    })
+
+    fn object_of(&mut self, _kind: u16, id: u32) -> Result<usize, HResult> {
+        new_proxy(self.link, id).map(|made| made as usize)
+    }
 }
 
 fn variant_of(link: *mut Link, value: &Value) -> Result<Variant, HResult> {
-    Ok(match value {
-        Value::Plain { kind, word } => Variant::new(*kind, *word),
-        Value::Decimal(bytes) => variant::decimal_variant(bytes),
-        Value::Text(None) => Variant::new(kind::BSTR, 0),
-        Value::Text(Some(units)) => {
-            let text = bstr::from_units(units);
-            if text.is_null() {
-                return Err(E_OUTOFMEMORY);
-            }
-            Variant::new(kind::BSTR, text as u64)
-        }
-        Value::Object { kind, id: 0 } => Variant::new(*kind, 0),
-        Value::Object { kind, id } => Variant::new(*kind, new_proxy(link, *id)? as u64),
-    })
+    carry::variant_of(&mut LinkObjects { link }, value)
 }
 
 unsafe fn read_at<T: Copy>(base: *const u8, offset: usize) -> T {
@@ -439,6 +411,8 @@ pub(super) unsafe extern "efiapi" fn invoke(
     let found = unsafe { proxy(this) };
     let link = found.link;
     let (mut arguments, mut named) = (Vec::new(), Vec::new());
+    let (mut by_reference, mut places) = (Vec::new(), Vec::new());
+    let mut objects = LinkObjects { link };
     if !parameters.is_null() {
         // SAFETY: the caller's `DISPPARAMS`: its arguments, named numbers and their counts.
         let (values, numbers, count, named_count) = unsafe {
@@ -455,7 +429,15 @@ pub(super) unsafe extern "efiapi" fn invoke(
         for index in 0..count {
             // SAFETY: as above: `count` VARIANTs.
             let held = unsafe { values.add(index).read_unaligned() };
-            match value_of(link, &held) {
+            if held.kind & kind::BYREF != 0 && held.pointer() != 0 {
+                let base = held.kind & !kind::BYREF;
+                by_reference.push(Reference {
+                    index: index as u16,
+                    kind: base,
+                });
+                places.push((held.pointer(), base));
+            }
+            match carry::value_of(&mut objects, &held) {
                 Ok(value) => arguments.push(value),
                 Err(status) => {
                     if !argument_error.is_null() {
@@ -471,7 +453,8 @@ pub(super) unsafe extern "efiapi" fn invoke(
             named.push(unsafe { numbers.add(index).read_unaligned() });
         }
     }
-    let message = wire::invoke(found.id, (member, locale, flags), &arguments, &named);
+    let call = (member, locale, flags);
+    let message = wire::invoke(found.id, call, &arguments, &named, &by_reference);
     // SAFETY: the proxy's live link.
     let Some(answer) = ask(unsafe { &*link }, &message).and_then(|body| wire::read_invoked(&body))
     else {
@@ -483,6 +466,12 @@ pub(super) unsafe extern "efiapi" fn invoke(
     }
     if let (Some(given), false) = (&answer.exception, exception.is_null()) {
         exception_into(exception, given);
+    }
+    for (&(place, base), changed) in places.iter().zip(&answer.changed) {
+        if let Ok(value) = variant_of(link, changed) {
+            // SAFETY: the program's place its `VT_BYREF` argument points at, of kind `base`.
+            unsafe { carry::write_back(place, base, value) };
+        }
     }
     if !result.is_null() {
         let value = match variant_of(link, &answer.result) {

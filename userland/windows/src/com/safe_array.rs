@@ -307,6 +307,34 @@ unsafe fn element_kind(array: *const SafeArray) -> u16 {
     unsafe { kind_at.read_unaligned() as u16 }
 }
 
+/// What an array holds, for carrying it to another process (D743): its element kind (from
+/// its features or element size when it keeps none), its bounds with the leftmost dimension
+/// first, its data and its element size.
+///
+/// # Safety
+/// `array` must be a valid descriptor, used by no one else meanwhile.
+pub unsafe fn shape(array: *const SafeArray) -> (u16, alloc::vec::Vec<Bound>, *mut u8, usize) {
+    // SAFETY: the caller's duty.
+    let found = unsafe { descriptor(array) };
+    // SAFETY: as above.
+    let mut element = unsafe { element_kind(array) };
+    if element == 0 {
+        element = match (elements_of(found.features), found.element_size) {
+            (Elements::Strings, _) => kind::BSTR,
+            (Elements::Variants, _) => kind::VARIANT,
+            (Elements::Objects, _) if found.features & FADF_DISPATCH != 0 => kind::DISPATCH,
+            (Elements::Objects, _) => kind::UNKNOWN,
+            (Elements::Plain, 1) => kind::UI1,
+            (Elements::Plain, 2) => kind::I2,
+            (Elements::Plain, 4) => kind::I4,
+            (Elements::Plain, _) => kind::R8,
+        };
+    }
+    // SAFETY: as above.
+    let bounds = unsafe { stored_bounds(array) }.iter().rev().copied().collect();
+    (element, bounds, found.data, found.element_size as usize)
+}
+
 unsafe fn copy_element(elements: Elements, from: *const u8, to: *mut u8, size: usize) -> HResult {
     match elements {
         Elements::Plain => {

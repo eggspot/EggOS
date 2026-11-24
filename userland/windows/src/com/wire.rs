@@ -3,13 +3,20 @@
 //! `u32`, the rest's bytes), its kind and its fields, little-endian. Automation is what
 //! crosses: creating an object, `IDispatch::GetIDsOfNames`, `IDispatch::Invoke` with its
 //! arguments, result and exception, and releasing an object. Values are VARIANTs' contents;
-//! an object inside one travels as the number the serving side gave it.
+//! an object inside one travels as the number the serving side gave it. Arrays travel with
+//! their element kind, bounds and elements, and arguments passed by reference come back
+//! changed in the answer (D743).
 
 use super::HResult;
 use alloc::vec::Vec;
 
 /// The longest message either side sends or accepts.
 pub const MOST_MESSAGE: usize = 1 << 20;
+/// The most elements one array carries, and dimensions it has.
+pub const MOST_ELEMENTS: usize = 1 << 16;
+pub const MOST_DIMENSIONS: usize = 8;
+/// How deep arrays of VARIANTs holding arrays may nest.
+pub const MOST_NESTING: usize = 4;
 /// The most names one `GetIDsOfNames` asks for, and arguments one `Invoke` passes.
 pub const MOST_ITEMS: usize = 64;
 const LENGTH_BYTES: usize = 4;
@@ -28,6 +35,7 @@ pub mod value_kind {
     pub const DECIMAL: u8 = 1;
     pub const TEXT: u8 = 2;
     pub const OBJECT: u8 = 3;
+    pub const ARRAY: u8 = 4;
 }
 
 /// A VARIANT's content as it travels.
@@ -41,6 +49,13 @@ pub enum Value {
     Text(Option<Vec<u16>>),
     /// A `VT_DISPATCH` or `VT_UNKNOWN`: the serving side's number for it, 0 for null.
     Object { kind: u16, id: u32 },
+    /// A `VT_ARRAY`: its element kind, each dimension's element count and lowest index
+    /// (leftmost first), and its elements in the array's data order.
+    Array {
+        element: u16,
+        bounds: Vec<(u32, i32)>,
+        items: Vec<Value>,
+    },
 }
 
 /// An `EXCEPINFO`'s content.
@@ -72,10 +87,18 @@ pub enum Request {
         flags: u16,
         arguments: Vec<Value>,
         named: Vec<i32>,
+        by_reference: Vec<Reference>,
     },
     Release {
         object: u32,
     },
+}
+
+/// An argument passed by reference: its index among the arguments and the kind it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reference {
+    pub index: u16,
+    pub kind: u16,
 }
 
 /// The answer to `Invoke`.
@@ -85,6 +108,8 @@ pub struct Invoked {
     pub result: Value,
     pub argument_error: u32,
     pub exception: Option<Exception>,
+    /// The values the arguments passed by reference hold after the call, in their order.
+    pub changed: Vec<Value>,
 }
 
 /// Writes a message.
@@ -146,6 +171,21 @@ impl Writer {
             Value::Text(None) => self.u8(value_kind::TEXT).u32(u32::MAX),
             Value::Text(Some(units)) => self.u8(value_kind::TEXT).text(units),
             Value::Object { kind, id } => self.u8(value_kind::OBJECT).u16(*kind).u32(*id),
+            Value::Array {
+                element,
+                bounds,
+                items,
+            } => {
+                self.u8(value_kind::ARRAY).u16(*element).u8(bounds.len() as u8);
+                for (elements, lower) in bounds {
+                    self.u32(*elements).i32(*lower);
+                }
+                self.u32(items.len() as u32);
+                for item in items {
+                    self.value(item);
+                }
+                self
+            }
         }
     }
 
@@ -227,6 +267,38 @@ impl<'a> Reader<'a> {
     }
 
     pub fn value(&mut self) -> Option<Value> {
+        self.nested_value(0)
+    }
+
+    fn array_value(&mut self, depth: usize) -> Option<Value> {
+        let element = self.u16()?;
+        let dimensions = usize::from(self.u8()?);
+        if dimensions == 0 || dimensions > MOST_DIMENSIONS || depth >= MOST_NESTING {
+            return None;
+        }
+        let bounds = (0..dimensions)
+            .map(|_| Some((self.u32()?, self.i32()?)))
+            .collect::<Option<Vec<_>>>()?;
+        let total = self.u32()? as usize;
+        let expected = bounds
+            .iter()
+            .try_fold(1usize, |product, &(elements, _)| {
+                product.checked_mul(elements as usize)
+            })?;
+        if total != expected || total > MOST_ELEMENTS {
+            return None;
+        }
+        let items = (0..total)
+            .map(|_| self.nested_value(depth + 1))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Value::Array {
+            element,
+            bounds,
+            items,
+        })
+    }
+
+    fn nested_value(&mut self, depth: usize) -> Option<Value> {
         Some(match self.u8()? {
             value_kind::PLAIN => Value::Plain {
                 kind: self.u16()?,
@@ -241,6 +313,7 @@ impl<'a> Reader<'a> {
                 kind: self.u16()?,
                 id: self.u32()?,
             },
+            value_kind::ARRAY => self.array_value(depth)?,
             _ => return None,
         })
     }
@@ -279,12 +352,14 @@ pub fn names(object: u32, locale: u32, names: &[&[u16]]) -> Vec<u8> {
     writer.finish()
 }
 
-/// The message calling member `member` of object `object`.
+/// The message calling member `member` of object `object`; `by_reference` names the
+/// arguments whose changed values should come back.
 pub fn invoke(
     object: u32,
     (member, locale, flags): (i32, u32, u16),
     arguments: &[Value],
     named: &[i32],
+    by_reference: &[Reference],
 ) -> Vec<u8> {
     let mut writer = Writer::new(request::INVOKE);
     writer
@@ -299,6 +374,10 @@ pub fn invoke(
     writer.u16(named.len() as u16);
     for number in named {
         writer.i32(*number);
+    }
+    writer.u16(by_reference.len() as u16);
+    for reference in by_reference {
+        writer.u16(reference.index).u16(reference.kind);
     }
     writer.finish()
 }
@@ -348,6 +427,14 @@ pub fn read_request(body: &[u8]) -> Option<Request> {
             let named = (0..named_total)
                 .map(|_| reader.i32())
                 .collect::<Option<Vec<_>>>()?;
+            let reference_total = count(&mut reader)?;
+            let by_reference = (0..reference_total)
+                .map(|_| {
+                    let index = reader.u16()?;
+                    let kind = reader.u16()?;
+                    (usize::from(index) < arguments.len()).then_some(Reference { index, kind })
+                })
+                .collect::<Option<Vec<_>>>()?;
             Request::Invoke {
                 object,
                 member,
@@ -355,6 +442,7 @@ pub fn read_request(body: &[u8]) -> Option<Request> {
                 flags,
                 arguments,
                 named,
+                by_reference,
             }
         }
         request::RELEASE => Request::Release {
@@ -413,6 +501,10 @@ pub fn invoked(answer: &Invoked) -> Vec<u8> {
         Some(exception) => writer.u8(1).exception(exception),
         None => writer.u8(0),
     };
+    writer.u16(answer.changed.len() as u16);
+    for value in &answer.changed {
+        writer.value(value);
+    }
     writer.finish()
 }
 
@@ -428,11 +520,16 @@ pub fn read_invoked(body: &[u8]) -> Option<Invoked> {
         1 => Some(reader.exception()?),
         _ => return None,
     };
+    let changed_total = count(&mut reader)?;
+    let changed = (0..changed_total)
+        .map(|_| reader.value())
+        .collect::<Option<Vec<_>>>()?;
     reader.ended().then_some(Invoked {
         status,
         result,
         argument_error,
         exception,
+        changed,
     })
 }
 
@@ -502,7 +599,8 @@ mod tests {
             Value::Text(None),
             Value::Object { kind: 9, id: 5 },
         ];
-        let message = invoke(2, (7, 0, 1), &arguments, &[-3]);
+        let by_reference = [Reference { index: 0, kind: 3 }];
+        let message = invoke(2, (7, 0, 1), &arguments, &[-3], &by_reference);
         assert_eq!(
             read_request(body(&message)),
             Some(Request::Invoke {
@@ -512,8 +610,44 @@ mod tests {
                 flags: 1,
                 arguments,
                 named: vec![-3],
+                by_reference: by_reference.to_vec(),
             })
         );
+    }
+
+    #[test]
+    fn arrays_travel_with_their_bounds_and_nest() {
+        let inner = Value::Array {
+            element: 3,
+            bounds: vec![(2, 0)],
+            items: vec![Value::Plain { kind: 3, word: 1 }, Value::Plain { kind: 3, word: 2 }],
+        };
+        let outer = Value::Array {
+            element: 12,
+            bounds: vec![(1, 1), (2, -1)],
+            items: vec![inner.clone(), Value::Text(None)],
+        };
+        let message = invoke(1, (0, 0, 1), core::slice::from_ref(&outer), &[], &[]);
+        let Some(Request::Invoke { arguments, .. }) = read_request(body(&message)) else {
+            panic!("the request did not read back");
+        };
+        assert_eq!(arguments, vec![outer]);
+        let mut wrong = Writer::new(request::INVOKE);
+        wrong.u32(1).i32(0).u32(0).u16(1).u16(1);
+        wrong.u8(value_kind::ARRAY).u16(3).u8(1).u32(3).i32(0).u32(2);
+        assert_eq!(read_request(&wrong.finish()[4..]), None);
+    }
+
+    #[test]
+    fn changed_references_come_back_in_the_answer() {
+        let answer = Invoked {
+            status: 0,
+            result: Value::Plain { kind: 0, word: 0 },
+            argument_error: 0,
+            exception: None,
+            changed: vec![Value::Plain { kind: 3, word: 9 }, Value::Text(Some(vec![65]))],
+        };
+        assert_eq!(read_invoked(body(&invoked(&answer))), Some(answer));
     }
 
     #[test]
@@ -530,6 +664,7 @@ mod tests {
                 help_context: 0,
                 status: 0,
             }),
+            changed: Vec::new(),
         };
         assert_eq!(read_invoked(body(&invoked(&answer))), Some(answer));
     }

@@ -4,14 +4,16 @@
 //! thread when it looks for messages, as Windows serves a single-threaded apartment's calls
 //! (any thread for one registered from the multithreaded apartment): an object is made through
 //! the class object's `IClassFactory` and asked for `IDispatch`, and each connection keeps the
-//! objects it was given, numbered, until it releases them or goes.
+//! objects it was given, numbered, until it releases them or goes. Arguments passed by
+//! reference are held in cells for the call and their values sent back after it (D743).
 
 use super::super::{SpinLock, thread_environment};
+use super::carry::{self, Objects};
 use super::channel;
 use crate::com::guid::{self, Guid};
 use crate::com::variant::{self, Variant, kind};
-use crate::com::wire::{self, Exception, Invoked, Request, Value};
-use crate::com::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER, HResult, S_OK, bstr};
+use crate::com::wire::{self, Exception, Invoked, Reference, Request, Value};
+use crate::com::{E_INVALIDARG, E_POINTER, HResult, S_OK, bstr};
 use crate::linux::{self, POLL_ERROR, POLL_HANG_UP, POLL_IN, Watched};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -496,7 +498,11 @@ fn serve_one(fd: usize) {
             flags,
             arguments,
             named,
-        }) => invoke(fd, object, (member, locale, flags), &arguments, &named),
+            by_reference,
+        }) => {
+            let call = (member, locale, flags);
+            invoke(fd, object, call, (&arguments, &named), &by_reference)
+        }
         Some(Request::Release { object }) => release(fd, object),
         None => {
             close_connection(fd);
@@ -561,60 +567,26 @@ fn numbers_of_names(fd: usize, object: u32, locale: u32, names: &[Vec<u16>]) -> 
     }
 }
 
-fn variant_of(fd: usize, value: &Value) -> Result<Variant, HResult> {
-    Ok(match value {
-        Value::Plain { kind, word } => Variant::new(*kind, *word),
-        Value::Decimal(bytes) => variant::decimal_variant(bytes),
-        Value::Text(None) => Variant::new(kind::BSTR, 0),
-        Value::Text(Some(units)) => {
-            let text = bstr::from_units(units);
-            if text.is_null() {
-                return Err(E_OUTOFMEMORY);
-            }
-            Variant::new(kind::BSTR, text as u64)
-        }
-        Value::Object { kind, id: 0 } => Variant::new(*kind, 0),
-        Value::Object { kind, id } => {
-            let object = object_of(fd, *id).ok_or(DISP_E_TYPEMISMATCH)?;
-            // SAFETY: a live object of the connection; the VARIANT holds its own reference.
-            unsafe { crate::com::add_reference(object) };
-            Variant::new(*kind, object as u64)
-        }
-    })
+struct ConnectionObjects {
+    fd: usize,
 }
 
-fn value_of(fd: usize, held: &Variant) -> Result<Value, HResult> {
-    // SAFETY: a valid VARIANT the program gave back.
-    let held = unsafe { variant::view(held) }?;
-    if held.kind & kind::ARRAY != 0 {
-        return Err(DISP_E_TYPEMISMATCH);
+impl Objects for ConnectionObjects {
+    fn object_value(&mut self, kind: u16, object: usize) -> Result<Value, HResult> {
+        // SAFETY: a live object a VARIANT holds; the connection takes a reference.
+        unsafe { crate::com::add_reference(object) };
+        Ok(Value::Object {
+            kind,
+            id: hand_out(self.fd, object),
+        })
     }
-    Ok(match held.kind {
-        kind::DECIMAL => Value::Decimal(variant::decimal_bytes(&held)),
-        kind::BSTR => match held.pointer() {
-            0 => Value::Text(None),
-            // SAFETY: the VARIANT holds a live BSTR.
-            text => Value::Text(Some(unsafe { bstr::units(text as *const u16) }.to_vec())),
-        },
-        kind::DISPATCH | kind::UNKNOWN => match held.pointer() {
-            0 => Value::Object {
-                kind: held.kind,
-                id: 0,
-            },
-            object => {
-                // SAFETY: a live object the VARIANT holds; the connection takes a reference.
-                unsafe { crate::com::add_reference(object) };
-                Value::Object {
-                    kind: held.kind,
-                    id: hand_out(fd, object),
-                }
-            }
-        },
-        other => Value::Plain {
-            kind: other,
-            word: held.data[0],
-        },
-    })
+
+    fn object_of(&mut self, _kind: u16, id: u32) -> Result<usize, HResult> {
+        let object = object_of(self.fd, id).ok_or(DISP_E_TYPEMISMATCH)?;
+        // SAFETY: a live object of the connection; its new holder gets its own reference.
+        unsafe { crate::com::add_reference(object) };
+        Ok(object)
+    }
 }
 
 fn exception_text(record: &[u8; EXCEPTION_BYTES], at: usize) -> Vec<u16> {
@@ -650,15 +622,23 @@ fn failed(status: HResult) -> Vec<u8> {
         },
         argument_error: 0,
         exception: None,
+        changed: Vec::new(),
     })
+}
+
+fn clear_all(values: &mut [Variant]) {
+    for value in values {
+        // SAFETY: a VARIANT this call made and owns.
+        unsafe { variant::clear(value) };
+    }
 }
 
 fn invoke(
     fd: usize,
     object: u32,
     (member, locale, flags): (i32, u32, u16),
-    arguments: &[Value],
-    named: &[i32],
+    (arguments, named): (&[Value], &[i32]),
+    by_reference: &[Reference],
 ) -> Vec<u8> {
     let Some(target) = object_of(fd, object) else {
         return failed(RPC_E_DISCONNECTED);
@@ -666,18 +646,27 @@ fn invoke(
     if named.len() > arguments.len() {
         return failed(DISP_E_BADPARAMCOUNT);
     }
+    let mut objects = ConnectionObjects { fd };
     let mut values: Vec<Variant> = Vec::new();
     for argument in arguments {
-        match variant_of(fd, argument) {
+        match carry::variant_of(&mut objects, argument) {
             Ok(value) => values.push(value),
             Err(status) => {
-                for value in &mut values {
-                    // SAFETY: a VARIANT this call made.
-                    unsafe { variant::clear(value) };
-                }
+                clear_all(&mut values);
                 return failed(status);
             }
         }
+    }
+    let mut cells: Vec<Variant> = Vec::new();
+    for reference in by_reference {
+        let index = usize::from(reference.index);
+        let owned = core::mem::replace(&mut values[index], Variant::EMPTY);
+        cells.push(owned);
+    }
+    for (reference, cell) in by_reference.iter().zip(cells.iter_mut()) {
+        let place = carry::cell_place(reference.kind, cell);
+        values[usize::from(reference.index)] =
+            Variant::new(reference.kind | kind::BYREF, place as u64);
     }
     let named_numbers = match named.is_empty() {
         true => 0,
@@ -705,14 +694,29 @@ fn invoke(
     // SAFETY: the object's `Invoke` with a `DISPPARAMS` (its arguments, named numbers and
     // counts) and room for its result, exception and argument error, all alive across the call.
     let status = unsafe { super::super::call_program_nine(method(target, SLOT_INVOKE), call) };
-    for value in &mut values {
-        // SAFETY: the arguments this call made; the callee kept its own references.
-        unsafe { variant::clear(value) };
+    for reference in by_reference {
+        values[usize::from(reference.index)] = Variant::EMPTY;
+    }
+    clear_all(&mut values);
+    let mut changed = Vec::new();
+    for (reference, cell) in by_reference.iter().zip(cells.iter_mut()) {
+        let mut now = carry::cell_value(reference.kind, cell);
+        let carried = carry::value_of(&mut objects, &now);
+        changed.push(carried.unwrap_or(Value::Plain {
+            kind: kind::EMPTY,
+            word: 0,
+        }));
+        if reference.kind == kind::DECIMAL {
+            continue;
+        }
+        // SAFETY: the value the cell held after the call, which this call owns.
+        unsafe { variant::clear(&mut now) };
+        *cell = Variant::EMPTY;
     }
     let Some(status) = status.map(|status| status as u32 as i32) else {
         return failed(E_NOTIMPL);
     };
-    let carried = value_of(fd, &result);
+    let carried = carry::value_of(&mut objects, &result);
     // SAFETY: the result the program gave, now carried.
     unsafe { variant::clear(&mut result) };
     let exception = (status == DISP_E_EXCEPTION).then(|| exception_of(&exception));
@@ -722,6 +726,7 @@ fn invoke(
             result,
             argument_error,
             exception,
+            changed,
         }),
         Err(failure) => failed(failure),
     }
