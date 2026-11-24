@@ -145,6 +145,64 @@ pub struct Exit {
     pub kind: ExitKind,
 }
 
+/// A run-time routine of the image that translated code calls with `bl`, for an operation too
+/// long to inline: the x87 instructions AArch64 has no instruction for (D702). Each takes its
+/// operands in `v16` and `v17` and returns its results there, with the status word's condition
+/// codes and exception bits it sets in `x16` (at their status-word positions); it may change
+/// `x17`, `x30` and `v18` to `v30`, and keeps every other register, NZCV and FPCR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Helper {
+    /// `v16` = sin x and `v17` = cos x of `v16` = x; C2 with both left as x when |x| >= 2^63.
+    SineCosine,
+    /// `v16` = the angle of the point (`v16`, `v17`) = (x, y), as `fpatan` gives it.
+    Arctangent,
+    /// `v16` = 2^x - 1.
+    TwoToTheMinusOne,
+    /// `v16` = log2 x.
+    LogTwo,
+    /// `v16` = log2(x + 1).
+    LogTwoOfOnePlus,
+    /// `v16` = x minus y times the truncated quotient (`fprem`), the quotient's low three bits
+    /// in C0, C3 and C1.
+    RemainderTruncated,
+    /// As [`Self::RemainderTruncated`] with the nearest quotient (`fprem1`).
+    RemainderNearest,
+    /// `v16` = x times 2 to the truncated y (`fscale`).
+    Scale,
+    /// `v16` = x's significand and `v17` = its exponent (`fxtract`); ZE for a zero.
+    Extract,
+}
+
+impl Helper {
+    /// Every routine, in the order the image carries them.
+    pub const ALL: [Helper; 9] = [
+        Helper::SineCosine,
+        Helper::Arctangent,
+        Helper::TwoToTheMinusOne,
+        Helper::LogTwo,
+        Helper::LogTwoOfOnePlus,
+        Helper::RemainderTruncated,
+        Helper::RemainderNearest,
+        Helper::Scale,
+        Helper::Extract,
+    ];
+
+    /// Its place in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// One call of a translated block to a [`Helper`]: a `brk` placeholder the image linker
+/// replaces with a `bl`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HelperCall {
+    /// The word index of the placeholder.
+    pub word: u32,
+    /// The routine it calls.
+    pub helper: Helper,
+}
+
 /// The first word of one guest instruction's code, for mapping faults back to the guest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InstructionStart {
@@ -165,6 +223,8 @@ pub struct TranslatedBlock {
     pub code: Vec<u32>,
     /// The exits, in code order.
     pub exits: Vec<Exit>,
+    /// The calls to the image's run-time routines, in code order.
+    pub calls: Vec<HelperCall>,
     /// Where each guest instruction's code starts, in order.
     pub starts: Vec<InstructionStart>,
     /// The word index of every 64-bit literal holding a guest address inside the image

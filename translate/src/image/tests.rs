@@ -385,3 +385,28 @@ fn exception_table_and_function_start_seeds_are_read() {
     assert_eq!(function_starts(&[0x80], 0), None);
     assert_eq!(function_starts(&[], 0x2000), Some(vec![]));
 }
+
+#[test]
+fn an_x87_sine_is_linked_into_a_call_to_the_images_routine() {
+    let code = [0xD9, 0xFE, 0xC3];
+    let sections = [text(&code)];
+    let seeds = [seed(TEXT, SeedOrigin::EntryPoint)];
+    let input = ImageInput {
+        image_base: BASE,
+        sections: &sections,
+        seeds: &seeds,
+    };
+    let image = translate_image(&input, MODE).unwrap();
+    let words = words(&image.code);
+    assert!(!words.contains(&encode::brk(trap::UNLINKED)));
+    let block = host_of(&image, 0x1000) as usize / 4;
+    let calls: Vec<usize> = (block..words.len())
+        .filter(|&index| words[index] & 0xFC00_0000 == 0x9400_0000)
+        .map(|index| {
+            let offset = ((words[index] << 6) as i32) >> 6;
+            (index as i64 + i64::from(offset)) as usize
+        })
+        .collect();
+    assert!(!calls.is_empty());
+    assert!(calls.iter().all(|&target| target < block && target > image.enter as usize / 4));
+}

@@ -1,6 +1,6 @@
 use super::{
-    Flags, Instruction, Logic, Lowered, Lowerer, Mnemonic, Operand, Reg, SCRATCH, Shift, Size, T0,
-    T1, T2, T3, T4, T5, T6, Width, bits, encode, state, state_access,
+    Flags, Helper, Instruction, Logic, Lowered, Lowerer, Mnemonic, Operand, Reg, SCRATCH, Shift,
+    Size, T0, T1, T2, T3, T4, T5, T6, Width, bits, encode, state, state_access,
 };
 use crate::codegen::aarch64::Cond;
 use crate::codegen::aarch64::encode::{AddSub, LoadStore, OneSource, TwoSource};
@@ -27,6 +27,10 @@ const CONDITION_C0: u8 = 8;
 const CONDITION_C1: u8 = 9;
 const CONDITION_C2: u8 = 10;
 const CONDITION_C3: u8 = 14;
+const C0: u64 = 1 << CONDITION_C0;
+const C1: u64 = 1 << CONDITION_C1;
+const C2: u64 = 1 << CONDITION_C2;
+const C3: u64 = 1 << CONDITION_C3;
 
 const DOUBLE_EXPONENT_BITS: u8 = 11;
 const DOUBLE_FRACTION_BITS: u8 = 52;
@@ -98,6 +102,18 @@ impl Lowerer {
             M::Ficom | M::Ficomp => self.x87_compare_into_status(instruction)?,
             M::Ftst => self.x87_test(),
             M::Fxam => self.x87_examine(),
+            M::Fsin => self.x87_on_top(Helper::SineCosine, V0, C1 | C2),
+            M::Fcos => self.x87_on_top(Helper::SineCosine, V1, C1 | C2),
+            M::F2xm1 => self.x87_on_top(Helper::TwoToTheMinusOne, V0, C1),
+            M::Fsincos => self.x87_sine_and_cosine(false),
+            M::Fptan => self.x87_sine_and_cosine(true),
+            M::Fpatan => self.x87_into_second(Helper::Arctangent, None),
+            M::Fyl2x => self.x87_into_second(Helper::LogTwo, Some(V1)),
+            M::Fyl2xp1 => self.x87_into_second(Helper::LogTwoOfOnePlus, Some(V1)),
+            M::Fprem => self.x87_with_second(Helper::RemainderTruncated, C0 | C1 | C2 | C3),
+            M::Fprem1 => self.x87_with_second(Helper::RemainderNearest, C0 | C1 | C2 | C3),
+            M::Fscale => self.x87_with_second(Helper::Scale, C1),
+            M::Fxtract => self.x87_extract(),
             M::Fchs => self.x87_unary(ScalarUnary::Fneg),
             M::Fabs => self.x87_unary(ScalarUnary::Fabs),
             M::Fsqrt => self.x87_unary(ScalarUnary::Fsqrt),
@@ -665,6 +681,80 @@ impl Lowerer {
         self.bfi(T5, T2, CONDITION_C2, 1);
         self.bfi(T5, T1, CONDITION_C3, 1);
         self.emit(state_access(LoadStore::Strh, T5, state::X87_STATUS));
+    }
+
+    fn x87_merge_helper_status(&mut self, defined: u64) {
+        self.emit(state_access(LoadStore::Ldrh, T0, state::X87_STATUS));
+        self.logic_immediate(Logic::And, Size::W, T0, T0, !defined & 0xFFFF);
+        self.emit(encode::logical_shifted(
+            Logic::Orr,
+            false,
+            Size::W,
+            T0,
+            T0,
+            ADDRESS,
+            Shift::Lsl,
+            0,
+        ));
+        self.emit(state_access(LoadStore::Strh, T0, state::X87_STATUS));
+    }
+
+    fn x87_on_top(&mut self, helper: Helper, result: u8, defined: u64) {
+        self.x87_top();
+        self.x87_load_st0(V0);
+        self.call_helper(helper);
+        self.x87_access(VectorLoadStore::StrD, result, SLOT);
+        self.x87_merge_helper_status(defined);
+    }
+
+    fn x87_sine_and_cosine(&mut self, tangent: bool) {
+        let out_of_range = self.asm.label();
+        self.x87_top();
+        self.x87_load_st0(V0);
+        self.call_helper(Helper::SineCosine);
+        self.x87_merge_helper_status(C1 | C2);
+        self.asm.tbz(ADDRESS, CONDITION_C2, out_of_range, true);
+        if tangent {
+            self.emit(simd::scalar(Scalar::Fdiv, Float::Double, V0, V0, V1));
+            self.emit(simd::float_one(Float::Double, V1));
+        }
+        self.x87_access(VectorLoadStore::StrD, V0, SLOT);
+        self.x87_push(V1);
+        self.asm.bind(out_of_range);
+    }
+
+    fn x87_load_first_two(&mut self) {
+        self.x87_top();
+        self.x87_load_st0(V0);
+        self.x87_slot(1, OTHER_SLOT);
+        self.x87_access(VectorLoadStore::LdrD, V1, OTHER_SLOT);
+    }
+
+    fn x87_into_second(&mut self, helper: Helper, multiplied_by_second: Option<u8>) {
+        self.x87_load_first_two();
+        self.call_helper(helper);
+        if let Some(second) = multiplied_by_second {
+            self.emit(simd::scalar(Scalar::Fmul, Float::Double, V0, V0, second));
+        }
+        self.x87_access(VectorLoadStore::StrD, V0, OTHER_SLOT);
+        self.x87_pop(1);
+        self.x87_merge_helper_status(C1);
+    }
+
+    fn x87_with_second(&mut self, helper: Helper, defined: u64) {
+        self.x87_load_first_two();
+        self.call_helper(helper);
+        self.x87_access(VectorLoadStore::StrD, V0, SLOT);
+        self.x87_merge_helper_status(defined);
+    }
+
+    fn x87_extract(&mut self) {
+        self.x87_top();
+        self.x87_load_st0(V0);
+        self.call_helper(Helper::Extract);
+        self.x87_access(VectorLoadStore::StrD, V1, SLOT);
+        self.x87_push(V0);
+        self.x87_merge_helper_status(C1);
     }
 
     fn x87_load_control(&mut self, instruction: &Instruction) -> Lowered {

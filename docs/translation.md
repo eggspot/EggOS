@@ -61,7 +61,7 @@ zone rather than below where the thread last called the layer.
 | Atomics and order | `lock` with `add` ... `xor`, `inc`, `dec`, `not`, `neg`, `xadd`, `xchg`, `cmpxchg`, `cmpxchg8b`, `cmpxchg16b`, `bts`/`btr`/`btc`; `mfence`, `lfence`, `sfence`, `pause` |
 | Strings | `movs`, `cmps`, `stos`, `lods`, `scas` with `rep`/`repe`/`repne`, `xlat` |
 | SSE, SSE2 | scalar and packed single and double arithmetic, compares, conversions, moves (aligned, unaligned, half, non-temporal), logic, shuffles and unpacks, the 128-bit integer set (`paddb` ... `pxor`, shifts, `pmovmskb`, `pinsrw`, `pextrw`, `pshufd`, ...), `movd`/`movq`, `ldmxcsr`, `stmxcsr` |
-| x87, minimal | `fld`/`fst`/`fstp` (32, 64, 80-bit memory and `st(i)`), `fild`/`fist`/`fistp` (16, 32, 64), `fadd`, `fsub`, `fsubr`, `fmul`, `fdiv`, `fdivr` and their `p` forms, `fxch`, `fchs`, `fabs`, `fsqrt`, `frndint`, `fld1`, `fldz`, `fldpi`, `fldl2e`, `fldl2t`, `fldlg2`, `fldln2`, `fcom`, `fucom` (and `p`, `pp`), `fcomi`, `fucomi` (and `p`), `fldcw`, `fnstcw`, `fnstsw`, `fnclex`, `fninit`, `fwait` |
+| x87, minimal | `fld`/`fst`/`fstp` (32, 64, 80-bit memory and `st(i)`), `fild`/`fist`/`fistp` (16, 32, 64), `fadd`, `fsub`, `fsubr`, `fmul`, `fdiv`, `fdivr` and their `p` forms, `fxch`, `fchs`, `fabs`, `fsqrt`, `frndint`, `fld1`, `fldz`, `fldpi`, `fldl2e`, `fldl2t`, `fldlg2`, `fldln2`, `fcom`, `fucom` (and `p`, `pp`), `fcomi`, `fucomi` (and `p`), `fldcw`, `fnstcw`, `fnstsw`, `fnclex`, `fninit`, `fwait`; through the image's routines (D702): `fsin`, `fcos`, `fsincos`, `fptan`, `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`, `fprem`, `fprem1`, `fscale`, `fxtract` |
 | System | `syscall` (macOS programs that trap directly), `cpuid`, `rdtsc`, `rdtscp`, `xgetbv`, `rdrand`, `rdseed`, `endbr64`, `nop` forms, prefetches, `clflush` |
 
 Not translated, with the reason the decoder gives (`Refusal`): VEX (AVX, AVX2, FMA, BMI2,
@@ -216,6 +216,19 @@ JavaScript engines) cannot be translated ahead of time. Guest pages never become
 `VirtualProtect`/`VirtualAlloc` with an execute right, or `mprotect` with `PROT_EXEC`, fails
 with the layer's "not supported" error and a log line naming the program. x87 arithmetic runs
 in double precision, not 80-bit extended; 80-bit loads and stores convert.
+
+**Run-time routines (D702).** The x87 operations AArch64 has no instruction for are routines
+every image carries after its dispatch and entry trampoline. A block calls one with a `bl`
+the image linker patches like an exit (`TranslatedBlock::calls`); operands go in `v16` and
+`v17`, results come back there with the condition codes and exception bits in `x16`, and the
+routine keeps every other register, NZCV and FPCR (it saves `x22`-`x28` and NZCV on `sp`).
+The sine and cosine reduce by π/2 in four parts and sum Taylor series to r^17 and r^18; the
+arctangent halves its argument twice after reflecting it into [0, 1]; the logarithms reduce to
+a significand in [√½, √2] and sum the series of atanh; 2^x - 1 sums the series of e^z - 1;
+`fprem` and `fprem1` divide the significands as integers, so their remainders are exact and
+complete (C2 always clear); `fscale` scales in three steps of at most 2^±1000. Arguments of
+`fsin`, `fcos`, `fsincos` and `fptan` of magnitude 2^63 or more set C2 and change nothing, as
+on x86.
 
 ## The cache
 

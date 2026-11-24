@@ -524,6 +524,11 @@ pub fn b(offset_words: i32) -> u32 {
     0x1400_0000 | ((offset_words as u32) & 0x03FF_FFFF)
 }
 
+/// `bl`: a call `offset_words` instructions away (within 128 MiB), the return address in `x30`.
+pub fn bl(offset_words: i32) -> u32 {
+    0x9400_0000 | ((offset_words as u32) & 0x03FF_FFFF)
+}
+
 /// `b.cond`: a conditional branch within 1 MiB.
 pub fn b_cond(cond: Cond, offset_words: i32) -> u32 {
     0x5400_0000 | (((offset_words as u32) & 0x7_FFFF) << 5) | (cond as u32)

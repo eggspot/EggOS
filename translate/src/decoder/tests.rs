@@ -958,6 +958,22 @@ fn x87_memory_and_register_forms_decode() {
     check(&[0xD9, 0xC9], Mnemonic::Fxch, Width::Tbyte, &[st(1)]);
     check(&[0xD9, 0xE4], Mnemonic::Ftst, Width::Tbyte, &[]);
     check(&[0xD9, 0xE5], Mnemonic::Fxam, Width::Tbyte, &[]);
+    for (byte, mnemonic) in [
+        (0xF0, Mnemonic::F2xm1),
+        (0xF1, Mnemonic::Fyl2x),
+        (0xF2, Mnemonic::Fptan),
+        (0xF3, Mnemonic::Fpatan),
+        (0xF4, Mnemonic::Fxtract),
+        (0xF5, Mnemonic::Fprem1),
+        (0xF8, Mnemonic::Fprem),
+        (0xF9, Mnemonic::Fyl2xp1),
+        (0xFB, Mnemonic::Fsincos),
+        (0xFD, Mnemonic::Fscale),
+        (0xFE, Mnemonic::Fsin),
+        (0xFF, Mnemonic::Fcos),
+    ] {
+        check(&[0xD9, byte], mnemonic, Width::Tbyte, &[]);
+    }
     check(
         &[0xDA, 0x00],
         Mnemonic::Fiadd,
@@ -1028,7 +1044,7 @@ fn x87_memory_and_register_forms_decode() {
     check(&[0xD9, 0xFA], Mnemonic::Fsqrt, Width::Tbyte, &[]);
     check(&[0xD9, 0xFC], Mnemonic::Frndint, Width::Tbyte, &[]);
     check(&[0xD9, 0xEB], Mnemonic::Fldpi, Width::Tbyte, &[]);
-    assert_eq!(refused(&[0xD9, 0xF0]), Refusal::X87);
+    assert_eq!(refused(&[0xD9, 0xF6]), Refusal::X87);
     assert_eq!(refused(&[0xDD, 0x08]), Refusal::Sse3);
     assert_eq!(refused(&[0xD9, 0x30]), Refusal::X87);
     assert_eq!(error(&[0xD9, 0x08]), DecodeErrorKind::Invalid);

@@ -1,6 +1,7 @@
 //! The run-time routines every translated image carries at the start of its code: the
-//! indirect dispatch, and the entry trampoline through which native code (the layers) runs
-//! guest code and gets control back when it returns.
+//! indirect dispatch, the entry trampoline through which native code (the layers) runs guest
+//! code and gets control back when it returns, and the x87 routines translated code calls
+//! ([`super::x87_math`], D702).
 
 use alloc::vec::Vec;
 
@@ -12,7 +13,7 @@ use crate::codegen::aarch64::encode::{
 use crate::codegen::aarch64::simd::{VectorLoadStore, vector_load_store};
 use crate::codegen::aarch64::{Reg, Shift, Size};
 use crate::codegen::registers::{ADDRESS, ENTRIES, GS_BASE, SCRATCH, SHADOW_STACK, STATE};
-use crate::codegen::trap;
+use crate::codegen::{Helper, trap};
 
 /// The byte offsets of the table `x19` points to at run time.
 pub mod entries_table {
@@ -86,6 +87,15 @@ pub struct Routines {
     pub enter: u32,
     /// The word index where a guest return to [`super::RETURN_TO_NATIVE_RVA`] lands.
     pub return_to_native: u32,
+    /// The word index of each [`Helper`], in [`Helper::ALL`]'s order.
+    pub helpers: [u32; Helper::ALL.len()],
+}
+
+impl Routines {
+    /// The word index of `helper`.
+    pub fn helper(&self, helper: Helper) -> u32 {
+        self.helpers[helper.index()]
+    }
 }
 
 fn load(t: Reg, n: Reg, offset: u32) -> u32 {
@@ -385,6 +395,7 @@ pub fn routines(bits: u8) -> Result<Routines, EmitError> {
     }
     let enter = asm.position();
     let return_to_native = emit_enter(&mut asm, dispatch);
+    let helpers = super::x87_math::emit(&mut asm);
     let assembled = asm.finish()?;
     let mut words = assembled.words;
     if words.len() % 2 == 1 {
@@ -395,5 +406,6 @@ pub fn routines(bits: u8) -> Result<Routines, EmitError> {
         dispatch: 0,
         enter,
         return_to_native,
+        helpers,
     })
 }

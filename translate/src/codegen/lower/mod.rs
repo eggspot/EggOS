@@ -6,8 +6,8 @@ use super::aarch64::{Access, Cond, Reg, Shift, Size};
 use super::flags::{self, Flags};
 use super::registers::{ADDRESS, GS_BASE, SCRATCH, STATE, TEMPORARIES, guest};
 use super::{
-    Block, BlockEnd, CodegenMode, Exit, ExitKind, InstructionStart, LowerError, LowerErrorKind,
-    TranslatedBlock, state, trap,
+    Block, BlockEnd, CodegenMode, Exit, ExitKind, Helper, HelperCall, InstructionStart,
+    LowerError, LowerErrorKind, TranslatedBlock, state, trap,
 };
 use crate::decoder::DecodeErrorKind;
 use crate::instruction::{
@@ -124,6 +124,7 @@ struct Lowerer {
     live: Flags,
     mnemonic: Mnemonic,
     exits: Vec<(u32, ExitKind)>,
+    calls: Vec<HelperCall>,
     starts: Vec<InstructionStart>,
     guest_literals: Vec<Literal>,
 }
@@ -142,6 +143,7 @@ pub(super) fn lower(
         live: live_out,
         mnemonic: Mnemonic::Nop,
         exits: Vec::new(),
+        calls: Vec::new(),
         starts: Vec::new(),
         guest_literals: Vec::new(),
     };
@@ -194,6 +196,7 @@ pub(super) fn lower(
             .into_iter()
             .map(|(word, kind)| Exit { word, kind })
             .collect(),
+        calls: lowerer.calls,
         starts: lowerer.starts,
         guest_address_literals: lowerer
             .guest_literals
@@ -858,6 +861,14 @@ impl Lowerer {
         self.exits.push((self.asm.position(), kind));
         self.emit(encode::brk(trap::UNLINKED));
         self.carry = sense;
+    }
+
+    fn call_helper(&mut self, helper: Helper) {
+        self.calls.push(HelperCall {
+            word: self.asm.position(),
+            helper,
+        });
+        self.emit(encode::brk(trap::UNLINKED));
     }
 
     fn normalize_for_exit(&mut self) {

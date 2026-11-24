@@ -11,7 +11,7 @@ use crate::codegen::aarch64::encode::{self, AddSub};
 use crate::codegen::flags::Flags;
 use crate::codegen::registers::{ADDRESS, SCRATCH};
 use crate::codegen::{
-    Block, BlockEnd, CodegenMode, ExitKind, LowerError, LowerErrorKind, TranslatedBlock,
+    Block, BlockEnd, CodegenMode, ExitKind, Helper, LowerError, LowerErrorKind, TranslatedBlock,
     translate_block, trap,
 };
 use crate::{DecodeErrorKind, Refusal};
@@ -131,6 +131,7 @@ struct Piece {
     guest: Option<u64>,
     words: Vec<u32>,
     exits: Vec<(u32, ExitKind)>,
+    calls: Vec<(u32, Helper)>,
     starts: Vec<(u32, u64)>,
     literals: Vec<u32>,
 }
@@ -144,6 +145,11 @@ impl Piece {
                 .exits
                 .iter()
                 .map(|exit| (exit.word, exit.kind))
+                .collect(),
+            calls: block
+                .calls
+                .iter()
+                .map(|call| (call.word, call.helper))
                 .collect(),
             starts: block
                 .starts
@@ -164,6 +170,7 @@ impl Piece {
                 (guest >> 32) as u32,
             ],
             exits: Vec::new(),
+            calls: Vec::new(),
             starts: alloc::vec![(0, guest)],
             literals: alloc::vec![2],
         }
@@ -387,6 +394,14 @@ fn branch(at: u32, target: u32) -> Result<u32, ImageError> {
     Ok(encode::b(delta as i32))
 }
 
+fn call(at: u32, target: u32) -> Result<u32, ImageError> {
+    let delta = i64::from(target) - i64::from(at);
+    if !(-BRANCH_REACH_WORDS..BRANCH_REACH_WORDS).contains(&delta) {
+        return Err(ImageError::TooLarge);
+    }
+    Ok(encode::bl(delta as i32))
+}
+
 fn veneer(at: u32, target: u32) -> [u32; VENEER_WORDS as usize] {
     let at_bytes = i64::from(at) * 4;
     let target_bytes = i64::from(target) * 4;
@@ -475,6 +490,9 @@ pub(crate) fn translate_image_with(
                 },
             };
             code[word as usize] = branch(at, target)?;
+        }
+        for &(word, helper) in &piece.calls {
+            code[word as usize] = call(offset + word, routines.helper(helper))?;
         }
         words.extend_from_slice(&code);
         for &(word, guest) in &piece.starts {

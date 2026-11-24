@@ -610,6 +610,18 @@ fn every_x87_form_lowers() {
         &[0xDF, 0xE0],
         &[0xDB, 0xE3],
         &[0x9B, 0xDB, 0xE2],
+        &[0xD9, 0xF0],
+        &[0xD9, 0xF1],
+        &[0xD9, 0xF2],
+        &[0xD9, 0xF3],
+        &[0xD9, 0xF4],
+        &[0xD9, 0xF5],
+        &[0xD9, 0xF8],
+        &[0xD9, 0xF9],
+        &[0xD9, 0xFB],
+        &[0xD9, 0xFD],
+        &[0xD9, 0xFE],
+        &[0xD9, 0xFF],
     ];
     for mode in [ORDERED, TSO, CodegenMode::default()] {
         for bytes in sequences {
@@ -652,4 +664,14 @@ fn every_string_and_legacy_integer_form_lowers() {
             );
         }
     }
+}
+
+#[test]
+fn fsin_calls_the_sine_routine_through_an_unlinked_placeholder() {
+    let block = translate_block(&straight(&[0xD9, 0xFE]), ORDERED, Flags::ALL).unwrap();
+    assert_eq!(block.calls.len(), 1);
+    assert_eq!(block.calls[0].helper, crate::codegen::Helper::SineCosine);
+    assert_eq!(block.code[block.calls[0].word as usize], UNLINKED);
+    let fpatan = translate_block(&straight(&[0xD9, 0xF3]), ORDERED, Flags::ALL).unwrap();
+    assert_eq!(fpatan.calls[0].helper, crate::codegen::Helper::Arctangent);
 }

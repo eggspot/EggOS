@@ -15,6 +15,7 @@ mod link;
 mod liveness;
 pub mod runtime;
 mod seeds;
+mod x87_math;
 #[cfg(test)]
 mod tests;
 

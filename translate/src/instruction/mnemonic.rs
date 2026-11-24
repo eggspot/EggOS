@@ -699,6 +699,30 @@ pub enum Mnemonic {
     Ftst,
     /// `fxam`: classifies `st(0)` into the condition codes.
     Fxam,
+    /// `fsin`: the sine of `st(0)`.
+    Fsin,
+    /// `fcos`: the cosine of `st(0)`.
+    Fcos,
+    /// `fsincos`: `st(0)` becomes its sine and its cosine is pushed.
+    Fsincos,
+    /// `fptan`: `st(0)` becomes its tangent and 1.0 is pushed.
+    Fptan,
+    /// `fpatan`: `st(1)` becomes the angle of the point (`st(0)`, `st(1)`), then a pop.
+    Fpatan,
+    /// `f2xm1`: `st(0)` becomes 2 to the `st(0)` minus 1.
+    F2xm1,
+    /// `fyl2x`: `st(1)` becomes `st(1)` times log2 `st(0)`, then a pop.
+    Fyl2x,
+    /// `fyl2xp1`: `st(1)` becomes `st(1)` times log2(`st(0)` + 1), then a pop.
+    Fyl2xp1,
+    /// `fprem`: the partial remainder of `st(0)` by `st(1)`, the quotient truncated.
+    Fprem,
+    /// `fprem1`: as `fprem`, the quotient rounded to nearest.
+    Fprem1,
+    /// `fscale`: `st(0)` times 2 to the truncated `st(1)`.
+    Fscale,
+    /// `fxtract`: `st(0)` becomes its exponent and its significand is pushed.
+    Fxtract,
 }
 
 impl Mnemonic {
