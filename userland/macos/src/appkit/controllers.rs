@@ -180,7 +180,14 @@ object_property!(
     window_fields,
     storyboard
 );
-object_property!(document, set_document, window_fields, document);
+extern "C" fn document(this: Id, _: Sel) -> Id {
+    window_fields(this).document
+}
+
+extern "C" fn set_document(this: Id, _: Sel, document: Id) {
+    window_fields(this).document = document;
+    super::document::synchronize_window_title(this);
+}
 
 extern "C" fn nib_name(this: Id, _: Sel) -> Id {
     view_fields(this).nib_name
@@ -439,6 +446,16 @@ extern "C" fn set_window_templates(this: Id, _: Sel, templates: Id) {
     store(&mut window_fields(this).templates, templates);
 }
 
+extern "C" fn title_for_display_name(_: Id, _: Sel, name: Id) -> Id {
+    name
+}
+
+extern "C" fn no(_: Id, _: Sel) -> u8 {
+    0
+}
+
+extern "C" fn ignore_flag(_: Id, _: Sel, _: u8) {}
+
 extern "C" fn window_init(this: Id, _: Sel) -> Id {
     this
 }
@@ -473,7 +490,6 @@ extern "C" fn window_dealloc(this: Id, _: Sel) {
         &mut fields.content,
         &mut fields.nib_name,
         &mut fields.storyboard,
-        &mut fields.document,
         &mut fields.templates,
     ] {
         store(slot, core::ptr::null_mut());
@@ -500,6 +516,7 @@ extern "C" fn window(this: Id, _: Sel) -> Id {
             }
             send(this, sel!("windowDidLoad"));
         }
+        super::document::synchronize_window_title(this);
     }
     window_fields(this).window
 }
@@ -634,6 +651,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setStoryboard:" => set_window_storyboard,
         "document" => document,
         "setDocument:" => set_document,
+        "windowTitleForDocumentDisplayName:" => title_for_display_name,
+        "shouldCloseDocument" => no,
+        "setShouldCloseDocument:" => ignore_flag,
         "performSegueWithIdentifier:sender:" => window_perform_segue,
         "shouldPerformSegueWithIdentifier:sender:" => should_perform,
         "prepareForSegue:sender:" => prepare,

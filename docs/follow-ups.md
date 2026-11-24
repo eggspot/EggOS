@@ -247,7 +247,7 @@ and is not listed per item.
 - [x] Common controls: `LVS_OWNERDATA` virtual lists with `LVN_ODCACHEHINT`; ANSI notifications to ANSI parents (D402, D403) — code written, unbuilt: D747
 - [x] msvcp140 iostreams: `wchar_t` streams (`wcout`, `wcin`), `num_put`/`numpunct`/`codecvt` facets, `ios_base::failure` thrown when enabled (D405) — code written, unbuilt: D748
 - [ ] macOS: storyboard segues (`performSegueWithIdentifier:sender:`, `prepareForSegue:`), split and tab view controllers, child view controllers (D406)
-- [ ] macOS: `NSDocument` with its window controllers (D406)
+- [x] macOS: `NSDocument` with its window controllers (D406) — code written, unbuilt, D750
 - [ ] macOS: utility-panel and floating-panel window levels (D407)
 - [ ] macOS: `RegisterEventHotKey` (Carbon hot keys through the window server's global hot keys) (D398)
 - [ ] macOS: ambiguous and non-public bases in `__dynamic_cast` (D408; `bad_cast`/`bad_typeid` thrown code written, unbuilt: D700)

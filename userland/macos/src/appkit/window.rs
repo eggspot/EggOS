@@ -569,7 +569,11 @@ extern "C" fn perform_close(this: Id, _: Sel, _: Id) {
     if responds(delegate, should_close) && !send_bool(delegate, should_close, this as usize) {
         return;
     }
+    if !super::document::may_close_window(this) {
+        return;
+    }
     close(this, true);
+    super::document::window_closed(this);
 }
 
 extern "C" fn is_visible(this: Id, _: Sel) -> u8 {

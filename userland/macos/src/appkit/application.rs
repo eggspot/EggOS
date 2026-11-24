@@ -163,6 +163,9 @@ fn finish_launching() {
         sel!("applicationDidFinishLaunching:"),
         foundation::APPLICATION_DID_FINISH_LAUNCHING,
     );
+    if any_shown().is_none() {
+        super::document::open_untitled_at_launch(application(), delegate());
+    }
 }
 
 /// Ends the app as `terminate:` does, unless the delegate cancels.
@@ -197,15 +200,28 @@ fn responder_for(window: Id, action: Sel) -> Option<Id> {
         if responds(window_delegate, action) {
             return Some(window_delegate);
         }
+        if let Some((owner, window_controller)) = super::document::owner_of_window(window) {
+            if responds(window_controller, action) {
+                return Some(window_controller);
+            }
+            if responds(owner, action) {
+                return Some(owner);
+            }
+        }
     }
-    [application(), delegate()]
-        .into_iter()
-        .find(|&candidate| responds(candidate, action))
+    [
+        application(),
+        delegate(),
+        super::document::existing_controller(),
+    ]
+    .into_iter()
+    .find(|&candidate| responds(candidate, action))
 }
 
 /// Sends `action` from `sender` to `target`, or along the responder chain when `target` is
-/// nil: the key window's first responder and its superviews, the window, its delegate, the
-/// application and its delegate. Whether something took it.
+/// nil: the key window's first responder and its superviews, the window, its delegate, its
+/// document's window controller and document, the application, its delegate and the shared
+/// document controller. Whether something took it.
 pub fn send_action(action: Sel, target: Id, sender: Id) -> bool {
     send_action_in(key_window(), action, target, sender)
 }

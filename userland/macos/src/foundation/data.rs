@@ -16,6 +16,7 @@ use crate::objc::root::{self, NSOBJECT};
 use crate::objc::{Runtime, methods};
 
 const SHOWN_BYTES: usize = 24;
+const WRITE_ATOMIC: usize = 1;
 const READ_CHUNK: usize = 4096;
 const HEXADECIMAL: &[u8; 16] = b"0123456789abcdef";
 
@@ -179,6 +180,59 @@ extern "C" fn data_with_contents_of_file(this: Id, _: Sel, path: Id) -> Id {
     };
     contents.free();
     made
+}
+
+fn path_of_url(url: Id) -> Id {
+    match url.is_null() {
+        true => url,
+        false => crate::objc::send(url, crate::objc::sel!("path")),
+    }
+}
+
+extern "C" fn data_with_contents_of_url(this: Id, sel: Sel, url: Id) -> Id {
+    data_with_contents_of_file(this, sel, path_of_url(url))
+}
+
+extern "C" fn data_with_contents_of_url_options(
+    this: Id,
+    sel: Sel,
+    url: Id,
+    _options: usize,
+    error: *mut Id,
+) -> Id {
+    let made = data_with_contents_of_url(this, sel, url);
+    if made.is_null() && !error.is_null() {
+        // SAFETY: the program passes room for an error object or null, checked above.
+        unsafe { error.write(core::ptr::null_mut()) };
+    }
+    made
+}
+
+extern "C" fn write_to_file(this: Id, _: Sel, path: Id, atomically: u8) -> u8 {
+    u8::from(super::file_manager::write_contents(
+        path,
+        bytes_of(this),
+        atomically != 0,
+    ))
+}
+
+extern "C" fn write_to_url(this: Id, sel: Sel, url: Id, atomically: u8) -> u8 {
+    write_to_file(this, sel, path_of_url(url), atomically)
+}
+
+extern "C" fn write_to_url_options(
+    this: Id,
+    sel: Sel,
+    url: Id,
+    options: usize,
+    error: *mut Id,
+) -> u8 {
+    let written = write_to_url(this, sel, url, u8::from(options & WRITE_ATOMIC != 0));
+    if written == 0 && !error.is_null() {
+        // SAFETY: the program passes room for an error object or null, checked above.
+        unsafe { error.write(core::ptr::null_mut()) };
+    }
+    written
 }
 
 extern "C" fn init(this: Id, _: Sel) -> Id {
@@ -377,12 +431,17 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "copyWithZone:" => copy_with_zone,
         "mutableCopyWithZone:" => mutable_copy_with_zone,
         "dealloc" => dealloc,
+        "writeToFile:atomically:" => write_to_file,
+        "writeToURL:atomically:" => write_to_url,
+        "writeToURL:options:error:" => write_to_url_options,
     ];
     let class = methods![
         "data" => data,
         "dataWithBytes:length:" => data_with_bytes,
         "dataWithData:" => data_with_data,
         "dataWithContentsOfFile:" => data_with_contents_of_file,
+        "dataWithContentsOfURL:" => data_with_contents_of_url,
+        "dataWithContentsOfURL:options:error:" => data_with_contents_of_url_options,
     ];
     let mutable_instance = methods![
         "appendBytes:length:" => eggos_guarded_append_bytes,

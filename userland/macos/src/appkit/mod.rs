@@ -35,6 +35,7 @@ mod screen;
 mod scroll_view;
 mod server;
 mod sound;
+mod document;
 mod segues;
 mod storyboard;
 mod table_view;
@@ -100,6 +101,8 @@ class_pairs! {
     NSWINDOWCONTROLLER, NSWINDOWCONTROLLER_META;
     NSSTORYBOARD, NSSTORYBOARD_META;
     NSSTORYBOARDSEGUE, NSSTORYBOARDSEGUE_META;
+    NSDOCUMENT, NSDOCUMENT_META;
+    NSDOCUMENTCONTROLLER, NSDOCUMENTCONTROLLER_META;
     NSSTORYBOARDSEGUETEMPLATE, NSSTORYBOARDSEGUETEMPLATE_META;
     NSPANEL, NSPANEL_META;
     NSABOUTPANEL, NSABOUTPANEL_META;
@@ -231,6 +234,7 @@ pub fn set_up() -> bool {
             && controllers::define(runtime)
             && storyboard::define(runtime)
             && segues::define(runtime)
+            && document::define(runtime)
             && panel::define(runtime)
             && layout::define(runtime)
             && layout::extend_views(runtime)
@@ -259,6 +263,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSStoryboard" => class(&NSSTORYBOARD_META),
         b"_OBJC_CLASS_$_NSStoryboardSegue" => class(&NSSTORYBOARDSEGUE),
         b"_OBJC_METACLASS_$_NSStoryboardSegue" => class(&NSSTORYBOARDSEGUE_META),
+        b"_OBJC_CLASS_$_NSDocument" => class(&NSDOCUMENT),
+        b"_OBJC_METACLASS_$_NSDocument" => class(&NSDOCUMENT_META),
+        b"_OBJC_CLASS_$_NSDocumentController" => class(&NSDOCUMENTCONTROLLER),
+        b"_OBJC_METACLASS_$_NSDocumentController" => class(&NSDOCUMENTCONTROLLER_META),
         b"_OBJC_CLASS_$_NSResponder" => class(&NSRESPONDER),
         b"_OBJC_METACLASS_$_NSResponder" => class(&NSRESPONDER_META),
         b"_OBJC_CLASS_$_NSView" => class(&NSVIEW),

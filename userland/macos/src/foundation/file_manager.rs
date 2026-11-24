@@ -69,7 +69,7 @@ pub fn cocoa_code(errno: u16, reading: bool) -> isize {
 }
 
 #[cfg(eggos_user)]
-pub use manager::{define, resolve};
+pub use manager::{define, resolve, write_contents};
 
 #[cfg(eggos_user)]
 mod manager {
@@ -116,6 +116,7 @@ mod manager {
     const TILDE: &[u8] = b"~";
     const WRITE_ONLY: u32 = 1;
     const DEFAULT_TEMPORARY: &[u8] = b"/tmp/";
+    const SAVING_SUFFIX: &[u8] = b".saving~";
 
     static DEFAULT_MANAGER: AtomicUsize = AtomicUsize::new(0);
 
@@ -669,6 +670,28 @@ mod manager {
         let written = linux::write_all(fd, contents);
         let _ = linux::close(fd);
         written
+    }
+
+    /// Writes `contents` to the file at the string `path`, replacing it; when `atomically`,
+    /// through a file beside it renamed over the old one, so a reader never sees half of it.
+    pub fn write_contents(path: Id, contents: &[u8], atomically: bool) -> bool {
+        let Some(target) = Path::of(path) else {
+            return false;
+        };
+        if !atomically {
+            return write_file(&target, contents).is_ok();
+        }
+        let Some(mut beside) = Path::new(target.text()) else {
+            return false;
+        };
+        if !beside.push_bytes(SAVING_SUFFIX) || write_file(&beside, contents).is_err() {
+            return false;
+        }
+        if rename(&beside, &target).is_ok() {
+            return true;
+        }
+        let _ = remove_entry(&beside, false);
+        false
     }
 
     extern "C" fn create_file(_: Id, _: Sel, path: Id, contents: Id, _attributes: Id) -> u8 {
