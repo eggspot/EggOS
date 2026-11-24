@@ -230,7 +230,7 @@ and is not listed per item.
 - [ ] Common controls: per-subitem custom draw (`CDRF_NOTIFYSUBITEMDRAW`), `CDRF_NEWFONT`, custom draw for trackbars, toolbar item states and `TBCDRF_*` (D353, D367, D368; per-subitem custom draw code written, unbuilt: D717; left: `CDRF_NEWFONT` (the controls draw with one font), trackbars, toolbar states and `TBCDRF_*`)
 - [x] Common controls: label editing started by a slow second click, the edit growing with its text (D354, D361; D718)
 - [x] Tray: `NIN_POPUPOPEN` and `WM_MOUSEMOVE` (version 4), double clicks, `NIN_KEYSELECT`/`NIM_SETFOCUS`, `Shell_NotifyIconGetRect`, `NIN_BALLOONTIMEOUT`/`NIN_BALLOONHIDE`, submenus in shell menus (D357, D364, D370, D371; D719, D720)
-- [ ] Layered windows: `UpdateLayeredWindowIndirect` with `prcDirty`, `AlphaBlend` writing alpha, child layered windows (D366, D369)
+- [x] Layered windows: `UpdateLayeredWindowIndirect` with `prcDirty`, `AlphaBlend` writing alpha, child layered windows (D366, D369; D721)
 - [ ] Foundation: an index for NSSet and NSCountedSet and the `nsdictionary_lookup` benchmark (D359)
 - [ ] Foundation: binary property lists written (NSKeyedArchiver's default), `$classes` hierarchy, NSError for damaged archives, secure coding's allowed classes, `decodeBytesForKey:returnedLength:` (D360, D365)
 - [ ] AppKit: view-based NSTableView, multiple selection with a full NSIndexSet, sorting, per-row heights, row hover through `mouseMoved:` (D373)

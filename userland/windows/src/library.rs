@@ -44,11 +44,12 @@ pub enum Library {
     Msvcrt,
     Ws2_32,
     Msvcp140,
+    Msimg32,
 }
 
 impl Library {
     /// Every library, in a fixed order (a module handle is its place in it).
-    pub const ALL: [Library; 26] = [
+    pub const ALL: [Library; 27] = [
         Library::Kernel32,
         Library::Ntdll,
         Library::Shell32,
@@ -75,6 +76,7 @@ impl Library {
         Library::Msvcrt,
         Library::Ws2_32,
         Library::Msvcp140,
+        Library::Msimg32,
     ];
 
     /// Its name, as [`library`] finds it.
@@ -106,11 +108,12 @@ impl Library {
             Library::Msvcrt => b"msvcrt",
             Library::Ws2_32 => b"ws2_32",
             Library::Msvcp140 => b"msvcp140",
+            Library::Msimg32 => b"msimg32",
         }
     }
 }
 
-const SMALLER_LIBRARIES: usize = 17;
+const SMALLER_LIBRARIES: usize = 18;
 
 /// One function a library exports: its name and its address in the layer.
 #[derive(Debug, Clone, Copy)]
@@ -216,6 +219,7 @@ mod tests {
         assert_eq!(library(b"MSVCRT.dll"), Some(Library::Msvcrt));
         assert_eq!(library(b"msvcrt"), Some(Library::Msvcrt));
         assert_eq!(library(b"WS2_32.dll"), Some(Library::Ws2_32));
+        assert_eq!(library(b"MSIMG32.dll"), Some(Library::Msimg32));
         assert_eq!(library(b"MSVCP140.dll"), Some(Library::Msvcp140));
         assert_eq!(library(b"msvcp140_1.dll"), Some(Library::Msvcp140));
         assert_eq!(

@@ -119,15 +119,21 @@ extern "efiapi" fn set_layered_window_attributes(
 fn set_layered(window: usize, key: u32, alpha: u8, flags: u32, pixel_alpha: bool) -> Bool {
     let found = try_with(|gui| {
         let entry = gui.window(window)?;
-        if entry.ex_style & WS_EX_LAYERED == 0 || entry.is_child() {
+        if entry.ex_style & WS_EX_LAYERED == 0 {
             return Err(error::INVALID_PARAMETER);
         }
-        Ok((entry.server, gui.device))
+        Ok((entry.server, gui.device, entry.is_child()))
     });
-    let (server, device) = match found {
+    let (server, device, child) = match found {
         Ok(found) => found,
         Err(code) => return fail(code, FALSE),
     };
+    if child {
+        remember_layered(window, key, alpha, flags);
+        super::layered_child::note_layered_child();
+        super::controls::invalidate(window);
+        return TRUE;
+    }
     let mut server_flags = 0;
     if flags & LWA_ALPHA != 0 {
         server_flags |= SERVER_ALPHA;
@@ -145,6 +151,11 @@ fn set_layered(window: usize, key: u32, alpha: u8, flags: u32, pixel_alpha: bool
     {
         return fail(error::INVALID_PARAMETER, FALSE);
     }
+    remember_layered(window, key, alpha, flags);
+    TRUE
+}
+
+fn remember_layered(window: usize, key: u32, alpha: u8, flags: u32) {
     LAYERED.with(|layered| {
         let slot = layered
             .iter_mut()
@@ -159,11 +170,37 @@ fn set_layered(window: usize, key: u32, alpha: u8, flags: u32, pixel_alpha: bool
             }
         }
     });
-    TRUE
+}
+
+/// How layered child `window` blends over what is under it (D721): its colour key as
+/// `0x00RRGGBB` and its constant alpha, each when set; `None` when it has no attributes.
+pub(super) fn child_blend(window: usize) -> Option<super::layered_child::ChildBlend> {
+    let found = LAYERED.with(|layered| {
+        layered
+            .iter()
+            .flatten()
+            .find(|(handle, ..)| *handle == window)
+            .copied()
+    })?;
+    let (_, key, alpha, flags) = found;
+    Some(super::layered_child::ChildBlend {
+        key: (flags & LWA_COLORKEY != 0).then_some(swap_red_blue(key)),
+        alpha: (flags & LWA_ALPHA != 0).then_some(alpha),
+    })
 }
 
 const ULW_COLORKEY: u32 = 0x1;
 const ULW_ALPHA: u32 = 0x2;
+const ULW_EX_NORESIZE: u32 = 0x8;
+const INFO_DESTINATION: usize = 16;
+const INFO_SIZE: usize = 24;
+const INFO_SOURCE: usize = 32;
+const INFO_SOURCE_POINT: usize = 40;
+const INFO_KEY: usize = 48;
+const INFO_BLEND: usize = 56;
+const INFO_FLAGS: usize = 64;
+const INFO_DIRTY: usize = 72;
+const INFO_BYTES: usize = 80;
 const AC_SRC_ALPHA: u32 = 0x1;
 const SRCCOPY: u32 = 0x00cc_0020;
 const SET_SIZE_ONLY: u32 = 0x0002 | 0x0004 | 0x0010;
@@ -185,6 +222,25 @@ unsafe fn pair(address: *const Pair) -> Option<(i32, i32)> {
     Some((pair.first, pair.second))
 }
 
+struct LayeredUpdate {
+    destination: Option<(i32, i32)>,
+    size: Option<(i32, i32)>,
+    source: usize,
+    source_point: (i32, i32),
+    key: u32,
+    blend: u32,
+    flags: u32,
+    dirty: Option<Rect>,
+}
+
+unsafe fn blend_function(blend: *const u32) -> u32 {
+    match blend.is_null() {
+        true => u32::from(u8::MAX) << 16,
+        // SAFETY: the caller's `BLENDFUNCTION`, four readable bytes.
+        false => unsafe { blend.read_unaligned() },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe extern "efiapi" fn update_layered_window(
     window: usize,
@@ -197,52 +253,116 @@ unsafe extern "efiapi" fn update_layered_window(
     blend: *const u32,
     flags: u32,
 ) -> Bool {
+    // SAFETY: the caller's `POINT`s, `SIZE` and `BLENDFUNCTION`, each null or readable.
+    let update = unsafe {
+        LayeredUpdate {
+            destination: pair(destination),
+            size: pair(size),
+            source,
+            source_point: pair(source_point).unwrap_or((0, 0)),
+            key,
+            blend: blend_function(blend),
+            flags,
+            dirty: None,
+        }
+    };
+    update_layered(window, &update)
+}
+
+unsafe fn info_field<T: Copy>(info: *const u8, offset: usize) -> T {
+    // SAFETY: the caller's contract: an `UPDATELAYEREDWINDOWINFO` of at least `INFO_BYTES`.
+    unsafe { info.add(offset).cast::<T>().read_unaligned() }
+}
+
+/// `UpdateLayeredWindowIndirect` (D721): `UpdateLayeredWindow` from an
+/// `UPDATELAYEREDWINDOWINFO`, whose `prcDirty` limits the copy to that part of the window.
+unsafe extern "efiapi" fn update_layered_window_indirect(window: usize, info: *const u8) -> Bool {
+    if info.is_null() {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    // SAFETY: the caller's structure starts with its size.
+    let bytes = unsafe { info_field::<u32>(info, 0) } as usize;
+    if bytes < INFO_BYTES {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    // SAFETY: the structure is `INFO_BYTES` long, and its pointers are null or readable.
+    let update = unsafe {
+        LayeredUpdate {
+            destination: pair(info_field(info, INFO_DESTINATION)),
+            size: pair(info_field(info, INFO_SIZE)),
+            source: info_field(info, INFO_SOURCE),
+            source_point: pair(info_field(info, INFO_SOURCE_POINT)).unwrap_or((0, 0)),
+            key: info_field(info, INFO_KEY),
+            blend: blend_function(info_field(info, INFO_BLEND)),
+            flags: info_field(info, INFO_FLAGS),
+            dirty: rect_from(info_field(info, INFO_DIRTY)),
+        }
+    };
+    update_layered(window, &update)
+}
+
+fn window_size(window: usize) -> Option<(i32, i32)> {
+    with(|gui| {
+        let entry = gui.windows.get(window)?;
+        Some((entry.width as i32, entry.height as i32))
+    })
+    .flatten()
+}
+
+fn update_layered(window: usize, update: &LayeredUpdate) -> Bool {
     if let Err(code) = try_with(|gui| gui.window(window).map(|_| ())) {
         return fail(code, FALSE);
     }
-    let blend = match blend.is_null() {
-        true => u32::from(u8::MAX) << 16,
-        // SAFETY: the caller's `BLENDFUNCTION`, four bytes: operation, flags, constant alpha
-        // and alpha format.
-        false => unsafe { blend.read_unaligned() },
-    };
-    let alpha = (blend >> 16) as u8;
-    let pixel_alpha = flags & ULW_ALPHA != 0 && (blend >> 24) & AC_SRC_ALPHA != 0;
-    // SAFETY: the caller's `POINT`s and `SIZE`, each null or readable.
-    let (destination, size, source_point) =
-        unsafe { (pair(destination), pair(size), pair(source_point)) };
-    if let Some((x, y)) = destination {
+    if update.flags & ULW_EX_NORESIZE != 0
+        && update.size.is_some()
+        && update.size != window_size(window)
+    {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let alpha = (update.blend >> 16) as u8;
+    let pixel_alpha = update.flags & ULW_ALPHA != 0 && (update.blend >> 24) & AC_SRC_ALPHA != 0;
+    if let Some((x, y)) = update.destination {
         super::placement::set_window_pos(window, 0, x, y, 0, 0, SET_POSITION_ONLY);
     }
-    if let Some((width, height)) = size {
+    if let Some((width, height)) = update.size {
         super::placement::set_window_pos(window, 0, 0, 0, width, height, SET_SIZE_ONLY);
     }
-    if source != 0 {
-        let (width, height) = size.unwrap_or_else(|| {
-            let found = with(|gui| {
-                let entry = gui.windows.get(window)?;
-                Some((entry.width as i32, entry.height as i32))
-            });
-            found.flatten().unwrap_or((0, 0))
-        });
-        let (x, y) = source_point.unwrap_or((0, 0));
+    if update.source != 0 {
+        let (width, height) = update.size.or_else(|| window_size(window)).unwrap_or((0, 0));
+        let whole = Rect::sized(0, 0, width, height);
+        let area = update.dirty.map_or(whole, |dirty| dirty.intersection(&whole));
+        let (x, y) = update.source_point;
         let hdc = super::paint::get_dc(window);
-        if hdc != 0 {
+        if hdc != 0 && !area.is_empty() {
+            let place = (area.left, area.top, area.width(), area.height());
+            let (from_x, from_y) = (x + area.left, y + area.top);
             match pixel_alpha {
-                true => super::gdi::copy_with_alpha(hdc, (0, 0, width, height), (source, x, y)),
-                false => super::gdi::bit_blt(hdc, 0, 0, width, height, source, x, y, SRCCOPY),
+                true => super::gdi::copy_with_alpha(hdc, place, (update.source, from_x, from_y)),
+                false => super::gdi::bit_blt(
+                    hdc,
+                    place.0,
+                    place.1,
+                    place.2,
+                    place.3,
+                    update.source,
+                    from_x,
+                    from_y,
+                    SRCCOPY,
+                ),
             };
+        }
+        if hdc != 0 {
             super::paint::release_dc(window, hdc);
         }
     }
     let mut layered = 0;
-    if flags & ULW_ALPHA != 0 {
+    if update.flags & ULW_ALPHA != 0 {
         layered |= LWA_ALPHA;
     }
-    if flags & ULW_COLORKEY != 0 {
+    if update.flags & ULW_COLORKEY != 0 {
         layered |= LWA_COLORKEY;
     }
-    set_layered(window, key, alpha, layered, pixel_alpha)
+    set_layered(window, update.key, alpha, layered, pixel_alpha)
 }
 
 unsafe extern "efiapi" fn get_layered_window_attributes(
@@ -666,6 +786,7 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"SetLayeredWindowAttributes" => set_layered_window_attributes,
     b"GetLayeredWindowAttributes" => get_layered_window_attributes,
     b"UpdateLayeredWindow" => update_layered_window [two_stack_arguments],
+    b"UpdateLayeredWindowIndirect" => update_layered_window_indirect,
     b"RedrawWindow" => redraw_window,
     b"GetUpdateRect" => get_update_rect,
     b"ScrollWindow" => scroll_window,

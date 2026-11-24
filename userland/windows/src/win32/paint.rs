@@ -171,6 +171,7 @@ pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
             .contexts
             .insert(DeviceContext::new(window, true, region))
             .ok_or(error::NOT_ENOUGH_MEMORY)?;
+        super::layered_child::keep_under(gui, hdc, window, region);
         Ok((hdc, region, erase))
     })?;
     let unerased = erase && gui::send(window, message::ERASE_BACKGROUND, hdc, 0) == 0;
@@ -183,6 +184,7 @@ pub fn begin(window: usize) -> Result<(usize, Rect, bool), u32> {
 pub fn finish(hdc: usize) -> bool {
     let thread = thread_environment::thread_id();
     let commit = with(|gui| {
+        super::layered_child::blend_kept(gui, hdc);
         let context = gui.contexts.remove(hdc)?;
         let Some(placement) = windows::client_placement(&gui.windows, context.window) else {
             return Some(None);
@@ -319,9 +321,12 @@ pub(super) extern "efiapi" fn get_dc(window: usize) -> usize {
             0 => Rect::default(),
             window => gui.window(window)?.client(),
         };
-        gui.contexts
+        let hdc = gui
+            .contexts
             .insert(DeviceContext::new(window, false, clip))
-            .ok_or(error::NOT_ENOUGH_MEMORY)
+            .ok_or(error::NOT_ENOUGH_MEMORY)?;
+        super::layered_child::keep_under(gui, hdc, window, clip);
+        Ok(hdc)
     });
     match made {
         Ok(hdc) => hdc,

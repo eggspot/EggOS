@@ -50,6 +50,7 @@ mod hooks;
 mod hover;
 mod icon;
 mod keyboard;
+mod layered_child;
 mod memory;
 mod menu;
 mod menu_items;
@@ -322,6 +323,8 @@ const BCRYPTPRIMITIVES: &[&[Export]] = &[random::EXPORTS];
 
 const USERENV: &[&[Export]] = &[userenv::EXPORTS];
 
+const MSIMG32: &[&[Export]] = &[gdi::MSIMG32_EXPORTS];
+
 fn exports(library: Library) -> &'static [&'static [Export]] {
     match library {
         Library::Kernel32 => KERNEL32,
@@ -350,6 +353,7 @@ fn exports(library: Library) -> &'static [&'static [Export]] {
         Library::Msvcrt => crt::MSVCRT,
         Library::Ws2_32 => WSOCK32,
         Library::Msvcp140 => msvcp::MSVCP140,
+        Library::Msimg32 => MSIMG32,
     }
 }
 

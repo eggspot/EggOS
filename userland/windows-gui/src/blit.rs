@@ -91,9 +91,59 @@ pub fn landing(
     (!landed.is_empty()).then_some((landed, (landed.left, landed.top)))
 }
 
+const CHANNEL_MAX: u32 = 255;
+
+fn scale_channel(value: u32, factor: u32) -> u32 {
+    (value * factor + CHANNEL_MAX / 2) / CHANNEL_MAX
+}
+
+/// `AlphaBlend`'s `AC_SRC_OVER` of pixel `source` onto pixel `destination` (D721), every
+/// channel of `0xAARRGGBB` alpha included: the source scaled by `constant_alpha`, then added to
+/// the destination scaled by what of it shows through, which is one minus the scaled source's
+/// own alpha when the source carries premultiplied alpha (`AC_SRC_ALPHA`), else one minus the
+/// constant alpha.
+pub fn blend_over(source: u32, destination: u32, constant_alpha: u8, source_alpha: bool) -> u32 {
+    let constant = u32::from(constant_alpha);
+    let scaled_alpha = scale_channel(source >> 24, constant);
+    let covered = match source_alpha {
+        true => scaled_alpha,
+        false => constant,
+    };
+    let through = CHANNEL_MAX - covered;
+    (0..4u32).fold(0, |pixel, channel| {
+        let shift = channel * 8;
+        let from = scale_channel((source >> shift) & CHANNEL_MAX, constant);
+        let under = scale_channel((destination >> shift) & CHANNEL_MAX, through);
+        pixel | ((from + under).min(CHANNEL_MAX) << shift)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blending_with_full_constant_alpha_and_no_source_alpha_copies_the_source() {
+        assert_eq!(blend_over(0x8012_3456, 0xff65_4321, 255, false), 0x8012_3456);
+    }
+
+    #[test]
+    fn blending_with_no_constant_alpha_keeps_the_destination() {
+        assert_eq!(blend_over(0xff12_3456, 0x8065_4321, 0, true), 0x8065_4321);
+        assert_eq!(blend_over(0xff12_3456, 0x8065_4321, 0, false), 0x8065_4321);
+    }
+
+    #[test]
+    fn a_premultiplied_half_transparent_source_lets_half_the_destination_through() {
+        let blended = blend_over(0x8080_0000, 0xff00_00ff, 255, true);
+        assert_eq!(blended, 0xff80_007f);
+    }
+
+    #[test]
+    fn constant_alpha_mixes_source_and_destination_by_its_share() {
+        let blended = blend_over(0xffff_ffff, 0x0000_0000, 128, false);
+        assert_eq!(blended, 0x8080_8080);
+    }
 
     #[test]
     fn the_named_operations_follow_their_truth_tables() {

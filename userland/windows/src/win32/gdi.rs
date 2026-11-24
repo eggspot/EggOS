@@ -684,6 +684,132 @@ pub(super) extern "efiapi" fn bit_blt(
 }
 
 const SRCCOPY: u32 = 0x00cc_0020;
+const AC_SRC_OVER: u32 = 0;
+const AC_SRC_ALPHA: u32 = 1;
+const FIXED_POINT_BITS: u32 = 16;
+
+/// `AlphaBlend` and `GdiAlphaBlend` (D721): the source rectangle, stretched to the destination
+/// rectangle, blended over the destination with `BLENDFUNCTION`'s constant alpha and, with
+/// `AC_SRC_ALPHA`, the source's premultiplied alpha; the destination's alpha channel is written
+/// too, which a layered window with per-pixel alpha shows. A source rectangle reaching outside
+/// its bitmap, a negative size or another operation than `AC_SRC_OVER` fails.
+#[allow(clippy::too_many_arguments)]
+pub(super) extern "efiapi" fn alpha_blend(
+    destination: usize,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    source: usize,
+    source_x: i32,
+    source_y: i32,
+    source_width: i32,
+    source_height: i32,
+    blend: u32,
+) -> Bool {
+    let operation = blend & 0xff;
+    let constant_alpha = (blend >> 16) as u8;
+    let source_alpha = (blend >> 24) & AC_SRC_ALPHA != 0;
+    let negative = width < 0 || height < 0 || source_width < 0 || source_height < 0;
+    if operation != AC_SRC_OVER || negative {
+        return fail(error::INVALID_PARAMETER, FALSE);
+    }
+    let wanted = Rect::sized(x, y, width, height);
+    let read = Rect::sized(source_x, source_y, source_width, source_height);
+    match blend_transfer(destination, wanted, (source, read), constant_alpha, source_alpha) {
+        Ok(()) => TRUE,
+        Err(code) => fail(code, FALSE),
+    }
+}
+
+fn blend_transfer(
+    destination: usize,
+    wanted: Rect,
+    (source, read): (usize, Rect),
+    constant_alpha: u8,
+    source_alpha: bool,
+) -> Result<(), u32> {
+    try_with(|gui| {
+        let target = *gui.contexts.get(destination).ok_or(error::INVALID_HANDLE)?;
+        let context = *gui.contexts.get(source).ok_or(error::INVALID_HANDLE)?;
+        if let Some(bitmap) = memory_bitmap(&context) {
+            load_section(bitmap);
+        }
+        let Some(from) = raster_of(gui, &context) else {
+            return Ok(());
+        };
+        if read.intersection(&whole_buffer(&from)) != read {
+            return Err(error::INVALID_PARAMETER);
+        }
+        if let Some(bitmap) = memory_bitmap(&target) {
+            load_section(bitmap);
+        }
+        let Some(to) = raster_of(gui, &target) else {
+            return Ok(());
+        };
+        let landed = wanted
+            .intersection(&to.clip)
+            .intersection(&whole_buffer(&to));
+        if landed.is_empty() || read.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: both rasters are the table's, under its lock; `landed` and `read` lie in them.
+        unsafe {
+            blend_pixels(
+                &to,
+                landed,
+                &from,
+                (wanted, read),
+                constant_alpha,
+                source_alpha,
+            )
+        };
+        if let Some(bitmap) = memory_bitmap(&target) {
+            store_section(bitmap, landed);
+        }
+        if let Some(stored) = gui.contexts.get_mut(destination) {
+            stored.drawn = stored.drawn.union(&landed);
+        }
+        Ok(())
+    })
+}
+
+unsafe fn blend_pixels(
+    to: &Raster,
+    landed: Rect,
+    from: &Raster,
+    (wanted, read): (Rect, Rect),
+    constant_alpha: u8,
+    source_alpha: bool,
+) {
+    let step = |read_length: i32, wanted_length: i32| {
+        (i64::from(read_length) << FIXED_POINT_BITS) / i64::from(wanted_length.max(1))
+    };
+    let (step_x, step_y) = (
+        step(read.width(), wanted.width()),
+        step(read.height(), wanted.height()),
+    );
+    let along = |offset: i32, step: i64| ((i64::from(offset) * step) >> FIXED_POINT_BITS) as i32;
+    for row in landed.top..landed.bottom {
+        let source_row = read.top + along(row - wanted.top, step_y) + from.origin.1;
+        let source_line = source_row as usize * from.width as usize;
+        let target_line = (row + to.origin.1) as usize * to.width as usize;
+        for column in landed.left..landed.right {
+            let source_column = read.left + along(column - wanted.left, step_x) + from.origin.0;
+            let read_at = source_line + source_column as usize;
+            let write_at = target_line + (column + to.origin.0) as usize;
+            // SAFETY: the caller's duty: `read_at` lies in `from`'s buffer.
+            let pixel = unsafe { (from.address as *const u32).add(read_at).read() };
+            // SAFETY: the caller's duty: `write_at` lies in `to`'s buffer.
+            let target = unsafe { (to.address as *mut u32).add(write_at) };
+            // SAFETY: as above; plain pointers, so a source in the same buffer stays sound.
+            let under = unsafe { target.read() };
+            let blended = blit::blend_over(pixel, under, constant_alpha, source_alpha);
+            // SAFETY: as above.
+            unsafe { target.write(blended) };
+        }
+    }
+}
 
 /// `BitBlt`'s `SRCCOPY` keeping each source pixel's top byte, its alpha, as
 /// `UpdateLayeredWindow` with `AC_SRC_ALPHA` needs (D369).
@@ -1904,11 +2030,17 @@ extern "efiapi" fn end_doc(_hdc: usize) -> i32 {
     fail(error::NOT_SUPPORTED, SP_ERROR)
 }
 
+/// msimg32's exports (D721).
+pub(super) const MSIMG32_EXPORTS: &[Export] = exports![
+    b"AlphaBlend" => alpha_blend [four_stack_arguments],
+];
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"CreateCompatibleDC" => create_compatible_dc,
     b"DeleteDC" => delete_dc,
     b"CreateCompatibleBitmap" => create_compatible_bitmap,
     b"BitBlt" => bit_blt [two_stack_arguments],
+    b"GdiAlphaBlend" => alpha_blend [four_stack_arguments],
     b"PatBlt" => pat_blt,
     b"Polygon" => polygon,
     b"Polyline" => polyline,
