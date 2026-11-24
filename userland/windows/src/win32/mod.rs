@@ -39,6 +39,7 @@ mod elements;
 mod environment;
 mod exception;
 mod file;
+mod file_dialog;
 mod file_information;
 mod file_mapping;
 mod file_picker;
@@ -81,6 +82,7 @@ mod shell;
 mod shell_desktop;
 mod shell_files;
 mod shell_folders;
+mod shell_item_array;
 mod shell_menu;
 mod shell_namespace;
 mod shlwapi;
@@ -254,6 +256,7 @@ const SHELL32: &[&[Export]] = &[
     shell::EXPORTS,
     shell_folders::EXPORTS,
     shell_namespace::EXPORTS,
+    shell_item_array::EXPORTS,
     shell_files::EXPORTS,
     shell_desktop::EXPORTS,
 ];

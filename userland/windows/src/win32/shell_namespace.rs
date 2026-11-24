@@ -4,14 +4,16 @@
 //! into lists, list their children through `IEnumIDList`, bind to subfolders, compare, give
 //! attributes and display names and rename; `IShellItem` over any list; and the folder picker
 //! `SHBrowseForFolderW`, which runs the system picker in `folder` mode. The desktop is the
-//! namespace's root; its one child is the file system's root, `C:\`. Shell views, context
-//! menus, data objects and icons (`CreateViewObject`, `GetUIObjectOf`) are not supported, and
-//! the folder picker calls no `BFFCALLBACK`: it has no dialog window to send messages to.
+//! namespace's root; its children are the virtual folders This PC, whose one child is the file
+//! system's root, `C:\`, and the Recycle Bin, which lists the Trash's files (D742). Shell
+//! views, context menus, data objects and icons (`CreateViewObject`, `GetUIObjectOf`) are not
+//! supported, and the folder picker calls no `BFFCALLBACK`: it has no dialog window to send
+//! messages to.
 
 use super::{Bool, FALSE, TRUE, heap, pick_process};
 use crate::com::guid::{self, Guid};
 use crate::com::{E_INVALIDARG, E_NOINTERFACE, E_OUTOFMEMORY, E_POINTER, HResult, S_FALSE, S_OK};
-use crate::item_lists::{self, FOLDER, Item};
+use crate::item_lists::{self, COMPUTER, FOLDER, Item, RECYCLE_BIN};
 use crate::library::Export;
 use crate::linux::{self, AT_FDCWD};
 use crate::text::{self, PATH_CAPACITY};
@@ -28,6 +30,22 @@ const PICK_OUTPUT_BYTES: usize = PATH_CAPACITY + 2;
 const TITLE_BYTES: usize = 256;
 const DESKTOP_NAME: &str = "Desktop";
 const ROOT_NAME: &str = "C:";
+const COMPUTER_NAME: &str = "This PC";
+const RECYCLE_BIN_NAME: &str = "Recycle Bin";
+const CSIDL_BITBUCKET: u32 = 0x0a;
+const CSIDL_DRIVES: u32 = 0x11;
+const FOLDERID_COMPUTER: Guid = Guid::new(
+    0x0ac0_837c,
+    0xbbf8,
+    0x452a,
+    [0x85, 0x0d, 0x79, 0xd0, 0x8e, 0x66, 0x7c, 0xa7],
+);
+const FOLDERID_RECYCLE_BIN: Guid = Guid::new(
+    0xb753_4046,
+    0x3ecb,
+    0x4c18,
+    [0xbe, 0x4e, 0x64, 0xcd, 0x4c, 0xb7, 0xd6, 0xac],
+);
 
 const SFGAO_CANCOPY: u32 = 0x0000_0001;
 const SFGAO_CANMOVE: u32 = 0x0000_0002;
@@ -107,7 +125,7 @@ struct Children {
     at: usize,
 }
 
-unsafe fn list_bytes<'a>(list: *const u8) -> Option<&'a [u8]> {
+pub(super) unsafe fn list_bytes<'a>(list: *const u8) -> Option<&'a [u8]> {
     if list.is_null() {
         return None;
     }
@@ -166,6 +184,9 @@ fn path_of(list: &[u8], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
 }
 
 fn attributes_of(found: &Item<'_>) -> u32 {
+    if found.is_virtual() {
+        return SFGAO_FOLDER | SFGAO_HASSUBFOLDER;
+    }
     let kind = match found.is_folder() {
         true => FOLDER_ATTRIBUTES,
         false => SFGAO_STREAM,
@@ -203,11 +224,18 @@ fn name_units(list: &[u8], out: &mut [u16; PATH_CAPACITY]) -> usize {
     match last_item(list) {
         None => text::write_utf16(DESKTOP_NAME.as_bytes(), out),
         Some(found) if found.is_root() => text::write_utf16(ROOT_NAME.as_bytes(), out),
+        Some(found) if found.is_computer() => text::write_utf16(COMPUTER_NAME.as_bytes(), out),
+        Some(found) if found.is_recycle_bin() => {
+            text::write_utf16(RECYCLE_BIN_NAME.as_bytes(), out)
+        }
         Some(found) => text::write_utf16(found.name, out),
     }
 }
 
 fn parsing_units(list: &[u8], out: &mut [u16; PATH_CAPACITY]) -> Option<usize> {
+    if let Some(found) = last_item(list).filter(Item::is_virtual) {
+        return Some(text::write_utf16(found.name, out));
+    }
     let mut path = [0u8; PATH_CAPACITY];
     match path_of(list, &mut path) {
         Some(length) => windows_units(&path[..length], out),
@@ -345,13 +373,49 @@ unsafe extern "efiapi" fn node_release(this: *mut Node) -> u32 {
 }
 
 fn folder_path(list: &[u8], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
-    match item_lists::count(list) {
-        0 => Some(0),
-        _ => path_of(list, out),
+    let above_drives = last_item(list).is_none_or(|found| found.is_computer());
+    match above_drives {
+        true => Some(0),
+        false => path_of(list, out),
+    }
+}
+
+fn filesystem_path_of(list: &[u8], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
+    match last_item(list).is_some_and(|found| found.is_virtual()) {
+        true => None,
+        false => path_of(list, out),
+    }
+}
+
+fn is_folder_list(list: &[u8]) -> bool {
+    match last_item(list) {
+        None => true,
+        Some(found) if found.is_virtual() => true,
+        Some(_) => {
+            let mut path = [0u8; PATH_CAPACITY];
+            path_of(list, &mut path).and_then(|length| kind_of(&path[..length])) == Some(true)
+        }
+    }
+}
+
+fn virtual_list(name: &[u8]) -> Result<*mut u8, HResult> {
+    let mut list = [0u8; LIST_CAPACITY];
+    let written = item_lists::write_virtual(name, &mut list).ok_or(E_INVALIDARG)?;
+    let made = new_list(&[without_terminator(&list[..written])]);
+    match made.is_null() {
+        true => Err(E_OUTOFMEMORY),
+        false => Ok(made),
     }
 }
 
 fn parse_in_folder(folder: &[u8], name: &[u16]) -> Result<(*mut u8, bool), HResult> {
+    if item_lists::count(folder) == 0 {
+        let mut typed = [0u8; PATH_CAPACITY];
+        let (length, _) = text::write_utf8(name, &mut typed);
+        if let Some(known) = item_lists::virtual_named(&typed[..length]) {
+            return virtual_list(known).map(|made| (made, true));
+        }
+    }
     let mut eggos = [0u8; PATH_CAPACITY];
     let typed = text::eggos_path(text::utf16_chars(name), &mut eggos).ok_or(E_INVALIDARG)? - 1;
     let mut base = [0u8; PATH_CAPACITY];
@@ -435,8 +499,27 @@ fn child_wanted(name: &[u8], is_folder: bool, flags: u32) -> bool {
     kind && (flags & SHCONTF_INCLUDEHIDDEN != 0 || !name.starts_with(b"."))
 }
 
+fn virtual_children() -> Result<(*mut u8, usize), HResult> {
+    let mut lists = [0u8; LIST_CAPACITY];
+    let first = item_lists::write_virtual(COMPUTER, &mut lists).ok_or(E_FAIL)?;
+    let second = item_lists::write_virtual(RECYCLE_BIN, &mut lists[first..]).ok_or(E_FAIL)?;
+    let block = heap::allocate(first + second);
+    if block.is_null() {
+        return Err(E_OUTOFMEMORY);
+    }
+    // SAFETY: the fresh block holds both lists, each with its terminator.
+    unsafe { block.copy_from_nonoverlapping(lists.as_ptr(), first + second) };
+    Ok((block, first + second))
+}
+
 fn list_children(list: &[u8], flags: u32) -> Result<(*mut u8, usize), HResult> {
     if item_lists::count(list) == 0 {
+        if flags & SHCONTF_FOLDERS == 0 {
+            return Ok((core::ptr::null_mut(), 0));
+        }
+        return virtual_children();
+    }
+    if last_item(list).is_some_and(|found| found.is_computer()) {
         if flags & SHCONTF_FOLDERS == 0 {
             return Ok((core::ptr::null_mut(), 0));
         }
@@ -549,9 +632,7 @@ unsafe extern "efiapi" fn folder_bind_to_object(
     }
     // SAFETY: the list just made, whole.
     let full = unsafe { list_bytes(made) }.unwrap_or(&[0, 0]);
-    let mut path = [0u8; PATH_CAPACITY];
-    let is_folder = path_of(full, &mut path).and_then(|length| kind_of(&path[..length]));
-    if is_folder != Some(true) {
+    if !is_folder_list(full) {
         // SAFETY: the list made above, unused.
         unsafe { heap::free(made) };
         // SAFETY: as above.
@@ -965,12 +1046,7 @@ unsafe extern "efiapi" fn item_bind_to_handler(
     }
     // SAFETY: the caller's duty: a live item.
     let list = unsafe { node_list(this) };
-    let mut path = [0u8; PATH_CAPACITY];
-    let folder = match path_of(list, &mut path) {
-        Some(length) => kind_of(&path[..length]) == Some(true),
-        None => item_lists::count(list) == 0,
-    };
-    if !folder {
+    if !is_folder_list(list) {
         // SAFETY: as above.
         unsafe { out.write(0) };
         return E_INVALIDARG;
@@ -1024,7 +1100,8 @@ unsafe extern "efiapi" fn item_get_display_name(
     let length = match form {
         SIGDN_FILESYSPATH => {
             let mut path = [0u8; PATH_CAPACITY];
-            path_of(list, &mut path).and_then(|length| windows_units(&path[..length], &mut units))
+            filesystem_path_of(list, &mut path)
+                .and_then(|length| windows_units(&path[..length], &mut units))
         }
         SIGDN_DESKTOPABSOLUTEPARSING | SIGDN_DESKTOPABSOLUTEEDITING => {
             parsing_units(list, &mut units)
@@ -1141,6 +1218,50 @@ static CHILDREN_TABLE: Table<7> = Table([
     export_entry!(children_clone),
 ]);
 
+/// A copy of the list `list`, terminator included, in the task allocator; null without memory.
+pub(super) fn clone_list(list: &[u8]) -> *mut u8 {
+    new_list(&[without_terminator(list)])
+}
+
+/// The list of `parent` with `child` after it; null without memory.
+pub(super) fn combined_list(parent: &[u8], child: &[u8]) -> *mut u8 {
+    new_list(&[without_terminator(parent), without_terminator(child)])
+}
+
+/// A new `IShellItem` that owns `list`, with one reference.
+pub(super) fn new_shell_item(list: *mut u8) -> Result<usize, HResult> {
+    new_item(list).map(|made| made as usize)
+}
+
+/// The `SFGAO` attributes of the item the absolute list `list` names.
+pub(super) fn attributes_of_list(list: &[u8]) -> u32 {
+    item_attributes(list)
+}
+
+/// The EggOS path of the file-system item the absolute list `list` names.
+pub(super) fn file_system_path(list: &[u8], out: &mut [u8; PATH_CAPACITY]) -> Option<usize> {
+    filesystem_path_of(list, out)
+}
+
+/// The absolute list of the EggOS path `path`, which need not exist yet (a file to save).
+pub(super) fn list_of_new_path(path: &[u8]) -> Result<*mut u8, HResult> {
+    if let Ok(made) = absolute_list_of_path(path) {
+        return Ok(made);
+    }
+    let mut list = [0u8; LIST_CAPACITY];
+    let written = item_lists::write_absolute(path, false, &mut list).ok_or(E_INVALIDARG)?;
+    let made = new_list(&[without_terminator(&list[..written])]);
+    match made.is_null() {
+        true => Err(E_OUTOFMEMORY),
+        false => Ok(made),
+    }
+}
+
+/// The text `units` and a NUL in the task allocator; null without memory.
+pub(super) fn task_text(units: &[u16]) -> *mut u16 {
+    wide_block(units)
+}
+
 fn absolute_list_of_path(path: &[u8]) -> Result<*mut u8, HResult> {
     let is_folder = kind_of(path).ok_or(from_win32(super::error::FILE_NOT_FOUND))?;
     let mut list = [0u8; LIST_CAPACITY];
@@ -1157,7 +1278,7 @@ fn absolute_list_of_windows(name: &[u16]) -> Result<*mut u8, HResult> {
     parse_in_folder(&desktop, name).map(|(made, _)| made)
 }
 
-unsafe fn list_of_object(object: usize) -> Option<*mut u8> {
+pub(super) unsafe fn list_of_object(object: usize) -> Option<*mut u8> {
     if object == 0 {
         return None;
     }
@@ -1307,7 +1428,7 @@ unsafe extern "efiapi" fn sh_parse_display_name(
 
 fn windows_path_into(list: &[u8], out: &mut [u16]) -> Option<usize> {
     let mut path = [0u8; PATH_CAPACITY];
-    let length = path_of(list, &mut path)?;
+    let length = filesystem_path_of(list, &mut path)?;
     let mut units = [0u16; PATH_CAPACITY];
     let written = windows_units(&path[..length], &mut units)?;
     let target = out.get_mut(..=written)?;
@@ -1472,6 +1593,8 @@ unsafe extern "efiapi" fn sh_get_special_folder_location(
     unsafe { out.write(core::ptr::null_mut()) };
     let made = match csidl & 0xff {
         0 => Ok(new_list(&[])),
+        CSIDL_DRIVES => virtual_list(COMPUTER),
+        CSIDL_BITBUCKET => virtual_list(RECYCLE_BIN),
         _ => {
             let mut path = [0u8; PATH_CAPACITY];
             match super::shell_folders::special_folder(csidl, &mut path) {
@@ -1508,10 +1631,18 @@ unsafe extern "efiapi" fn sh_get_known_folder_id_list(
     let mut path = [0u8; PATH_CAPACITY];
     // SAFETY: `SHGetKnownFolderIDList`'s contract: a readable `KNOWNFOLDERID`.
     let id = unsafe { id.read_unaligned() };
-    let Some(length) = super::shell_folders::known_folder(&id, &mut path) else {
-        return E_INVALIDARG;
+    let known = Guid::from_bytes(id);
+    let made = if known == FOLDERID_COMPUTER {
+        virtual_list(COMPUTER)
+    } else if known == FOLDERID_RECYCLE_BIN {
+        virtual_list(RECYCLE_BIN)
+    } else {
+        let Some(length) = super::shell_folders::known_folder(&id, &mut path) else {
+            return E_INVALIDARG;
+        };
+        absolute_list_of_path(&path[..length])
     };
-    match absolute_list_of_path(&path[..length]) {
+    match made {
         Ok(list) => {
             // SAFETY: as above.
             unsafe { out.write(list) };

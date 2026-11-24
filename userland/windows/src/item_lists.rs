@@ -3,10 +3,21 @@
 //! item of size 0. The empty list is the desktop, the namespace's root. Every item the layer
 //! makes is one name of an EggOS path: `EG`, a flags byte (bit 0: a folder) and the name in
 //! UTF-8; the first item of an absolute list has an empty name and is the file system's root,
-//! `/` (Windows' `C:\`). A list relative to a folder holds only the names below it.
+//! `/` (Windows' `C:\`). A list relative to a folder holds only the names below it. A virtual
+//! folder's item (bit 1) names it by its shell parsing name instead (D742): This PC, under
+//! which the file system's root sits, and the Recycle Bin, whose children are the Trash's
+//! files.
 
 /// An item's flag: it is a folder.
 pub const FOLDER: u8 = 1;
+/// An item's flag: it is a virtual folder, named by its parsing name.
+pub const VIRTUAL: u8 = 2;
+/// This PC's parsing name.
+pub const COMPUTER: &[u8] = b"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+/// The Recycle Bin's parsing name.
+pub const RECYCLE_BIN: &[u8] = b"::{645FF040-5081-101B-9F08-00AA002F954E}";
+/// Where the Recycle Bin's items are: the Trash's files (D135) in the home folder.
+pub const RECYCLE_BIN_PATH: &[u8] = b"/home/root/.local/share/Trash/files";
 const MAGIC: [u8; 2] = *b"EG";
 const SIZE_BYTES: usize = 2;
 const HEADER: usize = SIZE_BYTES + MAGIC.len() + 1;
@@ -29,8 +40,37 @@ impl Item<'_> {
 
     /// Whether the item is the file system's root.
     pub fn is_root(&self) -> bool {
-        self.name.is_empty()
+        self.name.is_empty() && !self.is_virtual()
     }
+
+    /// Whether the item is a virtual folder.
+    pub fn is_virtual(&self) -> bool {
+        self.flags & VIRTUAL != 0
+    }
+
+    /// Whether the item is This PC.
+    pub fn is_computer(&self) -> bool {
+        self.is_virtual() && self.name.eq_ignore_ascii_case(COMPUTER)
+    }
+
+    /// Whether the item is the Recycle Bin.
+    pub fn is_recycle_bin(&self) -> bool {
+        self.is_virtual() && self.name.eq_ignore_ascii_case(RECYCLE_BIN)
+    }
+}
+
+/// The virtual folder whose parsing name is `name`, ignoring case.
+pub fn virtual_named(name: &[u8]) -> Option<&'static [u8]> {
+    [COMPUTER, RECYCLE_BIN]
+        .into_iter()
+        .find(|known| known.eq_ignore_ascii_case(name))
+}
+
+/// Writes the one-item list of the virtual folder `name` into `out`; the bytes written,
+/// terminator included.
+pub fn write_virtual(name: &[u8], out: &mut [u8]) -> Option<usize> {
+    let at = write_item(name, FOLDER | VIRTUAL, out, 0)?;
+    terminate(out, at)
 }
 
 fn item_size(bytes: &[u8]) -> Option<usize> {
@@ -150,6 +190,19 @@ pub fn append_path(bytes: &[u8], out: &mut [u8], length: usize) -> Option<usize>
     let mut length = length;
     for found in items(bytes) {
         let found = found?;
+        if found.is_computer() {
+            length = 0;
+            continue;
+        }
+        if found.is_recycle_bin() {
+            out.get_mut(..RECYCLE_BIN_PATH.len())?
+                .copy_from_slice(RECYCLE_BIN_PATH);
+            length = RECYCLE_BIN_PATH.len();
+            continue;
+        }
+        if found.is_virtual() {
+            return None;
+        }
         if found.is_root() {
             *out.first_mut()? = b'/';
             length = 1;
@@ -191,6 +244,31 @@ pub fn compare(a: &Item<'_>, b: &Item<'_>) -> core::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_pc_holds_the_root_and_the_recycle_bin_the_trash() {
+        let mut out = [0u8; 128];
+        let written = write_virtual(COMPUTER, &mut out).unwrap();
+        let mut root = [0u8; 32];
+        let root_written = write_absolute(b"/", true, &mut root).unwrap();
+        let mut list = [0u8; 160];
+        list[..written - 2].copy_from_slice(&out[..written - 2]);
+        list[written - 2..written - 2 + root_written].copy_from_slice(&root[..root_written]);
+        let mut path = [0u8; 64];
+        assert_eq!(path_of_list(&list, &mut path), Some(&b"/"[..]));
+        assert_eq!(super::path(&out[..written], &mut path), None);
+        let bin = write_virtual(RECYCLE_BIN, &mut out).unwrap();
+        let mut path = [0u8; 64];
+        assert_eq!(path_of_list(&out[..bin], &mut path), Some(RECYCLE_BIN_PATH));
+        assert_eq!(virtual_named(b"::{20d04fe0-3aea-1069-a2d8-08002b30309d}"), Some(COMPUTER));
+        let found = item(&out[..bin - 2]).unwrap();
+        assert!(found.is_recycle_bin() && !found.is_root());
+    }
+
+    fn path_of_list<'a>(list: &[u8], out: &'a mut [u8]) -> Option<&'a [u8]> {
+        let length = super::path(list, out)?;
+        Some(&out[..length])
+    }
 
     #[test]
     fn an_absolute_list_holds_the_root_then_each_name() {

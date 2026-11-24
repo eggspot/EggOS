@@ -2,9 +2,9 @@
 //! thread's apartment (`CoInitializeEx`, `OleInitialize` and their ends), counted in the TEB's
 //! `ReservedForOle` word, which is ole32's own on Windows too; the task allocator
 //! (`CoTaskMemAlloc` and its family, `CoGetMalloc`'s `IMalloc`) over the layer's heap; CLSIDs
-//! and ProgIDs; `CoCreateInstance` for the one class the layer provides in process,
-//! `Scripting.Dictionary`; `CreateStreamOnHGlobal`; `OleLoadPicture`'s pictures (`picture.rs`,
-//! D231); the tables of methods of the layer's
+//! and ProgIDs; `CoCreateInstance` for the classes the layer provides in process,
+//! `Scripting.Dictionary` and the common item dialogs (D742); `CreateStreamOnHGlobal`;
+//! `OleLoadPicture`'s pictures (`picture.rs`, D231); the tables of methods of the layer's
 //! objects, whose entries keep the program's `x18` on aarch64 (`abi.rs`); and oleaut32's
 //! exports (`oleaut32.rs`), which programs import by ordinal. Classes a program registers
 //! (`CoRegisterClassObject`) are created in the same process directly and, registered for
@@ -478,6 +478,13 @@ unsafe extern "efiapi" fn co_create_instance(
         // SAFETY: as above.
         unsafe { release(factory) };
         return status;
+    }
+    if context & CLSCTX_INPROC_SERVER != 0 {
+        // SAFETY: as above: the interface and result are the caller's.
+        let made = unsafe { super::file_dialog::create_instance(&class, outer, interface, result) };
+        if let Some(status) = made {
+            return status;
+        }
     }
     if class != dictionary::CLASS || context & CLSCTX_INPROC_SERVER == 0 {
         if context & CLSCTX_LOCAL_SERVER == 0 {

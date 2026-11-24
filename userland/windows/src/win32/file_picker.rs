@@ -915,6 +915,65 @@ unsafe fn pick(request: *mut OpenFileName, kind: PickerKind) -> Bool {
     }
 }
 
+/// What the layer's own picker needs to stand in for the system picker behind `IFileDialog`
+/// (D742): NUL-terminated wide texts, or null.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Fallback {
+    pub(super) save: bool,
+    pub(super) owner: usize,
+    pub(super) title: *const u16,
+    pub(super) folder: *const u16,
+    pub(super) filter: *const u16,
+    pub(super) filter_index: u32,
+    pub(super) default_extension: *const u16,
+    pub(super) name: *const u16,
+    pub(super) overwrite_prompt: bool,
+}
+
+/// Runs the layer's own file picker for `request`: the chosen EggOS path, or `None` when
+/// cancelled.
+pub(super) fn layer_picker(
+    request: &Fallback,
+) -> Result<Option<(usize, [u8; PATH_CAPACITY])>, u32> {
+    let mut file = [0u16; PATH_CAPACITY];
+    if !request.name.is_null() {
+        // SAFETY: the caller's NUL-terminated name.
+        let name = unsafe { super::file::wide_string(request.name) };
+        let length = name.len().min(PATH_CAPACITY - 1);
+        file[..length].copy_from_slice(&name[..length]);
+    }
+    let local = OpenFileName {
+        size: core::mem::size_of::<OpenFileName>() as u32,
+        owner: request.owner,
+        instance: 0,
+        filter: request.filter,
+        custom_filter: core::ptr::null_mut(),
+        max_custom_filter: 0,
+        filter_index: request.filter_index,
+        file: file.as_mut_ptr(),
+        max_file: PATH_CAPACITY as u32,
+        file_title: core::ptr::null_mut(),
+        max_file_title: 0,
+        initial_dir: request.folder,
+        title: request.title,
+        flags: if request.overwrite_prompt { OFN_OVERWRITEPROMPT } else { 0 },
+        file_offset: 0,
+        file_extension: 0,
+        default_extension: request.default_extension,
+        custom_data: 0,
+        hook: 0,
+        template_name: core::ptr::null(),
+        reserved: 0,
+        reserved_flags: 0,
+        flags_ex: 0,
+    };
+    let kind = match request.save {
+        true => PickerKind::Save,
+        false => PickerKind::Open,
+    };
+    show(&local, kind)
+}
+
 unsafe extern "efiapi" fn get_open_file_name_w(request: *mut OpenFileName) -> Bool {
     // SAFETY: the caller's duty, passed on.
     unsafe { pick(request, PickerKind::Open) }
