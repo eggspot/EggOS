@@ -98,11 +98,16 @@ fn fork_process() -> Result<usize, Errno> {
     for handlers in registered.clone().rev() {
         call_handler(handlers.prepare);
     }
+    crate::objc::hold_across_fork();
+    heap::hold_across_fork();
     // SAFETY: `clone` with only `SIGCHLD` is `fork`: the child goes on with its own pages.
     let forked = unsafe { linux::syscall(linux::number::CLONE, [LINUX_SIGCHLD, 0, 0, 0, 0, 0]) };
     if forked == Ok(0) {
+        super::sync::forked_child();
         thread::adopt_after_fork();
     }
+    heap::release_after_fork();
+    crate::objc::release_after_fork();
     for handlers in registered {
         call_handler(match forked {
             Ok(0) => handlers.child,

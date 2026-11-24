@@ -30,6 +30,17 @@ static HEAP: Exclusive<State> = Exclusive::new(State {
     end: 0,
 });
 
+/// Holds the heap across a `fork`, so the child's heap is never caught between two changes
+/// (D709).
+pub fn hold_across_fork() {
+    HEAP.hold_across_fork();
+}
+
+/// Gives back what [`hold_across_fork`] held, in the parent and in the child.
+pub fn release_after_fork() {
+    HEAP.release_after_fork();
+}
+
 fn class_of(size: usize) -> Option<usize> {
     let block = size
         .checked_add(HEADER_SIZE)?

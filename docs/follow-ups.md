@@ -216,7 +216,7 @@ and is not listed per item.
 - [ ] Translation: a one-entry inline cache per indirect `call`/`jmp` site (D191)
 - [ ] Translation: callbacks with floating-point arguments or results and more than six integer arguments; Objective-C methods with more than four arguments (D191)
 - [ ] Translation: the `translated_loop_ratio` benchmark (D191)
-- [ ] macOS libSystem: the layer's locks taken around `fork` (D190; `sigwait`, `siginterrupt` and `pthread_atfork` code written, unbuilt: D694)
+- [x] macOS libSystem: the layer's locks taken around `fork` (D190; `sigwait`, `siginterrupt` and `pthread_atfork` code written, unbuilt: D694) — code written, unbuilt, D709
 - [ ] macOS libSystem: extended locales (`newlocale`, `uselocale`, `freelocale`, `*_l` functions), `wcscoll`, `wcsxfrm` (D190; `strcoll`, `strxfrm`, `wcwidth` and `wcswidth` code written, unbuilt: D695)
 - [ ] Windows edits: `EM_SETTABSTOPS`, Windows' 30,000-character default limit (D341; word wrap is D351, `EM_SETRECT` D689, `EM_FMTLINES` and margins D690)
 - [ ] Windows scroll bars: copying scrolled pixels instead of repainting, combo lists' arrow repeat (D343; `EnableScrollBar`, `ScrollWindowEx`, `WM_NCHITTEST` and the window bars' repeat code written, unbuilt: D687, D688)

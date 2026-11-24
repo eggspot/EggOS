@@ -96,6 +96,18 @@ mod runtime {
 
     static SELECTORS: Exclusive<SelectorTable> = Exclusive::new(SelectorTable::new());
 
+    /// Holds the runtime's class and selector tables across a `fork` (D709).
+    pub fn hold_across_fork() {
+        RUNTIME.hold_across_fork();
+        SELECTORS.hold_across_fork();
+    }
+
+    /// Gives back what [`hold_across_fork`] held, in the parent and in the child.
+    pub fn release_after_fork() {
+        SELECTORS.release_after_fork();
+        RUNTIME.release_after_fork();
+    }
+
     /// The canonical selector of the permanent NUL-terminated name at `name`.
     pub fn register_selector(name: *const u8) -> Option<Sel> {
         if name.is_null() {

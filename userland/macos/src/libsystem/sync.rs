@@ -31,6 +31,31 @@ const TIME_NOW: u64 = 0;
 const TIME_FOREVER: u64 = !0;
 const TIMED_OUT: isize = 49;
 
+static FORK_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+/// How many `fork`s this process's line of children has gone through (D709): a lock the
+/// layer took in an earlier generation and still holds was a thread's of a parent, which the
+/// child does not have.
+pub fn fork_generation() -> u32 {
+    FORK_GENERATION.load(Ordering::Relaxed)
+}
+
+/// The calling process is a new child of `fork`: locks taken before it are a parent's.
+pub fn forked_child() {
+    FORK_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Frees the lock in `word` without waking anyone: for a lock whose holder is a thread a
+/// `fork` left behind.
+pub fn abandon(word: &AtomicU32) {
+    word.store(FREE, Ordering::Relaxed);
+}
+
+/// Whether the lock in `word` is held.
+pub fn is_held(word: &AtomicU32) -> bool {
+    word.load(Ordering::Relaxed) != FREE
+}
+
 /// Takes the lock in `word`.
 pub fn lock(word: &AtomicU32) {
     let Err(mut state) = word.compare_exchange(FREE, HELD, Ordering::Acquire, Ordering::Relaxed)

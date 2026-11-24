@@ -36,10 +36,12 @@ pub use thread::{set_thread_local_template, set_up_main_thread};
 
 /// The layer's process-wide state, behind a lock that any of the program's threads may take;
 /// `with` ends the program if the thread that holds it re-enters it, which only a bug in the
-/// layer could do.
+/// layer could do. The lock remembers the fork generation it was taken in, so in a child of
+/// `fork` a lock a parent's other thread held is freed when first wanted (D709).
 pub struct Exclusive<T> {
     lock: core::sync::atomic::AtomicU32,
     owner: core::sync::atomic::AtomicUsize,
+    generation: core::sync::atomic::AtomicU32,
     value: core::cell::UnsafeCell<T>,
 }
 
@@ -51,23 +53,51 @@ impl<T> Exclusive<T> {
         Self {
             lock: core::sync::atomic::AtomicU32::new(0),
             owner: core::sync::atomic::AtomicUsize::new(0),
+            generation: core::sync::atomic::AtomicU32::new(0),
             value: core::cell::UnsafeCell::new(value),
         }
     }
 
-    pub fn with<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
+    fn take(&self, me: usize) {
         use core::sync::atomic::Ordering;
-        let me = thread::current() as usize;
-        if self.owner.load(Ordering::Relaxed) == me {
-            linux::exit(134);
+        let generation = sync::fork_generation();
+        if sync::is_held(&self.lock)
+            && self.generation.load(Ordering::Relaxed) != generation
+            && self.owner.load(Ordering::Relaxed) != me
+        {
+            sync::abandon(&self.lock);
         }
         sync::lock(&self.lock);
         self.owner.store(me, Ordering::Relaxed);
+        self.generation.store(generation, Ordering::Relaxed);
+    }
+
+    fn give_back(&self) {
+        self.owner.store(0, core::sync::atomic::Ordering::Relaxed);
+        sync::unlock(&self.lock);
+    }
+
+    pub fn with<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
+        let me = thread::current() as usize;
+        if self.owner.load(core::sync::atomic::Ordering::Relaxed) == me {
+            linux::exit(134);
+        }
+        self.take(me);
         // SAFETY: the lock is held, so this is the only reference to the value.
         let result = work(unsafe { &mut *self.value.get() });
-        self.owner.store(0, Ordering::Relaxed);
-        sync::unlock(&self.lock);
+        self.give_back();
         result
+    }
+
+    /// Takes the lock for the calling thread across a `fork`, so no other thread is in the
+    /// middle of changing the value when the child is made (D709).
+    pub fn hold_across_fork(&self) {
+        self.take(thread::current() as usize);
+    }
+
+    /// Gives back the lock [`Self::hold_across_fork`] took, in the parent and in the child.
+    pub fn release_after_fork(&self) {
+        self.give_back();
     }
 }
 
