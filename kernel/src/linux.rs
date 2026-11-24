@@ -1710,12 +1710,12 @@ fn ioctl<P: Platform>(
             render_node::ioctl(process, thread, context, request, argument)
         }
         FileKind::GpuFence(fence) => sync_file::ioctl(process, thread, *fence, request, argument),
-        FileKind::Socket(socket) => {
-            socket::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
-        }
-        FileKind::InetSocket(socket) => {
-            socket::inet::ioctl(process, socket, request, argument).unwrap_or(Err(Errno::ENOTTY))
-        }
+        FileKind::Socket(socket) => socket::link::ioctl(process, request, argument)
+            .or_else(|| socket::ioctl(process, socket, request, argument))
+            .unwrap_or(Err(Errno::ENOTTY)),
+        FileKind::InetSocket(socket) => socket::link::ioctl(process, request, argument)
+            .or_else(|| socket::inet::ioctl(process, socket, request, argument))
+            .unwrap_or(Err(Errno::ENOTTY)),
         FileKind::Regular(node) if crate::vfs::devfs::is_property_area(*node) => {
             properties::ioctl(process, request, argument)
         }

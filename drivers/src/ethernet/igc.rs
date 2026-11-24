@@ -4,8 +4,9 @@
 //! at the same places; only the interrupt mask moved.
 
 use super::{
-    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS,
-    TRANSMIT_RING, buffer_address, is_valid_mac, put_frame, take_frame,
+    Error, Gathered, MAX_FRAME_BYTES, MAX_JUMBO_MTU, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES,
+    ReceivedPiece, TRANSMIT_BUFFERS, TRANSMIT_RING, WakeOnLan, buffer_address, buffers_for,
+    frame_bytes_for, gather, is_valid_mac, put_piece,
 };
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
@@ -35,6 +36,13 @@ const TXDCTL: usize = 0xe028;
 const MTA: usize = 0x5200;
 const RAL: usize = 0x5400;
 const RAH: usize = 0x5404;
+const RLPML: usize = 0x5004;
+const WUC: usize = 0x5800;
+const WUFC: usize = 0x5808;
+const RCTL_LONG_PACKETS: u32 = 1 << 5;
+const WUC_ADVANCED_POWER: u32 = 1;
+const WUC_PME_ENABLE: u32 = 1 << 1;
+const WUFC_MAGIC_PACKET: u32 = 1 << 1;
 
 const CTRL_SET_LINK_UP: u32 = 1 << 6;
 const CTRL_RESET: u32 = 1 << 26;
@@ -57,6 +65,7 @@ const COMMAND_REPORT_STATUS: u32 = 1 << 27;
 const COMMAND_EXTENDED: u32 = 1 << 29;
 const PAYLOAD_SHIFT: u32 = 14;
 const DESCRIPTOR_BYTES: usize = 16;
+const CRC_BYTES: u32 = 4;
 const MULTICAST_TABLE_WORDS: usize = 128;
 
 /// Which of the two generations an adapter is.
@@ -144,6 +153,7 @@ pub struct Igc<R: RegisterIo, M: DmaMemory> {
     receive_next: usize,
     transmit_next: usize,
     transmit_used: [bool; RING_ENTRIES],
+    max_frame: usize,
 }
 
 impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
@@ -189,6 +199,7 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
             receive_next: 0,
             transmit_next: 0,
             transmit_used: [false; RING_ENTRIES],
+            max_frame: MAX_FRAME_BYTES,
         };
         adapter.start(keep_waiting);
         Ok(adapter)
@@ -259,60 +270,118 @@ impl<R: RegisterIo, M: DmaMemory> Igc<R, M> {
         self.regs.read32(STATUS) & STATUS_LINK_UP != 0
     }
 
+    /// Copies the next frame received into `frame`: its length, or `None` when none came. A
+    /// jumbo frame spans several buffers, up to its end-of-packet descriptor.
     pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
         loop {
-            let index = self.receive_next;
-            let descriptor = RECEIVE_RING + index * DESCRIPTOR_BYTES;
-            let status = read32(&self.memory, descriptor + 8);
-            if status & DESCRIPTOR_DONE == 0 {
+            let memory = &self.memory;
+            let gathered = gather(memory, self.receive_next, frame, |index| {
+                let descriptor = RECEIVE_RING + index * DESCRIPTOR_BYTES;
+                let status = read32(memory, descriptor + 8);
+                ReceivedPiece {
+                    done: status & DESCRIPTOR_DONE != 0,
+                    end: status & END_OF_PACKET != 0,
+                    length: (read32(memory, descriptor + 12) & 0xffff) as usize,
+                    good: status & RECEIVE_ERRORS == 0,
+                }
+            });
+            let Gathered::Frame {
+                descriptors,
+                length,
+            } = gathered
+            else {
                 return None;
+            };
+            fence(Ordering::SeqCst);
+            let mut index = self.receive_next;
+            for _ in 0..descriptors {
+                index = self.receive_next;
+                self.give_receive_buffer(index);
+                self.receive_next = (index + 1) % RING_ENTRIES;
             }
             fence(Ordering::SeqCst);
-            let length = (read32(&self.memory, descriptor + 12) & 0xffff) as usize;
-            let complete = status & END_OF_PACKET != 0 && status & RECEIVE_ERRORS == 0;
-            let taken = complete
-                .then(|| take_frame(&self.memory, index, length.min(BUFFER_BYTES), frame))
-                .flatten();
-            self.give_receive_buffer(index);
-            fence(Ordering::SeqCst);
             self.regs.write32(RDT, index as u32);
-            self.receive_next = (index + 1) % RING_ENTRIES;
-            if taken.is_some() {
-                return taken;
+            if length.is_some() {
+                return length;
             }
         }
     }
 
+    /// Queues `frame` for sending, in as many buffers as it needs, the frame's length in each
+    /// descriptor's payload field.
     pub fn transmit(&mut self, frame: &[u8]) -> Result<(), Error> {
-        let index = self.transmit_next;
-        let descriptor = TRANSMIT_RING + index * DESCRIPTOR_BYTES;
-        if self.transmit_used[index] && read32(&self.memory, descriptor + 12) & DESCRIPTOR_DONE == 0
-        {
-            return Err(Error::QueueFull);
+        if frame.len() > self.max_frame {
+            return Err(Error::FrameTooLarge);
         }
-        put_frame(&self.memory, index, frame)?;
-        let length = frame.len() as u32;
-        write64(
-            &self.memory,
-            descriptor,
-            buffer_address(&self.memory, TRANSMIT_BUFFERS, index),
-        );
-        write32(
-            &self.memory,
-            descriptor + 8,
-            length
-                | DATA_DESCRIPTOR
-                | COMMAND_END_OF_PACKET
-                | COMMAND_INSERT_CRC
-                | COMMAND_REPORT_STATUS
-                | COMMAND_EXTENDED,
-        );
-        write32(&self.memory, descriptor + 12, length << PAYLOAD_SHIFT);
-        self.transmit_used[index] = true;
-        self.transmit_next = (index + 1) % RING_ENTRIES;
+        let pieces = buffers_for(frame.len());
+        for step in 0..pieces {
+            let index = (self.transmit_next + step) % RING_ENTRIES;
+            let descriptor = TRANSMIT_RING + index * DESCRIPTOR_BYTES;
+            if self.transmit_used[index]
+                && read32(&self.memory, descriptor + 12) & DESCRIPTOR_DONE == 0
+            {
+                return Err(Error::QueueFull);
+            }
+        }
+        let total = frame.len() as u32;
+        for piece in 0..pieces {
+            let index = (self.transmit_next + piece) % RING_ENTRIES;
+            let descriptor = TRANSMIT_RING + index * DESCRIPTOR_BYTES;
+            let length = put_piece(&self.memory, index, frame, piece) as u32;
+            write64(
+                &self.memory,
+                descriptor,
+                buffer_address(&self.memory, TRANSMIT_BUFFERS, index),
+            );
+            let end = match piece + 1 == pieces {
+                true => COMMAND_END_OF_PACKET,
+                false => 0,
+            };
+            write32(
+                &self.memory,
+                descriptor + 8,
+                length
+                    | DATA_DESCRIPTOR
+                    | end
+                    | COMMAND_INSERT_CRC
+                    | COMMAND_REPORT_STATUS
+                    | COMMAND_EXTENDED,
+            );
+            write32(&self.memory, descriptor + 12, total << PAYLOAD_SHIFT);
+            self.transmit_used[index] = true;
+        }
+        self.transmit_next = (self.transmit_next + pieces) % RING_ENTRIES;
         fence(Ordering::SeqCst);
         self.regs.write32(TDT, self.transmit_next as u32);
         Ok(())
+    }
+
+    /// Takes and sends frames of up to `bytes` (without the CRC): long packets on, and the
+    /// receive length limit at it, past 1518 bytes; `Unsupported` past a 9000-byte MTU.
+    pub fn set_max_frame(&mut self, bytes: usize) -> Result<(), Error> {
+        if bytes > frame_bytes_for(MAX_JUMBO_MTU) || bytes < MAX_FRAME_BYTES {
+            return Err(Error::Unsupported("the adapter takes MTUs from 1500 to 9000"));
+        }
+        let control = self.regs.read32(RCTL) & !RCTL_LONG_PACKETS;
+        let long = match bytes > MAX_FRAME_BYTES {
+            true => RCTL_LONG_PACKETS,
+            false => 0,
+        };
+        self.regs.write32(RLPML, bytes as u32 + CRC_BYTES);
+        self.regs.write32(RCTL, control | long);
+        self.max_frame = bytes;
+        Ok(())
+    }
+
+    /// Wakes the machine on a magic packet, or not (D708); the bus's own wake enable is the
+    /// kernel's to set as the machine sleeps.
+    pub fn set_wake_on_lan(&mut self, wake: WakeOnLan) {
+        let (filters, control) = match wake {
+            WakeOnLan::Off => (0, 0),
+            WakeOnLan::MagicPacket => (WUFC_MAGIC_PACKET, WUC_PME_ENABLE | WUC_ADVANCED_POWER),
+        };
+        self.regs.write32(WUFC, filters);
+        self.regs.write32(WUC, control);
     }
 }
 

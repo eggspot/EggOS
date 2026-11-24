@@ -2,8 +2,9 @@
 //! rings of `OWN`-flagged descriptors (D240).
 
 use super::{
-    BUFFER_BYTES, Error, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES, TRANSMIT_BUFFERS,
-    TRANSMIT_RING, buffer_address, is_valid_mac, put_frame, take_frame,
+    BUFFER_BYTES, Error, MAX_FRAME_BYTES, RECEIVE_BUFFERS, RECEIVE_RING, RING_ENTRIES,
+    TRANSMIT_BUFFERS, TRANSMIT_RING, WakeOnLan, buffer_address, is_valid_mac, put_frame,
+    take_frame,
 };
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
@@ -23,6 +24,10 @@ const TRANSMIT_POLL_8125: usize = 0x90;
 const TRANSMIT_CONFIGURATION: usize = 0x40;
 const RECEIVE_CONFIGURATION: usize = 0x44;
 const CONFIGURATION_LOCK: usize = 0x50;
+const CONFIG1: usize = 0x52;
+const CONFIG3: usize = 0x54;
+const CONFIG1_POWER_MANAGEMENT: u8 = 1;
+const CONFIG3_MAGIC_PACKET: u8 = 1 << 5;
 const PHY_STATUS: usize = 0x6c;
 const RECEIVE_MAX_SIZE: usize = 0xda;
 const C_PLUS_COMMAND: usize = 0xe0;
@@ -214,6 +219,41 @@ impl<R: RegisterIo, M: DmaMemory> Realtek<R, M> {
 
     pub fn is_link_up(&self) -> bool {
         self.regs.read8(PHY_STATUS) & LINK_UP != 0
+    }
+
+    /// Jumbo frames need receive buffers larger than the 2 KiB this driver keeps (the chips do
+    /// not chain them on receive): only the standard 1518-byte frame is taken.
+    pub fn set_max_frame(&mut self, bytes: usize) -> Result<(), Error> {
+        match bytes == MAX_FRAME_BYTES {
+            true => Ok(()),
+            false => Err(Error::Unsupported(
+                "this Realtek adapter takes only the standard 1500-byte MTU",
+            )),
+        }
+    }
+
+    /// Wakes the machine on a magic packet, or not (D708): power management and the magic
+    /// packet bit of its configuration registers, written unlocked.
+    pub fn set_wake_on_lan(&mut self, wake: WakeOnLan) {
+        let on = wake == WakeOnLan::MagicPacket;
+        self.regs.write8(CONFIGURATION_LOCK, UNLOCK);
+        let config1 = self.regs.read8(CONFIG1);
+        self.regs.write8(
+            CONFIG1,
+            match on {
+                true => config1 | CONFIG1_POWER_MANAGEMENT,
+                false => config1,
+            },
+        );
+        let config3 = self.regs.read8(CONFIG3) & !CONFIG3_MAGIC_PACKET;
+        self.regs.write8(
+            CONFIG3,
+            match on {
+                true => config3 | CONFIG3_MAGIC_PACKET,
+                false => config3,
+            },
+        );
+        self.regs.write8(CONFIGURATION_LOCK, LOCK);
     }
 
     pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {

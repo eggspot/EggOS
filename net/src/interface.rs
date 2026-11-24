@@ -137,19 +137,19 @@ pub struct Interface {
     counters: Counters,
     transmit_checksums: Completion,
     segmentation_limit: Option<usize>,
-    frame: [u8; ethernet::MAX_FRAME_BYTES],
+    frame: [u8; ethernet::MAX_JUMBO_FRAME_BYTES],
     ipv6: ndp::Addresses,
     neighbours6: ndp::Cache,
     groups4: [Option<Ipv4Address>; MAX_IPV4_GROUPS],
 }
 
 impl Interface {
-    /// The stack of an adapter with hardware address `mac` and MTU `mtu` (at most 1500), its
+    /// The stack of an adapter with hardware address `mac` and MTU `mtu` (at most 9000), its
     /// link up and its DHCP client about to ask; `seed` makes its numbers unpredictable.
     pub fn new(mac: MacAddress, mtu: usize, seed: u64) -> Self {
         Self {
             mac,
-            mtu: mtu.min(ethernet::MAX_PAYLOAD_BYTES),
+            mtu: mtu.min(ethernet::MAX_JUMBO_PAYLOAD_BYTES),
             link_up: true,
             dhcp: Client::new(mac, seed),
             arp: Cache::new(),
@@ -158,7 +158,7 @@ impl Interface {
             counters: Counters::default(),
             transmit_checksums: Completion::Full,
             segmentation_limit: None,
-            frame: [0; ethernet::MAX_FRAME_BYTES],
+            frame: [0; ethernet::MAX_JUMBO_FRAME_BYTES],
             ipv6: ndp::Addresses::new(mac),
             neighbours6: ndp::Cache::default(),
             groups4: [None; MAX_IPV4_GROUPS],
@@ -344,6 +344,12 @@ impl Interface {
                 true => self.ipv6.next_solicitation_ms(),
                 false => u64::MAX,
             })
+    }
+
+    /// Makes `mtu` the link's MTU (at most 9000, D708): later packets and TCP segment sizes
+    /// follow it.
+    pub fn set_mtu(&mut self, mtu: usize) {
+        self.mtu = mtu.min(ethernet::MAX_JUMBO_PAYLOAD_BYTES);
     }
 
     /// Records whether the link is up at `now_ms`; when it comes back, the DHCP client checks
@@ -922,6 +928,13 @@ impl Interface {
             .pending
             .iter()
             .any(|slot| matches!(slot, Some(pending) if pending.next_hop == hop));
+        if length > ethernet::MAX_FRAME_BYTES {
+            self.counters.sent_dropped += 1;
+            if !asked {
+                self.ask(hop, transmit);
+            }
+            return;
+        }
         let slot = match self.pending.iter().position(Option::is_none) {
             Some(free) => free,
             None => {
@@ -933,12 +946,14 @@ impl Interface {
                     .map_or(0, |(index, _)| index)
             }
         };
+        let mut frame = [0; ethernet::MAX_FRAME_BYTES];
+        frame[..length].copy_from_slice(&self.frame[..length]);
         self.pending[slot] = Some(Pending {
             next_hop: hop,
             length,
             asked_ms: now_ms,
             attempts: 1,
-            frame: self.frame,
+            frame,
         });
         if !asked {
             self.ask(hop, transmit);

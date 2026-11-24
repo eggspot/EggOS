@@ -8,7 +8,10 @@ use super::{
 };
 use crate::net::NetDevice;
 use alloc::boxed::Box;
-use eggos_drivers::ethernet::{self, MEMORY_BYTES, e1000, igc, ixgbe, realtek, rtl8139};
+use eggos_drivers::ethernet::{
+    self, MAX_JUMBO_MTU, MEMORY_BYTES, STANDARD_MTU, WakeOnLan, e1000, frame_bytes_for, igc,
+    ixgbe, realtek, rtl8139,
+};
 use eggos_drivers::io::Mmio;
 use eggos_drivers::pci;
 use eggos_net::ethernet::MacAddress;
@@ -18,7 +21,34 @@ const ETHERNET: u8 = 0x00;
 const INTEL: u16 = 0x8086;
 const REALTEK: u16 = 0x10ec;
 const START_TIMEOUT_MS: u64 = 1_000;
-const ETHERNET_MTU: usize = 1500;
+const SMALLEST_MTU: usize = 68;
+const POWER_MANAGEMENT_CAPABILITY: u8 = 0x01;
+const POWER_CONTROL_OFFSET: u16 = 4;
+const PME_ENABLE: u32 = 1 << 8;
+const PME_STATUS: u32 = 1 << 15;
+
+/// The PCI function of the adapter whose Wake-on-LAN is on, for [`arm_wake`].
+static WAKE_FUNCTION: crate::sync::SpinLock<Option<pci::Address>> = crate::sync::SpinLock::new(None);
+
+/// Lets the adapter whose Wake-on-LAN is on signal a wake from the bus (its power management
+/// capability's PME enable, its old PME status cleared), as the machine goes to sleep or powers
+/// off (D708). Nothing when no adapter wakes the machine or it has no such capability.
+pub fn arm_wake() {
+    let Some(address) = *WAKE_FUNCTION.lock() else {
+        return;
+    };
+    let Some(config) = super::interrupts::kept_configuration() else {
+        return;
+    };
+    let Some(capability) = pci::capabilities(config, address)
+        .find(|capability| capability.id == POWER_MANAGEMENT_CAPABILITY)
+    else {
+        return;
+    };
+    let offset = u16::from(capability.offset) + POWER_CONTROL_OFFSET;
+    let word = config.read32(address, offset & !3);
+    config.write32(address, offset & !3, word | PME_ENABLE | PME_STATUS);
+}
 
 /// Ethernet controllers (PCI class 02h, subclass 00h) of the kinds the drivers take.
 pub static ETHERNET_DRIVER: DriverDescriptor = DriverDescriptor {
@@ -39,7 +69,96 @@ enum Adapter {
     Rtl8139(rtl8139::Rtl8139<Mmio, DmaRegion>),
 }
 
-impl NetDevice for Adapter {
+/// An adapter with the MTU and wake setting the stack gave it (D708).
+struct Ethernet {
+    adapter: Adapter,
+    function: pci::Address,
+    mtu: usize,
+    wake: bool,
+}
+
+impl Adapter {
+    fn takes_jumbo_frames(&self) -> bool {
+        matches!(self, Adapter::E1000(_) | Adapter::Igc(_) | Adapter::Ixgbe(_))
+    }
+
+    fn set_max_frame(&mut self, bytes: usize) -> Result<(), ethernet::Error> {
+        match self {
+            Adapter::E1000(adapter) => adapter.set_max_frame(bytes),
+            Adapter::Igc(adapter) => adapter.set_max_frame(bytes),
+            Adapter::Ixgbe(adapter) => adapter.set_max_frame(bytes),
+            Adapter::Realtek(adapter) => adapter.set_max_frame(bytes),
+            Adapter::Rtl8139(adapter) => adapter.set_max_frame(bytes),
+        }
+    }
+
+    fn set_wake_on_lan(&mut self, wake: WakeOnLan) {
+        match self {
+            Adapter::E1000(adapter) => adapter.set_wake_on_lan(wake),
+            Adapter::Igc(adapter) => adapter.set_wake_on_lan(wake),
+            Adapter::Ixgbe(adapter) => adapter.set_wake_on_lan(wake),
+            Adapter::Realtek(adapter) => adapter.set_wake_on_lan(wake),
+            Adapter::Rtl8139(adapter) => adapter.set_wake_on_lan(wake),
+        }
+    }
+}
+
+impl NetDevice for Ethernet {
+    fn mac(&self) -> MacAddress {
+        self.adapter.mac()
+    }
+
+    fn mtu(&self) -> usize {
+        self.mtu
+    }
+
+    fn is_link_up(&self) -> bool {
+        self.adapter.is_link_up()
+    }
+
+    fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+        self.adapter.receive(frame)
+    }
+
+    fn transmit(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+        self.adapter.transmit(frame)
+    }
+
+    fn max_mtu(&self) -> usize {
+        match self.adapter.takes_jumbo_frames() {
+            true => MAX_JUMBO_MTU,
+            false => STANDARD_MTU,
+        }
+    }
+
+    fn set_mtu(&mut self, mtu: usize) -> Result<(), &'static str> {
+        if !(SMALLEST_MTU..=self.max_mtu()).contains(&mtu) {
+            return Err("the MTU is outside what the adapter takes");
+        }
+        self.adapter
+            .set_max_frame(frame_bytes_for(mtu.max(STANDARD_MTU)))
+            .map_err(ethernet::Error::description)?;
+        self.mtu = mtu;
+        Ok(())
+    }
+
+    fn wake_on_lan(&self) -> Option<bool> {
+        Some(self.wake)
+    }
+
+    fn set_wake_on_lan(&mut self, on: bool) -> Result<(), &'static str> {
+        let wake = match on {
+            true => WakeOnLan::MagicPacket,
+            false => WakeOnLan::Off,
+        };
+        self.adapter.set_wake_on_lan(wake);
+        self.wake = on;
+        *WAKE_FUNCTION.lock() = on.then_some(self.function);
+        Ok(())
+    }
+}
+
+impl Adapter {
     fn mac(&self) -> MacAddress {
         MacAddress(match self {
             Adapter::E1000(adapter) => adapter.mac(),
@@ -48,10 +167,6 @@ impl NetDevice for Adapter {
             Adapter::Realtek(adapter) => adapter.mac(),
             Adapter::Rtl8139(adapter) => adapter.mac(),
         })
-    }
-
-    fn mtu(&self) -> usize {
-        ETHERNET_MTU
     }
 
     fn is_link_up(&self) -> bool {
@@ -164,9 +279,15 @@ fn probe_ethernet(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError>
     if let (true, Adapter::E1000(e1000)) = (interrupting, &mut adapter) {
         e1000.enable_interrupts();
     }
+    let device = Ethernet {
+        adapter,
+        function: function.address,
+        mtu: STANDARD_MTU,
+        wake: false,
+    };
     match interrupting {
-        true => crate::net::install_interrupting(Box::new(adapter)),
-        false => crate::net::install(Box::new(adapter)),
+        true => crate::net::install_interrupting(Box::new(device)),
+        false => crate::net::install(Box::new(device)),
     }
     .map_err(|_| ProbeError::Refused("a network adapter is already in use"))
 }

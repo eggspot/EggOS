@@ -166,6 +166,10 @@ pub struct InterfaceStatus {
     pub lease_s: Option<u32>,
     /// What it counted.
     pub counters: Counters,
+    /// The largest MTU it takes (D708).
+    pub max_mtu: u32,
+    /// Whether it wakes the machine on a magic packet; `None` when it cannot.
+    pub wake_on_lan: Option<bool>,
 }
 
 impl InterfaceStatus {
@@ -239,9 +243,14 @@ pub fn write_interface(out: &mut impl Write, status: &InterfaceStatus) -> fmt::R
         write!(out, "{server}")?;
     }
     let counters = status.counters;
+    let wake = match status.wake_on_lan {
+        None => "-",
+        Some(true) => "wake",
+        Some(false) => "no-wake",
+    };
     writeln!(
         out,
-        " {} {} {} {} {} {} {} {} {} {}",
+        " {} {} {} {} {} {} {} {} {} {} {} {}",
         Field(status.dhcp_server),
         Seconds(status.lease_left_s),
         Seconds(status.lease_s),
@@ -252,6 +261,8 @@ pub fn write_interface(out: &mut impl Write, status: &InterfaceStatus) -> fmt::R
         counters.sent_packets,
         counters.sent_bytes,
         counters.sent_dropped,
+        status.max_mtu,
+        wake,
     )
 }
 
@@ -314,6 +325,16 @@ pub fn parse_interface(line: &[u8]) -> Option<InterfaceStatus> {
         sent_bytes: counter()?,
         sent_dropped: counter()?,
     };
+    let max_mtu = match next() {
+        Some(word) => u32::try_from(parse_number(word)?).ok()?,
+        None => mtu,
+    };
+    let wake_on_lan = match next() {
+        Some(b"wake") => Some(true),
+        Some(b"no-wake") => Some(false),
+        Some(b"-") | None => None,
+        Some(_) => return None,
+    };
     Some(InterfaceStatus {
         name,
         link_up,
@@ -327,6 +348,8 @@ pub fn parse_interface(line: &[u8]) -> Option<InterfaceStatus> {
         lease_left_s,
         lease_s,
         counters,
+        max_mtu,
+        wake_on_lan,
     })
 }
 

@@ -8,7 +8,14 @@ use eggos_commands::{commands, errors};
 use eggos_net::dhcp::INFINITE_LEASE_S;
 use eggos_net::status::{Dhcp, InterfaceStatus, NO_ADAPTER_WORD, parse_neighbour};
 
-const USAGE: &[u8] = b"usage: ip [-s] [-j] [address | link | route | neigh] [show [dev <name>]]";
+const USAGE: &[u8] = b"usage: ip [-s] [-j] [address | link | route | neigh] [show [dev <name>]]\n       ip link set dev <name> [mtu <bytes>] [wake magic | wake off]";
+const SIOCSIFMTU: u32 = 0x8922;
+const SIOCETHTOOL: u32 = 0x8946;
+const ETHTOOL_SET_WAKE: u32 = 6;
+const WAKE_MAGIC: u32 = 1 << 5;
+const IFREQ_NAME_BYTES: usize = 16;
+const IFREQ_BYTES: usize = 40;
+const WOLINFO_BYTES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Object {
@@ -46,15 +53,19 @@ pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
     let mut statistics = false;
     let mut help = false;
+    let mut link_options: [Option<&[u8]>; 3] = [None; 3];
     let parsed = parse_defined(
         output,
         &words[..arguments.len()],
         &commands::IP,
         |output, given| {
-            match given.option.short {
-                Some(b's') => statistics = true,
-                Some(b'j') => output.use_json(),
-                Some(b'h') => help = true,
+            match (given.option.short, given.option.long) {
+                (Some(b's'), _) => statistics = true,
+                (Some(b'j'), _) => output.use_json(),
+                (Some(b'h'), _) => help = true,
+                (None, Some("dev")) => link_options[0] = given.value,
+                (None, Some("mtu")) => link_options[1] = given.value,
+                (None, Some("wake")) => link_options[2] = given.value,
                 _ => {}
             }
             Ok(())
@@ -69,6 +80,28 @@ pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
         return 0;
     }
     let json = output.is_json();
+    let all: [&[u8]; MAX_ARGUMENTS] = core::array::from_fn(|index| {
+        operands.all().get(index).map_or(&b""[..], |operand| operand.to_bytes())
+    });
+    let given = &all[..operands.all().len().min(MAX_ARGUMENTS)];
+    if let [b"l" | b"link", b"set", rest @ ..] = given {
+        let mut words: [&[u8]; MAX_ARGUMENTS + 6] = [b""; MAX_ARGUMENTS + 6];
+        let mut count = 0;
+        for (keyword, value) in [&b"dev"[..], b"mtu", b"wake"].into_iter().zip(link_options) {
+            if let Some(value) = value {
+                words[count] = keyword;
+                words[count + 1] = value;
+                count += 2;
+            }
+        }
+        for word in rest {
+            if count < words.len() {
+                words[count] = word;
+                count += 1;
+            }
+        }
+        return set_link(output, &words[..count]);
+    }
     let mut chosen = None;
     let mut device: Option<&[u8]> = None;
     let mut words = operands.all().iter().map(|operand| operand.to_bytes());
@@ -134,6 +167,86 @@ pub fn ip<S: System>(output: &mut Output<S>, arguments: &[&CStr]) -> i32 {
     }
 }
 
+/// `ip link set dev <name> [mtu <bytes>] [wake magic|off]` (D708), through `SIOCSIFMTU` and
+/// `SIOCETHTOOL` on a socket, as iproute2 and ethtool do.
+fn set_link<S: System>(output: &mut Output<S>, words: &[&[u8]]) -> i32 {
+    let mut name: Option<&[u8]> = None;
+    let mut mtu: Option<u32> = None;
+    let mut wake: Option<bool> = None;
+    let mut rest = words.iter();
+    while let Some(&word) = rest.next() {
+        match (word, rest.next().copied()) {
+            (b"dev", Some(value)) => name = Some(value),
+            (b"mtu", Some(value)) => match crate::wm::number(value) {
+                Some(bytes) if (68..=65_535).contains(&bytes) => mtu = Some(bytes.unsigned_abs()),
+                _ => {
+                    output.error(&[b"invalid MTU \"", value, b"\""]);
+                    return FAILURE;
+                }
+            },
+            (b"wake", Some(b"magic" | b"on")) => wake = Some(true),
+            (b"wake", Some(b"off")) => wake = Some(false),
+            _ => return usage(output),
+        }
+    }
+    let Some(name) = name.filter(|name| !name.is_empty() && name.len() < IFREQ_NAME_BYTES) else {
+        return usage(output);
+    };
+    if mtu.is_none() && wake.is_none() {
+        return usage(output);
+    }
+    let socket = match output
+        .system
+        .open_datagram_socket(crate::system::DatagramKind::Udp)
+    {
+        Ok(socket) => socket,
+        Err(errno) => {
+            output.error(&[b"cannot open a socket: ", errno.message()]);
+            return FAILURE;
+        }
+    };
+    let mut ifreq = [0u8; IFREQ_BYTES];
+    ifreq[..name.len()].copy_from_slice(name);
+    let mut status = 0;
+    if let Some(mtu) = mtu {
+        ifreq[IFREQ_NAME_BYTES..IFREQ_NAME_BYTES + 4].copy_from_slice(&mtu.to_ne_bytes());
+        if let Err(errno) = output.system.device_control(socket, SIOCSIFMTU, &mut ifreq) {
+            link_refused(output, name, b"mtu", errno);
+            status = FAILURE;
+        }
+    }
+    if let Some(on) = wake {
+        let mut wolinfo = [0u8; WOLINFO_BYTES];
+        wolinfo[..4].copy_from_slice(&ETHTOOL_SET_WAKE.to_ne_bytes());
+        let wanted = if on { WAKE_MAGIC } else { 0 };
+        wolinfo[8..12].copy_from_slice(&wanted.to_ne_bytes());
+        let pointer = wolinfo.as_mut_ptr() as usize as u64;
+        ifreq[IFREQ_NAME_BYTES..IFREQ_NAME_BYTES + 8].copy_from_slice(&pointer.to_ne_bytes());
+        if let Err(errno) = output.system.device_control(socket, SIOCETHTOOL, &mut ifreq) {
+            link_refused(output, name, b"wake", errno);
+            status = FAILURE;
+        }
+    }
+    output.system.close(socket);
+    status
+}
+
+fn link_refused<S: System>(
+    output: &mut Output<S>,
+    name: &[u8],
+    setting: &[u8],
+    errno: eggos_runtime::errno::Errno,
+) {
+    let why: &[u8] = match errno {
+        eggos_runtime::errno::Errno::EPERM => b"only root may change it",
+        eggos_runtime::errno::Errno::ENODEV => b"no such device",
+        eggos_runtime::errno::Errno::EOPNOTSUPP => b"the adapter cannot do it",
+        eggos_runtime::errno::Errno::EINVAL => b"the adapter does not take that value",
+        other => other.message(),
+    };
+    output.error(&[b"cannot set ", setting, b" of \"", name, b"\": ", why]);
+}
+
 fn usage<S: System>(output: &mut Output<S>) -> i32 {
     output.coded(&errors::USAGE, &[USAGE]);
     FAILURE
@@ -170,6 +283,15 @@ fn write_link<S: System>(
     if status.dhcp != Dhcp::Off {
         output.write(b" dhcp ");
         output.write(status.dhcp.word().as_bytes());
+    }
+    if status.max_mtu > status.mtu {
+        output.write(b" maxmtu ");
+        output.write_number(u64::from(status.max_mtu), 0);
+    }
+    match status.wake_on_lan {
+        Some(true) => output.write(b" wake magic"),
+        Some(false) => output.write(b" wake off"),
+        None => {}
     }
     output.write(b"\n    ");
     let mac = Shown::<17>::of(status.mac);
@@ -408,6 +530,14 @@ fn write_json_adapter<S: System>(output: &mut Output<S>, status: &InterfaceStatu
     ] {
         field(output, name);
         write_json_number(output, Some(value));
+    }
+    if status.max_mtu > status.mtu {
+        field(output, b"max_mtu");
+        write_json_number(output, Some(u64::from(status.max_mtu)));
+    }
+    if let Some(on) = status.wake_on_lan {
+        field(output, b"wake_on_lan");
+        output.write(if on { b"\"magic\"" } else { b"\"off\"" });
     }
     output.write(b"}");
 }

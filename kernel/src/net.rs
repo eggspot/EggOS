@@ -96,6 +96,25 @@ pub trait NetDevice: Send {
     ) -> Result<(), &'static str> {
         Err("the adapter does not cut segments")
     }
+    /// The largest MTU it takes (D708): its [`Self::mtu`] unless it takes jumbo frames.
+    fn max_mtu(&self) -> usize {
+        self.mtu()
+    }
+    /// Makes `mtu` its link's MTU (D708); `Err` with the reason when it cannot.
+    fn set_mtu(&mut self, mtu: usize) -> Result<(), &'static str> {
+        match mtu == self.mtu() {
+            true => Ok(()),
+            false => Err("the adapter's MTU cannot change"),
+        }
+    }
+    /// Whether it wakes the machine on a magic packet; `None` when it cannot (D708).
+    fn wake_on_lan(&self) -> Option<bool> {
+        None
+    }
+    /// Wakes the machine on a magic packet from sleep or soft-off, or not.
+    fn set_wake_on_lan(&mut self, _on: bool) -> Result<(), &'static str> {
+        Err("the adapter cannot wake the machine")
+    }
 }
 
 struct Adapter {
@@ -893,6 +912,8 @@ fn loopback_status() -> InterfaceStatus {
             sent_bytes: bytes,
             ..Counters::default()
         },
+        max_mtu: LOOPBACK_MTU,
+        wake_on_lan: None,
     }
 }
 
@@ -912,7 +933,55 @@ fn adapter_status(adapter: &Adapter, now: u64) -> Option<InterfaceStatus> {
         lease_left_s: lease.map(|lease| lease.left_s(now)),
         lease_s: lease.map(|lease| lease.lease_s),
         counters: interface.counters(),
+        max_mtu: adapter.device.max_mtu() as u32,
+        wake_on_lan: adapter.device.wake_on_lan(),
     })
+}
+
+/// Why an interface's link setting was not changed (D708).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkError {
+    /// No adapter has that name (`lo` included: its settings are fixed).
+    NoSuchInterface,
+    /// The adapter refused, for this reason.
+    Refused(&'static str),
+}
+
+fn with_adapter<T>(
+    name: &[u8],
+    change: impl FnOnce(&mut Adapter) -> Result<T, &'static str>,
+) -> Result<T, LinkError> {
+    let mut adapters = ADAPTERS.lock();
+    let adapter = adapters
+        .iter_mut()
+        .find(|adapter| adapter.name == name)
+        .ok_or(LinkError::NoSuchInterface)?;
+    change(adapter).map_err(LinkError::Refused)
+}
+
+/// Makes `mtu` the MTU of adapter `name` (D708): its frames, and the stack's packets and TCP
+/// segment sizes, follow it from the next packet on; jumbo frames up to 9000 on the adapters
+/// that take them.
+pub fn set_mtu(name: &[u8], mtu: usize) -> Result<(), LinkError> {
+    with_adapter(name, |adapter| {
+        adapter.device.set_mtu(mtu)?;
+        adapter.interface.set_mtu(mtu);
+        Ok(())
+    })
+}
+
+/// Has adapter `name` wake the machine on a magic packet, or not (D708).
+pub fn set_wake_on_lan(name: &[u8], on: bool) -> Result<(), LinkError> {
+    with_adapter(name, |adapter| adapter.device.set_wake_on_lan(on))
+}
+
+/// Whether any adapter wakes the machine on a magic packet: the machine's sleep and power-off
+/// then leave its PCI function able to signal a wake.
+pub fn wakes_on_lan() -> bool {
+    ADAPTERS
+        .lock()
+        .iter()
+        .any(|adapter| adapter.device.wake_on_lan() == Some(true))
 }
 
 /// Every interface's state at this moment: `lo`, then `eth0` and `wlan0` when there are those

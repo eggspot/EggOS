@@ -39,6 +39,7 @@ use eggos_hal::Platform;
 use eggos_hal::user::UserContext;
 
 pub mod inet;
+pub mod link;
 pub mod netlink;
 pub mod tcp;
 pub mod unix_datagram;

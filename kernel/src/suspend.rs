@@ -44,6 +44,7 @@ pub fn suspend_to_ram<P: Platform>() -> Result<(), &'static str> {
         .skip(1)
         .filter(|cpu| cpu.is_online())
         .collect();
+    crate::devices::ethernet::arm_wake();
     acpi_namespace::prepare_to_sleep::<P>(SUSPEND_TO_RAM);
     let result = hold_others_and_sleep::<P>(&others);
     for &cpu in &others {

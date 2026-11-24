@@ -240,6 +240,8 @@ pub enum Kind {
     ScreenReaderRead,
     /// `screen_reader_say` (D603).
     ScreenReaderSay,
+    /// `net_link_set`: a wired adapter's MTU and Wake-on-LAN (D708).
+    NetLinkSet,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -989,6 +991,11 @@ pub const TOOLS: [Tool; 96] = [
         &registry::SCREEN_READER_SAY,
         Kind::ScreenReaderSay,
         twin("/bin/screen-reader", &["say"], Operand::None),
+    ),
+    tool(
+        &registry::NET_LINK_SET,
+        Kind::NetLinkSet,
+        twin("/bin/ip", &["link", "set"], Operand::None),
     ),
 ];
 

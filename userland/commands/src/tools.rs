@@ -1044,6 +1044,40 @@ pub const NET_STATUS: ToolDefinition = reading(
     ToolResult::Text,
 );
 
+/// `net_link_set` (D708).
+pub const NET_LINK_SET: ToolDefinition = ToolDefinition {
+    name: "net_link_set",
+    title: "Set a network adapter's MTU or wake",
+    description: "Sets a wired adapter's MTU (68 to 9000; past 1500 are jumbo frames, on the \
+                  adapters that take them) or whether a magic packet wakes the machine from \
+                  sleep or power-off, as `ip link set dev <name> mtu <bytes> wake <magic|off>` \
+                  does; net_status reads them back (max_mtu, wake_on_lan). Asks the user first, \
+                  or needs confirm: true when the client cannot ask. Needs the run grant.",
+    command: &["ip", "link", "set"],
+    fixed: &[],
+    arguments: &[
+        required(described(
+            optional("interface", JsonType::String, Mapping::Option("--dev")),
+            "The adapter, as net_status names it (eth0).",
+        )),
+        described(
+            optional("mtu", JsonType::Integer, Mapping::Option("--mtu")),
+            "The MTU in bytes, 68 to 9000.",
+        ),
+        described(
+            optional("wake_on_lan", JsonType::String, Mapping::Option("--wake")),
+            "magic: a magic packet wakes the machine; off: nothing on the network does.",
+        ),
+        confirm(GUARD),
+    ],
+    max_effect: Effect::Change,
+    grant: Some(Grant::Run),
+    idempotent: true,
+    open_world: false,
+    confirm: Confirmation::Always,
+    result: ToolResult::Text,
+};
+
 /// `net_ping`.
 pub const NET_PING: ToolDefinition = reading(
     "net_ping",
@@ -2985,6 +3019,7 @@ pub const TOOLS: [ToolDefinition; 96] = [
     SCREEN_READER_LOG,
     SCREEN_READER_READ,
     SCREEN_READER_SAY,
+    NET_LINK_SET,
 ];
 
 impl ToolDefinition {

@@ -9,6 +9,10 @@ pub const HEADER_BYTES: usize = 14;
 pub const MAX_PAYLOAD_BYTES: usize = 1500;
 /// The largest frame: the header and the largest payload.
 pub const MAX_FRAME_BYTES: usize = HEADER_BYTES + MAX_PAYLOAD_BYTES;
+/// The largest payload of a jumbo frame (D708).
+pub const MAX_JUMBO_PAYLOAD_BYTES: usize = 9000;
+/// The largest jumbo frame: the header and the largest jumbo payload.
+pub const MAX_JUMBO_FRAME_BYTES: usize = HEADER_BYTES + MAX_JUMBO_PAYLOAD_BYTES;
 /// The shortest frame on the wire without its check sequence; shorter ones are padded.
 pub const MIN_FRAME_BYTES: usize = 60;
 

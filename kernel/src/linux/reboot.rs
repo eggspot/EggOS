@@ -156,6 +156,7 @@ pub fn take_machine_down<P: Platform>(action: Action) -> ! {
     }
     match action {
         Action::PowerOff => {
+            crate::devices::ethernet::arm_wake();
             crate::devices::acpi_namespace::prepare_to_power_off();
             P::exit(ExitStatus::Success)
         }

@@ -164,3 +164,34 @@ fn options_come_from_the_registry_with_iproute2_s_words() {
         (1, "ip: object \"-s\" is unknown, try \"ip help\"\n")
     );
 }
+
+#[test]
+fn a_link_that_takes_jumbo_frames_and_wakes_says_so() {
+    let jumbo = "eth0 up 52:54:00:12:34:56 1500 configured 10.0.2.15/24 10.0.2.2 10.0.2.3 \
+                 10.0.2.2 86342 86400 2905 3600000 0 4 812 1300000 0 9000 wake\n";
+    let (status, output, errors) = run(jumbo, &[c"link"]);
+    assert_eq!((status, errors.as_str()), (0, ""));
+    assert!(
+        output.starts_with(
+            "1: eth0: <BROADCAST,UP,LOWER_UP> mtu 1500 state UP dhcp configured maxmtu 9000 \
+             wake magic\n"
+        ),
+        "{output}"
+    );
+}
+
+#[test]
+fn link_set_needs_a_device_and_something_to_set() {
+    for arguments in [
+        &[c"link", c"set", c"dev", c"eth0"][..],
+        &[c"link", c"set", c"mtu", c"9000"][..],
+        &[c"link", c"set", c"dev", c"eth0", c"wake", c"sometimes"][..],
+    ] {
+        let (status, _, errors) = run(CONNECTED, arguments);
+        assert_eq!(status, 1, "{arguments:?}");
+        assert!(errors.contains("usage"), "{errors}");
+    }
+    let (status, _, errors) = run(CONNECTED, &[c"link", c"set", c"dev", c"eth0", c"mtu", c"12"]);
+    assert_eq!(status, 1);
+    assert!(errors.contains("invalid MTU"), "{errors}");
+}

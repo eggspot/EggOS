@@ -3761,12 +3761,36 @@ pub const IP: CommandDefinition = CommandDefinition {
                   links only (link), the routes (route) or the neighbours' hardware addresses \
                   (neigh), all or one adapter's (show dev <name>); -j writes the network's \
                   state and adapters as one JSON object. It also takes iproute2's -json, -stats \
-                  and -statistics, as --json and -s.",
+                  and -statistics, as --json and -s. ip link set dev <name> mtu <bytes> sets an \
+                  adapter's MTU (up to 9000, jumbo frames, on the adapters that take them) and \
+                  wake magic or wake off whether a magic packet wakes the machine; both need \
+                  root.",
     options: &[
         flag(b's', "Add traffic counters."),
         named_flag(b'j', "json", "Write one JSON object."),
         flag(b'4', "IPv4 only (always so)."),
         named_flag(b'h', "help", "Print the usage."),
+        valued(
+            None,
+            Some("dev"),
+            "name",
+            ValueType::Text,
+            "With link set: the adapter, as dev <name> does.",
+        ),
+        valued(
+            None,
+            Some("mtu"),
+            "bytes",
+            ValueType::Text,
+            "With link set: the MTU, 68 to 9000, as mtu <bytes> does.",
+        ),
+        valued(
+            None,
+            Some("wake"),
+            "magic|off",
+            ValueType::Text,
+            "With link set: whether a magic packet wakes the machine, as wake <magic|off> does.",
+        ),
     ],
     operands: &[
         operand(

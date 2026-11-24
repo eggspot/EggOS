@@ -22,6 +22,8 @@ fn connected() -> InterfaceStatus {
             sent_bytes: 1_300_000,
             sent_dropped: 0,
         },
+        max_mtu: 9000,
+        wake_on_lan: Some(false),
     }
 }
 
@@ -37,7 +39,7 @@ fn an_interface_line_has_its_fields_in_order_and_parses_back() {
     assert_eq!(
         line(&status),
         "eth0 up 52:54:00:12:34:56 1500 configured 10.0.2.15/24 10.0.2.2 10.0.2.3 10.0.2.2 \
-         86342 86400 2905 3600000 0 4 812 1300000 0\n"
+         86342 86400 2905 3600000 0 4 812 1300000 0 9000 no-wake\n"
     );
     assert_eq!(parse_interface(line(&status).as_bytes()), Some(status));
     assert_eq!(status.state(), State::Connected);
@@ -60,7 +62,8 @@ fn missing_values_are_dashes_a_lease_that_never_ends_is_forever_and_lo_is_static
     };
     assert_eq!(
         line(&lo),
-        "lo up 00:00:00:00:00:00 65536 off 127.0.0.1/8 - - - - - 2905 3600000 0 4 812 1300000 0\n"
+        "lo up 00:00:00:00:00:00 65536 off 127.0.0.1/8 - - - - - 2905 3600000 0 4 812 1300000 0 \
+         9000 no-wake\n"
     );
     assert_eq!(parse_interface(line(&lo).as_bytes()), Some(lo));
     assert!(lo.is_loopback());
@@ -194,4 +197,20 @@ fn neighbours_are_linux_s_arp_table_and_parse_back() {
         parse_neighbour(lines.next().unwrap().as_bytes()),
         Some(neighbour)
     );
+}
+
+#[test]
+fn a_line_without_the_link_fields_still_parses_with_the_mtu_as_the_largest() {
+    let mut status = connected();
+    status.wake_on_lan = None;
+    status.max_mtu = status.mtu;
+    let text = line(&status);
+    let old = text.trim_end().rsplitn(3, ' ').nth(2).unwrap().to_string() + "\n";
+    assert_eq!(parse_interface(old.as_bytes()), Some(status));
+    let wakes = InterfaceStatus {
+        wake_on_lan: Some(true),
+        ..connected()
+    };
+    assert!(line(&wakes).ends_with(" 9000 wake\n"));
+    assert_eq!(parse_interface(line(&wakes).as_bytes()), Some(wakes));
 }

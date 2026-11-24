@@ -2,7 +2,10 @@
 //! writes frames into one after the other, each behind a 4-byte header, and four transmit
 //! buffers it reads from (Realtek's RTL8139 datasheet; D615). It reaches only 32-bit addresses.
 
-use super::{BUFFER_BYTES, Error, MAX_FRAME_BYTES, RECEIVE_BUFFERS, TRANSMIT_BUFFERS, is_valid_mac};
+use super::{
+    BUFFER_BYTES, Error, MAX_FRAME_BYTES, RECEIVE_BUFFERS, TRANSMIT_BUFFERS, WakeOnLan,
+    is_valid_mac,
+};
 use crate::dma::DmaMemory;
 use crate::io::RegisterIo;
 use crate::storage::{copy_in, copy_out};
@@ -19,7 +22,13 @@ const IMR: usize = 0x3c;
 const ISR: usize = 0x3e;
 const TCR: usize = 0x40;
 const RCR: usize = 0x44;
+const CONFIG_LOCK: usize = 0x50;
 const CONFIG1: usize = 0x52;
+const CONFIG3: usize = 0x59;
+const CONFIG_UNLOCK: u8 = 0xc0;
+const CONFIG_LOCKED: u8 = 0x00;
+const CONFIG1_POWER_MANAGEMENT: u8 = 1;
+const CONFIG3_MAGIC_PACKET: u8 = 1 << 5;
 const MSR: usize = 0x58;
 
 const CR_RESET: u8 = 1 << 4;
@@ -151,6 +160,31 @@ impl<R: RegisterIo, M: DmaMemory> Rtl8139<R, M> {
 
     pub fn is_link_up(&self) -> bool {
         self.regs.read8(MSR) & MSR_LINK_DOWN == 0
+    }
+
+    /// The RTL8139 sends and takes only standard frames.
+    pub fn set_max_frame(&mut self, bytes: usize) -> Result<(), Error> {
+        match bytes == MAX_FRAME_BYTES {
+            true => Ok(()),
+            false => Err(Error::Unsupported("the RTL8139 takes only the standard 1500-byte MTU")),
+        }
+    }
+
+    /// Wakes the machine on a magic packet, or not (D708).
+    pub fn set_wake_on_lan(&mut self, wake: WakeOnLan) {
+        let on = wake == WakeOnLan::MagicPacket;
+        self.regs.write8(CONFIG_LOCK, CONFIG_UNLOCK);
+        let config1 = self.regs.read8(CONFIG1);
+        if on {
+            self.regs.write8(CONFIG1, config1 | CONFIG1_POWER_MANAGEMENT);
+        }
+        let config3 = self.regs.read8(CONFIG3) & !CONFIG3_MAGIC_PACKET;
+        let magic = match on {
+            true => CONFIG3_MAGIC_PACKET,
+            false => 0,
+        };
+        self.regs.write8(CONFIG3, config3 | magic);
+        self.regs.write8(CONFIG_LOCK, CONFIG_LOCKED);
     }
 
     pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {

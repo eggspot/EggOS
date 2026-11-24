@@ -164,7 +164,7 @@ and is not listed per item.
 - [x] AHCI port multipliers (D238) — code written, unbuilt, D614
 - [x] Linux-style disk names (`nvme0n1`, `sda`) beside `vdX`, and more than four disks (D238) — code written, unbuilt, D613
 - [x] Ethernet: Intel igb (I210/I211), ixgbe (82599/X540/X550) and Realtek RTL8139 drivers (D240) — code written, unbuilt, D615
-- [ ] Ethernet: jumbo frames and Wake-on-LAN (D240)
+- [ ] Ethernet: jumbo frames and Wake-on-LAN (D240; the drivers, the kernel, `SIOCSIFMTU`/`SIOCETHTOOL`, `ip link set` and `net_link_set` code written, unbuilt: D708; left: the Settings > Network rows, which need a Fable design)
 - [ ] Wi-Fi: WPA2/WPA3-Enterprise (802.1X with EAP-PEAP/MSCHAPv2 and EAP-TLS) and roaming between access points of one network (D246)
 - [x] x86_64: the paranoid GS check in the NMI, double-fault, machine-check and debug handlers, and NMIs from ring 3 handled by the kernel (D47, D49, D248) — code written, unbuilt, D616
 - [x] x86_64: emulating UMIP's five instructions (`sgdt`, `sidt`, `sldt`, `smsw`, `str`) for programs that use them (D251) — code written, unbuilt, D617
