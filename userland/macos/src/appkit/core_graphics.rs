@@ -3,7 +3,9 @@
 //! colours, line width) and its current path, the `CGContext...` functions that build and
 //! paint paths and rectangles, and `CGColor`. Drawing goes to the window being displayed, in
 //! the view's coordinates, as NSBezierPath's does; each view's drawing starts from a fresh
-//! state.
+//! state. Painting is anti-aliased and blended at the colours' and the context's alpha, strokes
+//! take caps, joins, a miter limit and dashes, and the clip is a mask the clipping calls narrow
+//! and the state stack keeps (D738).
 
 use super::{NSCOLOR, NSGRAPHICSCONTEXT, NSGRAPHICSCONTEXT_META, drawing};
 use crate::foundation::{class_pointer, new_instance};
@@ -14,7 +16,7 @@ use crate::objc::{Runtime, class, methods};
 use alloc::vec::Vec;
 use eggos_macos_gui::colour::{self, Colour};
 use eggos_macos_gui::geometry::{Frame, Point};
-use eggos_macos_gui::path::{Path, Transform};
+use eggos_macos_gui::path::{Cap, ClipMask, Join, Path, StrokeStyle, Transform};
 
 const MOST_STATES: usize = 64;
 const MOST_COLOURS: usize = 256;
@@ -23,27 +25,60 @@ const DRAW_EO_FILL: i32 = 1;
 const DRAW_STROKE: i32 = 2;
 const DRAW_FILL_STROKE: i32 = 3;
 const DRAW_EO_FILL_STROKE: i32 = 4;
+const MOST_DASHES: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 struct State {
     transform: Transform,
     fill: Colour,
     stroke: Colour,
+    fill_alpha: f64,
+    stroke_alpha: f64,
+    alpha: f64,
     line_width: f64,
+    cap: Cap,
+    join: Join,
+    miter_limit: f64,
+    dashes: [f64; MOST_DASHES],
+    dash_count: usize,
+    dash_phase: f64,
 }
 
 const FRESH: State = State {
     transform: Transform::IDENTITY,
     fill: Colour::opaque(0),
     stroke: Colour::opaque(0),
+    fill_alpha: 1.0,
+    stroke_alpha: 1.0,
+    alpha: 1.0,
     line_width: 1.0,
+    cap: Cap::Butt,
+    join: Join::Miter,
+    miter_limit: 10.0,
+    dashes: [0.0; MOST_DASHES],
+    dash_count: 0,
+    dash_phase: 0.0,
 };
+
+impl State {
+    fn stroke_style(&self) -> StrokeStyle<'_> {
+        StrokeStyle {
+            width: self.line_width,
+            cap: self.cap,
+            join: self.join,
+            miter_limit: self.miter_limit,
+            dashes: &self.dashes[..self.dash_count],
+            dash_phase: self.dash_phase,
+        }
+    }
+}
 
 struct Context {
     state: State,
-    saved: Vec<State>,
+    saved: Vec<(State, Option<ClipMask>)>,
     path: Path,
     current: Option<Point>,
+    clip: Option<ClipMask>,
 }
 
 static CONTEXT: Exclusive<Option<Context>> = Exclusive::new(None);
@@ -67,6 +102,7 @@ fn with_context<R>(work: impl FnOnce(&mut Context) -> R) -> R {
             saved: Vec::new(),
             path: Path::new(),
             current: None,
+            clip: None,
         });
         work(context)
     })
@@ -79,6 +115,7 @@ pub fn reset() {
         context.saved.clear();
         context.path = Path::new();
         context.current = None;
+        context.clip = None;
     });
 }
 
@@ -89,33 +126,144 @@ fn context_token() -> usize {
 extern "C" fn save_state(_: usize) {
     with_context(|context| {
         if context.saved.len() < MOST_STATES {
-            context.saved.push(context.state);
+            let clip = context.clip.clone();
+            context.saved.push((context.state, clip));
         }
     });
 }
 
 extern "C" fn restore_state(_: usize) {
     with_context(|context| {
-        if let Some(state) = context.saved.pop() {
+        if let Some((state, clip)) = context.saved.pop() {
             context.state = state;
+            context.clip = clip;
         }
     });
 }
 
+fn set_fill(colour: Colour, alpha: f64) {
+    with_context(|context| {
+        context.state.fill = colour;
+        context.state.fill_alpha = alpha.clamp(0.0, 1.0);
+    });
+}
+
+fn set_stroke(colour: Colour, alpha: f64) {
+    with_context(|context| {
+        context.state.stroke = colour;
+        context.state.stroke_alpha = alpha.clamp(0.0, 1.0);
+    });
+}
+
 extern "C" fn set_rgb_fill(_: usize, red: f64, green: f64, blue: f64, alpha: f64) {
-    with_context(|context| context.state.fill = colour::rgb(red, green, blue, alpha));
+    set_fill(colour::rgb(red, green, blue, alpha), alpha);
 }
 
 extern "C" fn set_rgb_stroke(_: usize, red: f64, green: f64, blue: f64, alpha: f64) {
-    with_context(|context| context.state.stroke = colour::rgb(red, green, blue, alpha));
+    set_stroke(colour::rgb(red, green, blue, alpha), alpha);
 }
 
 extern "C" fn set_gray_fill(_: usize, white: f64, alpha: f64) {
-    with_context(|context| context.state.fill = colour::grey(white, alpha));
+    set_fill(colour::grey(white, alpha), alpha);
 }
 
 extern "C" fn set_gray_stroke(_: usize, white: f64, alpha: f64) {
-    with_context(|context| context.state.stroke = colour::grey(white, alpha));
+    set_stroke(colour::grey(white, alpha), alpha);
+}
+
+extern "C" fn set_alpha(_: usize, alpha: f64) {
+    with_context(|context| context.state.alpha = alpha.clamp(0.0, 1.0));
+}
+
+extern "C" fn set_line_cap(_: usize, cap: i32) {
+    let cap = match cap {
+        1 => Cap::Round,
+        2 => Cap::Square,
+        _ => Cap::Butt,
+    };
+    with_context(|context| context.state.cap = cap);
+}
+
+extern "C" fn set_line_join(_: usize, join: i32) {
+    let join = match join {
+        1 => Join::Round,
+        2 => Join::Bevel,
+        _ => Join::Miter,
+    };
+    with_context(|context| context.state.join = join);
+}
+
+extern "C" fn set_miter_limit(_: usize, limit: f64) {
+    with_context(|context| context.state.miter_limit = limit.max(1.0));
+}
+
+extern "C" fn set_line_dash(_: usize, phase: f64, lengths: *const f64, count: usize) {
+    let count = match lengths.is_null() {
+        true => 0,
+        false => count.min(MOST_DASHES),
+    };
+    let mut dashes = [0.0; MOST_DASHES];
+    for (index, slot) in dashes.iter_mut().enumerate().take(count) {
+        // SAFETY: the caller's `count` readable lengths.
+        *slot = unsafe { lengths.add(index).read() }.max(0.0);
+    }
+    with_context(|context| {
+        context.state.dashes = dashes;
+        context.state.dash_count = count;
+        context.state.dash_phase = phase;
+    });
+}
+
+extern "C" fn set_should_antialias(_: usize, _: u8) {}
+
+fn clip_to(path: Path, even_odd: bool) {
+    let held = with_context(|context| context.clip.take());
+    let mut made = None;
+    drawing::with_canvas(|canvas, height, origin, _, _| {
+        let mut moved = path.clone();
+        moved.offset(origin.x, origin.y);
+        let mut mask = held.clone().unwrap_or_else(|| ClipMask::rect(canvas.clip()));
+        mask.intersect_path(&moved, height, even_odd);
+        made = Some(mask);
+    });
+    with_context(|context| context.clip = made.or(held));
+}
+
+fn clip_current(even_odd: bool) {
+    let path = with_context(|context| {
+        context.current = None;
+        core::mem::take(&mut context.path)
+    });
+    clip_to(path, even_odd);
+}
+
+extern "C" fn clip(_: usize) {
+    clip_current(false);
+}
+
+extern "C" fn eo_clip(_: usize) {
+    clip_current(true);
+}
+
+extern "C" fn clip_to_rect(_: usize, rect: Frame) {
+    let (path, _) = rect_path(rect, false);
+    clip_to(path, false);
+}
+
+extern "C" fn clip_to_rects(_: usize, rects: *const Frame, count: usize) {
+    if rects.is_null() {
+        return;
+    }
+    let path = with_context(|context| {
+        let mut path = Path::new();
+        for index in 0..count {
+            // SAFETY: the caller's `count` readable rectangles.
+            let rect = unsafe { rects.add(index).read() };
+            path.rect(&context.state.transform, (rect.x, rect.y, rect.width, rect.height));
+        }
+        path
+    });
+    clip_to(path, false);
 }
 
 fn colour_of(colour: *const CgColour) -> Option<Colour> {
@@ -123,15 +271,31 @@ fn colour_of(colour: *const CgColour) -> Option<Colour> {
     (!colour.is_null()).then(|| unsafe { (*colour).colour })
 }
 
+fn alpha_of(colour: *const CgColour) -> f64 {
+    match colour.is_null() {
+        true => 1.0,
+        // SAFETY: a `CGColorRef` the layer made, interned for the program's lifetime.
+        false => unsafe { (*colour).components[3] }.clamp(0.0, 1.0),
+    }
+}
+
 extern "C" fn set_fill_colour(_: usize, colour: *const CgColour) {
-    if let Some(colour) = colour_of(colour) {
-        with_context(|context| context.state.fill = colour);
+    if let Some(made) = colour_of(colour) {
+        let alpha = alpha_of(colour);
+        with_context(|context| {
+            context.state.fill = made;
+            context.state.fill_alpha = alpha;
+        });
     }
 }
 
 extern "C" fn set_stroke_colour(_: usize, colour: *const CgColour) {
-    if let Some(colour) = colour_of(colour) {
-        with_context(|context| context.state.stroke = colour);
+    if let Some(made) = colour_of(colour) {
+        let alpha = alpha_of(colour);
+        with_context(|context| {
+            context.state.stroke = made;
+            context.state.stroke_alpha = alpha;
+        });
     }
 }
 
@@ -247,16 +411,21 @@ fn paint(path: &Path, state: State, mode: i32) {
         DRAW_EO_FILL_STROKE => (true, true, true),
         _ => return,
     };
+    let mask = with_context(|context| context.clip.take());
     drawing::with_canvas(|canvas, height, origin, _, _| {
         let mut moved = path.clone();
         moved.offset(origin.x, origin.y);
+        let clip = mask.as_ref();
         if fill {
-            moved.fill(canvas, height, state.fill, even_odd);
+            let ink = (state.fill, state.fill_alpha * state.alpha);
+            moved.fill_with(canvas, height, ink, even_odd, clip);
         }
         if stroke {
-            moved.stroke(canvas, height, state.stroke, state.line_width);
+            let ink = (state.stroke, state.stroke_alpha * state.alpha);
+            moved.stroke_with(canvas, height, ink, &state.stroke_style(), clip);
         }
     });
+    with_context(|context| context.clip = mask);
 }
 
 fn draw_current(mode: i32) {
@@ -309,6 +478,8 @@ extern "C" fn stroke_rect(_: usize, rect: Frame) {
 extern "C" fn clear_rect(_: usize, rect: Frame) {
     let (path, mut state) = rect_path(rect, false);
     state.fill = Colour::opaque(eggos_toolkit::colour::WINDOW_BACKGROUND);
+    state.fill_alpha = 1.0;
+    state.alpha = 1.0;
     paint(&path, state, DRAW_FILL);
 }
 
@@ -438,6 +609,18 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_CGContextSetFillColorWithColor" => set_fill_colour as *const () as usize,
         b"_CGContextSetStrokeColorWithColor" => set_stroke_colour as *const () as usize,
         b"_CGContextSetLineWidth" => set_line_width as *const () as usize,
+        b"_CGContextSetLineCap" => set_line_cap as *const () as usize,
+        b"_CGContextSetLineJoin" => set_line_join as *const () as usize,
+        b"_CGContextSetMiterLimit" => set_miter_limit as *const () as usize,
+        b"_CGContextSetLineDash" => set_line_dash as *const () as usize,
+        b"_CGContextSetAlpha" => set_alpha as *const () as usize,
+        b"_CGContextSetShouldAntialias" | b"_CGContextSetAllowsAntialiasing" => {
+            set_should_antialias as *const () as usize
+        }
+        b"_CGContextClip" => clip as *const () as usize,
+        b"_CGContextEOClip" => eo_clip as *const () as usize,
+        b"_CGContextClipToRect" => clip_to_rect as *const () as usize,
+        b"_CGContextClipToRects" => clip_to_rects as *const () as usize,
         b"_CGContextTranslateCTM" => translate as *const () as usize,
         b"_CGContextScaleCTM" => scale as *const () as usize,
         b"_CGContextRotateCTM" => rotate as *const () as usize,

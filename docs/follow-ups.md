@@ -239,7 +239,7 @@ and is not listed per item.
 - [x] NSTrackingArea: cursor updates, enter/exit while dragging, `trackingArea`/`userData` on events; several screens in NSScreen (D382; D729)
 - [x] NSAttributedString: paragraph styles, underline, links, `enumerateAttributesInRange:`, RTF import (D384; D730, D731; a link colour waits on Claude Fable's design, listed with D730)
 - [x] NSGridView: merged cells, padding, hidden rows and columns, inserting and moving rows and columns (D385; D732)
-- [ ] CoreGraphics: clipping paths, dashes, caps and joins, alpha blending and anti-aliasing, `CGContextDrawImage`, gradients, shadows, `CGPath` objects (D386)
+- [ ] CoreGraphics: clipping paths, dashes, caps and joins, alpha blending and anti-aliasing, `CGContextDrawImage`, gradients, shadows, `CGPath` objects (D386; clipping, dashes, caps, joins, alpha and anti-aliasing code written, unbuilt: D738; left: `CGPath` objects, gradients, shadows, `CGContextDrawImage`)
 - [ ] Swift: resilient class stubs, generic class metadata instantiation (`swift_allocateGenericClassMetadata`), `@objc` accessors through KVC (D387)
 - [x] libc++abi: libc++'s other standard exceptions, `std::nested_exception` (D380; `exception_ptr` code written, unbuilt: D700) — code written, unbuilt, D710
 - [ ] Windows shell namespace: `IFileDialog` (`FileOpenDialog`/`FileSaveDialog` COM classes) over the system picker, `IShellItemArray`, virtual folders (This PC, Recycle Bin) (D392, D399)
