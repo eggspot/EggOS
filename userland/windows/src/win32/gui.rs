@@ -99,6 +99,13 @@ pub struct Gui {
     /// The top-level window where Alt went down with no key after it yet: its release opens
     /// the menu bar (D339).
     pub alt_alone: Option<usize>,
+    /// The top-level window whose bar title the keyboard selected with no drop-down open, and
+    /// that title (D733).
+    pub menu_selected: Option<(usize, usize)>,
+    /// The top-level window whose menu shows its mnemonic underlines (keyboard cues, D733).
+    pub keyboard_cues: Option<usize>,
+    /// The top-level window whose next left button release a menu session swallows.
+    pub swallow_release: Option<usize>,
     /// The tick count of the last input from the window server or the program itself.
     pub last_input: u32,
     /// The `QS_` bits `GetQueueStatus` last reported.
@@ -132,6 +139,9 @@ impl Gui {
             drawn: DrawnTexts::new(),
             menu_choice: None,
             alt_alone: None,
+            menu_selected: None,
+            keyboard_cues: None,
+            swallow_release: None,
             last_input: super::user32::now_ms(),
             queue_reported: 0,
             input: InputState::default(),

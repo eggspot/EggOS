@@ -1,8 +1,11 @@
 //! The menu bar and its drop-downs (section 6 of the design): their layout from the labels,
-//! hit tests and painting, inside the window's content above and over its client area.
+//! hit tests and painting, inside the window's content above and over its client area. A bar
+//! title selected by the keyboard without a drop-down carries the dotted focus outline, and the
+//! mnemonic underlines show only while the window's keyboard cues are on
+//! (`docs/ux/windows-menu-bar-keys-v0.1.md`, D733).
 
 use crate::controls::button::{dot, tick};
-use crate::controls::{MAX_LABEL_CELLS, Palette, label_cells, outline};
+use crate::controls::{MAX_LABEL_CELLS, Palette, dotted_outline, label_cells, outline};
 use crate::surface::{Rect, Surface};
 use crate::text::{self, CELL_WIDTH, Cell};
 
@@ -25,6 +28,24 @@ const ARROW_RIGHT: i32 = 10;
 const ARROW_TOP: i32 = 8;
 const ARROW_HEIGHT: i32 = 7;
 const CASCADE_OVERLAP: i32 = 2;
+const SELECTED_OUTLINE_INSET: i32 = 2;
+
+/// Which bar title is lit: none, the one whose drop-down is open, or the one the keyboard
+/// selected with no drop-down open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarLight {
+    None,
+    Open(usize),
+    Selected(usize),
+}
+
+fn hide_underlines(cells: &mut [Cell]) {
+    for cell in cells {
+        if let Cell::Glyph { underline, .. } = cell {
+            *underline = false;
+        }
+    }
+}
 
 /// One bar entry or drop-down item as the layout sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,12 +100,14 @@ pub fn entry_at(entries: &[MenuLabel<'_>], content_width: i32, x: i32, y: i32) -
     })
 }
 
-/// Paints the bar across a content `content_width` wide, entry `open` highlighted.
+/// Paints the bar across a content `content_width` wide with `light` lit, the mnemonics
+/// underlined only when `cues` is on.
 pub fn paint_bar(
     surface: &mut Surface<'_>,
     content_width: i32,
     entries: &[MenuLabel<'_>],
-    open: Option<usize>,
+    light: BarLight,
+    cues: bool,
     palette: &Palette,
 ) {
     surface.fill(Rect::new(0, 0, content_width, BAR_HEIGHT), palette.menu_bar);
@@ -92,8 +115,14 @@ pub fn paint_bar(
         let Some(rect) = entry_rect(entries, index, content_width) else {
             break;
         };
-        if open == Some(index) && entry.is_enabled() {
+        let lit = matches!(light, BarLight::Open(at) | BarLight::Selected(at) if at == index);
+        if lit && entry.is_enabled() {
             surface.fill(rect, palette.menu_highlight);
+        }
+        if light == BarLight::Selected(index) && entry.is_enabled() {
+            let inset = SELECTED_OUTLINE_INSET;
+            let ring = Rect::new(rect.left + inset, inset, rect.right - inset, BAR_HEIGHT - inset);
+            dotted_outline(surface, ring, palette.focus);
         }
         let colour = match entry.grayed {
             true => palette.menu_text_disabled,
@@ -101,6 +130,9 @@ pub fn paint_bar(
         };
         let mut cells = [Cell::Space; MAX_LABEL_CELLS];
         let count = entry.cells(&mut cells);
+        if !cues {
+            hide_underlines(&mut cells[..count]);
+        }
         text::draw_cells(
             surface,
             rect.left + ENTRY_PADDING,
@@ -184,12 +216,14 @@ pub fn item_at(rect: Rect, items: &[MenuLabel<'_>], x: i32, y: i32) -> Option<us
         .map(|(index, _, _)| index)
 }
 
-/// Paints the drop-down at `rect` with item `highlighted` highlighted.
+/// Paints the drop-down at `rect` with item `highlighted` highlighted, the mnemonics
+/// underlined only when `cues` is on.
 pub fn paint_drop_down(
     surface: &mut Surface<'_>,
     rect: Rect,
     items: &[MenuLabel<'_>],
     highlighted: Option<usize>,
+    cues: bool,
     palette: &Palette,
 ) {
     surface.fill(rect, palette.menu_fill);
@@ -236,6 +270,9 @@ pub fn paint_drop_down(
         }
         let mut cells = [Cell::Space; MAX_LABEL_CELLS];
         let count = item.cells(&mut cells);
+        if !cues {
+            hide_underlines(&mut cells[..count]);
+        }
         text::draw_cells(
             surface,
             rect.left + ITEM_TEXT_LEFT,
@@ -268,6 +305,25 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_title_has_the_dotted_outline_and_underlines_follow_the_cues() {
+        let (file, edit, help) = (units("&File"), units("&Edit"), units("&Help"));
+        let entries = [label(&file), label(&edit), label(&help)];
+        let mut pixels = vec![0u32; 400 * 24];
+        let mut surface = Surface::new(&mut pixels, 400, 24).unwrap();
+        paint_bar(&mut surface, 400, &entries, BarLight::Selected(0), true, &LIGHT);
+        assert_eq!(surface.get(2, 2), Some(LIGHT.focus));
+        assert_eq!(surface.get(45, 21), Some(LIGHT.focus));
+        assert_eq!(surface.get(3, 2), Some(LIGHT.menu_highlight));
+        assert_eq!(surface.get(8, 18), Some(LIGHT.menu_text));
+        assert_eq!(surface.get(56, 18), Some(LIGHT.menu_text));
+        paint_bar(&mut surface, 400, &entries, BarLight::None, false, &LIGHT);
+        assert_eq!(surface.get(8, 18), Some(LIGHT.menu_bar));
+        assert_eq!(surface.get(2, 2), Some(LIGHT.menu_bar));
+        paint_bar(&mut surface, 400, &entries, BarLight::Open(1), false, &LIGHT);
+        assert_eq!(surface.get(50, 2), Some(LIGHT.menu_highlight));
+    }
+
+    #[test]
     fn the_worked_examples_bar_and_file_drop_down_have_the_designed_rectangles() {
         let (file, help) = (units("File"), units("&Help"));
         let entries = [label(&file), label(&help)];
@@ -296,8 +352,8 @@ mod tests {
         assert_eq!(item_at(rect, &items, 10, 90), Some(3));
         let mut pixels = vec![0u32; 400 * 324];
         let mut surface = Surface::new(&mut pixels, 400, 324).unwrap();
-        paint_bar(&mut surface, 400, &entries, Some(0), &LIGHT);
-        paint_drop_down(&mut surface, rect, &items, Some(0), &LIGHT);
+        paint_bar(&mut surface, 400, &entries, BarLight::Open(0), true, &LIGHT);
+        paint_drop_down(&mut surface, rect, &items, Some(0), true, &LIGHT);
         assert_eq!(surface.get(47, 23), Some(LIGHT.menu_highlight));
         assert_eq!(surface.get(60, 18), Some(LIGHT.menu_text));
         assert_eq!(surface.get(0, 24), Some(LIGHT.menu_border));

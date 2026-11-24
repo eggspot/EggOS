@@ -5,7 +5,10 @@
 //! server's records, and a chosen item is `WM_COMMAND` with its id. The table is a heap block
 //! made at the first menu, so programs without menus pay nothing for it. A context menu
 //! (`TrackPopupMenuEx`, design section 12, D178) is a drop-down opened at a point of a window's
-//! content, run in a modal loop until an item is chosen or it is dismissed.
+//! content, run in a modal loop until an item is chosen or it is dismissed. Alt pressed and
+//! released alone, or F10, selects the bar's first enabled title without a drop-down, and the
+//! mnemonic underlines show only while the window's keyboard cues are on
+//! (`docs/ux/windows-menu-bar-keys-v0.1.md`, D733).
 
 use super::gui::{self, Gui, Next, try_with, with};
 use super::window_device::Device;
@@ -16,7 +19,7 @@ use crate::gui::queue::Filter;
 use crate::gui::windows;
 use crate::library::Export;
 use eggos_windows_gui::controls::LIGHT;
-use eggos_windows_gui::menu::{self as layout, BAR_HEIGHT, MenuLabel};
+use eggos_windows_gui::menu::{self as layout, BAR_HEIGHT, BarLight, MenuLabel};
 use eggos_windows_gui::surface::{Rect, Surface};
 
 const VK_ESCAPE: usize = 0x1b;
@@ -27,6 +30,7 @@ const VK_RIGHT: usize = 0x27;
 const VK_DOWN: usize = 0x28;
 const VK_F10: usize = 0x79;
 const VK_MENU: usize = 0x12;
+const VK_SPACE: usize = 0x20;
 const NO_ID: u32 = u32::MAX;
 
 /// An open drop-down: the window, its bar entry, the menu it shows, the item under the pointer
@@ -143,10 +147,16 @@ pub fn paint_bar(gui: &mut Gui, root: usize) -> Option<Rect> {
         .tracking
         .filter(|tracking| tracking.root == root && !tracking.context)
         .map(|tracking| tracking.entry);
+    let light = match (open, gui.menu_selected) {
+        (Some(entry), _) => BarLight::Open(entry),
+        (None, Some((owner, entry))) if owner == root => BarLight::Selected(entry),
+        _ => BarLight::None,
+    };
+    let cues = gui.keyboard_cues == Some(root);
     let bar = table(gui)?.get(menu)?;
     let entries = labels(bar, false);
     with_root_surface(gui, root, |surface| {
-        layout::paint_bar(surface, width, &entries[..bar.count], open, &LIGHT);
+        layout::paint_bar(surface, width, &entries[..bar.count], light, cues, &LIGHT);
     })?;
     Some(Rect::new(0, 0, width, BAR_HEIGHT))
 }
@@ -158,6 +168,7 @@ pub fn paint_open_drop_down(gui: &mut Gui, root: usize) -> Option<Rect> {
     let Some(cascade) = tracking.cascade else {
         return Some(main);
     };
+    let cues = gui.keyboard_cues == Some(root);
     let items = table(gui)?.get(cascade.popup)?;
     let labels = labels(items, true);
     with_root_surface(gui, root, |surface| {
@@ -166,6 +177,7 @@ pub fn paint_open_drop_down(gui: &mut Gui, root: usize) -> Option<Rect> {
             cascade.rect,
             &labels[..items.count],
             cascade.highlighted,
+            cues,
             &LIGHT,
         );
     })?;
@@ -173,6 +185,7 @@ pub fn paint_open_drop_down(gui: &mut Gui, root: usize) -> Option<Rect> {
 }
 
 fn paint_drop_down_of(gui: &mut Gui, root: usize, tracking: &Tracking) -> Option<Rect> {
+    let cues = gui.keyboard_cues == Some(root) && !tracking.context;
     let items = table(gui)?.get(tracking.popup)?;
     let labels = labels_with(items, true, !tracking.context);
     with_root_surface(gui, root, |surface| {
@@ -181,6 +194,7 @@ fn paint_drop_down_of(gui: &mut Gui, root: usize, tracking: &Tracking) -> Option
             tracking.rect,
             &labels[..items.count],
             tracking.highlighted,
+            cues,
             &LIGHT,
         );
     })?;
@@ -230,6 +244,9 @@ fn open(gui: &mut Gui, root: usize, entry: usize) -> Option<Rect> {
 pub fn close(gui: &mut Gui, root: usize) -> Option<Rect> {
     let tracking = gui.tracking.filter(|tracking| tracking.root == root)?;
     gui.tracking = None;
+    if gui.keyboard_cues == Some(root) {
+        gui.keyboard_cues = None;
+    }
     let menu_height = gui.windows.get(root)?.menu_height;
     let covered = match tracking.cascade {
         Some(cascade) => tracking.rect.union(&cascade.rect),
@@ -319,6 +336,161 @@ fn close_cascade(gui: &mut Gui, tracking: &Tracking) -> Option<Rect> {
     Some(shown.union(&cascade.rect))
 }
 
+fn refresh_bar(gui: &mut Gui, root: usize) -> Option<Rect> {
+    let bar = paint_bar(gui, root)?;
+    let window = gui.windows.get_mut(root)?;
+    window.pending = window.pending.union(&bar);
+    Some(bar)
+}
+
+fn set_cues(gui: &mut Gui, root: usize, on: bool) {
+    let before = gui.keyboard_cues;
+    match on {
+        true => gui.keyboard_cues = Some(root),
+        false if before == Some(root) => gui.keyboard_cues = None,
+        false => {}
+    }
+    if before != gui.keyboard_cues {
+        refresh_bar(gui, root);
+    }
+}
+
+fn enabled_entries(gui: &Gui, root: usize) -> ([bool; MAX_ITEMS], usize) {
+    let mut enabled = [false; MAX_ITEMS];
+    let Some(bar) = gui
+        .windows
+        .get(root)
+        .and_then(|window| table(gui)?.get(window.menu))
+    else {
+        return (enabled, 0);
+    };
+    let count = bar.count.min(MAX_ITEMS);
+    for (slot, item) in enabled.iter_mut().zip(bar.items()) {
+        *slot = !item.is_grayed() && !item.is_separator();
+    }
+    (enabled, count)
+}
+
+fn first_enabled_entry(gui: &Gui, root: usize) -> Option<usize> {
+    let (enabled, count) = enabled_entries(gui, root);
+    enabled[..count].iter().position(|&on| on)
+}
+
+fn stepped_entry(gui: &Gui, root: usize, from: usize, forward: bool) -> Option<usize> {
+    let (enabled, count) = enabled_entries(gui, root);
+    (1..=count)
+        .map(|step| match forward {
+            true => (from + step) % count,
+            false => (from + count - step % count) % count,
+        })
+        .find(|&entry| enabled[entry])
+}
+
+fn edge_item(gui: &Gui, popup: usize, last: bool) -> Option<usize> {
+    let items = table(gui)?.get(popup)?.items();
+    let usable = |item: &menus::MenuItem| !item.is_grayed() && !item.is_separator();
+    match last {
+        true => items.iter().rposition(usable),
+        false => items.iter().position(usable),
+    }
+}
+
+fn leave_selection(gui: &mut Gui, root: usize) -> Effect {
+    gui.menu_selected = None;
+    if gui.keyboard_cues == Some(root) {
+        gui.keyboard_cues = None;
+    }
+    Effect {
+        commit: refresh_bar(gui, root),
+        command: None,
+    }
+}
+
+fn open_by_keys(gui: &mut Gui, root: usize, entry: usize, last: bool) -> Effect {
+    gui.menu_selected = None;
+    if let Some(id) = bar_command(gui, root, entry) {
+        let mut effect = leave_selection(gui, root);
+        effect.command = Some(id);
+        return effect;
+    }
+    let mut commit = open(gui, root, entry);
+    if let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) {
+        gui.tracking = Some(Tracking {
+            highlighted: edge_item(gui, tracking.popup, last),
+            ..tracking
+        });
+        commit = match (commit, paint_open_drop_down(gui, root)) {
+            (Some(opened), Some(shown)) => Some(opened.union(&shown)),
+            (opened, shown) => opened.or(shown),
+        };
+    }
+    Effect {
+        commit,
+        command: None,
+    }
+}
+
+fn select_title(gui: &mut Gui, root: usize, entry: usize) -> Effect {
+    gui.menu_selected = Some((root, entry));
+    Effect {
+        commit: refresh_bar(gui, root),
+        command: None,
+    }
+}
+
+fn selected_input(
+    gui: &mut Gui,
+    root: usize,
+    entry: usize,
+    (number, wparam): (u32, usize),
+    point: (i32, i32),
+    menu_height: i32,
+) -> Effect {
+    let over_bar = (point.1 < menu_height)
+        .then(|| bar_entry_at(gui, root, point))
+        .flatten();
+    match number {
+        message::KEY_DOWN | message::SYS_KEY_DOWN => match wparam {
+            VK_LEFT | VK_RIGHT => {
+                let next = stepped_entry(gui, root, entry, wparam == VK_RIGHT).unwrap_or(entry);
+                select_title(gui, root, next)
+            }
+            VK_DOWN | VK_RETURN | VK_SPACE => open_by_keys(gui, root, entry, false),
+            VK_UP => open_by_keys(gui, root, entry, true),
+            VK_ESCAPE | VK_MENU | VK_F10 => leave_selection(gui, root),
+            key => match mnemonic_entry(gui, root, key) {
+                Some(other) => open_by_keys(gui, root, other, false),
+                None => Effect::default(),
+            },
+        },
+        message::MOUSE_MOVE => match over_bar.filter(|&over| over != entry) {
+            Some(over) => select_title(gui, root, over),
+            None => Effect::default(),
+        },
+        message::LEFT_BUTTON_DOWN => match over_bar {
+            Some(over) if bar_command(gui, root, over).is_none() => {
+                gui.menu_selected = None;
+                Effect {
+                    commit: open(gui, root, over),
+                    command: None,
+                }
+            }
+            Some(_) => {
+                gui.menu_selected = None;
+                Effect {
+                    commit: refresh_bar(gui, root),
+                    command: None,
+                }
+            }
+            None => {
+                gui.swallow_release = Some(root);
+                leave_selection(gui, root)
+            }
+        },
+        _ => Effect::default(),
+    }
+}
+
 fn bar_entry_at(gui: &Gui, root: usize, point: (i32, i32)) -> Option<usize> {
     let window = gui.windows.get(root)?;
     let bar = table(gui)?.get(window.menu)?;
@@ -359,34 +531,45 @@ pub fn input(
         });
     }
     let Some(tracking) = gui.tracking.filter(|tracking| tracking.root == root) else {
+        if let Some((_, entry)) = gui.menu_selected.filter(|&(owner, _)| owner == root) {
+            let effect = selected_input(gui, root, entry, (number, wparam), point, menu_height);
+            return Some(effect);
+        }
+        if number == message::LEFT_BUTTON_UP && gui.swallow_release == Some(root) {
+            gui.swallow_release = None;
+            return Some(Effect::default());
+        }
         let alt = wparam == VK_MENU;
         match number {
             message::SYS_KEY_DOWN if alt => {
                 gui.alt_alone = Some(root);
+                set_cues(gui, root, true);
                 return None;
             }
             message::SYS_KEY_UP | message::KEY_UP if alt && gui.alt_alone == Some(root) => {
                 gui.alt_alone = None;
-                let entry = first_open_entry(gui, root)?;
-                return Some(Effect {
-                    commit: open(gui, root, entry),
-                    command: None,
-                });
+                let Some(entry) = first_enabled_entry(gui, root) else {
+                    set_cues(gui, root, false);
+                    return None;
+                };
+                return Some(select_title(gui, root, entry));
             }
-            message::KEY_DOWN | message::SYS_KEY_DOWN | message::LEFT_BUTTON_DOWN => {
-                gui.alt_alone = None
+            message::SYS_KEY_UP | message::KEY_UP if alt => set_cues(gui, root, false),
+            message::KEY_DOWN | message::SYS_KEY_DOWN => gui.alt_alone = None,
+            message::LEFT_BUTTON_DOWN => {
+                gui.alt_alone = None;
+                set_cues(gui, root, false);
             }
             _ => {}
         }
         if number == message::SYS_KEY_DOWN && wparam == VK_F10 {
-            let entry = first_open_entry(gui, root)?;
-            return Some(Effect {
-                commit: open(gui, root, entry),
-                command: None,
-            });
+            let entry = first_enabled_entry(gui, root)?;
+            gui.keyboard_cues = Some(root);
+            return Some(select_title(gui, root, entry));
         }
         if number == message::SYS_KEY_DOWN {
             let entry = mnemonic_entry(gui, root, wparam)?;
+            gui.keyboard_cues = Some(root);
             return Some(match bar_command(gui, root, entry) {
                 Some(id) => Effect {
                     commit: None,
@@ -504,6 +687,15 @@ pub fn input(
             }
         }
         message::KEY_DOWN if wparam == VK_ESCAPE && tracking.cascade.is_none() => {
+            let closed = close(gui, root);
+            gui.keyboard_cues = Some(root);
+            gui.menu_selected = Some((root, tracking.entry));
+            effect.commit = match (closed, refresh_bar(gui, root)) {
+                (Some(closed), Some(bar)) => Some(closed.union(&bar)),
+                (closed, bar) => closed.or(bar),
+            };
+        }
+        message::SYS_KEY_DOWN if matches!(wparam, VK_MENU | VK_F10) => {
             effect.commit = close(gui, root)
         }
         message::KEY_DOWN | message::SYS_KEY_DOWN => {
@@ -595,14 +787,6 @@ fn mnemonic(label: &[u16]) -> Option<usize> {
     character
         .is_ascii_alphanumeric()
         .then(|| character.to_ascii_uppercase() as usize)
-}
-
-fn first_open_entry(gui: &Gui, root: usize) -> Option<usize> {
-    let window = gui.windows.get(root)?;
-    let bar = table(gui)?.get(window.menu)?;
-    bar.items()
-        .iter()
-        .position(|item| !item.is_grayed() && item.popup().is_some())
 }
 
 fn mnemonic_entry(gui: &Gui, root: usize, key: usize) -> Option<usize> {

@@ -220,7 +220,7 @@ and is not listed per item.
 - [ ] macOS libSystem: extended locales (`newlocale`, `uselocale`, `freelocale`, `*_l` functions), `wcscoll`, `wcsxfrm` (D190; `strcoll`, `strxfrm`, `wcwidth` and `wcswidth` code written, unbuilt: D695)
 - [ ] Windows edits: `EM_SETTABSTOPS`, Windows' 30,000-character default limit (D341; word wrap is D351, `EM_SETRECT` D689, `EM_FMTLINES` and margins D690; both wait on the edit model: it keeps one unit per cell and a fixed 1,024-unit array)
 - [ ] Windows scroll bars: copying scrolled pixels instead of repainting, combo lists' arrow repeat (D343; `EnableScrollBar`, `ScrollWindowEx`, `WM_NCHITTEST` and the window bars' repeat code written, unbuilt: D687, D688; copying scrolled pixels code written, unbuilt: D711; left: combo lists' arrow repeat)
-- [ ] Windows menus: Alt pressed and released alone selects the bar; mnemonic underlines only once Alt is pressed (D338)
+- [x] Windows menus: Alt pressed and released alone selects the bar; mnemonic underlines only once Alt is pressed (D338; designed by Claude Fable in docs/ux/windows-menu-bar-keys-v0.1.md; D733)
 - [x] Windows combo boxes: `CB_GETEDITSEL`, `CB_LIMITTEXT`, auto-complete from the list (D340; the two messages code written, unbuilt: D682) — code written, unbuilt, D712 (the open list follows the field)
 - [x] Windows: the main thread's overflow as `STATUS_STACK_OVERFLOW` (D346; `SetThreadStackGuarantee` is in `thread.rs`, `GetCurrentThreadStackLimits` code written, unbuilt: D681) — code written, unbuilt, D713
 - [x] Winsock: `listen`/`accept` with `FD_ACCEPT`, `FD_OOB`, `WSAEventSelect`, `WSAEnumNetworkEvents` (D348; `bind`, `listen`, `accept` and `FD_ACCEPT` code written, unbuilt: D683) — code written, unbuilt, D714
