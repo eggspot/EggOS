@@ -1291,3 +1291,68 @@ fn a_drag_from_another_window_lands_on_the_same_targets() {
     };
     assert_eq!(tree.handle(missed, 0), Response::Nothing);
 }
+
+const ZOOM_ENTRIES: [Entry; 2] = [
+    Entry::Item {
+        label: "&In",
+        key: "",
+        enabled: true,
+        id: 7,
+    },
+    Entry::Item {
+        label: "&Out",
+        key: "",
+        enabled: true,
+        id: 8,
+    },
+];
+
+const VIEW_WITH_ZOOM: [Entry; 2] = [
+    Entry::Item {
+        label: "&Wrap",
+        key: "",
+        enabled: true,
+        id: 1,
+    },
+    Entry::Submenu {
+        label: "&Zoom",
+        enabled: true,
+        entries: &ZOOM_ENTRIES,
+    },
+];
+
+#[test]
+fn an_agent_invokes_an_entry_inside_a_closed_submenu_by_its_own_id() {
+    let mut tree = WidgetTree::<16>::new();
+    let root = surface(&mut tree);
+    let bar = tree
+        .add(
+            Some(root),
+            Place::at(0, 0, Length::Fill(0), Length::Content),
+            Kind::menu_bar(&[("&View", &VIEW_WITH_ZOOM)]),
+        )
+        .unwrap();
+    tree.resize(WIDTH, HEIGHT);
+    let listed = described(&tree);
+    let zoom = listed.iter().find(|element| element.4 == "Zoom").unwrap();
+    assert_ne!(zoom.3 & flags::EXPANDABLE, 0);
+    assert_eq!(zoom.3 & flags::EXPANDED, 0);
+    let out = listed.iter().find(|element| element.4 == "Out").unwrap();
+    assert_eq!(out.1, zoom.0);
+    assert_ne!(out.0 & (1 << 31), 0);
+    assert_eq!(
+        tree.act(out.0, Action::Invoke, "", 0),
+        (Outcome::Done, Response::Invoked(bar, 8))
+    );
+    assert_eq!(
+        tree.act(zoom.0, Action::Invoke, "", 10),
+        (Outcome::Done, Response::Nothing)
+    );
+    let again = described(&tree);
+    let zoom_now = again.iter().find(|element| element.4 == "Zoom").unwrap();
+    assert_ne!(zoom_now.3 & flags::EXPANDED, 0);
+    assert_eq!(
+        again.iter().find(|element| element.4 == "Out").unwrap().0,
+        out.0
+    );
+}

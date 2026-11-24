@@ -1,8 +1,11 @@
 //! A widget tree as an element tree for an agent (D161, docs/windows.md "Element trees"): each
 //! shown widget is one element, and each option, card and shown list row one more below it.
 //! Widget `i` is element `(i + 1) * 100`, its part `p` element `(i + 1) * 100 + p + 1`, so an id
-//! stays the same while the window keeps its widgets. Acting on an element does what a click
-//! or the keyboard does to it, and answers with the same [`Response`] a person's input gives.
+//! stays the same while the window keeps its widgets. A menu's entries inside submenus, and the
+//! menu bar's `More` title, take ids from a range of their own (bit 31 set), made from the
+//! widget, the title and the path of entry positions (D705). Acting on an element does what a
+//! click or the keyboard does to it, and answers with the same [`Response`] a person's input
+//! gives.
 
 use super::{ROOT_ELEMENT, Response, WidgetId, WidgetTree};
 use crate::geometry::Rect;
@@ -18,6 +21,56 @@ const MENU_ENTRY_PART: usize = MAX_MENUS;
 const MENU_ENTRIES: usize = crate::menu::MAX_ENTRIES;
 const VALUE_BYTES: usize = eggos_element_tree::MAX_LABEL_BYTES;
 const CUT_VALUE: usize = 252;
+const NESTED: u32 = 1 << 31;
+const NESTED_WIDGET_SHIFT: u32 = 22;
+const NESTED_WIDGET_MASK: u32 = 0x1FF;
+const NESTED_TITLE_SHIFT: u32 = 19;
+const NESTED_TITLE_MASK: u32 = 0x7;
+const NESTED_STEP_SHIFTS: [u32; MAX_PATH] = [14, 9, 4];
+const NESTED_STEP_MASK: u32 = 0x1F;
+const MORE_TITLE: usize = 7;
+/// The most entry positions from a title's menu to a nested entry: three levels.
+pub const MAX_PATH: usize = 3;
+
+/// The element id of the entry at `path` (its positions from the menu of title `title`, the
+/// first being a submenu row of that menu) of widget `id`'s menus, or of the menu bar's `More`
+/// title for an empty path and title [`MORE_TITLE`]; none for a widget past the range's 512.
+fn nested_element(id: WidgetId, title: usize, path: &[usize]) -> Option<u32> {
+    let widget = id.index() as u32;
+    if widget > NESTED_WIDGET_MASK || title as u32 > NESTED_TITLE_MASK || path.len() > MAX_PATH {
+        return None;
+    }
+    let mut element = NESTED | widget << NESTED_WIDGET_SHIFT | (title as u32) << NESTED_TITLE_SHIFT;
+    for (step, &position) in path.iter().enumerate() {
+        let value = position as u32 + 1;
+        if value > NESTED_STEP_MASK {
+            return None;
+        }
+        element |= value << NESTED_STEP_SHIFTS[step];
+    }
+    Some(element)
+}
+
+/// What a nested element id names: the widget, the title, and the path with its length.
+fn nested_of(element: u32) -> Option<(WidgetId, usize, [usize; MAX_PATH], usize)> {
+    if element & NESTED == 0 {
+        return None;
+    }
+    let widget = (element >> NESTED_WIDGET_SHIFT) & NESTED_WIDGET_MASK;
+    let title = ((element >> NESTED_TITLE_SHIFT) & NESTED_TITLE_MASK) as usize;
+    let mut path = [0; MAX_PATH];
+    let mut length = 0;
+    for shift in NESTED_STEP_SHIFTS {
+        match (element >> shift) & NESTED_STEP_MASK {
+            0 => break,
+            value => {
+                path[length] = value as usize - 1;
+                length += 1;
+            }
+        }
+    }
+    Some((WidgetId(widget as u16), title, path, length))
+}
 
 fn bar_entry_part(title: usize, entry: usize) -> usize {
     MENU_ENTRY_PART + title * MENU_ENTRIES + entry
@@ -41,26 +94,58 @@ fn cut_value(text: &str) -> Text<VALUE_BYTES> {
     value
 }
 
+/// What [`describe_entries`] needs besides the menu: the element id of the entry at a path,
+/// the window for the submenus' places, the marks the program set, and the flags every entry
+/// carries.
+struct EntriesContext<'a> {
+    element: &'a dyn Fn(&[usize]) -> Option<u32>,
+    window: Rect,
+    mark: &'a dyn Fn(u8) -> Option<bool>,
+    disabled: u16,
+    open: &'a dyn Fn(&[usize]) -> bool,
+}
+
+/// Lists `menu`'s entries under `parent`, the menu's own position path being `above`, and the
+/// entries of every submenu it may open under their row, open or not, so an agent reaches a
+/// nested item directly.
 fn describe_entries(
     menu: &Menu,
     parent: u32,
-    element: impl Fn(usize) -> Option<u32>,
-    disabled: u16,
+    above: &[usize],
+    context: &EntriesContext<'_>,
     tree: &mut TreeWriter<'_>,
 ) -> bool {
+    let mut path = [0; MAX_PATH];
+    path[..above.len()].copy_from_slice(above);
+    let here = above.len();
     menu.entries().iter().enumerate().all(|(index, entry)| {
+        path[here] = index;
+        let own = &path[..=here];
         if let Entry::Submenu { label, .. } = entry {
-            let Some(id) = element(index) else {
+            let Some(id) = (context.element)(own) else {
                 return true;
             };
             let name = plain_label(label);
-            let opens = menu.submenu(index).is_some();
-            let flags = disabled | flags::EXPANDABLE | if opens { 0 } else { flags::DISABLED };
-            return tree.push(
+            let opens = menu.submenu(index);
+            let expanded = if (context.open)(own) { flags::EXPANDED } else { 0 };
+            let flags = context.disabled
+                | flags::EXPANDABLE
+                | expanded
+                | if opens.is_some() { 0 } else { flags::DISABLED };
+            let pushed = tree.push(
                 &Element::new(id, parent, Role::MenuItem, bounds(menu.entry_rect(index)))
                     .named(name.as_str().as_bytes())
                     .flagged(flags),
             );
+            return pushed
+                && match opens {
+                    Some(entries) if here + 1 < MAX_PATH => {
+                        let nested = Menu::beside(menu, index, entries, context.window)
+                            .with_marks(context.mark);
+                        describe_entries(&nested, id, own, context, tree)
+                    }
+                    _ => true,
+                };
         }
         let Some(ItemParts {
             label,
@@ -72,7 +157,7 @@ fn describe_entries(
         else {
             return true;
         };
-        let Some(id) = element(index) else {
+        let Some(id) = (context.element)(own) else {
             return true;
         };
         let name = plain_label(label);
@@ -81,7 +166,7 @@ fn describe_entries(
             Some(Mark::Radio(true)) => flags::SELECTED,
             _ => 0,
         };
-        let flags = disabled | marked | if enabled { 0 } else { flags::DISABLED };
+        let flags = context.disabled | marked | if enabled { 0 } else { flags::DISABLED };
         tree.push(
             &Element::new(id, parent, Role::MenuItem, bounds(menu.entry_rect(index)))
                 .named(name.as_str().as_bytes())
@@ -361,6 +446,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         tree: &mut TreeWriter<'_>,
     ) -> bool {
         let window = Rect::new(0, 0, self.size.0, self.size.1);
+        let mark = |entry| self.mark_of(id, entry);
+        if bar.overflows(rect)
+            && let Some(more) = nested_element(id, MORE_TITLE, &[])
+        {
+            let open = bar.open == Some(bar.overflow_index());
+            let element = Element::new(
+                more,
+                element_of(id),
+                Role::MenuItem,
+                bounds(bar.title_rect(rect, bar.overflow_index())),
+            )
+            .named(b"More")
+            .flagged(disabled | flags::EXPANDABLE | if open { flags::EXPANDED } else { 0 });
+            if !tree.push(&element) {
+                return false;
+            }
+        }
         (0..bar.count).all(|title| {
             let name = plain_label(bar.titles[title]);
             let open = bar.open == Some(title);
@@ -374,19 +476,24 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             .named(name.as_str().as_bytes())
             .flagged(disabled | if open { flags::EXPANDED } else { 0 });
             let menu = Menu::new(bar.menus[title], title_rect.x, rect.bottom() + 1, window)
-                .with_marks(|entry| self.mark_of(id, entry));
+                .with_marks(mark);
             let parent = part_element(id, title);
-            tree.push(&element)
-                && describe_entries(
-                    &menu,
-                    parent,
-                    |entry| {
-                        let part = bar_entry_part(title, entry);
-                        (part <= LAST_PART).then(|| part_element(id, part))
-                    },
-                    disabled,
-                    tree,
-                )
+            let element_at = |path: &[usize]| match path {
+                [entry] => {
+                    let part = bar_entry_part(title, *entry);
+                    (part <= LAST_PART).then(|| part_element(id, part))
+                }
+                _ => nested_element(id, title, path),
+            };
+            let open_at = |path: &[usize]| open && self.submenu_open_at(id, path);
+            let context = EntriesContext {
+                element: &element_at,
+                window,
+                mark: &mark,
+                disabled,
+                open: &open_at,
+            };
+            tree.push(&element) && describe_entries(&menu, parent, &[], &context, tree)
         })
     }
 
@@ -439,16 +546,21 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Kind::MenuBar(bar) => self.describe_bar(id, bar, node.rect, disabled, tree),
             Kind::MenuButton(button) => {
                 let window = Rect::new(0, 0, self.size.0, self.size.1);
-                let menu = button
-                    .menu(node.rect, window)
-                    .with_marks(|entry| self.mark_of(id, entry));
-                describe_entries(
-                    &menu,
-                    element_of(id),
-                    |entry| Some(part_element(id, entry)),
+                let mark = |entry| self.mark_of(id, entry);
+                let menu = button.menu(node.rect, window).with_marks(mark);
+                let element_at = |path: &[usize]| match path {
+                    [entry] => Some(part_element(id, *entry)),
+                    _ => nested_element(id, 0, path),
+                };
+                let open_at = |path: &[usize]| self.submenu_open_at(id, path);
+                let context = EntriesContext {
+                    element: &element_at,
+                    window,
+                    mark: &mark,
                     disabled,
-                    tree,
-                )
+                    open: &open_at,
+                };
+                describe_entries(&menu, element_of(id), &[], &context, tree)
             }
             Kind::Table(table) => {
                 let columns = table.visual_columns().all(|column| {
@@ -549,6 +661,71 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
+    fn act_on_nested(
+        &mut self,
+        id: WidgetId,
+        title: usize,
+        path: &[usize],
+        action: Action,
+    ) -> (Outcome, Response) {
+        let Some(node) = self.node(id) else {
+            return (Outcome::NoSuchElement, Response::Nothing);
+        };
+        let (kind, person_only, enabled) = (node.kind, node.person_only, node.enabled);
+        let rect = node.rect;
+        if !self.is_shown(id) || id.index() >= self.count {
+            return (Outcome::NoSuchElement, Response::Nothing);
+        }
+        if title == MORE_TITLE && path.is_empty() {
+            let Kind::MenuBar(bar) = kind else {
+                return (Outcome::NoSuchElement, Response::Nothing);
+            };
+            if !bar.overflows(rect) {
+                return (Outcome::NoSuchElement, Response::Nothing);
+            }
+            if person_only {
+                return (Outcome::NotSupported, Response::Nothing);
+            }
+            if !enabled {
+                return (Outcome::Disabled, Response::Nothing);
+            }
+            return match action {
+                Action::Invoke => {
+                    self.toggle_menu(id, bar.overflow_index());
+                    (Outcome::Done, Response::Nothing)
+                }
+                _ => (Outcome::NotSupported, Response::Nothing),
+            };
+        }
+        let Some(entry) = self.nested_entry(id, title, path) else {
+            return (Outcome::NoSuchElement, Response::Nothing);
+        };
+        if person_only {
+            return (Outcome::NotSupported, Response::Nothing);
+        }
+        if !enabled {
+            return (Outcome::Disabled, Response::Nothing);
+        }
+        match (action, entry) {
+            (Action::Invoke, Entry::Submenu { enabled: true, .. }) => {
+                self.toggle_submenu_by_agent(id, title, path);
+                (Outcome::Done, Response::Nothing)
+            }
+            (Action::Invoke, Entry::Submenu { .. }) => (Outcome::Disabled, Response::Nothing),
+            (Action::Invoke, entry) => match entry.item() {
+                Some(item) if item.enabled => {
+                    if self.menu == Some(id) {
+                        self.close_menu();
+                    }
+                    (Outcome::Done, Response::Invoked(id, item.id))
+                }
+                Some(_) => (Outcome::Disabled, Response::Nothing),
+                None => (Outcome::NotSupported, Response::Nothing),
+            },
+            _ => (Outcome::NotSupported, Response::Nothing),
+        }
+    }
+
     fn invoke_by_agent(&mut self, id: WidgetId, menu: usize, entry: usize) -> (Outcome, Response) {
         match self.invoke_entry(id, menu, entry) {
             Response::Nothing => (Outcome::Disabled, Response::Nothing),
@@ -572,6 +749,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         text: &str,
         now_ms: u32,
     ) -> (Outcome, Response) {
+        if let Some((id, title, path, length)) = nested_of(element) {
+            return self.act_on_nested(id, title, &path[..length], action);
+        }
         let Some((id, part)) = self.widget_of(element) else {
             return (Outcome::NoSuchElement, Response::Nothing);
         };

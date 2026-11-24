@@ -796,6 +796,68 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
+    /// The entry at `path` (positions from the menu of title `title`, 0 for a menu button) of
+    /// widget `id`'s menus, through enabled submenus only (D705).
+    pub(super) fn nested_entry(
+        &self,
+        id: WidgetId,
+        title: usize,
+        path: &[usize],
+    ) -> Option<&'static Entry> {
+        let mut entries: &'static [Entry] = match self.kind(id)? {
+            Kind::MenuBar(bar) if title < bar.count => bar.menus[title],
+            Kind::MenuButton(button) if title == 0 => button.entries,
+            _ => return None,
+        };
+        let (last, steps) = path.split_last()?;
+        for &step in steps {
+            entries = match entries.get(step)? {
+                Entry::Submenu {
+                    enabled: true,
+                    entries,
+                    ..
+                } => entries,
+                _ => return None,
+            };
+        }
+        entries.get(*last)
+    }
+
+    /// Whether the submenu row at `path` of widget `id`'s open menu has its submenu open.
+    pub(super) fn submenu_open_at(&self, id: WidgetId, path: &[usize]) -> bool {
+        let level = path.len().saturating_sub(1);
+        self.menu == Some(id)
+            && !path.is_empty()
+            && self.submenu_depth > level
+            && self.submenu_path[..=level] == *path
+    }
+
+    /// Opens the submenu of the row at `path` of title `title`'s menu for an agent, opening the
+    /// menu and the submenus above it first, or closes it when it is open (D705).
+    pub(super) fn toggle_submenu_by_agent(&mut self, id: WidgetId, title: usize, path: &[usize]) {
+        let Some((row, above)) = path.split_last() else {
+            return;
+        };
+        if self.submenu_open_at(id, path) {
+            self.close_submenus_to(above.len());
+            return;
+        }
+        let menu_open = match self.kind(id) {
+            Some(Kind::MenuBar(bar)) => self.menu == Some(id) && bar.open == Some(title),
+            Some(Kind::MenuButton(_)) => self.menu == Some(id),
+            _ => false,
+        };
+        if !menu_open {
+            self.toggle_menu(id, title);
+        }
+        for (level, &step) in above.iter().enumerate() {
+            if !self.submenu_open_at(id, &above[..=level]) {
+                self.open_submenu(level, step, false);
+            }
+        }
+        self.open_submenu(above.len(), *row, false);
+    }
+
     /// Opens or closes the menu of menu bar title `title` or of menu button `id`, by an agent.
     pub(super) fn toggle_menu(&mut self, id: WidgetId, title: usize) {
         match self.kind(id).copied() {

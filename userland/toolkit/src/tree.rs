@@ -840,7 +840,23 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         self.damage.add(Rect::new(0, 0, width, height));
     }
 
+    /// Whether the open menu bar title, if any, is shown in its bar rather than behind the
+    /// overflow title (docs/ux/toolkit-v0.6.md section 3): a layout that changes it closes the
+    /// menu, whose place it was.
+    fn open_title_shown(&self) -> Option<bool> {
+        let id = self.menu?;
+        let node = self.node(id)?;
+        match node.kind {
+            Kind::MenuBar(bar) => bar.open.map(|open| match open == bar.overflow_index() {
+                true => bar.overflows(node.rect),
+                false => open < bar.shown(node.rect),
+            }),
+            _ => None,
+        }
+    }
+
     fn layout(&mut self) {
+        let open_title_shown = self.open_title_shown();
         let window = Rect::new(0, 0, self.size.0, self.size.1);
         let mut cursors = [0i32; N];
         let mut content_bottoms = [i32::MIN; N];
@@ -973,6 +989,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             }
         }
         self.clamp_scrolls();
+        if open_title_shown != self.open_title_shown() {
+            self.close_menu();
+        }
     }
 
     fn clamp_scrolls(&mut self) {
