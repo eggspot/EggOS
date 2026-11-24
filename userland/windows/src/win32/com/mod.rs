@@ -165,6 +165,25 @@ static PROXY: Table<7> = Table([
     export_entry!(proxy::invoke, two_stack_arguments),
 ]);
 
+static CONTAINER_PROXY: Table<5> = Table([
+    export_entry!(proxy::query_interface),
+    export_entry!(proxy::add_reference),
+    export_entry!(proxy::release),
+    export_entry!(proxy::not_offered),
+    export_entry!(proxy::find_connection_point),
+]);
+
+static POINT_PROXY: Table<8> = Table([
+    export_entry!(proxy::query_interface),
+    export_entry!(proxy::add_reference),
+    export_entry!(proxy::release),
+    export_entry!(proxy::get_connection_interface),
+    export_entry!(proxy::not_offered),
+    export_entry!(proxy::advise),
+    export_entry!(proxy::unadvise),
+    export_entry!(proxy::not_offered),
+]);
+
 #[derive(Debug, Clone, Copy)]
 struct Apartment {
     initializations: u32,

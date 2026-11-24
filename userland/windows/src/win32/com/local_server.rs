@@ -5,15 +5,21 @@
 //! (any thread for one registered from the multithreaded apartment): an object is made through
 //! the class object's `IClassFactory` and asked for `IDispatch`, and each connection keeps the
 //! objects it was given, numbered, until it releases them or goes. Arguments passed by
-//! reference are held in cells for the call and their values sent back after it (D743).
+//! reference are held in cells for the call and their values sent back after it (D743). A
+//! program using a class out of process keeps its own end in the same table (D744): the
+//! objects it hands the server (sinks, callbacks) are numbered there, and its connection is
+//! served like a server's, so the server can call back while the program waits or later from
+//! its message loop. Queries for other interfaces and the connection-point calls are served
+//! too, and objects that arrive become proxies on the connection's link.
 
 use super::super::{SpinLock, thread_environment};
-use super::carry::{self, Objects};
+use super::carry;
 use super::channel;
+use super::proxy::{self, Link, LinkObjects};
 use crate::com::guid::{self, Guid};
 use crate::com::variant::{self, Variant, kind};
-use crate::com::wire::{self, Exception, Invoked, Reference, Request, Value};
-use crate::com::{E_INVALIDARG, E_POINTER, HResult, S_OK, bstr};
+use crate::com::wire::{self, Exception, Invoked, Reference, Request, Value, request};
+use crate::com::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER, HResult, S_OK, bstr};
 use crate::linux::{self, POLL_ERROR, POLL_HANG_UP, POLL_IN, Watched};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -25,7 +31,6 @@ const REGCLS_SUSPENDED: u32 = 4;
 const CO_E_OBJISREG: HResult = 0x8004_01fb_u32 as i32;
 const CO_E_OBJNOTREG: HResult = 0x8004_01fc_u32 as i32;
 const DISP_E_EXCEPTION: HResult = 0x8002_0009_u32 as i32;
-const DISP_E_TYPEMISMATCH: HResult = 0x8002_0005_u32 as i32;
 const DISP_E_BADPARAMCOUNT: HResult = 0x8002_000e_u32 as i32;
 const RPC_E_DISCONNECTED: HResult = 0x8001_0108_u32 as i32;
 const E_NOTIMPL: HResult = 0x8000_4001_u32 as i32;
@@ -33,6 +38,15 @@ static NO_INTERFACE: Guid = guid::NULL;
 const SLOT_CREATE_INSTANCE: usize = 3;
 const SLOT_GET_IDS_OF_NAMES: usize = 5;
 const SLOT_INVOKE: usize = 6;
+const SLOT_FIND_CONNECTION_POINT: usize = 4;
+const SLOT_ADVISE: usize = 5;
+const SLOT_UNADVISE: usize = 6;
+const CONNECTION_POINT_CONTAINER: Guid = Guid::new(
+    0xb196_b284,
+    0xbab4,
+    0x101a,
+    [0xb6, 0x9c, 0x00, 0xaa, 0x00, 0x34, 0x1d, 0x07],
+);
 const BACKLOG: usize = 16;
 const EXCEPTION_BYTES: usize = 64;
 const EXCEPTION_SOURCE: usize = 8;
@@ -66,6 +80,8 @@ struct Connection {
     armed: bool,
     objects: Vec<Entry>,
     next: u32,
+    link: usize,
+    owns_link: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -421,25 +437,86 @@ fn accept_one(cookie: u32, listener: usize) {
             armed: true,
             objects: Vec::new(),
             next: 1,
+            link: 0,
+            owns_link: false,
         })
     });
 }
 
-fn close_connection(fd: usize) {
-    let objects = CONNECTIONS.with(|connections| {
+/// Keeps a using program's connection `fd` (whose link is `link`) in the table, served on the
+/// calling thread, so the objects it hands the server are numbered and the server's calls
+/// back are answered.
+pub(super) fn adopt_connection(fd: usize, link: usize) -> bool {
+    let thread = thread_environment::thread_id();
+    CONNECTIONS.with(|connections| {
+        connections.push(Connection {
+            fd,
+            thread,
+            armed: true,
+            objects: Vec::new(),
+            next: 1,
+            link,
+            owns_link: false,
+        })
+    });
+    true
+}
+
+/// Closes connection `fd`: its socket, the objects it was given, and its link's calls.
+pub(super) fn close_connection(fd: usize) {
+    let removed = CONNECTIONS.with(|connections| {
         let at = connections
             .iter()
             .position(|connection| connection.fd == fd)?;
-        Some(connections.remove(at).objects)
+        let connection = connections.remove(at);
+        Some((connection.objects, connection.link, connection.owns_link))
     });
     let _ = linux::close(fd);
-    for entry in objects.into_iter().flatten() {
+    let Some((objects, link, owns_link)) = removed else {
+        return;
+    };
+    for entry in objects {
         // SAFETY: the connection's own reference to each object it was given.
         unsafe { crate::com::release(entry.object) };
     }
+    if link != 0 {
+        // SAFETY: the connection's link, live while the connection or its proxies hold it.
+        unsafe {
+            proxy::close_link(link as *mut Link);
+            if owns_link {
+                proxy::drop_link(link as *mut Link);
+            }
+        }
+    }
 }
 
-fn hand_out(fd: usize, object: usize) -> u32 {
+fn link_of(fd: usize) -> *mut Link {
+    let known = CONNECTIONS.with(|connections| {
+        let connection = connections.iter().find(|connection| connection.fd == fd)?;
+        Some(connection.link)
+    });
+    match known {
+        None => core::ptr::null_mut(),
+        Some(0) => {
+            let made = proxy::connection_link(fd);
+            if made.is_null() {
+                return made;
+            }
+            CONNECTIONS.with(|connections| {
+                if let Some(connection) = connections.iter_mut().find(|found| found.fd == fd) {
+                    connection.link = made as usize;
+                    connection.owns_link = true;
+                }
+            });
+            made
+        }
+        Some(link) => link as *mut Link,
+    }
+}
+
+/// Numbers `object` on connection `fd`, taking the caller's reference; 0 when the connection
+/// is gone.
+pub(super) fn hand_out(fd: usize, object: usize) -> u32 {
     CONNECTIONS
         .with(|connections| {
             let connection = connections
@@ -471,7 +548,8 @@ fn hand_out(fd: usize, object: usize) -> u32 {
         })
 }
 
-fn object_of(fd: usize, id: u32) -> Option<usize> {
+/// The object numbered `id` on connection `fd`.
+pub(super) fn object_of(fd: usize, id: u32) -> Option<usize> {
     CONNECTIONS.with(|connections| {
         let connection = connections.iter().find(|connection| connection.fd == fd)?;
         let entry = connection.objects.iter().find(|entry| entry.id == id)?;
@@ -484,14 +562,29 @@ fn serve_one(fd: usize) {
         close_connection(fd);
         return;
     };
-    let answer = match wire::read_request(&body) {
-        Some(Request::Create { class }) => create(fd, &Guid::from_bytes(class)),
-        Some(Request::Names {
+    if wire::is_reply(&body) {
+        return;
+    }
+    let Some(answer) = serve_request(fd, &body) else {
+        close_connection(fd);
+        return;
+    };
+    if !channel::send(fd, &answer) {
+        close_connection(fd);
+    }
+}
+
+/// The answer to the request `body` that arrived on connection `fd`; `None` for a malformed
+/// one.
+pub(super) fn serve_request(fd: usize, body: &[u8]) -> Option<Vec<u8>> {
+    Some(match wire::read_request(body)? {
+        Request::Create { class } => create(fd, &Guid::from_bytes(class)),
+        Request::Names {
             object,
             locale,
             names,
-        }) => numbers_of_names(fd, object, locale, &names),
-        Some(Request::Invoke {
+        } => numbers_of_names(fd, object, locale, &names),
+        Request::Invoke {
             object,
             member,
             locale,
@@ -499,19 +592,101 @@ fn serve_one(fd: usize) {
             arguments,
             named,
             by_reference,
-        }) => {
+        } => {
             let call = (member, locale, flags);
             invoke(fd, object, call, (&arguments, &named), &by_reference)
         }
-        Some(Request::Release { object }) => release(fd, object),
-        None => {
-            close_connection(fd);
-            return;
+        Request::Release { object } => release(fd, object),
+        Request::Query { object, interface } => query(fd, object, &Guid::from_bytes(interface)),
+        Request::FindPoint { object, interface } => {
+            find_point(fd, object, &Guid::from_bytes(interface))
         }
+        Request::Advise { object, sink } => advise(fd, object, &sink),
+        Request::Unadvise { object, cookie } => unadvise(fd, object, cookie),
+    })
+}
+
+fn query(fd: usize, object: u32, interface: &Guid) -> Vec<u8> {
+    let Some(target) = object_of(fd, object) else {
+        return wire::numbered(request::QUERY, RPC_E_DISCONNECTED, 0, false);
     };
-    if !channel::send(fd, &answer) {
-        close_connection(fd);
+    let mut found = 0usize;
+    // SAFETY: a live object of the connection; the result is local.
+    let status = unsafe { crate::com::query_interface(target, interface, &mut found) };
+    if status < 0 || found == 0 {
+        let status = if status < 0 { status } else { E_POINTER };
+        return wire::numbered(request::QUERY, status, 0, false);
     }
+    let mut dispatch = 0usize;
+    // SAFETY: as above.
+    let answered = unsafe { crate::com::query_interface(target, &guid::DISPATCH, &mut dispatch) };
+    let same = answered >= 0 && dispatch == found;
+    // SAFETY: the reference the second query gave, if any.
+    unsafe { crate::com::release(dispatch) };
+    match hand_out(fd, found) {
+        0 => wire::numbered(request::QUERY, RPC_E_DISCONNECTED, 0, false),
+        id => wire::numbered(request::QUERY, S_OK, id, same),
+    }
+}
+
+fn find_point(fd: usize, object: u32, interface: &Guid) -> Vec<u8> {
+    let Some(target) = object_of(fd, object) else {
+        return wire::numbered(request::FIND_POINT, RPC_E_DISCONNECTED, 0, false);
+    };
+    let mut container = 0usize;
+    // SAFETY: a live object of the connection; the result is local.
+    let status =
+        unsafe { crate::com::query_interface(target, &CONNECTION_POINT_CONTAINER, &mut container) };
+    if status < 0 || container == 0 {
+        let status = if status < 0 { status } else { E_POINTER };
+        return wire::numbered(request::FIND_POINT, status, 0, false);
+    }
+    let mut point = 0usize;
+    let arguments = [interface as *const Guid as usize, &raw mut point as usize, 0];
+    // SAFETY: the container's `FindConnectionPoint`, with the interface and a local result.
+    let status =
+        unsafe { crate::com::call_method(container, SLOT_FIND_CONNECTION_POINT, arguments) };
+    // SAFETY: the reference the query gave.
+    unsafe { crate::com::release(container) };
+    let status = status as u32 as i32;
+    if status < 0 || point == 0 {
+        let status = if status < 0 { status } else { E_POINTER };
+        return wire::numbered(request::FIND_POINT, status, 0, false);
+    }
+    match hand_out(fd, point) {
+        0 => wire::numbered(request::FIND_POINT, RPC_E_DISCONNECTED, 0, false),
+        id => wire::numbered(request::FIND_POINT, S_OK, id, false),
+    }
+}
+
+fn advise(fd: usize, object: u32, sink: &Value) -> Vec<u8> {
+    let (Some(point), link) = (object_of(fd, object), link_of(fd)) else {
+        return wire::numbered(request::ADVISE, RPC_E_DISCONNECTED, 0, false);
+    };
+    if link.is_null() {
+        return wire::numbered(request::ADVISE, E_OUTOFMEMORY, 0, false);
+    }
+    let mut held = match carry::variant_of(&mut LinkObjects::new(link), sink) {
+        Ok(held) => held,
+        Err(status) => return wire::numbered(request::ADVISE, status, 0, false),
+    };
+    let mut cookie = 0u32;
+    let arguments = [held.pointer(), &raw mut cookie as usize, 0];
+    // SAFETY: the point's `Advise`, with the sink and a local cookie.
+    let status = unsafe { crate::com::call_method(point, SLOT_ADVISE, arguments) } as u32 as i32;
+    // SAFETY: this call's reference to the sink; the point keeps its own.
+    unsafe { variant::clear(&mut held) };
+    wire::numbered(request::ADVISE, status, cookie, false)
+}
+
+fn unadvise(fd: usize, object: u32, cookie: u32) -> Vec<u8> {
+    let Some(point) = object_of(fd, object) else {
+        return wire::status_reply(request::UNADVISE, RPC_E_DISCONNECTED);
+    };
+    // SAFETY: the point's `Unadvise` with the cookie its `Advise` gave.
+    let status =
+        unsafe { crate::com::call_method(point, SLOT_UNADVISE, [cookie as usize, 0, 0]) };
+    wire::status_reply(request::UNADVISE, status as u32 as i32)
 }
 
 fn create(fd: usize, class: &Guid) -> Vec<u8> {
@@ -564,28 +739,6 @@ fn numbers_of_names(fd: usize, object: u32, locale: u32, names: &[Vec<u16>]) -> 
     match status {
         Some(status) => wire::named(status as u32 as i32, &numbers),
         None => wire::named(E_NOTIMPL, &[]),
-    }
-}
-
-struct ConnectionObjects {
-    fd: usize,
-}
-
-impl Objects for ConnectionObjects {
-    fn object_value(&mut self, kind: u16, object: usize) -> Result<Value, HResult> {
-        // SAFETY: a live object a VARIANT holds; the connection takes a reference.
-        unsafe { crate::com::add_reference(object) };
-        Ok(Value::Object {
-            kind,
-            id: hand_out(self.fd, object),
-        })
-    }
-
-    fn object_of(&mut self, _kind: u16, id: u32) -> Result<usize, HResult> {
-        let object = object_of(self.fd, id).ok_or(DISP_E_TYPEMISMATCH)?;
-        // SAFETY: a live object of the connection; its new holder gets its own reference.
-        unsafe { crate::com::add_reference(object) };
-        Ok(object)
     }
 }
 
@@ -646,7 +799,11 @@ fn invoke(
     if named.len() > arguments.len() {
         return failed(DISP_E_BADPARAMCOUNT);
     }
-    let mut objects = ConnectionObjects { fd };
+    let link = link_of(fd);
+    if link.is_null() {
+        return failed(E_OUTOFMEMORY);
+    }
+    let mut objects = LinkObjects::new(link);
     let mut values: Vec<Variant> = Vec::new();
     for argument in arguments {
         match carry::variant_of(&mut objects, argument) {

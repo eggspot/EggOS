@@ -5,19 +5,24 @@
 //! `Invoke` travel to the server and wait for its answer. Objects in results become proxies on
 //! the same connection, which closes when the last of them is released. Arrays travel, and
 //! arguments passed by reference are written back with the values the server left in them
-//! (D743). The program's own objects cannot travel to the server yet (`DISP_E_TYPEMISMATCH`):
-//! the server would have to call back into the program.
+//! (D743). Calls go both ways (D744): the program's own objects travel as objects it serves on
+//! the connection (its event sinks, its callbacks), and while either end waits for an answer
+//! it serves the other end's requests. A proxy asked for another interface asks the other
+//! end: `IConnectionPointContainer` and `IConnectionPoint` get proxies of their own
+//! (`FindConnectionPoint`, `Advise`, `Unadvise`, `GetConnectionInterface`), and an interface
+//! the object serves at its `IDispatch` gets a dispatch proxy. The same proxies serve a
+//! server calling back into the program it serves.
 
 use super::super::{file, processes, registry};
 use super::carry::{self, Objects};
-use super::channel;
+use super::{channel, local_server};
 use crate::com::guid::{self, Guid};
 use crate::com::variant::{self, Variant, kind};
-use crate::com::wire::{self, Reference, Value};
-use crate::com::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER, HResult, S_OK, bstr};
+use crate::com::wire::{self, Reference, Value, request};
+use crate::com::{E_INVALIDARG, E_NOINTERFACE, E_OUTOFMEMORY, E_POINTER, HResult, S_OK, bstr};
 use crate::linux;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 const CO_E_SERVER_EXEC_FAILURE: HResult = 0x8008_0005_u32 as i32;
 const RPC_E_DISCONNECTED: HResult = 0x8001_0108_u32 as i32;
@@ -41,12 +46,35 @@ const EXCEPTION_STATUS: usize = 56;
 const PARAMETERS_NAMED: usize = 8;
 const PARAMETERS_COUNT: usize = 16;
 const PARAMETERS_NAMED_COUNT: usize = 20;
+const E_NOTIMPL: HResult = 0x8000_4001_u32 as i32;
+const CLOSED: usize = usize::MAX;
+const CONNECTION_POINT_CONTAINER: Guid = Guid::new(
+    0xb196_b284,
+    0xbab4,
+    0x101a,
+    [0xb6, 0x9c, 0x00, 0xaa, 0x00, 0x34, 0x1d, 0x07],
+);
+const CONNECTION_POINT: Guid = Guid::new(
+    0xb196_b286,
+    0xbab4,
+    0x101a,
+    [0xb6, 0x9c, 0x00, 0xaa, 0x00, 0x34, 0x1d, 0x07],
+);
 
+/// One end of a connection: its socket, and whether the link closes it when it goes (the
+/// using end's) or the serving end's connection does.
 #[repr(C)]
 #[derive(Debug)]
-struct Link {
+pub(super) struct Link {
     references: AtomicU32,
-    fd: usize,
+    fd: AtomicUsize,
+    owns: bool,
+}
+
+impl Link {
+    fn fd(&self) -> usize {
+        self.fd.load(Ordering::Acquire)
+    }
 }
 
 #[repr(C)]
@@ -56,6 +84,7 @@ pub(crate) struct Proxy {
     references: AtomicU32,
     link: *mut Link,
     id: u32,
+    interface: Guid,
 }
 
 fn connect(class: &Guid) -> Option<usize> {
@@ -112,33 +141,77 @@ fn connect_or_start(class: &Guid) -> Result<usize, HResult> {
     Err(CO_E_SERVER_EXEC_FAILURE)
 }
 
-fn new_link(fd: usize) -> *mut Link {
+fn allocate_link(fd: usize, owns: bool) -> *mut Link {
     let link = crate::com::allocate(core::mem::size_of::<Link>()).cast::<Link>();
-    if link.is_null() {
-        let _ = linux::close(fd);
-        return link;
+    if !link.is_null() {
+        // SAFETY: a fresh block, sized and aligned for a link.
+        unsafe {
+            link.write(Link {
+                references: AtomicU32::new(1),
+                fd: AtomicUsize::new(fd),
+                owns,
+            })
+        };
     }
-    // SAFETY: a fresh block, sized and aligned for a link.
-    unsafe {
-        link.write(Link {
-            references: AtomicU32::new(1),
-            fd,
-        })
-    };
     link
 }
 
-unsafe fn drop_link(link: *mut Link) {
+fn new_link(fd: usize) -> *mut Link {
+    let link = allocate_link(fd, true);
+    if link.is_null() || !local_server::adopt_connection(fd, link as usize) {
+        let _ = linux::close(fd);
+        if !link.is_null() {
+            // SAFETY: the link just made, which nothing else holds.
+            unsafe { crate::com::free(link.cast()) };
+        }
+        return core::ptr::null_mut();
+    }
+    link
+}
+
+/// A link for the serving end's connection `fd`, which the connection closes; one reference,
+/// the connection's. Null without memory.
+pub(super) fn connection_link(fd: usize) -> *mut Link {
+    allocate_link(fd, false)
+}
+
+/// Marks `link` closed: its connection's socket is gone, so its proxies' calls fail rather
+/// than reach whatever reuses the descriptor.
+///
+/// # Safety
+/// `link` must be a live link.
+pub(super) unsafe fn close_link(link: *mut Link) {
+    // SAFETY: the caller's duty.
+    unsafe { &*link }.fd.store(CLOSED, Ordering::Release);
+}
+
+/// Gives back one reference to `link`; the last closes a using end's connection.
+///
+/// # Safety
+/// `link` must be a live link the caller holds a reference to.
+pub(super) unsafe fn drop_link(link: *mut Link) {
     // SAFETY: the caller's duty.
     let found = unsafe { &*link };
     if crate::com::drop_reference(&found.references).1 {
-        let _ = linux::close(found.fd);
+        let fd = found.fd();
+        if found.owns && fd != CLOSED {
+            local_server::close_connection(fd);
+        }
         // SAFETY: the link's block; no reference is left.
         unsafe { crate::com::free(link.cast()) };
     }
 }
 
 fn new_proxy(link: *mut Link, id: u32) -> Result<*mut Proxy, HResult> {
+    new_proxy_with(link, id, super::PROXY.address(), guid::DISPATCH)
+}
+
+fn new_proxy_with(
+    link: *mut Link,
+    id: u32,
+    table: usize,
+    interface: Guid,
+) -> Result<*mut Proxy, HResult> {
     let proxy = crate::com::allocate(core::mem::size_of::<Proxy>()).cast::<Proxy>();
     if proxy.is_null() {
         return Err(E_OUTOFMEMORY);
@@ -148,10 +221,11 @@ fn new_proxy(link: *mut Link, id: u32) -> Result<*mut Proxy, HResult> {
     // SAFETY: a fresh block, sized and aligned for a proxy.
     unsafe {
         proxy.write(Proxy {
-            table: super::PROXY.address(),
+            table,
             references: AtomicU32::new(1),
             link,
             id,
+            interface,
         })
     };
     Ok(proxy)
@@ -192,10 +266,39 @@ pub(super) unsafe fn create(class: &Guid, interface: *const Guid, result: *mut u
 }
 
 fn ask(link: &Link, message: &[u8]) -> Option<Vec<u8>> {
-    if !channel::send(link.fd, message) {
+    let fd = link.fd();
+    if fd == CLOSED || !channel::send(fd, message) {
         return None;
     }
-    channel::receive(link.fd)
+    loop {
+        let body = channel::receive(fd)?;
+        if wire::is_reply(&body) {
+            return Some(body);
+        }
+        let answer = local_server::serve_request(fd, &body)?;
+        if !channel::send(fd, &answer) {
+            return None;
+        }
+    }
+}
+
+fn is_proxy_table(table: usize) -> bool {
+    [
+        super::PROXY.address(),
+        super::CONTAINER_PROXY.address(),
+        super::POINT_PROXY.address(),
+    ]
+    .contains(&table)
+}
+
+fn own_interfaces(table: usize) -> [Guid; 2] {
+    if table == super::CONTAINER_PROXY.address() {
+        [guid::UNKNOWN, CONNECTION_POINT_CONTAINER]
+    } else if table == super::POINT_PROXY.address() {
+        [guid::UNKNOWN, CONNECTION_POINT]
+    } else {
+        [guid::UNKNOWN, guid::DISPATCH]
+    }
 }
 
 unsafe fn proxy<'a>(this: *mut Proxy) -> &'a Proxy {
@@ -203,7 +306,29 @@ unsafe fn proxy<'a>(this: *mut Proxy) -> &'a Proxy {
     unsafe { &*this }
 }
 
-/// `IUnknown::QueryInterface`: `IUnknown` and `IDispatch`.
+fn remote_interface(found: &Proxy, wanted: Guid) -> Result<*mut Proxy, HResult> {
+    // SAFETY: the proxy's live link.
+    let link = unsafe { &*found.link };
+    let answer = ask(link, &wire::query(found.id, wanted.bytes()))
+        .and_then(|body| wire::read_numbered(&body, request::QUERY));
+    let (status, id, dispatch) = answer.ok_or(RPC_E_DISCONNECTED)?;
+    if status < 0 {
+        return Err(status);
+    }
+    let table = if wanted == CONNECTION_POINT_CONTAINER {
+        super::CONTAINER_PROXY.address()
+    } else if wanted == CONNECTION_POINT {
+        super::POINT_PROXY.address()
+    } else if dispatch {
+        super::PROXY.address()
+    } else {
+        let _ = ask(link, &wire::release(id));
+        return Err(E_NOINTERFACE);
+    };
+    new_proxy_with(found.link, id, table, wanted)
+}
+
+/// `IUnknown::QueryInterface`: the proxy's own interfaces here, any other from the object.
 ///
 /// # Safety
 /// `this` must be a live proxy; the others as `QueryInterface` says.
@@ -213,10 +338,24 @@ pub(super) unsafe extern "efiapi" fn query_interface(
     result: *mut usize,
 ) -> HResult {
     // SAFETY: the caller's duty.
-    let references = unsafe { &proxy(this).references };
-    let interfaces = [guid::UNKNOWN, guid::DISPATCH];
-    // SAFETY: the caller's duty.
-    unsafe { crate::com::answer_query(this as usize, references, interface, result, &interfaces) }
+    let found = unsafe { proxy(this) };
+    let own = own_interfaces(found.table);
+    // SAFETY: the caller's duty: null or a GUID.
+    let wanted = unsafe { Guid::read(interface) };
+    let Some(wanted) = wanted.filter(|wanted| !own.contains(wanted)) else {
+        let references = &found.references;
+        // SAFETY: the caller's duty.
+        return unsafe {
+            crate::com::answer_query(this as usize, references, interface, result, &own)
+        };
+    };
+    if result.is_null() {
+        return E_POINTER;
+    }
+    let made = remote_interface(found, wanted);
+    // SAFETY: the caller's writable interface pointer.
+    unsafe { result.write(made.map_or(0, |made| made as usize)) };
+    made.map_or_else(|status| status, |_| S_OK)
 }
 
 /// `IUnknown::AddRef`.
@@ -328,32 +467,59 @@ pub(super) unsafe extern "efiapi" fn get_ids_of_names(
     status
 }
 
-struct LinkObjects {
+/// How objects travel on one link: a proxy of the same link goes back as the other end's
+/// object, any other object is served on the link; objects that arrive become proxies, or are
+/// this end's own again.
+pub(super) struct LinkObjects {
     link: *mut Link,
+}
+
+impl LinkObjects {
+    pub(super) fn new(link: *mut Link) -> Self {
+        Self { link }
+    }
+
+    fn fd(&self) -> usize {
+        // SAFETY: a live link the caller holds.
+        unsafe { &*self.link }.fd()
+    }
 }
 
 impl Objects for LinkObjects {
     fn object_value(&mut self, kind: u16, object: usize) -> Result<Value, HResult> {
         // SAFETY: a live COM object: its first word is its table.
         let table = unsafe { (object as *const usize).read() };
-        if table != super::PROXY.address() {
-            return Err(DISP_E_TYPEMISMATCH);
+        if is_proxy_table(table) {
+            // SAFETY: the layer's own proxy, as its table says.
+            let found = unsafe { proxy(object as *mut Proxy) };
+            if found.link == self.link {
+                return Ok(Value::Peer { kind, id: found.id });
+            }
         }
-        // SAFETY: the layer's own proxy, as its table says.
-        let found = unsafe { proxy(object as *mut Proxy) };
-        match found.link == self.link {
-            true => Ok(Value::Object { kind, id: found.id }),
-            false => Err(DISP_E_TYPEMISMATCH),
+        // SAFETY: a live object; the connection's table takes this reference.
+        unsafe { crate::com::add_reference(object) };
+        match local_server::hand_out(self.fd(), object) {
+            0 => Err(RPC_E_DISCONNECTED),
+            id => Ok(Value::Object { kind, id }),
         }
     }
 
-    fn object_of(&mut self, _kind: u16, id: u32) -> Result<usize, HResult> {
-        new_proxy(self.link, id).map(|made| made as usize)
+    fn object_of(&mut self, value: &Value) -> Result<usize, HResult> {
+        match *value {
+            Value::Object { id, .. } => new_proxy(self.link, id).map(|made| made as usize),
+            Value::Peer { id, .. } => {
+                let object = local_server::object_of(self.fd(), id).ok_or(DISP_E_TYPEMISMATCH)?;
+                // SAFETY: a live object of the connection; its new holder gets a reference.
+                unsafe { crate::com::add_reference(object) };
+                Ok(object)
+            }
+            _ => Err(E_INVALIDARG),
+        }
     }
 }
 
 fn variant_of(link: *mut Link, value: &Value) -> Result<Variant, HResult> {
-    carry::variant_of(&mut LinkObjects { link }, value)
+    carry::variant_of(&mut LinkObjects::new(link), value)
 }
 
 unsafe fn read_at<T: Copy>(base: *const u8, offset: usize) -> T {
@@ -412,7 +578,7 @@ pub(super) unsafe extern "efiapi" fn invoke(
     let link = found.link;
     let (mut arguments, mut named) = (Vec::new(), Vec::new());
     let (mut by_reference, mut places) = (Vec::new(), Vec::new());
-    let mut objects = LinkObjects { link };
+    let mut objects = LinkObjects::new(link);
     if !parameters.is_null() {
         // SAFETY: the caller's `DISPPARAMS`: its arguments, named numbers and their counts.
         let (values, numbers, count, named_count) = unsafe {
@@ -485,4 +651,115 @@ pub(super) unsafe extern "efiapi" fn invoke(
         unsafe { variant::clear(&mut value) };
     }
     answer.status
+}
+
+/// `IConnectionPointContainer::FindConnectionPoint`, answered by the object.
+///
+/// # Safety
+/// `this` must be a live container proxy, `interface` a GUID and `result` writable.
+pub(super) unsafe extern "efiapi" fn find_connection_point(
+    this: *mut Proxy,
+    interface: *const Guid,
+    result: *mut usize,
+) -> HResult {
+    if result.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: the caller's writable interface pointer.
+    unsafe { result.write(0) };
+    // SAFETY: the caller's duty: null or a GUID.
+    let Some(wanted) = (unsafe { Guid::read(interface) }) else {
+        return E_INVALIDARG;
+    };
+    // SAFETY: the caller's duty.
+    let found = unsafe { proxy(this) };
+    let message = wire::find_point(found.id, wanted.bytes());
+    // SAFETY: the proxy's live link.
+    let answer = ask(unsafe { &*found.link }, &message)
+        .and_then(|body| wire::read_numbered(&body, request::FIND_POINT));
+    let Some((status, id, _)) = answer else {
+        return RPC_E_DISCONNECTED;
+    };
+    if status < 0 {
+        return status;
+    }
+    match new_proxy_with(found.link, id, super::POINT_PROXY.address(), wanted) {
+        Ok(point) => {
+            // SAFETY: as above.
+            unsafe { result.write(point as usize) };
+            S_OK
+        }
+        Err(failure) => failure,
+    }
+}
+
+/// `EnumConnectionPoints`, `GetConnectionPointContainer` and `EnumConnections`: not offered.
+///
+/// # Safety
+/// `result` must be null or writable.
+pub(super) unsafe extern "efiapi" fn not_offered(_this: *mut Proxy, result: *mut usize) -> HResult {
+    if !result.is_null() {
+        // SAFETY: the caller's duty.
+        unsafe { result.write(0) };
+    }
+    E_NOTIMPL
+}
+
+/// `IConnectionPoint::GetConnectionInterface`: the interface the point was found for.
+///
+/// # Safety
+/// `this` must be a live point proxy and `result` null or writable.
+pub(super) unsafe extern "efiapi" fn get_connection_interface(
+    this: *mut Proxy,
+    result: *mut Guid,
+) -> HResult {
+    if result.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: the caller's duty.
+    unsafe { result.write_unaligned(proxy(this).interface) };
+    S_OK
+}
+
+/// `IConnectionPoint::Advise`: the sink, the program's own object, is served on the
+/// connection and the object's point connects it.
+///
+/// # Safety
+/// `this` must be a live point proxy, `sink` a live object and `cookie` null or writable.
+pub(super) unsafe extern "efiapi" fn advise(
+    this: *mut Proxy,
+    sink: usize,
+    cookie: *mut u32,
+) -> HResult {
+    if sink == 0 || cookie.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: the caller's duty.
+    let found = unsafe { proxy(this) };
+    let sink = match LinkObjects::new(found.link).object_value(kind::UNKNOWN, sink) {
+        Ok(sink) => sink,
+        Err(status) => return status,
+    };
+    // SAFETY: the proxy's live link.
+    let answer = ask(unsafe { &*found.link }, &wire::advise(found.id, &sink))
+        .and_then(|body| wire::read_numbered(&body, request::ADVISE));
+    let Some((status, number, _)) = answer else {
+        return RPC_E_DISCONNECTED;
+    };
+    // SAFETY: the caller's writable cookie.
+    unsafe { cookie.write(if status < 0 { 0 } else { number }) };
+    status
+}
+
+/// `IConnectionPoint::Unadvise`.
+///
+/// # Safety
+/// `this` must be a live point proxy.
+pub(super) unsafe extern "efiapi" fn unadvise(this: *mut Proxy, cookie: u32) -> HResult {
+    // SAFETY: the caller's duty.
+    let found = unsafe { proxy(this) };
+    // SAFETY: the proxy's live link.
+    ask(unsafe { &*found.link }, &wire::unadvise(found.id, cookie))
+        .and_then(|body| wire::read_status(&body, request::UNADVISE))
+        .unwrap_or(RPC_E_DISCONNECTED)
 }

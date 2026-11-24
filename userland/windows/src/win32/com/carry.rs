@@ -18,8 +18,9 @@ const WORD_BYTES: usize = 8;
 pub(super) trait Objects {
     /// The value a live, non-null object of `kind` travels as.
     fn object_value(&mut self, kind: u16, object: usize) -> Result<Value, HResult>;
-    /// The object, with a reference for its new holder, that value `id` of `kind` stands for.
-    fn object_of(&mut self, kind: u16, id: u32) -> Result<usize, HResult>;
+    /// The object, with a reference for its new holder, that a non-null object or peer
+    /// object value stands for.
+    fn object_of(&mut self, value: &Value) -> Result<usize, HResult>;
 }
 
 fn read_word(at: *const u8, size: usize) -> u64 {
@@ -210,8 +211,10 @@ fn nested_variant(
             }
             Variant::new(kind::BSTR, text as u64)
         }
-        Value::Object { kind, id: 0 } => Variant::new(*kind, 0),
-        Value::Object { kind, id } => Variant::new(*kind, objects.object_of(*kind, *id)? as u64),
+        Value::Object { kind, id: 0 } | Value::Peer { kind, id: 0 } => Variant::new(*kind, 0),
+        Value::Object { kind, .. } | Value::Peer { kind, .. } => {
+            Variant::new(*kind, objects.object_of(value)? as u64)
+        }
         Value::Array {
             element,
             bounds,

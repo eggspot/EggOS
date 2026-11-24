@@ -3,9 +3,13 @@
 //! `u32`, the rest's bytes), its kind and its fields, little-endian. Automation is what
 //! crosses: creating an object, `IDispatch::GetIDsOfNames`, `IDispatch::Invoke` with its
 //! arguments, result and exception, and releasing an object. Values are VARIANTs' contents;
-//! an object inside one travels as the number the serving side gave it. Arrays travel with
-//! their element kind, bounds and elements, and arguments passed by reference come back
-//! changed in the answer (D743).
+//! an object inside one travels as the number its owner gave it. Arrays travel with their
+//! element kind, bounds and elements, and arguments passed by reference come back changed in
+//! the answer (D743). Either end may serve objects (D744): an object the sender serves travels
+//! as an object, one the receiver serves (a proxy handed back) as a peer object, and either
+//! end may send requests while it waits for an answer, which carries the reply flag. Queries
+//! for other interfaces and the connection-point calls `FindConnectionPoint`, `Advise` and
+//! `Unadvise` have requests of their own.
 
 use super::HResult;
 use alloc::vec::Vec;
@@ -27,6 +31,12 @@ pub mod request {
     pub const NAMES: u8 = 2;
     pub const INVOKE: u8 = 3;
     pub const RELEASE: u8 = 4;
+    pub const QUERY: u8 = 5;
+    pub const FIND_POINT: u8 = 6;
+    pub const ADVISE: u8 = 7;
+    pub const UNADVISE: u8 = 8;
+    /// Set in the kind of every answer.
+    pub const REPLY: u8 = 0x80;
 }
 
 /// The kinds of value.
@@ -36,6 +46,7 @@ pub mod value_kind {
     pub const TEXT: u8 = 2;
     pub const OBJECT: u8 = 3;
     pub const ARRAY: u8 = 4;
+    pub const PEER: u8 = 5;
 }
 
 /// A VARIANT's content as it travels.
@@ -47,8 +58,10 @@ pub enum Value {
     Decimal([u8; 16]),
     /// A `VT_BSTR`'s text; `None` for a null BSTR.
     Text(Option<Vec<u16>>),
-    /// A `VT_DISPATCH` or `VT_UNKNOWN`: the serving side's number for it, 0 for null.
+    /// A `VT_DISPATCH` or `VT_UNKNOWN` the sender serves: its number for it, 0 for null.
     Object { kind: u16, id: u32 },
+    /// A `VT_DISPATCH` or `VT_UNKNOWN` the receiver serves, by the receiver's number.
+    Peer { kind: u16, id: u32 },
     /// A `VT_ARRAY`: its element kind, each dimension's element count and lowest index
     /// (leftmost first), and its elements in the array's data order.
     Array {
@@ -91,6 +104,22 @@ pub enum Request {
     },
     Release {
         object: u32,
+    },
+    Query {
+        object: u32,
+        interface: [u8; 16],
+    },
+    FindPoint {
+        object: u32,
+        interface: [u8; 16],
+    },
+    Advise {
+        object: u32,
+        sink: Value,
+    },
+    Unadvise {
+        object: u32,
+        cookie: u32,
     },
 }
 
@@ -171,6 +200,7 @@ impl Writer {
             Value::Text(None) => self.u8(value_kind::TEXT).u32(u32::MAX),
             Value::Text(Some(units)) => self.u8(value_kind::TEXT).text(units),
             Value::Object { kind, id } => self.u8(value_kind::OBJECT).u16(*kind).u32(*id),
+            Value::Peer { kind, id } => self.u8(value_kind::PEER).u16(*kind).u32(*id),
             Value::Array {
                 element,
                 bounds,
@@ -313,6 +343,10 @@ impl<'a> Reader<'a> {
                 kind: self.u16()?,
                 id: self.u32()?,
             },
+            value_kind::PEER => Value::Peer {
+                kind: self.u16()?,
+                id: self.u32()?,
+            },
             value_kind::ARRAY => self.array_value(depth)?,
             _ => return None,
         })
@@ -389,6 +423,63 @@ pub fn release(object: u32) -> Vec<u8> {
     writer.finish()
 }
 
+/// The message asking object `object` for `interface`.
+pub fn query(object: u32, interface: [u8; 16]) -> Vec<u8> {
+    let mut writer = Writer::new(request::QUERY);
+    writer.u32(object).bytes(&interface);
+    writer.finish()
+}
+
+/// The message asking the connection point container `object` for `interface`'s point.
+pub fn find_point(object: u32, interface: [u8; 16]) -> Vec<u8> {
+    let mut writer = Writer::new(request::FIND_POINT);
+    writer.u32(object).bytes(&interface);
+    writer.finish()
+}
+
+/// The message connecting `sink` to the connection point `object`.
+pub fn advise(object: u32, sink: &Value) -> Vec<u8> {
+    let mut writer = Writer::new(request::ADVISE);
+    writer.u32(object).value(sink);
+    writer.finish()
+}
+
+/// The message ending connection `cookie` of the connection point `object`.
+pub fn unadvise(object: u32, cookie: u32) -> Vec<u8> {
+    let mut writer = Writer::new(request::UNADVISE);
+    writer.u32(object).u32(cookie);
+    writer.finish()
+}
+
+/// Whether the message body `body` is an answer rather than a request.
+pub fn is_reply(body: &[u8]) -> bool {
+    body.first().is_some_and(|kind| kind & request::REPLY != 0)
+}
+
+fn reply(kind: u8) -> Writer {
+    Writer::new(kind | request::REPLY)
+}
+
+fn reading_reply<'a>(body: &'a [u8], kind: u8) -> Option<Reader<'a>> {
+    let mut reader = Reader::new(body);
+    (reader.u8()? == kind | request::REPLY).then_some(reader)
+}
+
+/// The answer to `Query`, `FindPoint` or `Advise`: its status, a number (the new object's, or
+/// the connection's cookie) and whether the object answers `IDispatch` at the same address.
+pub fn numbered(kind: u8, status: HResult, number: u32, dispatch: bool) -> Vec<u8> {
+    let mut writer = reply(kind);
+    writer.i32(status).u32(number).u8(u8::from(dispatch));
+    writer.finish()
+}
+
+/// Reads [`numbered`]'s answer of `kind`.
+pub fn read_numbered(body: &[u8], kind: u8) -> Option<(HResult, u32, bool)> {
+    let mut reader = reading_reply(body, kind)?;
+    let answer = (reader.i32()?, reader.u32()?, reader.u8()? != 0);
+    reader.ended().then_some(answer)
+}
+
 fn count(reader: &mut Reader<'_>) -> Option<usize> {
     let count = usize::from(reader.u16()?);
     (count <= MOST_ITEMS).then_some(count)
@@ -448,6 +539,22 @@ pub fn read_request(body: &[u8]) -> Option<Request> {
         request::RELEASE => Request::Release {
             object: reader.u32()?,
         },
+        request::QUERY => Request::Query {
+            object: reader.u32()?,
+            interface: reader.array()?,
+        },
+        request::FIND_POINT => Request::FindPoint {
+            object: reader.u32()?,
+            interface: reader.array()?,
+        },
+        request::ADVISE => Request::Advise {
+            object: reader.u32()?,
+            sink: reader.value()?,
+        },
+        request::UNADVISE => Request::Unadvise {
+            object: reader.u32()?,
+            cookie: reader.u32()?,
+        },
         _ => return None,
     };
     reader.ended().then_some(request)
@@ -455,22 +562,21 @@ pub fn read_request(body: &[u8]) -> Option<Request> {
 
 /// The answer to `Create`: its status and the new object's number.
 pub fn created(status: HResult, object: u32) -> Vec<u8> {
-    let mut writer = Writer::new(request::CREATE);
+    let mut writer = reply(request::CREATE);
     writer.i32(status).u32(object);
     writer.finish()
 }
 
 /// Reads [`created`]'s answer.
 pub fn read_created(body: &[u8]) -> Option<(HResult, u32)> {
-    let mut reader = Reader::new(body);
-    (reader.u8()? == request::CREATE).then_some(())?;
+    let mut reader = reading_reply(body, request::CREATE)?;
     let answer = (reader.i32()?, reader.u32()?);
     reader.ended().then_some(answer)
 }
 
 /// The answer to `Names`: its status and the numbers.
 pub fn named(status: HResult, numbers: &[i32]) -> Vec<u8> {
-    let mut writer = Writer::new(request::NAMES);
+    let mut writer = reply(request::NAMES);
     writer.i32(status).u16(numbers.len() as u16);
     for number in numbers {
         writer.i32(*number);
@@ -480,8 +586,7 @@ pub fn named(status: HResult, numbers: &[i32]) -> Vec<u8> {
 
 /// Reads [`named`]'s answer.
 pub fn read_named(body: &[u8]) -> Option<(HResult, Vec<i32>)> {
-    let mut reader = Reader::new(body);
-    (reader.u8()? == request::NAMES).then_some(())?;
+    let mut reader = reading_reply(body, request::NAMES)?;
     let status = reader.i32()?;
     let total = count(&mut reader)?;
     let numbers = (0..total)
@@ -492,7 +597,7 @@ pub fn read_named(body: &[u8]) -> Option<(HResult, Vec<i32>)> {
 
 /// The answer to `Invoke`.
 pub fn invoked(answer: &Invoked) -> Vec<u8> {
-    let mut writer = Writer::new(request::INVOKE);
+    let mut writer = reply(request::INVOKE);
     writer
         .i32(answer.status)
         .value(&answer.result)
@@ -510,8 +615,7 @@ pub fn invoked(answer: &Invoked) -> Vec<u8> {
 
 /// Reads [`invoked`]'s answer.
 pub fn read_invoked(body: &[u8]) -> Option<Invoked> {
-    let mut reader = Reader::new(body);
-    (reader.u8()? == request::INVOKE).then_some(())?;
+    let mut reader = reading_reply(body, request::INVOKE)?;
     let status = reader.i32()?;
     let result = reader.value()?;
     let argument_error = reader.u32()?;
@@ -535,15 +639,24 @@ pub fn read_invoked(body: &[u8]) -> Option<Invoked> {
 
 /// The answer to `Release`: its status.
 pub fn released(status: HResult) -> Vec<u8> {
-    let mut writer = Writer::new(request::RELEASE);
-    writer.i32(status);
-    writer.finish()
+    status_reply(request::RELEASE, status)
 }
 
 /// Reads [`released`]'s answer.
 pub fn read_released(body: &[u8]) -> Option<HResult> {
-    let mut reader = Reader::new(body);
-    (reader.u8()? == request::RELEASE).then_some(())?;
+    read_status(body, request::RELEASE)
+}
+
+/// An answer of `kind` holding only a status (`Release`, `Unadvise`).
+pub fn status_reply(kind: u8, status: HResult) -> Vec<u8> {
+    let mut writer = reply(kind);
+    writer.i32(status);
+    writer.finish()
+}
+
+/// Reads [`status_reply`]'s answer of `kind`.
+pub fn read_status(body: &[u8], kind: u8) -> Option<HResult> {
+    let mut reader = reading_reply(body, kind)?;
     let status = reader.i32()?;
     reader.ended().then_some(status)
 }
@@ -687,5 +800,47 @@ mod tests {
     fn create_and_release_answers_round_trip() {
         assert_eq!(read_created(&created(0, 9)[4..]), Some((0, 9)));
         assert_eq!(read_released(&released(1)[4..]), Some(1));
+        assert!(is_reply(&created(0, 9)[4..]));
+        assert!(!is_reply(&create([0; 16])[4..]));
+    }
+
+    #[test]
+    fn connection_point_requests_and_answers_round_trip() {
+        let interface = [3u8; 16];
+        assert_eq!(
+            read_request(body(&query(4, interface))),
+            Some(Request::Query {
+                object: 4,
+                interface
+            })
+        );
+        assert_eq!(
+            read_request(body(&find_point(4, interface))),
+            Some(Request::FindPoint {
+                object: 4,
+                interface
+            })
+        );
+        let sink = Value::Object { kind: 9, id: 2 };
+        assert_eq!(
+            read_request(body(&advise(5, &sink))),
+            Some(Request::Advise { object: 5, sink })
+        );
+        assert_eq!(
+            read_request(body(&unadvise(5, 7))),
+            Some(Request::Unadvise {
+                object: 5,
+                cookie: 7
+            })
+        );
+        let answer = numbered(request::ADVISE, 0, 7, false);
+        assert_eq!(read_numbered(body(&answer), request::ADVISE), Some((0, 7, false)));
+        assert_eq!(read_numbered(body(&answer), request::QUERY), None);
+        let peer = Value::Peer { kind: 13, id: 8 };
+        let message = invoke(1, (0, 0, 1), core::slice::from_ref(&peer), &[], &[]);
+        let Some(Request::Invoke { arguments, .. }) = read_request(body(&message)) else {
+            panic!("the request did not read back");
+        };
+        assert_eq!(arguments, vec![peer]);
     }
 }
