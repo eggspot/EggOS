@@ -1,24 +1,36 @@
-//! NSKeyedArchiver (D365): an object graph written as a keyed archive in an XML property list,
-//! the layout NSKeyedUnarchiver reads (D360): `$archiver`, `$version` 100000, `$top` with the
-//! root's UID and `$objects`, `$null` first. Each object is written once, by identity, and
-//! referred to by its UID: strings, numbers, booleans and data plainly; arrays, sets,
+//! NSKeyedArchiver (D365, D723): an object graph written as a keyed archive in a binary
+//! property list (macOS's default) or, with `setOutputFormat:` XML, an XML one, the layout
+//! NSKeyedUnarchiver reads (D360): `$archiver`, `$version` 100000, `$top` with the root's UID
+//! and `$objects`, `$null` first. Each object is written once, by identity, and referred to by
+//! its UID: strings, numbers, booleans and data plainly; mutable strings, arrays, sets,
 //! dictionaries, dates and NSNull as dictionaries naming their class; any other object as the
-//! keys its `encodeWithCoder:` gives. A class is written once, `{$classname, $classes}`.
+//! keys its `encodeWithCoder:` gives. A class is written once, `{$classname, $classes}`, with
+//! its superclasses up to the root. An object that cannot be encoded (or, when secure coding is
+//! required, does not support it) fails the archive with `NSCoderInvalidValueError`.
 
+use super::constants::{self, COCOA_ERROR_DOMAIN};
 use super::{
-    Definition, NSCODER, NSDATA, NSKEYEDARCHIVER, NSKEYEDARCHIVER_META, NSMUTABLEARRAY,
-    NSMUTABLEDICTIONARY, NSMUTABLESET, autoreleased, class_pointer, define as define_class,
-    is_array, is_data, is_date, is_dictionary, is_number, is_set, is_string, new_instance,
+    Definition, NSCODER, NSDATA, NSERROR, NSKEYEDARCHIVER, NSKEYEDARCHIVER_META, NSMUTABLEARRAY,
+    NSMUTABLEDICTIONARY, NSMUTABLESET, NSMUTABLESTRING, autoreleased, class_pointer,
+    define as define_class, is_array, is_data, is_date, is_dictionary, is_number, is_set,
+    is_string, new_instance,
 };
+use crate::objc::class;
+use crate::objc::message;
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::objc_release;
 use crate::objc::root;
 use crate::objc::sel;
-use crate::objc::{Runtime, methods, send1, send2};
+use crate::objc::{Runtime, methods, send_bool, send1, send2};
+use eggos_plist::writer::{Node, write_binary};
 
 const NO_ENTRY: u32 = u32::MAX;
 const ARCHIVE_VERSION: i64 = 100_000;
+const XML_FORMAT: usize = 100;
+const BINARY_FORMAT: usize = 200;
+const INVALID_VALUE_ERROR: isize = 4866;
+const NAME_SEPARATOR: u8 = 0;
 const HEADER: &[u8] = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
 \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n<dict>\n";
@@ -61,6 +73,8 @@ struct Archiver {
     root: u32,
     secure: bool,
     finished: Id,
+    format: usize,
+    failed: bool,
 }
 
 fn fields_of(this: Id) -> &'static mut Archiver {
@@ -82,6 +96,8 @@ fn set_up(this: Id) -> Id {
     archiver.current = NO_ENTRY;
     archiver.root = NO_ENTRY;
     archiver.finished = core::ptr::null_mut();
+    archiver.format = BINARY_FORMAT;
+    archiver.failed = false;
     this
 }
 
@@ -110,20 +126,20 @@ fn text(this: Id, (start, length): (u32, u32)) -> &'static [u8] {
     &bytes[start as usize..(start + length) as usize]
 }
 
-fn class_entry(this: Id, name: &[u8]) -> u32 {
+fn class_entry(this: Id, names: &[u8]) -> u32 {
     let archiver = fields_of(this);
     let found = archiver
         .entries
         .as_slice()
         .iter()
         .position(|entry| match *entry {
-            Entry::Class(start, length) => text(this, (start, length)) == name,
+            Entry::Class(start, length) => text(this, (start, length)) == names,
             _ => false,
         });
     if let Some(at) = found {
         return at as u32;
     }
-    let (start, length) = stored(this, name);
+    let (start, length) = stored(this, names);
     let archiver = fields_of(this);
     archiver.entries.push(Entry::Class(start, length));
     archiver.entries.len() as u32 - 1
@@ -151,6 +167,7 @@ fn add_uids(this: Id, objects: &[Id]) -> Value {
 
 fn class_name_for(object: Id) -> &'static [u8] {
     match () {
+        () if is_string(object) => b"NSMutableString",
         () if is_array(object) && root::is_kind_of(object, &NSMUTABLEARRAY) => b"NSMutableArray",
         () if is_array(object) => b"NSArray",
         () if is_set(object) && root::is_kind_of(object, &NSMUTABLESET) => b"NSMutableSet",
@@ -164,9 +181,64 @@ fn class_name_for(object: Id) -> &'static [u8] {
     }
 }
 
+fn foundation_superclasses(name: &[u8]) -> Option<&'static [&'static [u8]]> {
+    Some(match name {
+        b"NSMutableString" => &[b"NSString", b"NSObject"],
+        b"NSMutableArray" => &[b"NSArray", b"NSObject"],
+        b"NSMutableSet" => &[b"NSSet", b"NSObject"],
+        b"NSMutableDictionary" => &[b"NSDictionary", b"NSObject"],
+        b"NSArray" | b"NSSet" | b"NSDictionary" | b"NSDate" | b"NSNull" => &[b"NSObject"],
+        _ => return None,
+    })
+}
+
+fn class_names(object: Id) -> Buffer<u8> {
+    let mut names = Buffer::new();
+    let mut put = |name: &[u8]| {
+        if !names.as_slice().is_empty() {
+            names.push(NAME_SEPARATOR);
+        }
+        for &byte in name {
+            names.push(byte);
+        }
+    };
+    let name = class_name_for(object);
+    put(name);
+    match foundation_superclasses(name) {
+        Some(superclasses) => superclasses.iter().for_each(|superclass| put(superclass)),
+        None => {
+            let own = class::record_of(class::class_of(object));
+            let mut record = own.and_then(|own| own.superclass());
+            while let Some(superclass) = record {
+                put(superclass.name());
+                record = superclass.superclass();
+            }
+        }
+    }
+    names
+}
+
+fn first_name(names: &[u8]) -> &[u8] {
+    names.split(|&byte| byte == NAME_SEPARATOR).next().unwrap_or(names)
+}
+
+fn encodable(this: Id, object: Id) -> bool {
+    let responds =
+        |receiver: Id, name: Sel| send_bool(receiver, sel!("respondsToSelector:"), name as usize);
+    if !responds(object, sel!("encodeWithCoder:")) {
+        return false;
+    }
+    if !fields_of(this).secure {
+        return true;
+    }
+    let class_object = class::class_of(object).cast();
+    responds(class_object, sel!("supportsSecureCoding"))
+        && send_bool(class_object, sel!("supportsSecureCoding"), 0)
+}
+
 fn plain(object: Id, this: Id) -> Option<Value> {
     Some(match () {
-        () if is_string(object) => {
+        () if is_string(object) && !root::is_kind_of(object, &NSMUTABLESTRING) => {
             let (start, length) = stored_string(this, object);
             Value::Text(start, length)
         }
@@ -203,11 +275,17 @@ fn encode(this: Id, object: Id) -> u32 {
         fields_of(this).entries.as_mut_slice()[uid as usize] = Entry::Plain(value);
         return uid;
     }
-    let class = class_entry(this, class_name_for(object));
+    let mut names = class_names(object);
+    let class = class_entry(this, names.as_slice());
+    names.free();
     fields_of(this).entries.as_mut_slice()[uid as usize] = Entry::Object(class);
     let outer = fields_of(this).current;
     fields_of(this).current = uid;
     match () {
+        () if is_string(object) => {
+            let (start, length) = stored_string(this, object);
+            add_field(this, uid, b"NS.string", Value::Text(start, length));
+        }
         () if is_array(object) => {
             let mut items: Buffer<Id> = Buffer::new();
             for index in 0..super::array::count_of(object) {
@@ -241,6 +319,7 @@ fn encode(this: Id, object: Id) -> u32 {
             add_field(this, uid, b"NS.time", Value::Real(seconds));
         }
         () if root::class_name(object) == b"NSNull" => {}
+        () if !encodable(this, object) => fields_of(this).failed = true,
         () => {
             send1(object, sel!("encodeWithCoder:"), this as usize);
         }
@@ -408,11 +487,16 @@ impl Writer {
             Entry::Null => self.put(b"<string>$null</string>"),
             Entry::Plain(value) => self.value(this, value),
             Entry::Class(start, length) => {
+                let names = text(this, (start, length));
                 self.put(b"<dict><key>$classname</key><string>");
-                self.escaped(text(this, (start, length)));
-                self.put(b"</string><key>$classes</key><array><string>");
-                self.escaped(text(this, (start, length)));
-                self.put(b"</string><string>NSObject</string></array></dict>");
+                self.escaped(first_name(names));
+                self.put(b"</string><key>$classes</key><array>");
+                for name in names.split(|&byte| byte == NAME_SEPARATOR) {
+                    self.put(b"<string>");
+                    self.escaped(name);
+                    self.put(b"</string>");
+                }
+                self.put(b"</array></dict>");
             }
             Entry::Object(class) => {
                 self.put(b"<dict><key>$class</key>");
@@ -437,6 +521,17 @@ fn finish(this: Id) -> Id {
     if !archiver.finished.is_null() {
         return archiver.finished;
     }
+    let mut out = match archiver.format {
+        XML_FORMAT => xml_archive(this),
+        _ => binary_archive(this),
+    };
+    let data = super::data::new_data(class_pointer(&NSDATA), out.as_slice());
+    out.free();
+    fields_of(this).finished = data;
+    data
+}
+
+fn xml_archive(this: Id) -> Buffer<u8> {
     let mut writer = Writer { out: Buffer::new() };
     writer.put(HEADER);
     writer.put(b"<key>$archiver</key><string>NSKeyedArchiver</string>\n");
@@ -455,10 +550,190 @@ fn finish(this: Id) -> Id {
     writer.put(b"</dict>\n<key>$version</key>");
     writer.integer(ARCHIVE_VERSION);
     writer.put(b"\n</dict>\n</plist>\n");
-    let data = super::data::new_data(class_pointer(&NSDATA), writer.out.as_slice());
-    writer.out.free();
-    fields_of(this).finished = data;
-    data
+    writer.out
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Spec {
+    Integer(i64),
+    Real(f64),
+    Boolean(bool),
+    Archived(u32, u32),
+    Constant(&'static str),
+    Data(u32, u32),
+    Uid(u32),
+    Array(u32, u32),
+    Dictionary(u32, u32),
+}
+
+struct Plan {
+    specs: Buffer<Spec>,
+    references: Buffer<u32>,
+}
+
+impl Plan {
+    fn add(&mut self, spec: Spec) -> u32 {
+        self.specs.push(spec);
+        self.specs.len() as u32 - 1
+    }
+
+    fn array(&mut self, members: &[u32]) -> u32 {
+        let start = self.references.len() as u32;
+        for &member in members {
+            self.references.push(member);
+        }
+        self.add(Spec::Array(start, members.len() as u32))
+    }
+
+    fn dictionary(&mut self, keys: &[u32], values: &[u32]) -> Spec {
+        let start = self.references.len() as u32;
+        for &reference in keys.iter().chain(values) {
+            self.references.push(reference);
+        }
+        Spec::Dictionary(start, keys.len().min(values.len()) as u32)
+    }
+
+    fn value(&mut self, this: Id, value: Value) -> u32 {
+        match value {
+            Value::Uid(uid) => self.add(Spec::Uid(uid)),
+            Value::Integer(value) => self.add(Spec::Integer(value)),
+            Value::Real(value) => self.add(Spec::Real(value)),
+            Value::Boolean(value) => self.add(Spec::Boolean(value)),
+            Value::Text(start, length) => self.add(Spec::Archived(start, length)),
+            Value::Data(start, length) => self.add(Spec::Data(start, length)),
+            Value::Uids(start, count) => {
+                let mut members: Buffer<u32> = Buffer::new();
+                let uids = fields_of(this).uids.as_slice();
+                for &uid in &uids[start as usize..(start + count) as usize] {
+                    members.push(self.add(Spec::Uid(uid)));
+                }
+                let array = self.array(members.as_slice());
+                members.free();
+                array
+            }
+        }
+    }
+
+    fn entry(&mut self, this: Id, index: u32, entry: Entry) -> u32 {
+        let (mut keys, mut values): (Buffer<u32>, Buffer<u32>) = (Buffer::new(), Buffer::new());
+        match entry {
+            Entry::Null => return self.add(Spec::Constant("$null")),
+            Entry::Plain(value) => return self.value(this, value),
+            Entry::Class(start, length) => {
+                let names = text(this, (start, length));
+                keys.push(self.add(Spec::Constant("$classname")));
+                let first = first_name(names).len() as u32;
+                values.push(self.add(Spec::Archived(start, first)));
+                keys.push(self.add(Spec::Constant("$classes")));
+                let mut members: Buffer<u32> = Buffer::new();
+                let mut at = start;
+                for name in names.split(|&byte| byte == NAME_SEPARATOR) {
+                    members.push(self.add(Spec::Archived(at, name.len() as u32)));
+                    at += name.len() as u32 + 1;
+                }
+                values.push(self.array(members.as_slice()));
+                members.free();
+            }
+            Entry::Object(class) => {
+                keys.push(self.add(Spec::Constant("$class")));
+                values.push(self.add(Spec::Uid(class)));
+                let count = fields_of(this).fields.len();
+                for at in 0..count {
+                    let field = fields_of(this).fields.as_slice()[at];
+                    if field.entry == index {
+                        keys.push(self.add(Spec::Archived(field.key.0, field.key.1)));
+                        values.push(self.value(this, field.value));
+                    }
+                }
+            }
+        }
+        let dictionary = self.dictionary(keys.as_slice(), values.as_slice());
+        keys.free();
+        values.free();
+        self.add(dictionary)
+    }
+
+    fn node(&self, this: Id, index: usize) -> Node<'_> {
+        let references = |start: u32, count: u32| {
+            &self.references.as_slice()[start as usize..(start + count) as usize]
+        };
+        match self.specs.as_slice()[index] {
+            Spec::Integer(value) => Node::Integer(value),
+            Spec::Real(value) => Node::Real(value),
+            Spec::Boolean(value) => Node::Boolean(value),
+            Spec::Archived(start, length) => {
+                Node::String(core::str::from_utf8(text(this, (start, length))).unwrap_or(""))
+            }
+            Spec::Constant(constant) => Node::String(constant),
+            Spec::Data(start, length) => Node::Data(text(this, (start, length))),
+            Spec::Uid(uid) => Node::Uid(u64::from(uid)),
+            Spec::Array(start, count) => Node::Array(references(start, count)),
+            Spec::Dictionary(start, count) => {
+                Node::Dictionary(references(start, count), references(start + count, count))
+            }
+        }
+    }
+}
+
+fn binary_archive(this: Id) -> Buffer<u8> {
+    let mut plan = Plan {
+        specs: Buffer::new(),
+        references: Buffer::new(),
+    };
+    plan.add(Spec::Boolean(false));
+    let mut objects: Buffer<u32> = Buffer::new();
+    let count = fields_of(this).entries.len();
+    for index in 0..count {
+        let entry = fields_of(this).entries.as_slice()[index];
+        objects.push(plan.entry(this, index as u32, entry));
+    }
+    let root = match fields_of(this).root {
+        NO_ENTRY => 0,
+        root => root,
+    };
+    let keys = [
+        plan.add(Spec::Constant("$archiver")),
+        plan.add(Spec::Constant("$objects")),
+        plan.add(Spec::Constant("$top")),
+        plan.add(Spec::Constant("$version")),
+    ];
+    let root_key = plan.add(Spec::Constant("root"));
+    let root_uid = plan.add(Spec::Uid(root));
+    let top_spec = plan.dictionary(&[root_key], &[root_uid]);
+    let values = [
+        plan.add(Spec::Constant("NSKeyedArchiver")),
+        plan.array(objects.as_slice()),
+        plan.add(top_spec),
+        plan.add(Spec::Integer(ARCHIVE_VERSION)),
+    ];
+    objects.free();
+    let document = plan.dictionary(&keys, &values);
+    plan.specs.as_mut_slice()[0] = document;
+    let mut out = Buffer::new();
+    write_binary(
+        plan.specs.len(),
+        0,
+        |index| plan.node(this, index),
+        &mut |bytes: &[u8]| {
+            for &byte in bytes {
+                out.push(byte);
+            }
+        },
+    );
+    plan.specs.free();
+    plan.references.free();
+    out
+}
+
+fn invalid_value_error() -> Id {
+    let make: extern "C" fn(Id, Sel, Id, isize, Id) -> Id = message::msg_send_as();
+    make(
+        class_pointer(&NSERROR).cast(),
+        sel!("errorWithDomain:code:userInfo:"),
+        constants::string(COCOA_ERROR_DOMAIN),
+        INVALID_VALUE_ERROR,
+        core::ptr::null_mut(),
+    )
 }
 
 extern "C" fn init_requiring_secure_coding(this: Id, _: Sel, secure: u8) -> Id {
@@ -481,7 +756,15 @@ extern "C" fn finish_encoding(this: Id, _: Sel) {
     finish(this);
 }
 
-extern "C" fn set_output_format(_: Id, _: Sel, _: usize) {}
+extern "C" fn set_output_format(this: Id, _: Sel, format: usize) {
+    if matches!(format, XML_FORMAT | BINARY_FORMAT) {
+        fields_of(this).format = format;
+    }
+}
+
+extern "C" fn output_format(this: Id, _: Sel) -> usize {
+    fields_of(this).format
+}
 
 extern "C" fn requires_secure_coding(this: Id, _: Sel) -> u8 {
     u8::from(fields_of(this).secure)
@@ -502,32 +785,49 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     crate::objc::reference_count::dispose(this);
 }
 
-fn archive(root: Id) -> Id {
+fn archive(root: Id, secure: bool) -> Result<Id, Id> {
     let archiver = set_up(new_instance(class_pointer(&NSKEYEDARCHIVER)));
     if archiver.is_null() {
-        return archiver;
+        return Ok(archiver);
     }
+    fields_of(archiver).secure = secure;
     fields_of(archiver).root = encode(archiver, root);
+    if fields_of(archiver).failed {
+        objc_release(archiver);
+        return Err(invalid_value_error());
+    }
     let data = finish(archiver);
     fields_of(archiver).finished = core::ptr::null_mut();
     objc_release(archiver);
-    autoreleased(data)
+    Ok(autoreleased(data))
 }
 
 extern "C" fn archived_data_with_root_object(_: Id, _: Sel, root: Id) -> Id {
-    archive(root)
+    match archive(root, false) {
+        Ok(data) => data,
+        Err(_) => super::raise_named(
+            b"NSInvalidArgumentException",
+            &[b"*** -[NSKeyedArchiver encodeObject:forKey:]: an object cannot be encoded"],
+        ),
+    }
 }
 
-extern "C" fn archived_data_secure(_: Id, _: Sel, root: Id, _: u8, error: *mut Id) -> Id {
+extern "C" fn archived_data_secure(_: Id, _: Sel, root: Id, secure: u8, error: *mut Id) -> Id {
+    let (data, failure) = match archive(root, secure != 0) {
+        Ok(data) => (data, core::ptr::null_mut()),
+        Err(failure) => (core::ptr::null_mut(), failure),
+    };
     if !error.is_null() {
         // SAFETY: the caller's `NSError **`.
-        unsafe { error.write(core::ptr::null_mut()) };
+        unsafe { error.write(failure) };
     }
-    archive(root)
+    data
 }
 
 extern "C" fn archive_root_object_to_file(_: Id, _: Sel, root: Id, path: Id) -> u8 {
-    let data = archive(root);
+    let Ok(data) = archive(root, false) else {
+        return 0;
+    };
     u8::from(!send2(data, sel!("writeToFile:atomically:"), path as usize, 1).is_null())
 }
 
@@ -538,6 +838,7 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "encodedData" => encoded_data,
         "finishEncoding" => finish_encoding,
         "setOutputFormat:" => set_output_format,
+        "outputFormat" => output_format,
         "requiresSecureCoding" => requires_secure_coding,
         "allowsKeyedCoding" => allows_keyed_coding,
         "encodeObject:forKey:" => encode_object_for_key,

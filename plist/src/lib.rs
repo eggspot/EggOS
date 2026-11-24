@@ -3,13 +3,14 @@
 //! front (a binary list's trailer and offset table); everything else is checked as it is read,
 //! so a damaged list gives `None` from the accessor that meets the damage, never a panic.
 //! Shared by the installer (an `Info.plist`'s icon and program) and the macOS layer (NSBundle,
-//! keyed archives and nibs).
+//! keyed archives and nibs). [`writer`] writes the binary format (D723).
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod binary;
 mod text;
+pub mod writer;
 mod xml;
 
 #[cfg(test)]
