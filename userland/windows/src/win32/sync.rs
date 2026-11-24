@@ -547,7 +547,8 @@ fn wait(handles: &[usize], wait_all: bool, milliseconds: u32, alertable: bool) -
     let caller = thread_environment::thread_id();
     let mut deadline = None;
     loop {
-        let reading = super::overlapped::finish_ready_reads(handles);
+        let reading = super::overlapped::finish_ready_reads(handles)
+            | super::async_select::signal_events_ready();
         let (sequence, polling) = match check(handles, wait_all, caller) {
             Err(code) => return fail(code, WAIT_FAILED),
             Ok(Check::Done(result)) => return result,

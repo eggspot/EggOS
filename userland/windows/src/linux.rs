@@ -362,6 +362,7 @@ pub struct Watched {
 }
 
 pub const POLL_IN: u16 = 0x001;
+pub const POLL_PRIORITY: u16 = 0x002;
 pub const POLL_OUT: u16 = 0x004;
 pub const POLL_ERROR: u16 = 0x008;
 pub const POLL_HANG_UP: u16 = 0x010;

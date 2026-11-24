@@ -675,6 +675,49 @@ extern "efiapi" fn wsa_async_select(
     }
 }
 
+/// `WSAEventSelect(s, hEventObject, lNetworkEvents)` (D714): the socket becomes non-blocking
+/// and its events set the object; no events cancels it.
+extern "efiapi" fn wsa_event_select(socket: usize, event: usize, events: i32) -> i32 {
+    let fd = match socket_fd(socket) {
+        Ok(fd) => fd,
+        Err(error) => return fail(error, SOCKET_ERROR),
+    };
+    let non_blocking = linux::control(fd, linux::F_GETFL, 0)
+        .and_then(|flags| linux::control(fd, linux::F_SETFL, flags | O_NONBLOCK));
+    if let Err(errno) = non_blocking {
+        return fail(sockets::error_for(errno.0), SOCKET_ERROR);
+    }
+    match super::async_select::select_event(socket, fd, event, events as u32) {
+        Ok(()) => 0,
+        Err(error) => fail(error, SOCKET_ERROR),
+    }
+}
+
+/// `WSAEnumNetworkEvents(s, hEventObject, lpNetworkEvents)` (D714): the events recorded since
+/// the last call into the `WSANETWORKEVENTS` (`lNetworkEvents`, then ten error codes), cleared,
+/// and the object, when given, reset.
+unsafe extern "efiapi" fn wsa_enum_network_events(socket: usize, event: usize, out: *mut i32) -> i32 {
+    if let Err(error) = socket_fd(socket) {
+        return fail(error, SOCKET_ERROR);
+    }
+    if out.is_null() {
+        return fail(sockets::code::WSAEFAULT, SOCKET_ERROR);
+    }
+    let (events, errors) = super::async_select::take_recorded(socket)
+        .unwrap_or((0, [0; super::async_select::EVENT_KINDS]));
+    // SAFETY: the caller's `WSANETWORKEVENTS`: a `long` and ten `int`s, all 32 bits on Windows.
+    unsafe {
+        out.write_unaligned(events as i32);
+        for (index, error) in errors.iter().enumerate() {
+            out.add(1 + index).write_unaligned(*error as i32);
+        }
+    }
+    if event != 0 {
+        super::sync::set_event_quietly(event, false);
+    }
+    0
+}
+
 pub(super) const EXPORTS: &[Export] = exports![
     b"accept" => accept,
     b"bind" => bind,
@@ -697,6 +740,8 @@ pub(super) const EXPORTS: &[Export] = exports![
     b"getservbyport" => getservbyport,
     b"gethostname" => gethostname,
     b"WSAAsyncSelect" => wsa_async_select,
+    b"WSAEventSelect" => wsa_event_select,
+    b"WSAEnumNetworkEvents" => wsa_enum_network_events,
     b"WSAGetLastError" => wsa_get_last_error,
     b"WSASetLastError" => wsa_set_last_error,
     b"WSAStartup" => wsa_startup,
