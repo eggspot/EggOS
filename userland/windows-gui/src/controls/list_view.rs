@@ -1601,6 +1601,16 @@ pub struct RowDraw {
     pub skip: bool,
 }
 
+/// What the program asked for one cell of a report-view row by per-subitem custom draw
+/// (`CDRF_NOTIFYSUBITEMDRAW`, D717): its text and background colours instead of the row's,
+/// or no text (it drew the cell itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellDraw {
+    pub text: Option<u32>,
+    pub background: Option<u32>,
+    pub skip: bool,
+}
+
 /// Paints `list` over `rect` with each row as the list says.
 pub fn paint(
     surface: &mut Surface<'_>,
@@ -1623,6 +1633,28 @@ pub fn paint_custom(
     look: ListLook,
     (images, palette, common): (&dyn Images, &Palette, &CommonPalette),
     rows: &dyn Fn(usize) -> RowDraw,
+) {
+    paint_custom_cells(
+        surface,
+        rect,
+        list,
+        look,
+        (images, palette, common),
+        rows,
+        &|_, _| CellDraw::default(),
+    );
+}
+
+/// [`paint_custom`] with each report-view cell's own colours as `cells` says by row and
+/// column (D717).
+pub fn paint_custom_cells(
+    surface: &mut Surface<'_>,
+    rect: Rect,
+    list: &ListView,
+    look: ListLook,
+    (images, palette, common): (&dyn Images, &Palette, &CommonPalette),
+    rows: &dyn Fn(usize) -> RowDraw,
+    cells: &dyn Fn(usize, usize) -> CellDraw,
 ) {
     let saved = surface.clip();
     surface.clip_to(rect);
@@ -1686,7 +1718,7 @@ pub fn paint_custom(
                 list,
                 &layout,
                 index,
-                (look, draw),
+                (look, draw, cells),
                 images,
                 palette,
                 common,
@@ -1730,7 +1762,7 @@ fn paint_row(
     list: &ListView,
     layout: &ListLayout,
     index: usize,
-    (look, draw): (ListLook, RowDraw),
+    (look, draw, cells): (ListLook, RowDraw, &dyn Fn(usize, usize) -> CellDraw),
     images: &dyn Images,
     palette: &Palette,
     common: &CommonPalette,
@@ -1768,11 +1800,25 @@ fn paint_row(
         let (left, width, alignment) = list.column_span(layout, column);
         let cell = Rect::sized(left, y, width, ROW_HEIGHT);
         let in_area = full_row || column == 0 || !layout.report;
+        let own = match layout.report {
+            true => cells(index, column),
+            false => CellDraw::default(),
+        };
+        let plain_text = match (look.enabled, own.text) {
+            (true, Some(colour)) => colour,
+            _ => plain_text,
+        };
         let colour = match (area_text, in_area) {
             (Some(colour), true) => colour,
             _ => plain_text,
         };
         surface.set_clip(rows_clip.intersection(&cell));
+        if let (Some(fill), false) = (own.background, selected && in_area) {
+            surface.fill(cell, fill);
+        }
+        if own.skip {
+            continue;
+        }
         let mut prefix = 0;
         if column == 0 {
             if list.extended & extended::CHECK_BOXES != 0 {

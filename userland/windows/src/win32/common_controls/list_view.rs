@@ -384,12 +384,15 @@ const CDDS_PREPAINT: u32 = 0x1;
 const CDDS_POSTPAINT: u32 = 0x2;
 const CDDS_ITEMPREPAINT: u32 = 0x1_0001;
 const CDDS_ITEMPOSTPAINT: u32 = 0x1_0002;
+const CDDS_SUBITEM: u32 = 0x2_0000;
+const CDRF_NOTIFYSUBITEMDRAW: usize = 0x20;
 const CDRF_SKIPDEFAULT: usize = 0x4;
 const CDRF_NOTIFYPOSTPAINT: usize = 0x10;
 const CDRF_NOTIFYITEMDRAW: usize = 0x20;
 const CDIS_SELECTED: u32 = 0x1;
 const CDIS_FOCUS: u32 = 0x10;
 const MOST_CUSTOM_ROWS: usize = 64;
+const MOST_CUSTOM_COLUMNS: usize = eggos_windows_gui::controls::list_view::MAX_COLUMNS;
 
 #[repr(C)]
 struct NmCustomDraw {
@@ -429,6 +432,7 @@ struct VisibleRow {
 struct CustomRows {
     rows: [VisibleRow; MOST_CUSTOM_ROWS],
     draws: [model::RowDraw; MOST_CUSTOM_ROWS],
+    cells: [[model::CellDraw; MOST_CUSTOM_COLUMNS]; MOST_CUSTOM_ROWS],
     after: [bool; MOST_CUSTOM_ROWS],
     count: usize,
     after_all: bool,
@@ -441,6 +445,14 @@ impl CustomRows {
             .position(|row| row.index == index)
             .map_or_else(model::RowDraw::default, |at| self.draws[at])
     }
+
+    fn cell(&self, index: usize, column: usize) -> model::CellDraw {
+        self.rows[..self.count]
+            .iter()
+            .position(|row| row.index == index)
+            .and_then(|at| self.cells[at].get(column).copied())
+            .unwrap_or_default()
+    }
 }
 
 fn custom_draw(
@@ -448,6 +460,16 @@ fn custom_draw(
     stage: u32,
     hdc: usize,
     row: VisibleRow,
+) -> (usize, Option<NmListCustomDraw>) {
+    custom_draw_cell(window, stage, hdc, row, 0)
+}
+
+fn custom_draw_cell(
+    window: usize,
+    stage: u32,
+    hdc: usize,
+    row: VisibleRow,
+    sub_item: i32,
 ) -> (usize, Option<NmListCustomDraw>) {
     let mut item_state = 0;
     if row.state & state::SELECTED != 0 {
@@ -468,7 +490,7 @@ fn custom_draw(
         },
         text: CLR_DEFAULT,
         text_background: CLR_DEFAULT,
-        sub_item: 0,
+        sub_item,
         item_type: 0,
         face: CLR_DEFAULT,
         icon_effect: 0,
@@ -513,6 +535,7 @@ fn custom_rows(window: usize, hdc: usize) -> CustomRows {
     let mut custom = CustomRows {
         rows: [VisibleRow::default(); MOST_CUSTOM_ROWS],
         draws: [model::RowDraw::default(); MOST_CUSTOM_ROWS],
+        cells: [[model::CellDraw::default(); MOST_CUSTOM_COLUMNS]; MOST_CUSTOM_ROWS],
         after: [false; MOST_CUSTOM_ROWS],
         count: 0,
         after_all: false,
@@ -539,8 +562,27 @@ fn custom_rows(window: usize, hdc: usize) -> CustomRows {
             skip: answer & CDRF_SKIPDEFAULT != 0,
         };
         custom.after[at] = answer & CDRF_NOTIFYPOSTPAINT != 0;
+        if answer & CDRF_NOTIFYSUBITEMDRAW != 0 && answer & CDRF_SKIPDEFAULT == 0 {
+            let columns = column_count(window).min(MOST_CUSTOM_COLUMNS);
+            for column in 0..columns {
+                let stage = CDDS_ITEMPREPAINT | CDDS_SUBITEM;
+                let (answer, data) =
+                    custom_draw_cell(window, stage, hdc, custom.rows[at], column as i32);
+                if let Some(data) = data {
+                    custom.cells[at][column] = model::CellDraw {
+                        text: chosen_colour(data.text),
+                        background: chosen_colour(data.text_background),
+                        skip: answer & CDRF_SKIPDEFAULT != 0,
+                    };
+                }
+            }
+        }
     }
     custom
+}
+
+fn column_count(window: usize) -> usize {
+    with_state::<ListState, _>(window, |_, control| control.list.columns().count()).unwrap_or(0)
 }
 
 fn custom_after(window: usize, hdc: usize, custom: &CustomRows) {
@@ -582,13 +624,14 @@ fn paint_rows(window: usize) {
                 enabled: windows::enabled_in_tree(&gui.windows, window),
                 header_window,
             };
-            model::paint_custom(
+            model::paint_custom_cells(
                 surface,
                 entry.client(),
                 &control.list,
                 look,
                 (&image_list::LayerImages, &LIGHT, &COMMON_LIGHT),
                 &|index| custom.draw(index),
+                &|index, column| custom.cell(index, column),
             );
         });
     });
