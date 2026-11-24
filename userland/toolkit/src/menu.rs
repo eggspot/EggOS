@@ -864,63 +864,21 @@ impl Bar {
 
     /// [`Self::pool`] with each check or radio item's mark as `mark` says by its id (None
     /// leaves the entry's own), as a third field: `c1` or `c0` for a check, `r1` or `r0` for a
-    /// radio (docs/ux/toolkit-v0.6.md section 2.5).
+    /// radio; a submenu is an `S<label>` line (`s` when disabled), its entries, and an `E` line,
+    /// two levels deep at most, a deeper one a disabled item (docs/ux/toolkit-v0.6.md section
+    /// 2.5). A cut leaves no submenu open: room for the `E` lines it needs is kept.
     pub fn pool_with_marks(
         &self,
         out: &mut [u8; POOL_CAPACITY],
         mark: impl Fn(u8) -> Option<bool>,
     ) -> usize {
         let mut length = 0;
-        let mut put = |parts: &[&[u8]], length: &mut usize| -> bool {
-            let needed: usize = parts.iter().map(|part| part.len()).sum();
-            if *length + needed > POOL_CAPACITY {
-                return false;
-            }
-            for part in parts {
-                out[*length..*length + part.len()].copy_from_slice(part);
-                *length += part.len();
-            }
-            true
-        };
         for index in 0..self.count {
             let title = plain_label(self.titles[index]);
-            if !put(&[b"M", title.as_str().as_bytes(), b"\n"], &mut length) {
+            if !put_in_pool(out, &mut length, &[b"M", title.as_str().as_bytes(), b"\n"], 0)
+                || !pool_entries(self.menus[index], 0, &mark, out, &mut length)
+            {
                 return length;
-            }
-            for entry in self.menus[index].iter().take(MAX_ENTRIES) {
-                let fits = match (entry.item(), entry) {
-                    (None, Entry::Submenu { label, .. }) => {
-                        let label = plain_label(label);
-                        put(&[b"D", label.as_str().as_bytes(), b"\t\n"], &mut length)
-                    }
-                    (None, _) => put(&[b"-\n"], &mut length),
-                    (Some(item), _) => {
-                        let label = plain_label(item.label);
-                        let kind: &[u8] = if item.enabled { b"I" } else { b"D" };
-                        let shown = |own: bool| mark(item.id).unwrap_or(own);
-                        let marked: &[u8] = match item.mark {
-                            None => b"",
-                            Some(Mark::Check(own)) if shown(own) => b"\tc1",
-                            Some(Mark::Check(_)) => b"\tc0",
-                            Some(Mark::Radio(own)) if shown(own) => b"\tr1",
-                            Some(Mark::Radio(_)) => b"\tr0",
-                        };
-                        put(
-                            &[
-                                kind,
-                                label.as_str().as_bytes(),
-                                b"\t",
-                                item.key.as_bytes(),
-                                marked,
-                                b"\n",
-                            ],
-                            &mut length,
-                        )
-                    }
-                };
-                if !fits {
-                    return length;
-                }
             }
         }
         length
@@ -1013,6 +971,124 @@ impl Button {
         };
         Menu::new(self.entries, rect.x, y, window).with_chosen(self.highlighted)
     }
+}
+
+const POOL_SUBMENU_DEPTH: usize = 2;
+const POOL_SUBMENU_END: &[u8] = b"E\n";
+
+/// The entry of `entries` whose depth-first number in the pool is `number`, as the top bar's
+/// `MenuChosen` names it: every entry counts one, a submenu's row and then its entries, two
+/// levels deep (docs/ux/toolkit-v0.6.md section 2.5).
+pub fn entry_by_number(entries: &'static [Entry], number: usize) -> Option<&'static Entry> {
+    let mut counted = 0;
+    find_by_number(entries, 0, number, &mut counted)
+}
+
+fn find_by_number(
+    entries: &'static [Entry],
+    depth: usize,
+    number: usize,
+    counted: &mut usize,
+) -> Option<&'static Entry> {
+    for entry in entries.iter().take(MAX_ENTRIES) {
+        if *counted == number {
+            return Some(entry);
+        }
+        *counted += 1;
+        if let Entry::Submenu {
+            entries: nested, ..
+        } = entry
+            && depth < POOL_SUBMENU_DEPTH
+            && let Some(found) = find_by_number(nested, depth + 1, number, counted)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn put_in_pool(
+    out: &mut [u8; POOL_CAPACITY],
+    length: &mut usize,
+    parts: &[&[u8]],
+    reserved: usize,
+) -> bool {
+    let needed: usize = parts.iter().map(|part| part.len()).sum();
+    if *length + needed + reserved > POOL_CAPACITY {
+        return false;
+    }
+    for part in parts {
+        out[*length..*length + part.len()].copy_from_slice(part);
+        *length += part.len();
+    }
+    true
+}
+
+/// Writes `entries`, `depth` submenus deep, into the pool; whether all of them fitted.
+fn pool_entries(
+    entries: &[Entry],
+    depth: usize,
+    mark: &impl Fn(u8) -> Option<bool>,
+    out: &mut [u8; POOL_CAPACITY],
+    length: &mut usize,
+) -> bool {
+    let reserved = depth * POOL_SUBMENU_END.len();
+    for entry in entries.iter().take(MAX_ENTRIES) {
+        let fits = match (entry.item(), entry) {
+            (
+                None,
+                Entry::Submenu {
+                    label,
+                    enabled,
+                    entries: nested,
+                },
+            ) if depth < POOL_SUBMENU_DEPTH => {
+                let label = plain_label(label);
+                let start: &[u8] = if *enabled { b"S" } else { b"s" };
+                let own_end = reserved + POOL_SUBMENU_END.len();
+                if !put_in_pool(out, length, &[start, label.as_str().as_bytes(), b"\n"], own_end) {
+                    return false;
+                }
+                let whole = pool_entries(nested, depth + 1, mark, out, length);
+                put_in_pool(out, length, &[POOL_SUBMENU_END], reserved);
+                whole
+            }
+            (None, Entry::Submenu { label, .. }) => {
+                let label = plain_label(label);
+                put_in_pool(out, length, &[b"D", label.as_str().as_bytes(), b"\t\n"], reserved)
+            }
+            (None, _) => put_in_pool(out, length, &[b"-\n"], reserved),
+            (Some(item), _) => {
+                let label = plain_label(item.label);
+                let kind: &[u8] = if item.enabled { b"I" } else { b"D" };
+                let shown = |own: bool| mark(item.id).unwrap_or(own);
+                let marked: &[u8] = match item.mark {
+                    None => b"",
+                    Some(Mark::Check(own)) if shown(own) => b"\tc1",
+                    Some(Mark::Check(_)) => b"\tc0",
+                    Some(Mark::Radio(own)) if shown(own) => b"\tr1",
+                    Some(Mark::Radio(_)) => b"\tr0",
+                };
+                put_in_pool(
+                    out,
+                    length,
+                    &[
+                        kind,
+                        label.as_str().as_bytes(),
+                        b"\t",
+                        item.key.as_bytes(),
+                        marked,
+                        b"\n",
+                    ],
+                    reserved,
+                )
+            }
+        };
+        if !fits {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1169,6 +1245,37 @@ mod tests {
             entries: &ZOOM,
         },
     ];
+
+    #[test]
+    fn the_pool_writes_a_submenu_between_s_and_e_lines_and_never_cuts_one_open() {
+        let menus: [(&'static str, &'static [Entry]); 1] = [("&View", &WITH_SUBMENU)];
+        let bar = Bar::new(&menus);
+        let mut out = [0u8; POOL_CAPACITY];
+        let length = bar.pool(&mut out);
+        assert_eq!(
+            &out[..length],
+            b"MView\nIWrap\t\nSZoom\nIIn\t\nIOut\t\nE\n"
+        );
+        let mut whole = 0;
+        let fits = pool_entries(&WITH_SUBMENU, 0, &|_| None, &mut out, &mut whole);
+        assert!(fits);
+        let mut cut = POOL_CAPACITY - 12;
+        assert!(!pool_entries(&WITH_SUBMENU, 0, &|_| None, &mut out, &mut cut));
+        let written = &out[POOL_CAPACITY - 12..cut];
+        let opened = written.iter().filter(|&&byte| byte == b'S').count();
+        let closed = written.split(|&byte| byte == b'\n').filter(|line| *line == b"E").count();
+        assert_eq!(opened, closed);
+    }
+
+    #[test]
+    fn depth_first_numbers_reach_into_submenus() {
+        let number = |n| entry_by_number(&WITH_SUBMENU, n).and_then(Entry::item).map(|item| item.id);
+        assert_eq!(number(0), Some(1));
+        assert_eq!(entry_by_number(&WITH_SUBMENU, 1).and_then(Entry::item), None);
+        assert_eq!(number(2), Some(7));
+        assert_eq!(number(3), Some(8));
+        assert!(entry_by_number(&WITH_SUBMENU, 4).is_none());
+    }
 
     #[test]
     fn a_submenu_opens_beside_its_row_and_to_the_left_without_room() {

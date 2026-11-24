@@ -57,8 +57,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
-    /// The top bar's `MenuChosen` (menu `menu`, entry `entry`, separators counted) as the menu
-    /// bar's choice: [`Response::Invoked`] for an enabled item.
+    /// The top bar's `MenuChosen` (menu `menu`, entry `entry` its depth-first number, separators
+    /// and submenu rows counted) as the menu bar's choice: [`Response::Invoked`] for an enabled
+    /// item.
     pub fn menu_chosen(&mut self, menu: usize, entry: usize) -> Response {
         let Some(id) = self.menu_bar() else {
             return Response::Nothing;
@@ -69,7 +70,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         if menu >= bar.count || !self.is_enabled(id) {
             return Response::Nothing;
         }
-        match bar.menus[menu].get(entry).and_then(Entry::item) {
+        match menu::entry_by_number(bar.menus[menu], entry).and_then(Entry::item) {
             Some(item) if item.enabled => {
                 self.close_menu();
                 Response::Invoked(id, item.id)

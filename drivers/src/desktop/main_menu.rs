@@ -1,7 +1,9 @@
 //! The app's main menu in the macOS profile's top bar (docs/ux/macos-gui-v0.3.md, section 5;
 //! D147): the menus a client sets for its normal window (`SetMenu`), their titles in the bar
 //! while that window or a dialog of it is focused, and the open menu under a title, chosen by
-//! pointer or keys, which sends the window `MenuChosen`.
+//! pointer or keys, which sends the window `MenuChosen`. Submenus (`S`, `s` and `E` lines,
+//! docs/ux/toolkit-v0.6.md section 2.5, D704) open beside the row they come from, two levels
+//! deep at most, and their entries are numbered depth-first in their title's menu.
 
 use super::paint::Canvas;
 use super::popups::with_shadow;
@@ -34,6 +36,17 @@ const MENU_START: u8 = b'M';
 const ITEM_START: u8 = b'I';
 const DISABLED_ITEM_START: u8 = b'D';
 const SEPARATOR_START: u8 = b'-';
+const SUBMENU_START: u8 = b'S';
+const DISABLED_SUBMENU_START: u8 = b's';
+const SUBMENU_END: u8 = b'E';
+const MAX_SUBMENUS: usize = 24;
+const MAX_PANELS: usize = MAX_MENUS + MAX_SUBMENUS;
+pub(super) const MAX_SUBMENU_DEPTH: usize = 2;
+const NO_SUBMENU: u8 = u8::MAX;
+const ARROW_WIDTH: u32 = 6;
+const ARROW_RIGHT: u32 = 12;
+const ARROW_TOP: u32 = 11;
+const ARROW_COLUMNS: [(u32, u32); 3] = [(0, 10), (2, 6), (4, 2)];
 const ENTRY_END: u8 = b'\n';
 const MARK_COLUMN: u32 = 20;
 const MARK_X: u32 = 12;
@@ -55,13 +68,17 @@ pub(super) enum EntryKind {
     Item,
     DisabledItem,
     Separator,
+    Submenu,
+    DisabledSubmenu,
 }
 
 impl EntryKind {
     fn height(self) -> u32 {
         match self {
             Self::Separator => SEPARATOR_HEIGHT,
-            Self::Item | Self::DisabledItem => MENU_ITEM_HEIGHT,
+            Self::Item | Self::DisabledItem | Self::Submenu | Self::DisabledSubmenu => {
+                MENU_ITEM_HEIGHT
+            }
         }
     }
 }
@@ -93,6 +110,8 @@ struct Entry {
     label: Span,
     key_label: Span,
     mark: EntryMark,
+    submenu: u8,
+    number: u8,
 }
 
 const SEPARATOR: Entry = Entry {
@@ -100,6 +119,8 @@ const SEPARATOR: Entry = Entry {
     label: Span { start: 0, end: 0 },
     key_label: Span { start: 0, end: 0 },
     mark: EntryMark::None,
+    submenu: NO_SUBMENU,
+    number: 0,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -107,28 +128,41 @@ struct Menu {
     title: Span,
     entries: [Entry; MAX_MENU_ENTRIES],
     length: u8,
+    owner: u8,
 }
 
 const NO_MENU: Menu = Menu {
     title: Span { start: 0, end: 0 },
     entries: [SEPARATOR; MAX_MENU_ENTRIES],
     length: 0,
+    owner: 0,
 };
 
-/// A window's main menu as `SetMenu` set it: its pool of labels and the menus and entries
-/// parsed from it, as spans of the pool.
+/// Where the parser adds entries: the menus and submenus open from the title down, and the
+/// next depth-first number in the title's menu.
+struct Parsing {
+    open: [u8; MAX_SUBMENU_DEPTH + 1],
+    depth: usize,
+    number: u8,
+}
+
+/// A window's main menu as `SetMenu` set it: its pool of labels and the menus, submenus and
+/// entries parsed from it, as spans of the pool. Menus `0..menu_count()` are the titles'; a
+/// submenu is a menu of its own after them, which its row names.
 #[derive(Debug, Clone)]
 pub(super) struct MainMenu {
     pool: [u8; MENU_POOL_CAPACITY],
     pool_length: u8,
-    menus: [Menu; MAX_MENUS],
+    menus: [Menu; MAX_PANELS],
     length: u8,
+    submenus: u8,
 }
 
 impl MainMenu {
     /// The main menu `pool` describes (docs/windows.md, `SET_MENU`); `Invalid` for a pool that
     /// is empty, too long, not UTF-8, not made of whole entries, without a menu first, with a
-    /// control character in a label, or with more menus or entries than the limits.
+    /// control character in a label, with more menus, entries, submenus or levels than the
+    /// limits, or with a submenu left open.
     pub fn parse(pool: &[u8]) -> Result<Box<Self>, WindowError> {
         let whole_entries = pool.last() == Some(&ENTRY_END);
         if !whole_entries || pool.len() > MENU_POOL_CAPACITY {
@@ -138,10 +172,16 @@ impl MainMenu {
         let mut parsed = Box::new(Self {
             pool: [0; MENU_POOL_CAPACITY],
             pool_length: pool.len() as u8,
-            menus: [NO_MENU; MAX_MENUS],
+            menus: [NO_MENU; MAX_PANELS],
             length: 0,
+            submenus: 0,
         });
         parsed.pool[..pool.len()].copy_from_slice(pool);
+        let mut parsing = Parsing {
+            open: [0; MAX_SUBMENU_DEPTH + 1],
+            depth: 0,
+            number: 0,
+        };
         let mut start = 0;
         while start < pool.len() {
             let end = pool[start..]
@@ -149,13 +189,21 @@ impl MainMenu {
                 .position(|&byte| byte == ENTRY_END)
                 .map(|at| start + at)
                 .ok_or(WindowError::Invalid)?;
-            parsed.add_entry(start, end)?;
+            parsed.add_entry(start, end, &mut parsing)?;
             start = end + 1;
+        }
+        if parsing.depth != 0 {
+            return Err(WindowError::Invalid);
         }
         Ok(parsed)
     }
 
-    fn add_entry(&mut self, start: usize, end: usize) -> Result<(), WindowError> {
+    fn add_entry(
+        &mut self,
+        start: usize,
+        end: usize,
+        parsing: &mut Parsing,
+    ) -> Result<(), WindowError> {
         if start >= end {
             return Err(WindowError::Invalid);
         }
@@ -164,13 +212,55 @@ impl MainMenu {
             MENU_START => {
                 let title = self.label_span(text, end)?;
                 let index = usize::from(self.length);
-                if index == MAX_MENUS {
+                if index == MAX_MENUS || parsing.depth != 0 {
                     return Err(WindowError::Invalid);
                 }
                 self.menus[index].title = title;
+                self.menus[index].owner = index as u8;
                 self.length += 1;
+                parsing.open[0] = index as u8;
+                parsing.number = 0;
                 Ok(())
             }
+            kind @ (SUBMENU_START | DISABLED_SUBMENU_START) => {
+                let label = self.label_span(text, end)?;
+                let index = MAX_MENUS + usize::from(self.submenus);
+                if self.length == 0
+                    || parsing.depth == MAX_SUBMENU_DEPTH
+                    || usize::from(self.submenus) == MAX_SUBMENUS
+                {
+                    return Err(WindowError::Invalid);
+                }
+                let kind = match kind {
+                    SUBMENU_START => EntryKind::Submenu,
+                    _ => EntryKind::DisabledSubmenu,
+                };
+                self.push(
+                    parsing,
+                    Entry {
+                        kind,
+                        label,
+                        key_label: Span { start: 0, end: 0 },
+                        mark: EntryMark::None,
+                        submenu: index as u8,
+                        number: 0,
+                    },
+                )?;
+                let owner = parsing.open[0];
+                self.menus[index].title = label;
+                self.menus[index].owner = owner;
+                self.submenus += 1;
+                parsing.depth += 1;
+                parsing.open[parsing.depth] = index as u8;
+                Ok(())
+            }
+            SUBMENU_END if end == text => match parsing.depth {
+                0 => Err(WindowError::Invalid),
+                _ => {
+                    parsing.depth -= 1;
+                    Ok(())
+                }
+            },
             kind @ (ITEM_START | DISABLED_ITEM_START) => {
                 let tab = self.pool[text..end]
                     .iter()
@@ -193,14 +283,19 @@ impl MainMenu {
                     ITEM_START => EntryKind::Item,
                     _ => EntryKind::DisabledItem,
                 };
-                self.push(Entry {
-                    kind,
-                    label,
-                    key_label,
-                    mark,
-                })
+                self.push(
+                    parsing,
+                    Entry {
+                        kind,
+                        label,
+                        key_label,
+                        mark,
+                        submenu: NO_SUBMENU,
+                        number: 0,
+                    },
+                )
             }
-            SEPARATOR_START if end == text => self.push(SEPARATOR),
+            SEPARATOR_START if end == text => self.push(parsing, SEPARATOR),
             _ => Err(WindowError::Invalid),
         }
     }
@@ -217,15 +312,21 @@ impl MainMenu {
         })
     }
 
-    fn push(&mut self, entry: Entry) -> Result<(), WindowError> {
-        let menu = usize::from(self.length.checked_sub(1).ok_or(WindowError::Invalid)?);
-        let menu = &mut self.menus[menu];
+    fn push(&mut self, parsing: &mut Parsing, entry: Entry) -> Result<(), WindowError> {
+        if self.length == 0 {
+            return Err(WindowError::Invalid);
+        }
+        let menu = &mut self.menus[usize::from(parsing.open[parsing.depth])];
         let index = usize::from(menu.length);
         if index == MAX_MENU_ENTRIES {
             return Err(WindowError::Invalid);
         }
-        menu.entries[index] = entry;
+        menu.entries[index] = Entry {
+            number: parsing.number,
+            ..entry
+        };
         menu.length += 1;
+        parsing.number = parsing.number.wrapping_add(1);
         Ok(())
     }
 
@@ -296,16 +397,65 @@ impl MainMenu {
         entry < self.entry_count(menu) && self.entry_kind(menu, entry) == EntryKind::Item
     }
 
+    /// The submenu entry `entry` of menu `menu` opens, if it is an enabled submenu row.
+    pub fn submenu(&self, menu: usize, entry: usize) -> Option<usize> {
+        (entry < self.entry_count(menu) && self.entry_kind(menu, entry) == EntryKind::Submenu)
+            .then(|| usize::from(self.entry(menu, entry).submenu))
+    }
+
+    /// Whether the pointer and the keys stop on entry `entry` of menu `menu`: an enabled item
+    /// or submenu row.
+    pub fn is_hoverable(&self, menu: usize, entry: usize) -> bool {
+        self.is_enabled(menu, entry) || self.submenu(menu, entry).is_some()
+    }
+
+    /// Whether menu `menu` holds a submenu row.
+    pub fn has_submenus(&self, menu: usize) -> bool {
+        (0..self.entry_count(menu)).any(|entry| {
+            matches!(
+                self.entry_kind(menu, entry),
+                EntryKind::Submenu | EntryKind::DisabledSubmenu
+            )
+        })
+    }
+
+    /// The title whose menu menu `menu` belongs to: itself for a title's menu.
+    pub fn owner(&self, menu: usize) -> usize {
+        usize::from(self.menus[menu].owner)
+    }
+
+    /// Entry `entry` of menu `menu`'s depth-first number in its title's menu, what `MenuChosen`
+    /// and `CHOOSE_MENU` carry: the entry's index when the menu has no submenu.
+    pub fn number(&self, menu: usize, entry: usize) -> usize {
+        usize::from(self.entry(menu, entry).number)
+    }
+
+    /// The menu and entry whose depth-first number in title `title`'s menu is `number`.
+    pub fn find(&self, title: usize, number: usize) -> Option<(usize, usize)> {
+        let submenus = MAX_MENUS..MAX_MENUS + usize::from(self.submenus);
+        core::iter::once(title)
+            .chain(submenus.filter(|&menu| self.owner(menu) == title))
+            .find_map(|menu| {
+                (0..self.entry_count(menu))
+                    .find(|&entry| self.number(menu, entry) == number)
+                    .map(|entry| (menu, entry))
+            })
+    }
+
     /// Menu `menu`'s width, its border included: room for its widest item's label, a gap and
     /// its key label, rounded up to a glyph, and never narrower than the power menu.
     pub fn width(&self, menu: usize) -> u32 {
+        let arrow_room = match self.has_submenus(menu) {
+            true => ARROW_WIDTH,
+            false => 0,
+        };
         let widest = (0..self.entry_count(menu))
             .filter(|&entry| self.entry_kind(menu, entry) != EntryKind::Separator)
             .map(|entry| {
                 self.text_x(menu)
                     + text_width(self.entry_label(menu, entry))
                     + KEY_LABEL_GAP
-                    + text_width(self.entry_key_label(menu, entry))
+                    + text_width(self.entry_key_label(menu, entry)).max(arrow_room)
                     + KEY_LABEL_RIGHT
             })
             .max()
@@ -342,8 +492,8 @@ impl MainMenu {
         None
     }
 
-    /// The enabled item of menu `menu` after `from` (before it when `back`), wrapping; the
-    /// first (last) when there is no `from`.
+    /// The enabled item or submenu row of menu `menu` after `from` (before it when `back`),
+    /// wrapping; the first (last) when there is no `from`.
     pub fn next_enabled(&self, menu: usize, from: Option<usize>, back: bool) -> Option<usize> {
         let count = self.entry_count(menu);
         if count == 0 {
@@ -360,7 +510,7 @@ impl MainMenu {
                 false => (start + step) % count,
                 true => (start + count - step) % count,
             })
-            .find(|&entry| self.is_enabled(menu, entry))
+            .find(|&entry| self.is_hoverable(menu, entry))
     }
 }
 
@@ -376,13 +526,84 @@ pub(super) struct MenuBar {
     pub inert: bool,
 }
 
-/// The open menu: whose main menu, which of its menus, and the item the pointer or the keys
-/// are on.
+/// A submenu open beside its parent: the row of the parent it came from, and its menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct OpenSubmenu {
+    pub from: u8,
+    pub menu: u8,
+}
+
+/// The open menu: whose main menu, which of its title menus, the submenus open from it (the
+/// first `depth` of `submenus`), and the row the pointer or the keys are on in the deepest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OpenMainMenu {
     pub window: usize,
     pub menu: usize,
     pub hover: Option<usize>,
+    pub submenus: [OpenSubmenu; MAX_SUBMENU_DEPTH],
+    pub depth: u8,
+}
+
+impl OpenMainMenu {
+    fn new(window: usize, menu: usize, hover: Option<usize>) -> Self {
+        Self {
+            window,
+            menu,
+            hover,
+            submenus: [OpenSubmenu::default(); MAX_SUBMENU_DEPTH],
+            depth: 0,
+        }
+    }
+
+    fn levels(&self) -> usize {
+        usize::from(self.depth) + 1
+    }
+
+    /// The menu shown at `level`, 0 being the title's.
+    fn menu_at(&self, level: usize) -> usize {
+        match level {
+            0 => self.menu,
+            _ => usize::from(self.submenus[level - 1].menu),
+        }
+    }
+
+    /// The deepest open menu.
+    fn deepest(&self) -> usize {
+        self.menu_at(usize::from(self.depth))
+    }
+
+    /// The row level `level` is drawn hovered on: the deepest level's hover, or the row the
+    /// next level was opened from.
+    fn hover_at(&self, level: usize) -> Option<usize> {
+        match level == usize::from(self.depth) {
+            true => self.hover,
+            false => Some(usize::from(self.submenus[level].from)),
+        }
+    }
+
+    /// Only the first `levels` levels kept open, the hover on `hover` in the deepest of them.
+    fn cut(self, levels: usize, hover: Option<usize>) -> Self {
+        Self {
+            depth: (levels.max(1) - 1) as u8,
+            hover,
+            ..self
+        }
+    }
+
+    /// The submenu `menu`, opened from row `from` of level `level`, as the deepest level.
+    fn opened(self, level: usize, from: usize, menu: usize, hover: Option<usize>) -> Self {
+        let mut submenus = self.submenus;
+        submenus[level] = OpenSubmenu {
+            from: from as u8,
+            menu: menu as u8,
+        };
+        Self {
+            submenus,
+            depth: (level + 1) as u8,
+            hover,
+            ..self
+        }
+    }
 }
 
 impl Desktop {
@@ -416,12 +637,13 @@ impl Desktop {
             let menu = self.main_menus[slot].as_deref();
             let shown = open.menu < self.shown_menu_titles(slot);
             self.open_main_menu = match menu {
-                Some(menu) if shown => Some(OpenMainMenu {
-                    hover: open
-                        .hover
-                        .filter(|&entry| menu.is_enabled(open.menu, entry)),
-                    ..open
-                }),
+                Some(menu) if shown => Some(OpenMainMenu::new(
+                    open.window,
+                    open.menu,
+                    open.hover
+                        .filter(|_| open.depth == 0)
+                        .filter(|&entry| menu.is_hoverable(open.menu, entry)),
+                )),
                 _ => None,
             };
             self.damage_open_main_menu(damage);
@@ -443,8 +665,9 @@ impl Desktop {
             .map_or(&[][..], MainMenu::pool))
     }
 
-    /// Chooses entry `entry` of menu `menu` of window `window`'s main menu for a command or an
-    /// agent (`CHOOSE_MENU`), as a person's choice in the top bar does: the window's menu closes
+    /// Chooses entry `entry` (its depth-first number, which counts the rows of submenus) of menu
+    /// `menu` of window `window`'s main menu for a command or an agent (`CHOOSE_MENU`), as a
+    /// person's choice in the top bar does: the window's menu closes
     /// if it is open, and the window gets `MenuChosen`. It works on a covered, minimised or
     /// unfocused window, in every profile, and moves neither focus nor the pointer. `label` is
     /// the entry's label as the caller read it (`GET_MENU`): a menu set again since then with
@@ -472,8 +695,9 @@ impl Desktop {
         let (menu, entry) = (menu as usize, entry as usize);
         let enabled = self.main_menus[slot].as_deref().is_some_and(|main| {
             menu < main.menu_count()
-                && main.is_enabled(menu, entry)
-                && main.entry_label(menu, entry).as_bytes() == label
+                && main.find(menu, entry).is_some_and(|(panel, row)| {
+                    main.is_enabled(panel, row) && main.entry_label(panel, row).as_bytes() == label
+                })
         });
         if !enabled || self.has_dialog(self.window_at(slot).client) {
             return Err(WindowError::Invalid);
@@ -502,6 +726,34 @@ impl Desktop {
     pub fn main_menu_area(&self) -> Option<Rect> {
         self.open_main_menu
             .and_then(|open| self.main_menu_rect(open))
+    }
+
+    /// The rectangle of the submenu open at level `level` (1 or 2), while it is.
+    pub fn main_submenu_area(&self, level: usize) -> Option<Rect> {
+        let open = self.open_main_menu?;
+        (level >= 1 && level < open.levels())
+            .then(|| self.level_rect(open, level))
+            .flatten()
+    }
+
+    /// Whether (`x`, `y`) is on the open menu or one of its open submenus.
+    pub(super) fn main_menu_covers(&self, x: u32, y: u32) -> bool {
+        self.open_main_menu.is_some_and(|open| {
+            (0..open.levels()).any(|level| {
+                self.level_rect(open, level)
+                    .is_some_and(|rect| contains(rect, x, y))
+            })
+        })
+    }
+
+    /// Whether the open menu or one of its submenus, their shadows included, overlaps `clip`.
+    pub(super) fn main_menu_overlaps(&self, clip: Rect) -> bool {
+        self.open_main_menu.is_some_and(|open| {
+            (0..open.levels()).any(|level| {
+                self.level_rect(open, level)
+                    .is_some_and(|rect| with_shadow(rect).overlaps(&clip))
+            })
+        })
     }
 
     /// The rectangle of entry `entry` of the open menu, while one is open and has it.
@@ -597,6 +849,35 @@ impl Desktop {
         count
     }
 
+    /// Where level `level` of `open` is drawn: the title's menu under its title, a submenu
+    /// beside the row it came from, its left edge on the parent's right border and its first
+    /// row level with that row, or to the left of the parent when it would pass the screen's
+    /// right margin, and moved up when it would pass the bottom one.
+    fn level_rect(&self, open: OpenMainMenu, level: usize) -> Option<Rect> {
+        if level == 0 {
+            return self.main_menu_rect(open);
+        }
+        let parent = self.level_rect(open, level - 1)?;
+        let menu = self.main_menus[open.window].as_deref()?;
+        let shown = open.menu_at(level);
+        let (width, height) = (menu.width(shown), menu.height(shown));
+        let from = usize::from(open.submenus[level - 1].from);
+        let right_bound = self.width.saturating_sub(SCREEN_MARGIN);
+        let beside = parent.right().saturating_sub(1);
+        let x = match beside + width <= right_bound {
+            true => beside,
+            false => match (parent.x + 1).checked_sub(width) {
+                Some(left) if left >= SCREEN_MARGIN => left,
+                _ => right_bound.saturating_sub(width),
+            },
+        };
+        let row = menu.entry_top(open.menu_at(level - 1), parent, from);
+        let y = row
+            .saturating_sub(1)
+            .min(self.height.saturating_sub(SCREEN_MARGIN + height));
+        Some(Rect::new(x, y, width, height))
+    }
+
     fn main_menu_rect(&self, open: OpenMainMenu) -> Option<Rect> {
         let menu = self.main_menus[open.window].as_deref()?;
         let title = self.menu_title_rect(open.window, open.menu)?;
@@ -628,9 +909,19 @@ impl Desktop {
     }
 
     fn damage_open_main_menu(&self, damage: &mut Damage) {
-        if let Some(rect) = self.main_menu_area() {
-            damage.add(with_shadow(rect));
+        if let Some(open) = self.open_main_menu {
+            for level in 0..open.levels() {
+                if let Some(rect) = self.level_rect(open, level) {
+                    damage.add(with_shadow(rect));
+                }
+            }
         }
+    }
+
+    fn set_open_main_menu(&mut self, open: OpenMainMenu, damage: &mut Damage) {
+        self.damage_open_main_menu(damage);
+        self.open_main_menu = Some(open);
+        self.damage_open_main_menu(damage);
     }
 
     fn forget_menu_title_hover(&mut self) {
@@ -674,11 +965,7 @@ impl Desktop {
         let Some(bar) = self.menu_bar().filter(|bar| !bar.inert) else {
             return;
         };
-        let open = OpenMainMenu {
-            window: bar.window,
-            menu,
-            hover: None,
-        };
+        let open = OpenMainMenu::new(bar.window, menu, None);
         if self
             .open_main_menu
             .is_some_and(|already| already.window == open.window && already.menu == menu)
@@ -709,13 +996,7 @@ impl Desktop {
                 .and_then(|main_menu| main_menu.next_enabled(menu, None, false)),
             false => None,
         };
-        self.damage_open_main_menu(damage);
-        self.open_main_menu = Some(OpenMainMenu {
-            menu,
-            hover,
-            ..open
-        });
-        self.damage_open_main_menu(damage);
+        self.set_open_main_menu(OpenMainMenu::new(open.window, menu, hover), damage);
         self.damage_menu_titles(damage);
     }
 
@@ -730,6 +1011,7 @@ impl Desktop {
 
     fn choose_main_menu_entry(
         &mut self,
+        level: usize,
         entry: usize,
         damage: &mut Damage,
         events: &mut dyn EventSink,
@@ -737,18 +1019,59 @@ impl Desktop {
         let Some(open) = self.open_main_menu else {
             return;
         };
-        let enabled = self.main_menus[open.window]
+        let shown = open.menu_at(level);
+        let number = self.main_menus[open.window]
             .as_deref()
-            .is_some_and(|menu| menu.is_enabled(open.menu, entry));
-        if !enabled {
+            .filter(|menu| menu.is_enabled(shown, entry))
+            .map(|menu| menu.number(shown, entry));
+        let Some(number) = number else {
             return;
-        }
+        };
         self.close_main_menu(damage);
         self.send(
             open.window,
-            EventRecord::new(event::MENU_CHOSEN, 0, open.menu as i32, entry as i32, 0, 0),
+            EventRecord::new(event::MENU_CHOSEN, 0, open.menu as i32, number as i32, 0, 0),
             events,
         );
+    }
+
+    /// Opens the submenu of row `entry` of level `level`, closing any deeper one, the keys'
+    /// hover on its first row when `by_keys`; nothing for a row that opens none.
+    fn open_main_submenu(&mut self, level: usize, entry: usize, by_keys: bool, damage: &mut Damage) {
+        let Some(open) = self.open_main_menu else {
+            return;
+        };
+        let Some(main) = self.main_menus[open.window].as_deref() else {
+            return;
+        };
+        let Some(submenu) = main.submenu(open.menu_at(level), entry) else {
+            return;
+        };
+        if level >= MAX_SUBMENU_DEPTH {
+            return;
+        }
+        let already = usize::from(open.depth) > level
+            && usize::from(open.submenus[level].menu) == submenu
+            && usize::from(open.submenus[level].from) == entry;
+        let hover = by_keys
+            .then(|| main.next_enabled(submenu, None, false))
+            .flatten();
+        let next = match already {
+            true => open.cut(level + 2, hover.or(open.hover_at(level + 1))),
+            false => open.opened(level, entry, submenu, hover),
+        };
+        if Some(next) != self.open_main_menu {
+            self.set_open_main_menu(next, damage);
+        }
+    }
+
+    /// The level and row under (`x`, `y`) in the open menu or its submenus, the deepest first.
+    fn main_menu_row_at(&self, open: OpenMainMenu, x: u32, y: u32) -> Option<(usize, Option<usize>)> {
+        let main = self.main_menus[open.window].as_deref()?;
+        (0..open.levels()).rev().find_map(|level| {
+            let rect = self.level_rect(open, level)?;
+            contains(rect, x, y).then(|| (level, main.entry_at(open.menu_at(level), rect, y)))
+        })
     }
 
     /// Button `code` went down at (`x`, `y`) while a menu may be open: a left press on an item
@@ -766,16 +1089,17 @@ impl Desktop {
         let Some(open) = self.open_main_menu else {
             return false;
         };
-        if let Some(rect) = self.main_menu_rect(open)
-            && contains(rect, x, y)
-        {
-            let entry = self.main_menus[open.window]
-                .as_deref()
-                .and_then(|menu| menu.entry_at(open.menu, rect, y));
+        if let Some((level, entry)) = self.main_menu_row_at(open, x, y) {
             if code == button::LEFT
                 && let Some(entry) = entry
             {
-                self.choose_main_menu_entry(entry, damage, events);
+                let opens = self.main_menus[open.window]
+                    .as_deref()
+                    .and_then(|menu| menu.submenu(open.menu_at(level), entry));
+                match opens {
+                    Some(_) => self.open_main_submenu(level, entry, false, damage),
+                    None => self.choose_main_menu_entry(level, entry, damage, events),
+                }
             }
             return true;
         }
@@ -800,19 +1124,23 @@ impl Desktop {
             self.switch_main_menu(menu, false, damage);
             return;
         }
-        let Some(rect) = self.main_menu_rect(open) else {
+        let Some((level, entry)) = self.main_menu_row_at(open, x, y) else {
             return;
         };
-        if !contains(rect, x, y) {
+        let Some(main) = self.main_menus[open.window].as_deref() else {
+            return;
+        };
+        let shown = open.menu_at(level);
+        let hover = entry.filter(|&entry| main.is_hoverable(shown, entry));
+        if let Some(entry) = hover
+            && main.submenu(shown, entry).is_some()
+        {
+            self.open_main_submenu(level, entry, false, damage);
             return;
         }
-        let hover = self.main_menus[open.window].as_deref().and_then(|menu| {
-            menu.entry_at(open.menu, rect, y)
-                .filter(|&entry| menu.is_enabled(open.menu, entry))
-        });
-        if hover != open.hover {
-            self.open_main_menu = Some(OpenMainMenu { hover, ..open });
-            damage.add(rect);
+        let next = open.cut(level + 1, hover);
+        if next != open {
+            self.set_open_main_menu(next, damage);
         }
     }
 
@@ -832,18 +1160,34 @@ impl Desktop {
         if !pressed {
             return;
         }
+        let deepest = usize::from(open.depth);
+        let opens = open.hover.and_then(|entry| {
+            self.main_menus[open.window]
+                .as_deref()
+                .and_then(|menu| menu.submenu(open.deepest(), entry))
+        });
         match code {
+            key::ESC if deepest > 0 => {
+                let back = open.hover_at(deepest - 1);
+                self.set_open_main_menu(open.cut(deepest, back), damage);
+            }
             key::ESC => self.close_main_menu(damage),
             key::UP | key::DOWN => {
-                let hover = self.main_menus[open.window]
-                    .as_deref()
-                    .and_then(|menu| menu.next_enabled(open.menu, open.hover, code == key::UP));
+                let hover = self.main_menus[open.window].as_deref().and_then(|menu| {
+                    menu.next_enabled(open.deepest(), open.hover, code == key::UP)
+                });
                 if hover != open.hover {
-                    self.open_main_menu = Some(OpenMainMenu { hover, ..open });
-                    if let Some(rect) = self.main_menu_rect(open) {
-                        damage.add(rect);
-                    }
+                    self.set_open_main_menu(OpenMainMenu { hover, ..open }, damage);
                 }
+            }
+            key::RIGHT if opens.is_some() => {
+                if let Some(entry) = open.hover {
+                    self.open_main_submenu(deepest, entry, true, damage);
+                }
+            }
+            key::LEFT if deepest > 0 => {
+                let back = open.hover_at(deepest - 1);
+                self.set_open_main_menu(open.cut(deepest, back), damage);
             }
             key::LEFT | key::RIGHT => {
                 let count = self.shown_menu_titles(open.window);
@@ -855,11 +1199,11 @@ impl Desktop {
                     self.switch_main_menu(next, true, damage);
                 }
             }
-            key::ENTER | key::KEYPAD_ENTER => {
-                if let Some(entry) = open.hover {
-                    self.choose_main_menu_entry(entry, damage, events);
-                }
-            }
+            key::ENTER | key::KEYPAD_ENTER => match (open.hover, opens) {
+                (Some(entry), Some(_)) => self.open_main_submenu(deepest, entry, true, damage),
+                (Some(entry), None) => self.choose_main_menu_entry(deepest, entry, damage, events),
+                (None, _) => {}
+            },
             _ => {}
         }
     }
@@ -902,18 +1246,29 @@ impl Desktop {
         let Some(open) = self.open_main_menu else {
             return;
         };
-        let (Some(menu), Some(rect)) = (
-            self.main_menus[open.window].as_deref(),
-            self.main_menu_rect(open),
-        ) else {
+        let Some(menu) = self.main_menus[open.window].as_deref() else {
             return;
         };
+        for level in 0..open.levels() {
+            if let Some(rect) = self.level_rect(open, level) {
+                Self::draw_main_menu_level(canvas, menu, open.menu_at(level), rect, open.hover_at(level));
+            }
+        }
+    }
+
+    fn draw_main_menu_level(
+        canvas: &mut Canvas<'_>,
+        menu: &MainMenu,
+        shown: usize,
+        rect: Rect,
+        hover: Option<usize>,
+    ) {
         Self::draw_popup_surface(canvas, rect, colour::current().menu);
         let mut top = rect.y + 1;
-        for entry in 0..menu.entry_count(open.menu) {
-            let kind = menu.entry_kind(open.menu, entry);
-            match kind {
-                EntryKind::Separator => canvas.fill(
+        for entry in 0..menu.entry_count(shown) {
+            let kind = menu.entry_kind(shown, entry);
+            if kind == EntryKind::Separator {
+                canvas.fill(
                     Rect::new(
                         rect.x + SEPARATOR_INSET,
                         top + SEPARATOR_LINE_Y,
@@ -921,61 +1276,39 @@ impl Desktop {
                         1,
                     ),
                     colour::current().menu_border,
-                ),
-                EntryKind::Item | EntryKind::DisabledItem => {
-                    if open.hover == Some(entry) {
-                        canvas.fill(
-                            Rect::new(
-                                rect.x + 1,
-                                top + HOVER_INSET,
-                                rect.width - 2,
-                                MENU_ITEM_HEIGHT - 2 * HOVER_INSET,
-                            ),
-                            colour::current().menu_hover,
-                        );
-                    }
-                    let label_colour = match kind {
-                        EntryKind::Item => colour::current().text,
-                        _ => colour::current().text_dim,
-                    };
-                    match menu.entry_mark(open.menu, entry) {
-                        EntryMark::Check(true) => {
-                            for (column, row) in TICK_ROWS.iter().enumerate() {
-                                canvas.fill(
-                                    Rect::new(
-                                        rect.x + MARK_X + column as u32,
-                                        top + TICK_TOP + row,
-                                        1,
-                                        2,
-                                    ),
-                                    label_colour,
-                                );
-                            }
-                        }
-                        EntryMark::Radio(true) => {
-                            let size = DOT_INSETS.len() as u32;
-                            for (row, inset) in DOT_INSETS.iter().enumerate() {
-                                canvas.fill(
-                                    Rect::new(
-                                        rect.x + DOT_OFFSET + inset,
-                                        top + DOT_OFFSET + row as u32,
-                                        size - 2 * inset,
-                                        1,
-                                    ),
-                                    label_colour,
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                    let y = top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
-                    canvas.text(
-                        rect.x + menu.text_x(open.menu),
-                        y,
-                        menu.entry_label(open.menu, entry),
-                        label_colour,
-                    );
-                    let key_label = menu.entry_key_label(open.menu, entry);
+                );
+                top += kind.height();
+                continue;
+            }
+            if hover == Some(entry) {
+                canvas.fill(
+                    Rect::new(
+                        rect.x + 1,
+                        top + HOVER_INSET,
+                        rect.width - 2,
+                        MENU_ITEM_HEIGHT - 2 * HOVER_INSET,
+                    ),
+                    colour::current().menu_hover,
+                );
+            }
+            let label_colour = match kind {
+                EntryKind::Item | EntryKind::Submenu => colour::current().text,
+                _ => colour::current().text_dim,
+            };
+            Self::draw_mark(canvas, menu.entry_mark(shown, entry), rect.x, top, label_colour);
+            let y = top + (MENU_ITEM_HEIGHT - GLYPH_HEIGHT as u32) / 2;
+            canvas.text(
+                rect.x + menu.text_x(shown),
+                y,
+                menu.entry_label(shown, entry),
+                label_colour,
+            );
+            match kind {
+                EntryKind::Submenu | EntryKind::DisabledSubmenu => {
+                    Self::draw_submenu_arrow(canvas, rect.right(), top, label_colour);
+                }
+                _ => {
+                    let key_label = menu.entry_key_label(shown, entry);
                     canvas.text(
                         rect.right()
                             .saturating_sub(KEY_LABEL_RIGHT + text_width(key_label)),
@@ -986,6 +1319,44 @@ impl Desktop {
                 }
             }
             top += kind.height();
+        }
+    }
+
+    fn draw_mark(canvas: &mut Canvas<'_>, mark: EntryMark, x: u32, top: u32, colour: u32) {
+        match mark {
+            EntryMark::Check(true) => {
+                for (column, row) in TICK_ROWS.iter().enumerate() {
+                    canvas.fill(
+                        Rect::new(x + MARK_X + column as u32, top + TICK_TOP + row, 1, 2),
+                        colour,
+                    );
+                }
+            }
+            EntryMark::Radio(true) => {
+                let size = DOT_INSETS.len() as u32;
+                for (row, inset) in DOT_INSETS.iter().enumerate() {
+                    canvas.fill(
+                        Rect::new(
+                            x + DOT_OFFSET + inset,
+                            top + DOT_OFFSET + row as u32,
+                            size - 2 * inset,
+                            1,
+                        ),
+                        colour,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn draw_submenu_arrow(canvas: &mut Canvas<'_>, right: u32, top: u32, colour: u32) {
+        let left = right.saturating_sub(ARROW_RIGHT + ARROW_WIDTH);
+        for (column, (first_row, rows)) in ARROW_COLUMNS.iter().enumerate() {
+            canvas.fill(
+                Rect::new(left + 2 * column as u32, top + ARROW_TOP + first_row, 2, *rows),
+                colour,
+            );
         }
     }
 }

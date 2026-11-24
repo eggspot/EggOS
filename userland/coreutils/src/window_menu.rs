@@ -11,7 +11,9 @@ use eggos_runtime::errno::Errno;
 
 pub const HELP: &[u8] = b"wm menu: lists a window's main menu (the menus a macOS app shows in \
 the top bar): each menu's number and title, then each entry's number, label, key equivalent in \
-parentheses and [disabled]; separators are ---- and count. wm menu --choose chooses an item as a \
+parentheses, [checked] or [selected] for a marked one and [disabled]; separators are ---- and \
+count; a submenu's row ends with > and its entries follow it indented, numbered on from it. wm \
+menu --choose chooses an item as a \
 click on it would: <menu> and <entry> are those numbers, or a title and a label (not \
 case-sensitive; a word of digits is always a number); --label <label> refuses the choice unless \
 the entry is labelled so (for numbers read earlier, when the app may have changed its menu).\n";
@@ -22,14 +24,39 @@ const LABEL_AT: usize = 16;
 const LABEL_CAPACITY: usize = CHOOSE_MENU_SIZE - LABEL_AT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    None,
+    Checked,
+    Unchecked,
+    Selected,
+    Unselected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line<'a> {
     Menu(&'a [u8]),
     Item {
         label: &'a [u8],
         key: &'a [u8],
         enabled: bool,
+        mark: Mark,
     },
     Separator,
+    Submenu {
+        label: &'a [u8],
+        enabled: bool,
+    },
+    End,
+}
+
+fn mark(field: &[u8]) -> Mark {
+    match field {
+        b"c1" => Mark::Checked,
+        b"c0" => Mark::Unchecked,
+        b"r1" => Mark::Selected,
+        b"r0" => Mark::Unselected,
+        _ => Mark::None,
+    }
 }
 
 pub fn lines(pool: &[u8]) -> impl Iterator<Item = Line<'_>> {
@@ -37,16 +64,19 @@ pub fn lines(pool: &[u8]) -> impl Iterator<Item = Line<'_>> {
         .filter_map(|line| match line.split_first()? {
             (&b'M', title) => Some(Line::Menu(title)),
             (&kind @ (b'I' | b'D'), rest) => {
-                let tab = rest
-                    .iter()
-                    .position(|&byte| byte == b'\t')
-                    .unwrap_or(rest.len());
+                let mut fields = rest.splitn(3, |&byte| byte == b'\t');
                 Some(Line::Item {
-                    label: &rest[..tab],
-                    key: rest.get(tab + 1..).unwrap_or(&[]),
+                    label: fields.next().unwrap_or(&[]),
+                    key: fields.next().unwrap_or(&[]),
                     enabled: kind == b'I',
+                    mark: mark(fields.next().unwrap_or(&[])),
                 })
             }
+            (&kind @ (b'S' | b's'), label) => Some(Line::Submenu {
+                label,
+                enabled: kind == b'S',
+            }),
+            (&b'E', _) => Some(Line::End),
             (&b'-', _) => Some(Line::Separator),
             _ => None,
         })
@@ -64,6 +94,7 @@ pub enum Choice<'a> {
     NoEntry,
     Separator,
     Disabled,
+    Submenu,
 }
 
 fn names(word: &[u8], index: usize, text: &[u8]) -> bool {
@@ -86,14 +117,25 @@ pub fn resolve<'a>(pool: &'a [u8], menu_word: &[u8], entry_word: &[u8]) -> Choic
                 }
                 menus += 1;
             }
-            (_, None) => {}
+            (_, None) | (Line::End, Some(_)) => {}
+            (Line::Submenu { label, .. }, Some(_)) => {
+                if names(entry_word, entry, label) {
+                    return Choice::Submenu;
+                }
+                entry += 1;
+            }
             (Line::Separator, Some(_)) => {
                 if names(entry_word, entry, b"----") {
                     return Choice::Separator;
                 }
                 entry += 1;
             }
-            (Line::Item { label, enabled, .. }, Some((menu, title))) => {
+            (
+                Line::Item {
+                    label, enabled, ..
+                },
+                Some((menu, title)),
+            ) => {
                 if names(entry_word, entry, label) {
                     return match enabled {
                         true => Choice::Item {
@@ -122,7 +164,13 @@ fn list<S: System>(output: &mut Output<S>, pool: &[u8]) {
     }
     let mut menus = 0;
     let mut entry = 0;
+    let mut depth = 0usize;
     for line in lines(pool) {
+        let indent = |output: &mut Output<S>| {
+            for _ in 0..=depth {
+                output.write(b"  ");
+            }
+        };
         match line {
             Line::Menu(title) => {
                 output.write(b"menu ");
@@ -131,19 +179,37 @@ fn list<S: System>(output: &mut Output<S>, pool: &[u8]) {
                 output.write(title);
                 menus += 1;
                 entry = 0;
+                depth = 0;
+            }
+            Line::End => {
+                depth = depth.saturating_sub(1);
+                continue;
             }
             Line::Separator => {
-                output.write(b"  ");
+                indent(output);
                 output.write_number(entry, 0);
                 output.write(b" ----");
                 entry += 1;
+            }
+            Line::Submenu { label, enabled } => {
+                indent(output);
+                output.write_number(entry, 0);
+                output.write(b" ");
+                output.write(label);
+                output.write(b" >");
+                if !enabled {
+                    output.write(b" [disabled]");
+                }
+                entry += 1;
+                depth += 1;
             }
             Line::Item {
                 label,
                 key,
                 enabled,
+                mark,
             } => {
-                output.write(b"  ");
+                indent(output);
                 output.write_number(entry, 0);
                 output.write(b" ");
                 output.write(label);
@@ -151,6 +217,11 @@ fn list<S: System>(output: &mut Output<S>, pool: &[u8]) {
                     output.write(b" (");
                     output.write(key);
                     output.write(b")");
+                }
+                match mark {
+                    Mark::Checked => output.write(b" [checked]"),
+                    Mark::Selected => output.write(b" [selected]"),
+                    _ => {}
                 }
                 if !enabled {
                     output.write(b" [disabled]");
@@ -258,6 +329,15 @@ impl Chooser<'_> {
             }
             Choice::Disabled => {
                 output.error(&[window_text, b": entry '", entry_word, b"' is disabled"]);
+                return FAILURE;
+            }
+            Choice::Submenu => {
+                output.error(&[
+                    window_text,
+                    b": entry '",
+                    entry_word,
+                    b"' opens a submenu; choose one of its entries (see wm menu)",
+                ]);
                 return FAILURE;
             }
         };
@@ -556,17 +636,48 @@ MFile\nIClear\tCmd+K\nDUndo\tCmd+Z\nIClose\tCmd+W\n";
                 Line::Item {
                     label: b"One",
                     key: b"Cmd+1",
-                    enabled: true
+                    enabled: true,
+                    mark: Mark::None,
                 },
                 Line::Item {
                     label: b"Two",
                     key: b"",
-                    enabled: false
+                    enabled: false,
+                    mark: Mark::None,
                 },
                 Line::Separator,
             ]
         );
         assert_eq!(resolve(b"", b"0", b"0"), Choice::NoMenu);
         assert_eq!(resolve(b"MA\n", b"-1", b"0"), Choice::NoMenu);
+    }
+
+    #[test]
+    fn a_submenu_s_entries_are_listed_indented_and_numbered_on_from_its_row() {
+        let pool = b"MView\nIWrap\t\tc1\nSZoom\nIIn\t\tr1\nIOut\t\tr0\nE\nIEnd\t\n";
+        let mut fake = machine();
+        fake.menus.insert(129, pool.to_vec());
+        let (status, fake) = run(&[c"menu", c"129"], fake);
+        assert_eq!((status, fake.errors().as_str()), (0, ""));
+        assert_eq!(
+            fake.output(),
+            "menu 0: View\n  0 Wrap [checked]\n  1 Zoom >\n    2 In [selected]\n    3 Out\n  4 End\n"
+        );
+        assert_eq!(
+            resolve(pool, b"View", b"Out"),
+            Choice::Item {
+                menu: 0,
+                entry: 3,
+                title: b"View",
+                label: b"Out"
+            }
+        );
+        assert_eq!(resolve(pool, b"0", b"1"), Choice::Submenu);
+        assert_eq!(resolve(pool, b"0", b"4"), Choice::Item {
+            menu: 0,
+            entry: 4,
+            title: b"View",
+            label: b"End"
+        });
     }
 }

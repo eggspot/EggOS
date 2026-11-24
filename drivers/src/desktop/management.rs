@@ -950,9 +950,7 @@ impl Desktop {
             || self
                 .window_menu_area()
                 .is_some_and(|rect| contains(rect, x, y))
-            || self
-                .main_menu_area()
-                .is_some_and(|rect| contains(rect, x, y))
+            || self.main_menu_covers(x, y)
             || self
                 .launcher_area()
                 .is_some_and(|rect| contains(rect, x, y))

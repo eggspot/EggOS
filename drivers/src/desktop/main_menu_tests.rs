@@ -932,3 +932,77 @@ fn a_third_field_marks_a_check_or_radio_item_and_widens_the_menu() {
     assert!(!plain.has_marks(0));
     assert!(MainMenu::parse(b"MView\nIWrap\t\tx1\n").is_err());
 }
+
+const ZOOM: &[u8] = b"MView\nIWrap\t\nSZoom\nIIn\t\nIOut\t\nE\nIEnd\t\n";
+
+#[test]
+fn a_submenu_opens_beside_its_row_and_its_items_carry_depth_first_numbers() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = with_menu(&mut desktop, CLIENT, ZOOM);
+    click(&mut desktop, 120, 10, &mut events);
+    let menu = desktop.main_menu_area().unwrap();
+    let zoom = desktop.main_menu_entry(1).unwrap();
+    move_to(&mut desktop, zoom.x + 20, zoom.y + 16, &mut events);
+    let submenu = desktop.main_submenu_area(1).unwrap();
+    assert_eq!(submenu.x, menu.right() - 1);
+    assert_eq!(submenu.y, zoom.y - 1);
+    let pixels = painted(&desktop);
+    assert!(lit(
+        &pixels,
+        Rect::new(menu.right() - 18, zoom.y + 11, 6, 10),
+        colour::TEXT
+    ));
+    click(&mut desktop, submenu.x + 20, submenu.y + 1 + 32 + 16, &mut events);
+    assert_eq!(events.chosen(), [(CLIENT, window, 0, 3)]);
+    assert_eq!(desktop.main_menu_area(), None);
+    events.take();
+    let choose = |desktop: &mut Desktop, entry: u32, label: &[u8], events: &mut Recorded| {
+        desktop.choose_menu(u32::from(window), 0, entry, label, &mut Damage::new(), events)
+    };
+    assert_eq!(choose(&mut desktop, 4, b"End", &mut events), Ok(()));
+    assert_eq!(choose(&mut desktop, 2, b"In", &mut events), Ok(()));
+    assert_eq!(
+        choose(&mut desktop, 1, b"Zoom", &mut events),
+        Err(WindowError::Invalid)
+    );
+    assert_eq!(
+        events.chosen(),
+        [(CLIENT, window, 0, 4), (CLIENT, window, 0, 2)]
+    );
+}
+
+#[test]
+fn keys_open_a_submenu_with_right_and_close_it_with_left() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let mut events = Recorded::default();
+    let window = with_menu(&mut desktop, CLIENT, ZOOM);
+    click(&mut desktop, 120, 10, &mut events);
+    let mut damage = Damage::new();
+    for code in [key::DOWN, key::DOWN, key::RIGHT] {
+        desktop.main_menu_key(code, true, &mut damage, &mut events);
+    }
+    assert!(desktop.main_submenu_area(1).is_some());
+    desktop.main_menu_key(key::LEFT, true, &mut damage, &mut events);
+    assert!(desktop.main_submenu_area(1).is_none());
+    assert!(desktop.main_menu_area().is_some());
+    for code in [key::RIGHT, key::DOWN, key::ENTER] {
+        desktop.main_menu_key(code, true, &mut damage, &mut events);
+    }
+    assert_eq!(events.chosen(), [(CLIENT, window, 0, 3)]);
+}
+
+#[test]
+fn a_pool_with_a_submenu_left_open_or_too_deep_is_refused() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let window = shown(&mut desktop, CLIENT);
+    for pool in [
+        &b"MView\nSZoom\nIIn\t\n"[..],
+        b"MView\nE\n",
+        b"MA\nSb\nSc\nSd\nIx\t\nE\nE\nE\n",
+        b"MA\nSb\nIx\t\nMB\nIy\t\nE\n",
+    ] {
+        assert_eq!(set(&mut desktop, window, pool), Err(WindowError::Invalid));
+    }
+    assert_eq!(set(&mut desktop, window, ZOOM), Ok(()));
+}

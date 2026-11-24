@@ -587,9 +587,7 @@ impl Desktop {
                 .window_menu
                 .filter(|menu| menu.mode == MenuMode::Items)
                 .is_some_and(|menu| with_shadow(self.window_menu_rect(&menu)).overlaps(&clip))
-            || self
-                .main_menu_area()
-                .is_some_and(|rect| with_shadow(rect).overlaps(&clip))
+            || self.main_menu_overlaps(clip)
             || self.launcher_overlaps(clip)
             || self.icon_menu_overlaps(clip)
             || self.notice_overlaps(clip)
