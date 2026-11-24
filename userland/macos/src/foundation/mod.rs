@@ -30,6 +30,8 @@ mod error;
 #[cfg(eggos_user)]
 mod exception;
 #[cfg(eggos_user)]
+pub mod index_set;
+#[cfg(eggos_user)]
 mod keyed_archiver;
 #[cfg(eggos_user)]
 mod keyed_unarchiver;
@@ -62,8 +64,8 @@ pub use runtime::*;
 #[cfg(eggos_user)]
 mod runtime {
     use super::{
-        array, bundle, constants, data, date, dictionary, error, exception, log, notification,
-        number, process_info, set, string, timer,
+        array, bundle, constants, data, date, dictionary, error, exception, index_set, log,
+        notification, number, process_info, set, string, timer,
     };
     use crate::objc::abi::{ClassObject, Id};
     use crate::objc::class::{self, BuiltinClass};
@@ -105,6 +107,8 @@ mod runtime {
         NSSET, NSSET_META;
         NSMUTABLESET, NSMUTABLESET_META;
         NSCOUNTEDSET, NSCOUNTEDSET_META;
+        NSINDEXSET, NSINDEXSET_META;
+        NSMUTABLEINDEXSET, NSMUTABLEINDEXSET_META;
         NSTIMER, NSTIMER_META;
         NSRUNLOOP, NSRUNLOOP_META;
         NSNOTIFICATION, NSNOTIFICATION_META;
@@ -208,6 +212,7 @@ mod runtime {
                 && error::define(runtime)
                 && data::define(runtime)
                 && set::define(runtime)
+                && index_set::define(runtime)
                 && timer::define(runtime)
                 && notification::define(runtime)
                 && super::uuid::define(runtime)
@@ -267,6 +272,10 @@ mod runtime {
             b"_OBJC_METACLASS_$_NSMutableSet" => class(&NSMUTABLESET_META),
             b"_OBJC_CLASS_$_NSCountedSet" => class(&NSCOUNTEDSET),
             b"_OBJC_METACLASS_$_NSCountedSet" => class(&NSCOUNTEDSET_META),
+            b"_OBJC_CLASS_$_NSIndexSet" => class(&NSINDEXSET),
+            b"_OBJC_METACLASS_$_NSIndexSet" => class(&NSINDEXSET_META),
+            b"_OBJC_CLASS_$_NSMutableIndexSet" => class(&NSMUTABLEINDEXSET),
+            b"_OBJC_METACLASS_$_NSMutableIndexSet" => class(&NSMUTABLEINDEXSET_META),
             b"_OBJC_CLASS_$_NSTimer" => class(&NSTIMER),
             b"_OBJC_METACLASS_$_NSTimer" => class(&NSTIMER_META),
             b"_OBJC_CLASS_$_NSRunLoop" => class(&NSRUNLOOP),

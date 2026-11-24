@@ -77,7 +77,6 @@ class_pairs! {
     NSSCROLLER, NSSCROLLER_META;
     NSTABLEVIEW, NSTABLEVIEW_META;
     NSTABLECOLUMN, NSTABLECOLUMN_META;
-    NSINDEXSET, NSINDEXSET_META;
     NSIMAGE, NSIMAGE_META;
     NSIMAGEVIEW, NSIMAGEVIEW_META;
     NSSCREEN, NSSCREEN_META;
@@ -293,8 +292,6 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSTableView" => class(&NSTABLEVIEW_META),
         b"_OBJC_CLASS_$_NSTableColumn" => class(&NSTABLECOLUMN),
         b"_OBJC_METACLASS_$_NSTableColumn" => class(&NSTABLECOLUMN_META),
-        b"_OBJC_CLASS_$_NSIndexSet" => class(&NSINDEXSET),
-        b"_OBJC_METACLASS_$_NSIndexSet" => class(&NSINDEXSET_META),
         b"_OBJC_CLASS_$_NSImage" => class(&NSIMAGE),
         b"_OBJC_METACLASS_$_NSImage" => class(&NSIMAGE_META),
         b"_OBJC_CLASS_$_NSImageView" => class(&NSIMAGEVIEW),

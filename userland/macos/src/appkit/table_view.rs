@@ -1,16 +1,19 @@
-//! NSTableView, NSTableColumn and NSIndexSet (D373, docs/ux/macos-gui-v0.3.md section 11): a
-//! cell-based table with a data source, the document view of a scroll view, drawn as the
-//! toolkit's table: the header kept at the top of the clip view, 24-pixel rows asked of the
-//! data source at every paint, single selection by pointer and keys with the `>` mark and the
-//! focus ring, actions, double actions and the delegate's notifications, alternating rows,
-//! grid lines and column resizing from the header.
+//! NSTableView and NSTableColumn (D373, docs/ux/macos-gui-v0.3.md section 11): a cell-based
+//! table with a data source, the document view of a scroll view, drawn as the toolkit's table:
+//! the header kept at the top of the clip view, 24-pixel rows asked of the data source at every
+//! paint, selection by pointer and keys with the `>` mark and the focus ring, actions, double
+//! actions and the delegate's notifications, alternating rows, grid lines and column resizing
+//! from the header. The selection is an NSMutableIndexSet (D725): with
+//! `allowsMultipleSelection`, Command-click toggles a row, Shift-click and Shift with the
+//! arrow keys extend from the anchor row, and `selectAll:` takes every row.
 
 use super::{
-    NSINDEXSET, NSINDEXSET_META, NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META,
-    NSVIEW, application, drawing, event, responds, scroll_view, store, store_copy, string, view,
-    window, with_text,
+    NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META, NSVIEW, application,
+    drawing, event, responds, scroll_view, store, store_copy, string, view, window, with_text,
 };
-use crate::foundation::{NSARRAY, class_pointer, new_instance, notification_with_name, post};
+use crate::foundation::index_set;
+use crate::foundation::{NSARRAY, class_pointer, notification_with_name, post};
+use crate::objc::buffer::Buffer;
 use crate::objc::abi::{Id, Sel};
 use crate::objc::reference_count::{objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
@@ -51,7 +54,8 @@ const KEY_RETURN: u16 = 0x24;
 const KEY_ENTER: u16 = 0x4c;
 const KEY_ESCAPE: u16 = 0x35;
 const NO_INDEX: isize = -1;
-const NOT_FOUND: usize = isize::MAX as usize;
+const SHIFT_FLAG: u64 = 1 << 17;
+const COMMAND_FLAG: u64 = 1 << 20;
 
 #[derive(Debug, Clone, Copy)]
 struct Resize {
@@ -74,6 +78,9 @@ struct TableFields {
     rows: usize,
     rows_known: bool,
     selected: isize,
+    selection: Id,
+    anchor: isize,
+    multiple: bool,
     clicked_row: isize,
     clicked_column: isize,
     last_press: Option<(usize, u32)>,
@@ -101,13 +108,6 @@ struct ColumnFields {
     table: Id,
 }
 
-#[repr(C)]
-#[derive(Debug)]
-struct IndexSetFields {
-    isa: usize,
-    index: isize,
-}
-
 fn table(object: Id) -> &'static mut TableFields {
     // SAFETY: the callers pass NSTableView instances, whose memory starts with these fields;
     // the program's single event thread is the only one that reaches them.
@@ -117,11 +117,6 @@ fn table(object: Id) -> &'static mut TableFields {
 fn column(object: Id) -> &'static mut ColumnFields {
     // SAFETY: the callers pass NSTableColumn instances, whose memory starts with these fields.
     unsafe { &mut *object.cast::<ColumnFields>() }
-}
-
-fn index_set(object: Id) -> &'static mut IndexSetFields {
-    // SAFETY: the callers pass NSIndexSet instances, whose memory starts with these fields.
-    unsafe { &mut *object.cast::<IndexSetFields>() }
 }
 
 fn columns(this: Id) -> &'static [Id] {
@@ -212,23 +207,66 @@ fn reveal(this: Id, row: usize) {
     }
 }
 
-fn select(this: Id, row: isize, scroll: bool) -> bool {
-    if row == table(this).selected {
-        return true;
+fn copy_of_selection(this: Id) -> Id {
+    let wanted = index_set::new_mutable();
+    if !wanted.is_null() {
+        for &(start, end) in index_set::each_range(table(this).selection) {
+            index_set::insert(wanted, start, end);
+        }
     }
-    if row >= 0 {
-        let delegate = table(this).delegate;
-        let asking = sel!("tableView:shouldSelectRow:");
-        if responds(delegate, asking) {
-            let ask: extern "C" fn(Id, Sel, Id, isize) -> u8 = message::msg_send_as();
-            if ask(delegate, asking, this, row) == 0 {
-                return false;
+    wanted
+}
+
+fn refuse_unwanted(this: Id, wanted: Id) {
+    let delegate = table(this).delegate;
+    let asking = sel!("tableView:shouldSelectRow:");
+    if !responds(delegate, asking) {
+        return;
+    }
+    let ask: extern "C" fn(Id, Sel, Id, isize) -> u8 = message::msg_send_as();
+    let mut ranges: Buffer<(usize, usize)> = Buffer::new();
+    for &range in index_set::each_range(wanted) {
+        ranges.push(range);
+    }
+    let current = table(this).selection;
+    for &(start, end) in ranges.as_slice() {
+        for row in start..end {
+            let new = !index_set::contains(current, row);
+            if new && ask(delegate, asking, this, row as isize) == 0 {
+                index_set::remove(wanted, row, row + 1);
             }
         }
     }
-    table(this).selected = row;
-    if scroll && row >= 0 {
-        reveal(this, row as usize);
+    ranges.free();
+}
+
+fn last_of(set: Id) -> isize {
+    index_set::each_range(set)
+        .last()
+        .map_or(NO_INDEX, |&(_, end)| end as isize - 1)
+}
+
+fn apply(this: Id, wanted: Id, last: isize, scroll: bool) -> bool {
+    if wanted.is_null() {
+        return false;
+    }
+    refuse_unwanted(this, wanted);
+    let landed = last < 0 || index_set::contains(wanted, last as usize);
+    let selected = match landed && last >= 0 {
+        true => last,
+        false => last_of(wanted),
+    };
+    let current = table(this).selection;
+    if index_set::each_range(wanted) == index_set::each_range(current) {
+        objc_release(wanted);
+        table(this).selected = selected;
+        return landed;
+    }
+    table(this).selection = wanted;
+    objc_release(current);
+    table(this).selected = selected;
+    if scroll && selected >= 0 {
+        reveal(this, selected as usize);
     }
     changed(this);
     notify(
@@ -236,7 +274,50 @@ fn select(this: Id, row: isize, scroll: bool) -> bool {
         "NSTableViewSelectionDidChangeNotification",
         sel!("tableViewSelectionDidChange:"),
     );
-    true
+    landed
+}
+
+fn select(this: Id, row: isize, scroll: bool) -> bool {
+    let wanted = index_set::new_mutable();
+    if !wanted.is_null() && row >= 0 {
+        index_set::insert(wanted, row as usize, row as usize + 1);
+    }
+    if row >= 0 {
+        table(this).anchor = row;
+    }
+    apply(this, wanted, row, scroll)
+}
+
+fn extend_to(this: Id, row: usize, scroll: bool) -> bool {
+    let anchor = match table(this).anchor {
+        NO_INDEX => row,
+        anchor => anchor as usize,
+    };
+    let wanted = index_set::new_mutable();
+    if !wanted.is_null() {
+        index_set::insert(wanted, anchor.min(row), anchor.max(row) + 1);
+    }
+    apply(this, wanted, row as isize, scroll)
+}
+
+fn toggle(this: Id, row: usize) -> bool {
+    let wanted = copy_of_selection(this);
+    if wanted.is_null() {
+        return false;
+    }
+    table(this).anchor = row as isize;
+    if index_set::contains(wanted, row) {
+        index_set::remove(wanted, row, row + 1);
+        if index_set::count(wanted) == 0 && table(this).refuses_empty {
+            objc_release(wanted);
+            return false;
+        }
+        let last = last_of(wanted);
+        apply(this, wanted, last, false);
+        return false;
+    }
+    index_set::insert(wanted, row, row + 1);
+    apply(this, wanted, row as isize, true)
 }
 
 fn send_action(this: Id, double: bool) {
@@ -282,6 +363,8 @@ extern "C" fn init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
     view::fields(this).frame = frame;
     let fields = table(this);
     fields.selected = NO_INDEX;
+    fields.selection = index_set::new_mutable();
+    fields.anchor = NO_INDEX;
     fields.clicked_row = NO_INDEX;
     fields.clicked_column = NO_INDEX;
     fields.header = true;
@@ -296,6 +379,8 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     }
     fields.column_count = 0;
     store(&mut fields.background, core::ptr::null_mut());
+    objc_release(fields.selection);
+    fields.selection = core::ptr::null_mut();
     view::dispose(this);
 }
 
@@ -418,9 +503,13 @@ extern "C" fn set_double_action(this: Id, _: Sel, action: usize) {
 extern "C" fn reload_data(this: Id, _: Sel) {
     table(this).rows_known = false;
     let rows = row_count(this);
-    let selected = table(this).selected;
-    if selected >= rows as isize {
-        select(this, NO_INDEX, false);
+    if last_of(table(this).selection) >= rows as isize {
+        let wanted = copy_of_selection(this);
+        if !wanted.is_null() {
+            index_set::remove(wanted, rows, usize::MAX);
+        }
+        let selected = table(this).selected;
+        apply(this, wanted, selected, false);
     }
     if table(this).refuses_empty && table(this).selected < 0 && rows > 0 {
         select(this, 0, true);
@@ -445,21 +534,42 @@ extern "C" fn clicked_column(this: Id, _: Sel) -> isize {
 }
 
 extern "C" fn number_of_selected_rows(this: Id, _: Sel) -> isize {
-    isize::from(table(this).selected >= 0)
+    index_set::count(table(this).selection) as isize
 }
 
-extern "C" fn select_row_indexes(this: Id, _: Sel, indexes: Id, _: u8) {
-    let row = match indexes.is_null() {
-        true => NO_INDEX,
-        false => index_set(indexes).index,
+extern "C" fn select_row_indexes(this: Id, _: Sel, indexes: Id, extending: u8) {
+    let wanted = match extending != 0 {
+        true => copy_of_selection(this),
+        false => index_set::new_mutable(),
     };
-    if row < row_count(this) as isize {
-        select(this, row, true);
+    if wanted.is_null() {
+        return;
     }
+    let rows = row_count(this);
+    let multiple = table(this).multiple;
+    for &(start, end) in index_set::each_range(indexes) {
+        let end = end.min(rows);
+        match multiple {
+            true => index_set::insert(wanted, start, end),
+            false if start < end => {
+                index_set::clear(wanted);
+                index_set::insert(wanted, start, start + 1);
+            }
+            false => {}
+        }
+        if !multiple {
+            break;
+        }
+    }
+    let last = last_of(wanted);
+    if last >= 0 {
+        table(this).anchor = last;
+    }
+    apply(this, wanted, last, true);
 }
 
 extern "C" fn selected_row_indexes(this: Id, _: Sel) -> Id {
-    new_index_set(table(this).selected)
+    crate::foundation::autoreleased(index_set::immutable_copy(table(this).selection))
 }
 
 extern "C" fn deselect_all(this: Id, _: Sel, _: Id) {
@@ -468,14 +578,47 @@ extern "C" fn deselect_all(this: Id, _: Sel, _: Id) {
     }
 }
 
-extern "C" fn deselect_row(this: Id, _: Sel, row: isize) {
-    if row == table(this).selected && !table(this).refuses_empty {
-        select(this, NO_INDEX, false);
+extern "C" fn select_all(this: Id, _: Sel, _: Id) {
+    if !table(this).multiple {
+        return;
     }
+    let wanted = index_set::new_mutable();
+    if !wanted.is_null() {
+        index_set::insert(wanted, 0, row_count(this));
+    }
+    let selected = table(this).selected;
+    apply(this, wanted, selected, false);
+}
+
+extern "C" fn deselect_row(this: Id, _: Sel, row: isize) {
+    if row < 0 || !index_set::contains(table(this).selection, row as usize) {
+        return;
+    }
+    if index_set::count(table(this).selection) == 1 && table(this).refuses_empty {
+        return;
+    }
+    let wanted = copy_of_selection(this);
+    if !wanted.is_null() {
+        index_set::remove(wanted, row as usize, row as usize + 1);
+    }
+    let last = last_of(wanted);
+    apply(this, wanted, last, false);
 }
 
 extern "C" fn is_row_selected(this: Id, _: Sel, row: isize) -> u8 {
-    u8::from(row >= 0 && row == table(this).selected)
+    u8::from(row >= 0 && index_set::contains(table(this).selection, row as usize))
+}
+
+extern "C" fn allows_multiple_selection(this: Id, _: Sel) -> u8 {
+    u8::from(table(this).multiple)
+}
+
+extern "C" fn set_allows_multiple_selection(this: Id, _: Sel, value: u8) {
+    table(this).multiple = value != 0;
+    if value == 0 && index_set::count(table(this).selection) > 1 {
+        let selected = table(this).selected;
+        select(this, selected, false);
+    }
 }
 
 extern "C" fn scroll_row_to_visible(this: Id, _: Sel, row: isize) {
@@ -611,7 +754,13 @@ extern "C" fn mouse_down(this: Id, _: Sel, event: Id) {
         true => None,
         false => Some((row, now)),
     };
-    if !select(this, row as isize, true) {
+    let flags = event::fields(event).flags;
+    let chosen = match (table(this).multiple, flags) {
+        (true, flags) if flags & COMMAND_FLAG != 0 => toggle(this, row),
+        (true, flags) if flags & SHIFT_FLAG != 0 => extend_to(this, row, true),
+        _ => select(this, row as isize, true),
+    };
+    if !chosen {
         return;
     }
     send_action(this, double);
@@ -689,8 +838,12 @@ extern "C" fn key_down(this: Id, _: Sel, event: Id) {
         }
     };
     let visible = (body_height(this) / TABLE_ROW_HEIGHT).max(1) as usize;
+    let extending = table(this).multiple && event::fields(event).flags & SHIFT_FLAG != 0;
     if let Some(row) = geometry::moved(table(this).selected, step, row_count(this), visible) {
-        select(this, row as isize, true);
+        match extending {
+            true => extend_to(this, row, true),
+            false => select(this, row as isize, true),
+        };
     }
 }
 
@@ -738,8 +891,9 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
     let (first, last) =
         geometry::shown_rows(rows, clip_height - geometry::body_top(header), offset);
     let fields = table(this);
-    let (selected, alternating, grid, disabled) = (
+    let (selected, selection, alternating, grid, disabled) = (
         fields.selected,
+        fields.selection,
         fields.alternating,
         fields.grid,
         fields.disabled,
@@ -767,7 +921,8 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
                 width,
                 TABLE_ROW_HEIGHT,
             );
-            let fill = if row as isize == selected {
+            let chosen = index_set::contains(selection, row);
+            let fill = if chosen {
                 colour::SELECTION
             } else if alternating && geometry::is_alternate(row) {
                 colour::MENU
@@ -794,10 +949,10 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
                     );
                 }
             }
-            if row as isize == selected && !disabled {
+            if chosen && !disabled {
                 let at = place(Rect::new(TABLE_MARK_X, rect.y + TEXT_TOP, 8, 16));
                 let _ = canvas.text(at.x, at.y, MARK, colour::ACCENT, 1);
-                if focused {
+                if focused && row as isize == selected {
                     focus_ring(
                         canvas,
                         place(Rect::new(0, rect.y, clip_width, TABLE_ROW_HEIGHT)),
@@ -966,55 +1121,6 @@ extern "C" fn column_set_alignment(this: Id, _: Sel, alignment: usize) {
     column_changed(this);
 }
 
-fn new_index_set(index: isize) -> Id {
-    let object = new_instance(class_pointer(&NSINDEXSET));
-    if !object.is_null() {
-        index_set(object).index = index;
-    }
-    crate::foundation::autoreleased(object)
-}
-
-extern "C" fn index_set_with_index(_: Id, _: Sel, index: usize) -> Id {
-    new_index_set(index as isize)
-}
-
-extern "C" fn index_set_empty(_: Id, _: Sel) -> Id {
-    new_index_set(NO_INDEX)
-}
-
-extern "C" fn index_set_init(this: Id, _: Sel) -> Id {
-    if !this.is_null() {
-        index_set(this).index = NO_INDEX;
-    }
-    this
-}
-
-extern "C" fn index_set_init_with_index(this: Id, _: Sel, index: usize) -> Id {
-    if !this.is_null() {
-        index_set(this).index = index as isize;
-    }
-    this
-}
-
-extern "C" fn index_set_first_index(this: Id, _: Sel) -> usize {
-    match index_set(this).index {
-        NO_INDEX => NOT_FOUND,
-        index => index as usize,
-    }
-}
-
-extern "C" fn index_set_count(this: Id, _: Sel) -> usize {
-    usize::from(index_set(this).index >= 0)
-}
-
-extern "C" fn index_set_contains(this: Id, _: Sel, index: usize) -> u8 {
-    u8::from(index_set(this).index >= 0 && index_set(this).index as usize == index)
-}
-
-extern "C" fn index_set_copy(this: Id, _: Sel, _: usize) -> Id {
-    objc_retain(this)
-}
-
 /// A table as agents see it (D378): its selected row (-1 for none), its rows and whether it
 /// is disabled.
 pub fn summary(this: Id) -> (isize, usize, bool) {
@@ -1175,6 +1281,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "deselectAll:" => deselect_all,
         "deselectRow:" => deselect_row,
         "isRowSelected:" => is_row_selected,
+        "selectAll:" => select_all,
+        "allowsMultipleSelection" => allows_multiple_selection,
+        "setAllowsMultipleSelection:" => set_allows_multiple_selection,
         "scrollRowToVisible:" => scroll_row_to_visible,
         "headerView" => header_view,
         "setHeaderView:" => set_header_view,
@@ -1190,7 +1299,6 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setEnabled:" => set_enabled,
         "allowsEmptySelection" => allows_empty_selection,
         "setAllowsEmptySelection:" => set_allows_empty_selection,
-        "setAllowsMultipleSelection:" => ignore_word,
         "setAllowsColumnReordering:" => ignore_word,
         "setAllowsColumnResizing:" => ignore_word,
         "setColumnAutoresizingStyle:" => ignore_word,
@@ -1235,19 +1343,6 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setEditable:" => ignore_word,
         "setSortDescriptorPrototype:" => ignore_word,
     ];
-    let index_set_methods = methods![
-        "init" => index_set_init,
-        "initWithIndex:" => index_set_init_with_index,
-        "firstIndex" => index_set_first_index,
-        "lastIndex" => index_set_first_index,
-        "count" => index_set_count,
-        "containsIndex:" => index_set_contains,
-        "copyWithZone:" => index_set_copy,
-    ];
-    let index_set_class_methods = methods![
-        "indexSetWithIndex:" => index_set_with_index,
-        "indexSet" => index_set_empty,
-    ];
     super::define(
         runtime,
         b"NSTableView\0",
@@ -1264,13 +1359,5 @@ pub fn define(runtime: &mut Runtime) -> bool {
         core::mem::size_of::<ColumnFields>(),
         &column_methods,
         &[],
-    ) && super::define(
-        runtime,
-        b"NSIndexSet\0",
-        (&NSINDEXSET, &NSINDEXSET_META),
-        &NSOBJECT,
-        core::mem::size_of::<IndexSetFields>(),
-        &index_set_methods,
-        &index_set_class_methods,
     )
 }
