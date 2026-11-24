@@ -321,3 +321,52 @@ pub unsafe fn call_program_nine(address: usize, arguments: [usize; 9]) -> Option
     };
     Some(result)
 }
+
+/// Runs `work(argument)` with the stack pointer at `top`, a 16-byte aligned stack top, and
+/// returns its result on the caller's stack again: the program's main thread runs on a stack
+/// the layer mapped with a guard and an overflow reserve (D713).
+///
+/// # Safety
+/// `top` must be the top of a mapped, writable stack large enough for `work`, which no other
+/// thread uses.
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+pub unsafe extern "C" fn run_on_stack(
+    _top: usize,
+    _work: extern "C" fn(usize) -> usize,
+    _argument: usize,
+) -> usize {
+    core::arch::naked_asm!(
+        "push rbp",
+        "mov rbp, rsp",
+        "mov rsp, rdi",
+        "mov rdi, rdx",
+        "call rsi",
+        "mov rsp, rbp",
+        "pop rbp",
+        "ret",
+    )
+}
+
+/// As the x86_64 one: `x29` keeps the caller's stack pointer across `work`.
+///
+/// # Safety
+/// As above.
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+pub unsafe extern "C" fn run_on_stack(
+    _top: usize,
+    _work: extern "C" fn(usize) -> usize,
+    _argument: usize,
+) -> usize {
+    core::arch::naked_asm!(
+        "stp x29, x30, [sp, #-16]!",
+        "mov x29, sp",
+        "mov sp, x0",
+        "mov x0, x2",
+        "blr x1",
+        "mov sp, x29",
+        "ldp x29, x30, [sp], #16",
+        "ret",
+    )
+}

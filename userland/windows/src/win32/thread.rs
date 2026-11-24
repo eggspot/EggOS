@@ -475,6 +475,17 @@ fn current_stack() -> Option<(usize, crate::fault::ThreadStack)> {
     Some((teb, stack))
 }
 
+/// Maps the program's main thread a stack of `length` bytes as `CreateThread` maps one, its
+/// hard guard page and closed overflow reserve below it (D713): the mapping, the stack's base
+/// (its top) and its limit. `None` without memory.
+pub fn map_main_stack(length: usize) -> Option<(usize, usize, usize)> {
+    let total = length + BELOW_STACK;
+    let mapping = linux::map_anonymous(0, total, PROT_READ | PROT_WRITE, false).ok()?;
+    // SAFETY: the guard page and the reserve are the bottom of the new mapping, unused yet.
+    let _ = unsafe { linux::protect(mapping, BELOW_STACK, PROT_NONE) };
+    Some((mapping, mapping + total, mapping + BELOW_STACK))
+}
+
 /// What a memory fault at `address` is to the calling thread's stack (D346), opening the
 /// stack's reserve, and lowering its TEB's limit to the reserve's bottom, when the stack ran
 /// into it. Called from the fault handler, on the thread's signal stack.

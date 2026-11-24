@@ -111,14 +111,14 @@ use crate::library::{self, Export, Library};
 use crate::ordinals::Winsock;
 use eggos_runtime::errno::Errno;
 
-pub use abi::{call_program, call_program_nine};
+pub use abi::{call_program, call_program_nine, run_on_stack};
 pub use console::set_gui_program;
 pub use crt::set_processor_features;
 pub use exception::{deliver_fault, in_layer as in_layer_code, set_image as set_exception_image};
 pub use heap::{allocate as heap_allocate, free as heap_free, process_heap};
 pub use memory::flip_write_execute_page;
 pub use process::set_process;
-pub use thread::{finish as end_thread, stack_fault_opening_reserve};
+pub use thread::{finish as end_thread, map_main_stack, stack_fault_opening_reserve};
 
 pub type Bool = i32;
 pub const TRUE: Bool = 1;

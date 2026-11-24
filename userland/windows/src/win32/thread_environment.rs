@@ -179,6 +179,8 @@ pub struct Blocks {
     pub heap: usize,
     pub stack_base: usize,
     pub stack_limit: usize,
+    /// The stack mapping's bottom, under its guard and overflow reserve (D713).
+    pub deallocation: usize,
 }
 
 /// Maps and fills the first thread's TEB and the PEB; returns the TEB's address.
@@ -193,6 +195,7 @@ pub fn create(blocks: Blocks) -> Result<usize, Errno> {
     };
     put(teb + teb::STACK_BASE, blocks.stack_base as u64);
     put(teb + teb::STACK_LIMIT, blocks.stack_limit as u64);
+    put(teb + teb::DEALLOCATION_STACK, blocks.deallocation as u64);
     put(teb + teb::SELF, teb as u64);
     put(teb + teb::PROCESS_ID, u64::from(linux::process_id()));
     put(teb + teb::THREAD_ID, u64::from(linux::thread_id()));

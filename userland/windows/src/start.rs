@@ -189,12 +189,14 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let tls = image::thread_local_storage(&pe, image, base as u64).map_err(Failure::Invalid)?;
     let heap = win32::process_heap();
     win32::set_process(startup, base as u64).ok_or(Failure::Memory)?;
-    let stack = stack_top();
+    let (deallocation, stack_base, stack_limit) =
+        win32::map_main_stack(STACK_RESERVE).ok_or(Failure::Memory)?;
     let teb = thread_environment::create(thread_environment::Blocks {
         image_base: base as u64,
         heap,
-        stack_base: stack,
-        stack_limit: stack - STACK_RESERVE,
+        stack_base,
+        stack_limit,
+        deallocation,
     })
     .map_err(|_| Failure::Memory)?;
     if let Some(tls) = tls {
@@ -243,11 +245,17 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     // through it.
     unsafe { linux::set_thread_environment_block(teb) }.map_err(|_| Failure::Memory)?;
     thread_environment::run_tls_callbacks(DLL_PROCESS_ATTACH);
+    // SAFETY: `stack_base` tops the main stack `map_main_stack` mapped for this thread alone.
+    let code = unsafe { win32::run_on_stack(stack_base, run_program, entry) };
+    win32::end_thread(code as u32)
+}
+
+/// Calls the program's entry point, on the main stack the layer mapped (D713).
+extern "C" fn run_program(entry: usize) -> usize {
     // SAFETY: `entry` is the checked entry point inside an executable section of the image,
     // laid out, relocated and bound, and Windows calls it as a function without arguments
     // that returns the exit code.
-    let code = unsafe { win32::call_program(entry, [0; 4]) };
-    win32::end_thread(code as u32)
+    unsafe { win32::call_program(entry, [0; 4]) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -341,11 +349,6 @@ fn layer_code(startup: &Startup) -> (u64, u64) {
     // process's life.
     let bytes = unsafe { core::slice::from_raw_parts(headers as *const u8, count * size) };
     eggos_translation_loader::executable_range(bytes, headers as u64).unwrap_or((0, 0))
-}
-
-fn stack_top() -> usize {
-    let marker = 0u8;
-    (&raw const marker as usize).next_multiple_of(linux::PAGE_SIZE)
 }
 
 fn protect(pe: &Pe<'_>, base: usize, translated: bool) -> Result<(), Failure> {
