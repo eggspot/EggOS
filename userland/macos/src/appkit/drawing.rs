@@ -68,6 +68,20 @@ pub fn begin(buffer: server::Buffer, origin: Point, clip: Rect) {
     });
 }
 
+/// The drawing context as it stands, to put back with [`restore`] (D727's `lockFocus`).
+#[derive(Debug, Clone, Copy)]
+pub struct Saved(Context);
+
+/// Keeps the drawing context as it stands.
+pub fn save() -> Saved {
+    CONTEXT.with(|context| Saved(*context))
+}
+
+/// Puts back a context [`save`] kept.
+pub fn restore(saved: Saved) {
+    CONTEXT.with(|context| *context = saved.0);
+}
+
 /// Ends drawing: primitives draw nothing until the next [`begin`].
 pub fn end() {
     CONTEXT.with(|context| context.buffer = None);

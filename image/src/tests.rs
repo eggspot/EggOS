@@ -442,3 +442,67 @@ fn gif_frames_stop_once_their_declared_areas_pass_the_pixel_cap() {
     let too_big = gif_of_empty_frames(1, 11);
     assert_eq!(decode_animation(&too_big, &hundred), Err(Error::TooLarge));
 }
+
+fn icns_element(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut element = kind.to_vec();
+    element.extend_from_slice(&(data.len() as u32 + 8).to_be_bytes());
+    element.extend_from_slice(data);
+    element
+}
+
+fn fake_png_of_width(width: u32) -> Vec<u8> {
+    let mut data = eggos_png::SIGNATURE.to_vec();
+    data.extend_from_slice(&[0, 0, 0, 13]);
+    data.extend_from_slice(b"IHDR");
+    data.extend_from_slice(&width.to_be_bytes());
+    data.extend_from_slice(&width.to_be_bytes());
+    data
+}
+
+fn icns_of(elements: &[Vec<u8>]) -> Vec<u8> {
+    let body: Vec<u8> = elements.concat();
+    let mut file = b"icns".to_vec();
+    file.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+    file.extend_from_slice(&body);
+    file
+}
+
+#[test]
+fn an_apple_icon_gives_its_widest_png_within_the_limit() {
+    let small = fake_png_of_width(32);
+    let large = fake_png_of_width(512);
+    let huge = fake_png_of_width(1024);
+    let file = icns_of(&[
+        icns_element(b"ic11", &small),
+        icns_element(b"it32", &[1, 2, 3]),
+        icns_element(b"ic09", &large),
+        icns_element(b"ic10", &huge),
+    ]);
+    assert_eq!(sniff(&file), Some(Format::AppleIcon));
+    assert_eq!(crate::icns::largest_png(&file, 512), Ok(&large[..]));
+    assert_eq!(crate::icns::largest_png(&file, 4096), Ok(&huge[..]));
+}
+
+#[test]
+fn an_apple_icon_without_png_images_is_unsupported_and_a_broken_one_corrupt() {
+    let legacy = icns_of(&[icns_element(b"it32", &[0; 16])]);
+    assert_eq!(crate::icns::largest_png(&legacy, 512), Err(Error::Unsupported));
+    let mut broken = icns_of(&[icns_element(b"ic09", &fake_png_of_width(512))]);
+    broken[12..16].copy_from_slice(&1000u32.to_be_bytes());
+    assert_eq!(crate::icns::largest_png(&broken, 512), Err(Error::Corrupt));
+}
+
+#[test]
+fn an_encoded_tiff_decodes_back_to_its_pixels() {
+    let pixels = [RED, 0xff00_ff00, 0xff00_00ff, 0xff12_3456];
+    let file = encode_tiff(2, 2, &pixels, true).unwrap();
+    assert_eq!(sniff(&file), Some(Format::Tiff));
+    let image = decode(&file, &Limits::default()).unwrap();
+    assert_eq!((image.width, image.height), (2, 2));
+    assert_eq!(image.pixels, pixels);
+}
+
+#[test]
+fn encoding_a_tiff_refuses_too_few_pixels() {
+    assert_eq!(encode_tiff(2, 2, &[RED; 3], false), Err(Error::Corrupt));
+}

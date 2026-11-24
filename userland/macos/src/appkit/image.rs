@@ -3,19 +3,21 @@
 //! pixels, found by name in the bundle's resources or read from a file or data, drawn from `drawRect:` unscaled, cropped or scaled by nearest
 //! neighbour with a fraction of its alpha; and a view that shows one image in its frame by
 //! `imageScaling`, `imageAlignment` and `imageFrameStyle`, keeping the scaled pixels until
-//! the image or the drawn size changes.
+//! the image, its pixels or the drawn size change. `lockFocus` points the drawing context at
+//! the image's own pixels until `unlockFocus`, and `TIFFRepresentation` writes them as an
+//! uncompressed TIFF (D727); `.icns` files decode through `eggos-image` too.
 
 use super::{
     NSIMAGE, NSIMAGE_META, NSIMAGEVIEW, NSIMAGEVIEW_META, NSVIEW, drawing, store, store_copy,
     string, view, with_text,
 };
 use crate::foundation::{NSBUNDLE, NSDATA, autoreleased, class_pointer, new_instance};
-use crate::libsystem::Exclusive;
+use crate::libsystem::{Exclusive, heap};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::buffer::Buffer;
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, message, methods, sel, send, send1};
+use crate::objc::{Runtime, message, methods, sel, send, send1, send2};
 use eggos_image::Limits;
 use eggos_macos_gui::geometry::{Frame, Point, Size, pixel_rect, round};
 use eggos_macos_gui::image_view::{self as geometry, faded, fits, frame_style, premultiplied};
@@ -27,6 +29,7 @@ const EXTENSIONS: [&str; 10] = [
 ];
 const LONGEST_PATH: usize = 1024;
 const COMPOSITE_COPY: usize = 1;
+const OPAQUE: u32 = 0xff00_0000;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -37,6 +40,7 @@ struct ImageFields {
     height: u32,
     name: Id,
     file_name: Id,
+    generation: u32,
 }
 
 #[repr(C)]
@@ -50,9 +54,19 @@ struct ImageViewFields {
     cached: Buffer<u32>,
     cached_for: Id,
     cached_size: (i32, i32),
+    cached_generation: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Focus {
+    image: Id,
+    saved: drawing::Saved,
+    before: *mut u32,
+    count: usize,
 }
 
 static NAMED: Exclusive<Buffer<(Id, Id)>> = Exclusive::new(Buffer::new());
+static FOCUSED: Exclusive<Buffer<Focus>> = Exclusive::new(Buffer::new());
 
 fn image(object: Id) -> &'static mut ImageFields {
     // SAFETY: the callers pass NSImage instances, whose memory starts with these fields; the
@@ -184,6 +198,72 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     store(&mut fields.name, core::ptr::null_mut());
     store(&mut fields.file_name, core::ptr::null_mut());
     dispose(this);
+}
+
+extern "C" fn lock_focus(this: Id, _: Sel) {
+    let fields = image(this);
+    let count = fields.pixels.len();
+    let before = match count {
+        0 => core::ptr::null_mut(),
+        _ => heap::allocate(count * core::mem::size_of::<u32>(), false).cast::<u32>(),
+    };
+    if !before.is_null() {
+        // SAFETY: `before` was just allocated for `count` pixels, apart from the image's.
+        unsafe { core::ptr::copy_nonoverlapping(fields.pixels.as_slice().as_ptr(), before, count) };
+    }
+    let saved = drawing::save();
+    objc_retain(this);
+    FOCUSED.with(|stack| {
+        stack.push(Focus {
+            image: this,
+            saved,
+            before,
+            count,
+        })
+    });
+    let buffer = super::server::Buffer {
+        window: 0,
+        width: fields.width,
+        height: fields.height,
+        pixels: fields.pixels.as_slice().as_ptr() as usize,
+    };
+    let clip = Rect::new(0, 0, fields.width as i32, fields.height as i32);
+    drawing::begin(buffer, Point::new(0.0, 0.0), clip);
+}
+
+extern "C" fn unlock_focus(_: Id, _: Sel) {
+    let Some(focus) = FOCUSED.with(|stack| stack.pop()) else {
+        return;
+    };
+    drawing::restore(focus.saved);
+    let fields = image(focus.image);
+    if !focus.before.is_null() {
+        let pixels = fields.pixels.as_mut_slice();
+        for (at, pixel) in pixels.iter_mut().enumerate().take(focus.count) {
+            // SAFETY: `before` holds the `count` pixels `lockFocus` copied.
+            let old = unsafe { focus.before.add(at).read() };
+            if *pixel != old && *pixel & OPAQUE == 0 {
+                *pixel |= OPAQUE;
+            }
+        }
+        heap::release(focus.before.cast());
+    }
+    fields.generation = fields.generation.wrapping_add(1);
+    objc_release(focus.image);
+}
+
+extern "C" fn tiff_representation(this: Id, _: Sel) -> Id {
+    let fields = image(this);
+    let pixels = fields.pixels.as_slice();
+    let Ok(bytes) = eggos_image::encode_tiff(fields.width, fields.height, pixels, true) else {
+        return core::ptr::null_mut();
+    };
+    send2(
+        class_pointer(&NSDATA).cast(),
+        sel!("dataWithBytes:length:"),
+        bytes.as_ptr() as usize,
+        bytes.len(),
+    )
 }
 
 fn same_text(first: Id, second: Id) -> bool {
@@ -481,7 +561,11 @@ extern "C" fn ignore_word(_: Id, _: Sel, _: usize) {}
 
 fn cached_pixels(this: Id, size: (i32, i32)) -> bool {
     let fields = image_view(this);
-    if fields.cached_for == fields.image && fields.cached_size == size && fields.cached.len() > 0 {
+    let generation = image(fields.image).generation;
+    let fresh = fields.cached_for == fields.image
+        && fields.cached_size == size
+        && fields.cached_generation == generation;
+    if fresh && fields.cached.len() > 0 {
         return true;
     }
     let source = image(fields.image);
@@ -497,6 +581,7 @@ fn cached_pixels(this: Id, size: (i32, i32)) -> bool {
     }
     fields.cached_for = fields.image;
     fields.cached_size = size;
+    fields.cached_generation = generation;
     true
 }
 
@@ -566,6 +651,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "drawAtPoint:fromRect:operation:fraction:" => draw_at_point,
         "drawInRect:fromRect:operation:fraction:" => draw_in_rect_from,
         "drawInRect:" => draw_in_rect,
+        "lockFocus" => lock_focus,
+        "unlockFocus" => unlock_focus,
+        "TIFFRepresentation" => tiff_representation,
         "setTemplate:" => ignore_word,
     ];
     let image_class_methods = methods![
