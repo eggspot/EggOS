@@ -38,7 +38,7 @@ use eggos_runtime::errno::Errno;
 use eggos_toolkit::damage::Damage;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::{Input, Modifiers, MouseButton, key};
-use eggos_toolkit::menu::{Entry, Menu, MenuKey};
+use eggos_toolkit::menu::{ContextMenu, Entry, Menu, MenuKey};
 use eggos_toolkit::panel::{Panel, PanelResponse};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::PointerShape;
@@ -381,7 +381,7 @@ pub struct FilesWindow {
     path_field: Field,
     path_before: Text<255>,
     rename: Option<Rename>,
-    menu: Option<(Menu, MenuOn)>,
+    menu: Option<(ContextMenu, MenuOn)>,
     panel: Option<(Panel, Asked)>,
     notice: Option<Notice>,
     clipboard: Option<Clip>,
@@ -1303,6 +1303,7 @@ impl FilesWindow {
             } => {
                 let chosen = menu.key(code);
                 self.damage.add(rect);
+                self.damage.add(menu.rect());
                 match chosen {
                     MenuKey::Chosen(id) => {
                         self.menu = None;
@@ -1317,10 +1318,11 @@ impl FilesWindow {
             Input::PointerMove { x, y } => {
                 if menu.hover(x, y) {
                     self.damage.add(rect);
+                    self.damage.add(menu.rect());
                 }
-                rect.contains(x, y)
+                menu.contains(x, y)
             }
-            Input::Button { x, y, pressed, .. } if rect.contains(x, y) => {
+            Input::Button { x, y, pressed, .. } if menu.contains(x, y) => {
                 if pressed && let Some(id) = menu.id_at(x, y) {
                     self.menu = None;
                     self.damage.add(rect);
@@ -1946,7 +1948,7 @@ impl FilesWindow {
     fn open_menu(&mut self, on: MenuOn, x: i32, y: i32) {
         let mut entries = [Entry::Separator; eggos_toolkit::menu::MAX_ENTRIES];
         let count = self.menu_entries(on, &mut entries);
-        let menu = Menu::new(&entries[..count], x, y, self.content());
+        let menu = ContextMenu::new(Menu::new(&entries[..count], x, y, self.content()), self.content());
         self.damage.add(menu.rect());
         self.menu = Some((menu, on));
     }

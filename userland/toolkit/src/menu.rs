@@ -673,6 +673,141 @@ impl Stack {
     }
 }
 
+/// A program's own context menu with its submenus (Files, the Text Editor; docs/ux/toolkit-v0.6.md
+/// section 2.1, D706): a [`Stack`] driven as a single [`Menu`] is, by `hover`, `leave`, `key`,
+/// `id_at` and `paint`. Pointing at a submenu's row opens it; Right or Enter opens the chosen
+/// one with its first row chosen, Left or Esc closes the innermost.
+#[derive(Debug, Clone, Copy)]
+pub struct ContextMenu {
+    first: Menu,
+    path: [usize; DEPTH - 1],
+    depth: usize,
+    chosen: Option<usize>,
+    bounds: Rect,
+}
+
+impl ContextMenu {
+    /// `first` with no submenu open, its submenus placed inside `bounds`.
+    pub fn new(first: Menu, bounds: Rect) -> Self {
+        Self {
+            chosen: first.chosen(),
+            first,
+            path: [0; DEPTH - 1],
+            depth: 0,
+            bounds,
+        }
+    }
+
+    /// The open levels as they are drawn.
+    pub fn stack(&self) -> Stack {
+        let first = match self.depth {
+            0 => self.first.with_chosen(self.chosen),
+            _ => self.first,
+        };
+        Stack::build(
+            first,
+            &self.path[..self.depth],
+            self.chosen,
+            self.bounds,
+            &|_| None,
+        )
+    }
+
+    /// The smallest rectangle holding every open level, for damage.
+    pub fn rect(&self) -> Rect {
+        let stack = self.stack();
+        (1..=stack.depth())
+            .filter_map(|level| stack.level(level))
+            .fold(self.first.rect(), |area, menu| area.union(&menu.rect()))
+    }
+
+    /// Whether (`x`, `y`) is on one of its open levels.
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        self.stack().level_at(x, y).is_some()
+    }
+
+    /// The rectangle of entry `index` of the first level.
+    pub fn entry_rect(&self, index: usize) -> Rect {
+        self.first.entry_rect(index)
+    }
+
+    /// The id of the enabled item at (`x`, `y`), on any open level.
+    pub fn id_at(&self, x: i32, y: i32) -> Option<u8> {
+        let stack = self.stack();
+        let level = stack.level_at(x, y)?;
+        stack.level(level)?.id_at(x, y)
+    }
+
+    /// The pointer is at (`x`, `y`): the row under it is chosen, a submenu's row opens its
+    /// submenu, and the levels below the pointed one close; whether anything changed.
+    pub fn hover(&mut self, x: i32, y: i32) -> bool {
+        let stack = self.stack();
+        let Some(level) = stack.level_at(x, y) else {
+            return false;
+        };
+        let Some(menu) = stack.level(level).copied() else {
+            return false;
+        };
+        let row = menu.item_at(x, y);
+        let before = (self.path, self.depth, self.chosen);
+        match row {
+            Some(row) if menu.submenu(row).is_some() && level < DEPTH - 1 => {
+                if !(self.depth > level && self.path[level] == row) {
+                    self.path[level] = row;
+                    self.depth = level + 1;
+                    self.chosen = None;
+                }
+            }
+            _ => {
+                self.depth = level;
+                self.chosen = row;
+            }
+        }
+        before != (self.path, self.depth, self.chosen)
+    }
+
+    /// The pointer left: nothing is chosen on the first level; open submenus stay.
+    pub fn leave(&mut self) -> bool {
+        self.depth == 0 && self.chosen.take().is_some()
+    }
+
+    /// Key `code` was pressed.
+    pub fn key(&mut self, code: u16) -> MenuKey {
+        let stack = self.stack();
+        let innermost = *stack.innermost();
+        let opens = self
+            .chosen
+            .filter(|&row| innermost.submenu(row).is_some() && self.depth < DEPTH - 1);
+        match code {
+            key::ESC | key::LEFT if self.depth > 0 => {
+                self.depth -= 1;
+                self.chosen = Some(self.path[self.depth]);
+                MenuKey::Nothing
+            }
+            key::LEFT => MenuKey::Nothing,
+            key::RIGHT | key::ENTER if opens.is_some() => {
+                let row = opens.unwrap_or(0);
+                self.path[self.depth] = row;
+                self.depth += 1;
+                self.chosen = self.stack().innermost().first_enabled();
+                MenuKey::Nothing
+            }
+            key::RIGHT => MenuKey::Nothing,
+            _ => {
+                let mut menu = innermost.with_chosen(self.chosen);
+                let answer = menu.key(code);
+                self.chosen = menu.chosen();
+                answer
+            }
+        }
+    }
+
+    /// Draws every open level.
+    pub fn paint(&self, canvas: &mut Canvas<'_>) {
+        self.stack().paint(canvas);
+    }
+}
+
 fn paint_tick(canvas: &mut Canvas<'_>, menu_x: i32, row_y: i32, ink: u32) {
     let (x, y) = (menu_x + MARK_X, row_y + TICK_TOP);
     for (column, row) in TICK_ROWS.iter().enumerate() {
@@ -1275,6 +1410,28 @@ mod tests {
         assert_eq!(number(2), Some(7));
         assert_eq!(number(3), Some(8));
         assert!(entry_by_number(&WITH_SUBMENU, 4).is_none());
+    }
+
+    #[test]
+    fn a_context_menu_opens_a_submenu_by_pointing_and_by_keys() {
+        let bounds = Rect::new(0, 0, 720, 480);
+        let mut menu = ContextMenu::new(Menu::new(&WITH_SUBMENU, 10, 10, bounds), bounds);
+        let zoom = menu.entry_rect(1);
+        assert!(menu.hover(zoom.x + 4, zoom.y + 4));
+        assert_eq!(menu.stack().depth(), 1);
+        let inner = menu.stack().innermost().rect();
+        assert!(menu.contains(inner.x + 4, inner.y + 20));
+        assert_eq!(menu.id_at(inner.x + 4, inner.y + 1 + 32 + 16), Some(8));
+        assert_eq!(menu.key(key::LEFT), MenuKey::Nothing);
+        assert_eq!(menu.stack().depth(), 0);
+        assert_eq!(menu.key(key::RIGHT), MenuKey::Nothing);
+        assert_eq!(menu.stack().depth(), 1);
+        assert_eq!(menu.key(key::DOWN), MenuKey::Nothing);
+        assert_eq!(menu.key(key::ENTER), MenuKey::Chosen(8));
+        let mut plain = ContextMenu::new(Menu::new(&ZOOM, 10, 10, bounds), bounds);
+        assert_eq!(plain.key(key::DOWN), MenuKey::Nothing);
+        assert_eq!(plain.key(key::ENTER), MenuKey::Chosen(7));
+        assert_eq!(plain.key(key::ESC), MenuKey::Closed);
     }
 
     #[test]

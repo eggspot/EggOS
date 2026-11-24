@@ -25,7 +25,7 @@ use eggos_runtime::errno::Errno;
 use eggos_toolkit::damage::Damage;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::{Input, Modifiers, MouseButton, key};
-use eggos_toolkit::menu::{Entry, Menu, MenuKey};
+use eggos_toolkit::menu::{ContextMenu, Entry, Menu, MenuKey};
 use eggos_toolkit::panel::{Panel, PanelResponse};
 use eggos_toolkit::text::Text;
 use eggos_toolkit::tree::PointerShape;
@@ -260,7 +260,7 @@ pub struct EditorWindow<'a> {
     pending: Option<Then>,
     file_to_open: Path,
     panel: Option<(Panel, Asked)>,
-    menu: Option<Menu>,
+    menu: Option<ContextMenu>,
     notice: Option<Notice>,
     hover: Option<Part>,
     pressed: Option<Part>,
@@ -1436,13 +1436,13 @@ impl<'a> EditorWindow<'a> {
             Input::Key { .. } => true,
             Input::PointerMove { x, y } => {
                 let changed = menu.hover(x, y);
-                let inside = menu.rect().contains(x, y);
+                let inside = menu.contains(x, y);
                 if changed {
                     self.damage_all();
                 }
                 inside
             }
-            Input::Button { x, y, pressed, .. } if menu.rect().contains(x, y) => {
+            Input::Button { x, y, pressed, .. } if menu.contains(x, y) => {
                 if !pressed && let Some(id) = menu.id_at(x, y) {
                     self.menu = None;
                     self.chosen(id);
@@ -1511,13 +1511,16 @@ impl<'a> EditorWindow<'a> {
                 id: item::SYNTAX_COLOURS,
             },
         ];
-        self.menu = Some(Menu::new(&entries, x, y, self.content()));
+        self.menu = Some(ContextMenu::new(
+            Menu::new(&entries, x, y, self.content()),
+            self.content(),
+        ));
         self.damage_all();
     }
 
     /// The rectangle of the context menu shown, if one is.
     pub fn menu_rect(&self) -> Option<Rect> {
-        self.menu.as_ref().map(Menu::rect)
+        self.menu.as_ref().map(ContextMenu::rect)
     }
 
     /// The rectangle of entry `index` of the context menu shown.
