@@ -233,7 +233,7 @@ and is not listed per item.
 - [x] Layered windows: `UpdateLayeredWindowIndirect` with `prcDirty`, `AlphaBlend` writing alpha, child layered windows (D366, D369; D721)
 - [ ] Foundation: an index for NSSet and NSCountedSet and the `nsdictionary_lookup` benchmark (D359; NSSet's own table predates it (D175), NSCountedSet on it code written, unbuilt: D722; left: the `nsdictionary_lookup` benchmark, which waits on the macOS benchmark images like the macOS benchmark item)
 - [x] Foundation: binary property lists written (NSKeyedArchiver's default), `$classes` hierarchy, NSError for damaged archives, secure coding's allowed classes, `decodeBytesForKey:returnedLength:` (D360, D365; D723, D724)
-- [ ] AppKit: view-based NSTableView, multiple selection with a full NSIndexSet, sorting, per-row heights, row hover through `mouseMoved:` (D373; multiple selection and the full NSIndexSet code written, unbuilt: D725; left: view-based tables, sorting, per-row heights, row hover)
+- [ ] AppKit: view-based NSTableView, multiple selection with a full NSIndexSet, sorting, per-row heights, row hover through `mouseMoved:` (D373; multiple selection and the full NSIndexSet code written, unbuilt: D725; row hover: D726; left: view-based tables, sorting, per-row heights, designed by Claude Fable in docs/ux/macos-tables-v0.4.md)
 - [ ] AppKit: NSImage decoding JPEG, GIF, TIFF, BMP, `.ico` and `.icns` through `eggos-image`, system images, `lockFocus`, `TIFFRepresentation`, `CGImage` (D374)
 - [ ] NSUserDefaults: suites, global and argument domains, `NSUserDefaultsDidChangeNotification`, `URLForKey:` (D381)
 - [ ] NSTrackingArea: cursor updates, enter/exit while dragging, `trackingArea`/`userData` on events; several screens in NSScreen (D382)

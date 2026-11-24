@@ -5,11 +5,13 @@
 //! actions and the delegate's notifications, alternating rows, grid lines and column resizing
 //! from the header. The selection is an NSMutableIndexSet (D725): with
 //! `allowsMultipleSelection`, Command-click toggles a row, Shift-click and Shift with the
-//! arrow keys extend from the anchor row, and `selectAll:` takes every row.
+//! arrow keys extend from the anchor row, and `selectAll:` takes every row. The row under the
+//! pointer takes the hover fill (D726), through a tracking area the table keeps on itself.
 
 use super::{
-    NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META, NSVIEW, application,
-    drawing, event, responds, scroll_view, store, store_copy, string, view, window, with_text,
+    NSTABLECOLUMN, NSTABLECOLUMN_META, NSTABLEVIEW, NSTABLEVIEW_META, NSTRACKINGAREA, NSVIEW,
+    application, drawing, event, responds, scroll_view, store, store_copy, string, view, window,
+    with_text,
 };
 use crate::foundation::index_set;
 use crate::foundation::{NSARRAY, class_pointer, notification_with_name, post};
@@ -56,6 +58,10 @@ const KEY_ESCAPE: u16 = 0x35;
 const NO_INDEX: isize = -1;
 const SHIFT_FLAG: u64 = 1 << 17;
 const COMMAND_FLAG: u64 = 1 << 20;
+const TRACK_ENTERED_AND_EXITED: usize = 0x01;
+const TRACK_MOUSE_MOVED: usize = 0x02;
+const TRACK_ACTIVE_ALWAYS: usize = 0x80;
+const TRACK_IN_VISIBLE_RECT: usize = 0x200;
 
 #[derive(Debug, Clone, Copy)]
 struct Resize {
@@ -81,6 +87,8 @@ struct TableFields {
     selection: Id,
     anchor: isize,
     multiple: bool,
+    hover: isize,
+    tracking: Id,
     clicked_row: isize,
     clicked_column: isize,
     last_press: Option<(usize, u32)>,
@@ -365,6 +373,7 @@ extern "C" fn init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
     fields.selected = NO_INDEX;
     fields.selection = index_set::new_mutable();
     fields.anchor = NO_INDEX;
+    fields.hover = NO_INDEX;
     fields.clicked_row = NO_INDEX;
     fields.clicked_column = NO_INDEX;
     fields.header = true;
@@ -381,6 +390,8 @@ extern "C" fn dealloc(this: Id, _: Sel) {
     store(&mut fields.background, core::ptr::null_mut());
     objc_release(fields.selection);
     fields.selection = core::ptr::null_mut();
+    objc_release(fields.tracking);
+    fields.tracking = core::ptr::null_mut();
     view::dispose(this);
 }
 
@@ -503,6 +514,9 @@ extern "C" fn set_double_action(this: Id, _: Sel, action: usize) {
 extern "C" fn reload_data(this: Id, _: Sel) {
     table(this).rows_known = false;
     let rows = row_count(this);
+    if table(this).hover >= rows as isize {
+        table(this).hover = NO_INDEX;
+    }
     if last_of(table(this).selection) >= rows as isize {
         let wanted = copy_of_selection(this);
         if !wanted.is_null() {
@@ -766,6 +780,59 @@ extern "C" fn mouse_down(this: Id, _: Sel, event: Id) {
     send_action(this, double);
 }
 
+fn set_hover(this: Id, row: isize) {
+    if table(this).hover != row {
+        table(this).hover = row;
+        changed(this);
+    }
+}
+
+extern "C" fn mouse_moved(this: Id, _: Sel, event: Id) {
+    if table(this).disabled || table(this).resize.is_some() {
+        set_hover(this, NO_INDEX);
+        return;
+    }
+    let (_, y) = local_pixel(this, event);
+    let ((_, offset), _) = clip_of(this);
+    let header = table(this).header;
+    let clip_y = y - offset;
+    let row = match header && clip_y < TABLE_HEADER_HEIGHT {
+        true => None,
+        false => geometry::row_at(clip_y, header, offset, row_count(this)),
+    };
+    set_hover(this, row.map_or(NO_INDEX, |row| row as isize));
+}
+
+extern "C" fn mouse_exited(this: Id, _: Sel, _: Id) {
+    set_hover(this, NO_INDEX);
+}
+
+fn track_hover(this: Id) {
+    if !table(this).tracking.is_null() || view::fields(this).window.is_null() {
+        return;
+    }
+    let allocated = send(class_pointer(&NSTRACKINGAREA).cast(), sel!("alloc"));
+    if allocated.is_null() {
+        return;
+    }
+    let make: extern "C" fn(Id, Sel, Frame, usize, Id, Id) -> Id = message::msg_send_as();
+    let options =
+        TRACK_ENTERED_AND_EXITED | TRACK_MOUSE_MOVED | TRACK_ACTIVE_ALWAYS | TRACK_IN_VISIBLE_RECT;
+    let area = make(
+        allocated,
+        sel!("initWithRect:options:owner:userInfo:"),
+        Frame::default(),
+        options,
+        this,
+        core::ptr::null_mut(),
+    );
+    if area.is_null() {
+        return;
+    }
+    send1(this, sel!("addTrackingArea:"), area as usize);
+    table(this).tracking = area;
+}
+
 extern "C" fn mouse_dragged(this: Id, _: Sel, event: Id) {
     let Some(resize) = table(this).resize else {
         return;
@@ -891,9 +958,10 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
     let (first, last) =
         geometry::shown_rows(rows, clip_height - geometry::body_top(header), offset);
     let fields = table(this);
-    let (selected, selection, alternating, grid, disabled) = (
+    let (selected, selection, hover, alternating, grid, disabled) = (
         fields.selected,
         fields.selection,
+        fields.hover,
         fields.alternating,
         fields.grid,
         fields.disabled,
@@ -924,6 +992,8 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
             let chosen = index_set::contains(selection, row);
             let fill = if chosen {
                 colour::SELECTION
+            } else if row as isize == hover && !disabled {
+                colour::MENU_HOVER
             } else if alternating && geometry::is_alternate(row) {
                 colour::MENU
             } else {
@@ -1009,6 +1079,7 @@ extern "C" fn draw_rect(this: Id, _: Sel, _: Frame) {
 }
 
 extern "C" fn view_did_move_to_window(this: Id, _: Sel) {
+    track_hover(this);
     fit_frame(this);
 }
 
@@ -1281,6 +1352,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "deselectAll:" => deselect_all,
         "deselectRow:" => deselect_row,
         "isRowSelected:" => is_row_selected,
+        "mouseMoved:" => mouse_moved,
+        "mouseExited:" => mouse_exited,
         "selectAll:" => select_all,
         "allowsMultipleSelection" => allows_multiple_selection,
         "setAllowsMultipleSelection:" => set_allows_multiple_selection,
