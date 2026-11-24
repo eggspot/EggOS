@@ -13,7 +13,8 @@ use super::super::user32::{create_child, now_ms};
 use super::super::{call_program, file, thread_environment, window_text};
 use super::{
     Model, NotifyHeader, allocate, code, default_procedure, image_list, invalidate, item_element,
-    notify_parent, notify_parent_keeping, read_state, utf8, with_state,
+    LABEL_EDIT_TIMER, notify_parent, notify_parent_keeping, read_state, start_label_timer,
+    stop_label_timer, utf8, with_state,
 };
 use crate::gui::message;
 use crate::gui::windows::{self, CommonKind, ControlKind, Window};
@@ -282,7 +283,14 @@ struct ListState {
     last_down: Option<(u32, i32, i32, usize)>,
     drag: Option<Drag>,
     editing: Option<(usize, usize)>,
+    label_click: Option<LabelClick>,
     tips: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LabelClick {
+    index: usize,
+    due: bool,
 }
 
 impl Model for ListState {
@@ -298,6 +306,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         last_down: None,
         drag: None,
         editing: None,
+        label_click: None,
         tips: 0,
     })
 }
@@ -976,6 +985,8 @@ fn bar_down(window: usize, vertical: bool, part: Part, along: i32) {
 }
 
 fn button_down(window: usize, keys: usize, (x, y): (i32, i32), double_message: bool) {
+    let had_focus = has_focus_in(window);
+    cancel_label_click(window);
     set_focus(window);
     let (ctrl, shift) = (keys & MK_CONTROL != 0, keys & MK_SHIFT != 0);
     let now = now_ms();
@@ -1000,11 +1011,32 @@ fn button_down(window: usize, keys: usize, (x, y): (i32, i32), double_message: b
             _ => None,
         };
         let full_row = control.list.extended & extended::FULL_ROW_SELECT != 0 || !layout.report;
-        (hit, double, full_row)
+        let slow_label = match hit {
+            ListHit::Cell {
+                index,
+                column: 0,
+                part: CellPart::Text,
+            } => {
+                let current = state::SELECTED | state::FOCUSED;
+                (had_focus
+                    && !double
+                    && !ctrl
+                    && !shift
+                    && entry.style & LVS_EDITLABELS != 0
+                    && control.list.state(index) & current == current)
+                    .then_some(index)
+            }
+            _ => None,
+        };
+        control.label_click = slow_label.map(|index| LabelClick { index, due: false });
+        (hit, double, full_row, slow_label.is_some())
     });
-    let Some((hit, double, full_row)) = found else {
+    let Some((hit, double, full_row, slow_label)) = found else {
         return;
     };
+    if slow_label {
+        start_label_timer(window, DOUBLE_CLICK_MS);
+    }
     match hit {
         ListHit::Vertical(part) => bar_down(window, true, part, y),
         ListHit::Horizontal(part) => bar_down(window, false, part, x),
@@ -1061,11 +1093,25 @@ fn empty_down(window: usize, column: Option<usize>, ctrl: bool, shift: bool) {
 
 fn button_up(window: usize, keys: usize, (x, y): (i32, i32)) {
     let taken = with_state::<ListState, _>(window, |_, control| {
-        (control.pressed.take(), control.drag.take())
+        let due = match control.label_click {
+            Some(LabelClick { index, due: true }) => {
+                control.label_click = None;
+                Some(index)
+            }
+            _ => None,
+        };
+        (control.pressed.take(), control.drag.take(), due)
     });
-    let Some((pressed, drag)) = taken else {
+    let Some((pressed, drag, due)) = taken else {
         return;
     };
+    if let Some(index) = due {
+        if pressed.is_some() || drag.is_some() {
+            release_capture();
+        }
+        begin_label_edit(window, index);
+        return;
+    }
     if pressed.is_some() || drag.is_some() {
         release_capture();
     }
@@ -2304,7 +2350,21 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
             0
         }
         message::SET_FOCUS | message::KILL_FOCUS => {
+            if number == message::KILL_FOCUS {
+                cancel_label_click(window);
+            }
             focus_changed(window, number == message::SET_FOCUS);
+            0
+        }
+        message::TIMER if wparam == LABEL_EDIT_TIMER => {
+            label_timer_fired(window);
+            0
+        }
+        message::COMMAND
+            if (wparam >> 16) & 0xffff == super::super::controls::code::EN_CHANGE
+                && is_label_editor(lparam) =>
+        {
+            fit_label_editor(window, lparam);
             0
         }
         message::LEFT_BUTTON_DOWN | message::LEFT_BUTTON_DOUBLE_CLICK => {
@@ -2425,6 +2485,62 @@ fn begin_label_edit(window: usize, index: usize) -> usize {
         usize::MAX,
     );
     editor
+}
+
+fn cancel_label_click(window: usize) {
+    let armed = with_state::<ListState, _>(window, |_, control| control.label_click.take())
+        .flatten()
+        .is_some();
+    if armed {
+        stop_label_timer(window);
+    }
+}
+
+fn label_timer_fired(window: usize) {
+    stop_label_timer(window);
+    let start = with_state::<ListState, _>(window, |_, control| {
+        let click = control.label_click?;
+        let current = state::SELECTED | state::FOCUSED;
+        if control.list.state(click.index) & current != current {
+            control.label_click = None;
+            return None;
+        }
+        if control.pressed.is_some() || control.drag.is_some() {
+            control.label_click = Some(LabelClick { due: true, ..click });
+            return None;
+        }
+        control.label_click = None;
+        Some(click.index)
+    })
+    .flatten();
+    if let Some(index) = start {
+        begin_label_edit(window, index);
+    }
+}
+
+fn fit_label_editor(window: usize, editor: usize) {
+    let mut text = [0u16; LABEL_UNITS + 1];
+    let length = gui::send(
+        editor,
+        message::GET_TEXT,
+        text.len(),
+        text.as_mut_ptr() as usize,
+    )
+    .min(LABEL_UNITS);
+    let limits = with_state::<ListState, _>(window, |entry, control| {
+        let layout = layout_of(entry, &control.list);
+        let (_, width, _) = control.list.column_span(&layout, 0);
+        (width.max(CELL_WIDTH * 4), entry.width as i32)
+    });
+    let bounds = with(|gui| gui.windows.get(editor).map(|entry| entry.bounds)).flatten();
+    let (Some((minimum, client_width)), Some(bounds)) = (limits, bounds) else {
+        return;
+    };
+    let width = super::label_editor_width(&text[..length], minimum, client_width - bounds.left);
+    if width != bounds.width() {
+        let _ = super::super::placement::place(editor, None, Some((width, bounds.height())));
+        invalidate(window);
+    }
 }
 
 fn end_label_edit(window: usize, accept: bool) {

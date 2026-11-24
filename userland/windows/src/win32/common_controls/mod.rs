@@ -259,6 +259,37 @@ pub fn notify_parent_keeping<T>(
     (answer, Some(data))
 }
 
+/// The timer a slow second click on a list or tree view's selected label sets; the label edit
+/// starts when it fires without a double click in between.
+pub const LABEL_EDIT_TIMER: usize = 0xffff_0229;
+
+/// Arms `window`'s [`LABEL_EDIT_TIMER`] to fire once after `interval_ms`.
+pub fn start_label_timer(window: usize, interval_ms: u32) {
+    with(|gui| {
+        let thread = gui.windows.get(window)?.thread;
+        let now = super::user32::now_ms();
+        gui.timers
+            .set(window, LABEL_EDIT_TIMER, interval_ms, 0, thread, now)
+    });
+    gui::wake();
+}
+
+/// Stops `window`'s [`LABEL_EDIT_TIMER`].
+pub fn stop_label_timer(window: usize) {
+    with(|gui| {
+        let thread = gui.windows.get(window).map_or(0, |entry| entry.thread);
+        gui.timers.kill(window, LABEL_EDIT_TIMER, thread)
+    });
+}
+
+/// The width, in pixels, a label editor needs to show `text` with room for the caret: at least
+/// `minimum`, at most `room`.
+pub fn label_editor_width(text: &[u16], minimum: i32, room: i32) -> i32 {
+    let cells = eggos_windows_gui::controls::common::plain_width_cells(text) + 2;
+    let wanted = (cells as i32).saturating_mul(eggos_windows_gui::text::CELL_WIDTH);
+    wanted.max(minimum).min(room.max(minimum))
+}
+
 /// `WM_COMMAND` from `window` to its parent with `command` in its low word, as a toolbar's
 /// button click sends it.
 pub fn command_parent(window: usize, command: usize) {

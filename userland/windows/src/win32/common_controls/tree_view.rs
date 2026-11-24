@@ -13,7 +13,8 @@ use super::super::{call_program, window_text};
 use super::list_view::{self, text_at, write_rect};
 use super::{
     Model, NotifyHeader, allocate, code, default_procedure, image_list, invalidate, item_element,
-    notify_parent, read_state, utf8, with_state,
+    LABEL_EDIT_TIMER, notify_parent, read_state, start_label_timer, stop_label_timer, utf8,
+    with_state,
 };
 use crate::gui::message;
 use crate::gui::windows::{self, CommonKind, ControlKind, Window};
@@ -224,6 +225,7 @@ struct TreeState {
     last_down: Option<(u32, i32, i32, usize)>,
     drag: Option<Drag>,
     editing: Option<(usize, usize)>,
+    label_click: Option<usize>,
     tips: usize,
     children_asked: alloc::vec::Vec<usize>,
 }
@@ -240,6 +242,7 @@ pub(super) fn new_state(_style: u32) -> Option<usize> {
         last_down: None,
         drag: None,
         editing: None,
+        label_click: None,
         tips: 0,
         children_asked: alloc::vec::Vec::new(),
     })
@@ -738,6 +741,8 @@ fn bar_down(window: usize, vertical: bool, part: Part, along: i32) {
 }
 
 fn button_down(window: usize, (x, y): (i32, i32), double_message: bool) {
+    let had_focus = with(|gui| has_focus(gui, window)).unwrap_or(false);
+    cancel_label_click(window);
     set_focus(window);
     let now = now_ms();
     let found = with_state::<TreeState, _>(window, |entry, control| {
@@ -763,11 +768,31 @@ fn button_down(window: usize, (x, y): (i32, i32), double_message: bool) {
             (false, Some(index)) => Some((now, x, y, index)),
             _ => None,
         };
-        (hit, double, entry.style & style::FULL_ROW_SELECT != 0)
+        let slow_label = match hit {
+            TreeHit::Item {
+                index,
+                part: TreePart::Label,
+            } => (had_focus
+                && !double
+                && entry.style & TVS_EDITLABELS != 0
+                && control.tree.selected() == Some(index))
+            .then_some(index),
+            _ => None,
+        };
+        control.label_click = slow_label;
+        (
+            hit,
+            double,
+            entry.style & style::FULL_ROW_SELECT != 0,
+            slow_label.is_some(),
+        )
     });
-    let Some((hit, double, full_row)) = found else {
+    let Some((hit, double, full_row, slow_label)) = found else {
         return;
     };
+    if slow_label {
+        start_label_timer(window, DOUBLE_CLICK_MS);
+    }
     match hit {
         TreeHit::Vertical(part) => bar_down(window, true, part, y),
         TreeHit::Horizontal(part) => bar_down(window, false, part, x),
@@ -1924,7 +1949,21 @@ pub(super) fn procedure(window: usize, number: u32, wparam: usize, lparam: usize
             0
         }
         message::SET_FOCUS | message::KILL_FOCUS => {
+            if number == message::KILL_FOCUS {
+                cancel_label_click(window);
+            }
             focus_changed(window, number == message::SET_FOCUS);
+            0
+        }
+        message::TIMER if wparam == LABEL_EDIT_TIMER => {
+            label_timer_fired(window);
+            0
+        }
+        message::COMMAND
+            if (wparam >> 16) & 0xffff == super::super::controls::code::EN_CHANGE
+                && is_label_editor(lparam) =>
+        {
+            fit_label_editor(window, lparam);
             0
         }
         message::LEFT_BUTTON_DOWN | message::LEFT_BUTTON_DOUBLE_CLICK => {
@@ -2011,6 +2050,56 @@ fn label_item(control: &TreeState, index: usize, text: usize) -> LabelItem {
         selected_image: 0,
         children: 0,
         lparam: control.tree.lparam(index),
+    }
+}
+
+fn cancel_label_click(window: usize) {
+    let armed = with_state::<TreeState, _>(window, |_, control| control.label_click.take())
+        .flatten()
+        .is_some();
+    if armed {
+        stop_label_timer(window);
+    }
+}
+
+fn label_timer_fired(window: usize) {
+    stop_label_timer(window);
+    let start = with_state::<TreeState, _>(window, |_, control| {
+        let index = control.label_click.take()?;
+        (control.tree.selected() == Some(index) && control.drag.is_none()).then_some(index)
+    })
+    .flatten();
+    if let Some(index) = start {
+        begin_label_edit(window, index);
+    }
+}
+
+fn fit_label_editor(window: usize, editor: usize) {
+    let mut text = [0u16; LABEL_UNITS + 1];
+    let length = gui::send(
+        editor,
+        message::GET_TEXT,
+        text.len(),
+        text.as_mut_ptr() as usize,
+    )
+    .min(LABEL_UNITS);
+    let limits = with_state::<TreeState, _>(window, |entry, control| {
+        let (_, index) = control.editing?;
+        let place = control.tree.visible_index(index)?;
+        let layout = layout_of(entry, &control.tree);
+        let geometry = control.tree.geometry(&layout, entry.style, index, place);
+        let minimum = geometry.room.max(eggos_windows_gui::text::CELL_WIDTH * 8);
+        Some((minimum, entry.width as i32))
+    })
+    .flatten();
+    let bounds = with(|gui| gui.windows.get(editor).map(|entry| entry.bounds)).flatten();
+    let (Some((minimum, client_width)), Some(bounds)) = (limits, bounds) else {
+        return;
+    };
+    let width = super::label_editor_width(&text[..length], minimum, client_width - bounds.left);
+    if width != bounds.width() {
+        let _ = super::super::placement::place(editor, None, Some((width, bounds.height())));
+        invalidate(window);
     }
 }
 
