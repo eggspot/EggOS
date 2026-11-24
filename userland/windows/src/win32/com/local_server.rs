@@ -490,7 +490,8 @@ pub(super) fn close_connection(fd: usize) {
     }
 }
 
-fn link_of(fd: usize) -> *mut Link {
+/// The link of connection `fd`, made on first use; null when it is gone or without memory.
+pub(super) fn link_of(fd: usize) -> *mut Link {
     let known = CONNECTIONS.with(|connections| {
         let connection = connections.iter().find(|connection| connection.fd == fd)?;
         Some(connection.link)
@@ -603,6 +604,11 @@ pub(super) fn serve_request(fd: usize, body: &[u8]) -> Option<Vec<u8>> {
         }
         Request::Advise { object, sink } => advise(fd, object, &sink),
         Request::Unadvise { object, cookie } => unadvise(fd, object, cookie),
+        Request::Call {
+            object,
+            slot,
+            arguments,
+        } => super::universal::serve_call(fd, object, slot, &arguments),
     })
 }
 

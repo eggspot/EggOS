@@ -6,12 +6,15 @@
 //! functions (`FUNCDESC`), names, implemented types and documentation, maps names to member
 //! ids, creates a coclass's objects, and `Invoke`s a member through the object's vtable as
 //! `IDispatch` does for a dual interface. `DispGetIDsOfNames`, `DispInvoke` and
-//! `CreateStdDispatch` build on it. Variables, type comparers, DLL entries and arguments of
-//! floating-point kinds passed by value (which travel in vector registers) are not served.
+//! `CreateStdDispatch` build on it. A registered interface's methods give the shapes the
+//! universal proxy of a custom interface carries (D746). Variables, type comparers, DLL
+//! entries and arguments of floating-point kinds passed by value (which travel in vector
+//! registers) are not served.
 
 use super::super::icon;
 use super::super::registry;
 use super::super::resource::{self, Name};
+use super::universal::{self, ParameterShape, Shapes};
 use crate::com::conversion;
 use crate::com::guid::{self, Guid};
 use crate::com::type_library::{self, Function, Library as Parsed, TypeDesc, type_kind};
@@ -38,7 +41,10 @@ const VT_VOID: u16 = 24;
 const MEMBER_NIL: i32 = -1;
 const CLSCTX_SERVER: u32 = 0x15;
 const REGKIND_REGISTER: u32 = 1;
+const PARAMFLAG_FIN: u32 = 0x1;
+const PARAMFLAG_FOUT: u32 = 0x2;
 const PARAMFLAG_FLCID: u32 = 0x4;
+const MOST_BASES: usize = 16;
 const PARAMFLAG_FRETVAL: u32 = 0x8;
 const PARAMFLAG_FOPT: u32 = 0x10;
 const MOST_ARGUMENTS: usize = 8;
@@ -1534,3 +1540,90 @@ pub(super) unsafe extern "efiapi" fn standard_invoke(
     }
 }
 
+
+fn parameter_shape(
+    parsed: &Parsed<'_>,
+    parameter: &type_library::Parameter,
+) -> Option<ParameterShape> {
+    if let Some(base) = pointee_kind(parsed, &parameter.desc) {
+        let out = parameter.flags & (PARAMFLAG_FOUT | PARAMFLAG_FRETVAL) != 0;
+        return Some(ParameterShape {
+            passing: crate::com::wire::passing::PLACE,
+            kind: base,
+            out_only: out && parameter.flags & PARAMFLAG_FIN == 0,
+        });
+    }
+    if parameter.desc == TypeDesc::Base(kind::VARIANT) {
+        return Some(ParameterShape {
+            passing: crate::com::wire::passing::VARIANT,
+            kind: kind::VARIANT,
+            out_only: false,
+        });
+    }
+    Some(ParameterShape {
+        passing: crate::com::wire::passing::WORD,
+        kind: value_kind(parsed, &parameter.desc)?,
+        out_only: false,
+    })
+}
+
+fn method_shape(parsed: &Parsed<'_>, function: &Function) -> Option<Vec<ParameterShape>> {
+    if function.parameters.len() > universal::MOST_PARAMETERS {
+        return None;
+    }
+    function
+        .parameters
+        .iter()
+        .map(|parameter| parameter_shape(parsed, parameter))
+        .collect()
+}
+
+fn version_of(text: &[u16]) -> Option<(u16, u16)> {
+    let text: alloc::string::String = text
+        .iter()
+        .filter_map(|&unit| char::from_u32(unit.into()))
+        .collect();
+    let (major, minor) = text.split_once('.')?;
+    Some((
+        u16::from_str_radix(major, 16).ok()?,
+        u16::from_str_radix(minor, 16).ok()?,
+    ))
+}
+
+/// The shapes of the methods of the custom interface `interface`, from the type library the
+/// registry names for it; `None` when it has none.
+pub(super) fn interface_shapes(interface: &Guid) -> Option<Shapes> {
+    let mut key = alloc::string::String::from(INTERFACE_KEY);
+    key.push_str(&guid_text(interface));
+    key.push_str("\\TypeLib");
+    let library_id = Guid::parse(&registry::string_value(&key, &[])?)?;
+    let version_name: Vec<u16> = "Version".encode_utf16().collect();
+    let version = registry::string_value(&key, &version_name)
+        .and_then(|text| version_of(&text))
+        .unwrap_or((1, 0));
+    let path = registered_path(&library_id, version, 0)?;
+    let bytes = bytes_of_file(&path).ok()?;
+    let parsed = Parsed::parse(&bytes)?;
+    let mut index = parsed.find(&interface.bytes())?;
+    let mut shapes = Shapes {
+        methods: (0..universal::SLOTS).map(|_| None).collect(),
+    };
+    for _ in 0..MOST_BASES {
+        let entry = parsed.type_info(index)?;
+        for at in 0..entry.function_count() {
+            let Some(function) = entry.function(at) else {
+                continue;
+            };
+            let slot = usize::from(function.slot);
+            if slot < 3 || slot >= universal::SLOTS || shapes.methods[slot].is_some() {
+                continue;
+            }
+            shapes.methods[slot] = method_shape(&parsed, &function);
+        }
+        match entry.implemented(0).and_then(|base| parsed.type_of_reference(base)) {
+            Some(base) => index = base,
+            None => break,
+        }
+    }
+    Some(shapes)
+}

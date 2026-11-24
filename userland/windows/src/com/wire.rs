@@ -9,7 +9,8 @@
 //! as an object, one the receiver serves (a proxy handed back) as a peer object, and either
 //! end may send requests while it waits for an answer, which carries the reply flag. Queries
 //! for other interfaces and the connection-point calls `FindConnectionPoint`, `Advise` and
-//! `Unadvise` have requests of their own.
+//! `Unadvise` have requests of their own. A call of a custom interface's vtable slot travels
+//! with each argument's value and how the method takes it (D746).
 
 use super::HResult;
 use alloc::vec::Vec;
@@ -35,6 +36,7 @@ pub mod request {
     pub const FIND_POINT: u8 = 6;
     pub const ADVISE: u8 = 7;
     pub const UNADVISE: u8 = 8;
+    pub const CALL: u8 = 9;
     /// Set in the kind of every answer.
     pub const REPLY: u8 = 0x80;
 }
@@ -121,6 +123,29 @@ pub enum Request {
         object: u32,
         cookie: u32,
     },
+    Call {
+        object: u32,
+        slot: u16,
+        arguments: Vec<Argument>,
+    },
+}
+
+/// How a vtable method takes one argument (D746).
+pub mod passing {
+    /// The value itself in the argument's word.
+    pub const WORD: u8 = 0;
+    /// A pointer to a VARIANT holding it (a `VARIANT` passed by value).
+    pub const VARIANT: u8 = 1;
+    /// A pointer to a place of the kind holding it, whose value comes back after the call.
+    pub const PLACE: u8 = 2;
+}
+
+/// One argument of a vtable call: how it is passed, its kind and its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Argument {
+    pub passing: u8,
+    pub kind: u16,
+    pub value: Value,
 }
 
 /// An argument passed by reference: its index among the arguments and the kind it points at.
@@ -451,6 +476,37 @@ pub fn unadvise(object: u32, cookie: u32) -> Vec<u8> {
     writer.finish()
 }
 
+/// The message calling vtable slot `slot` of object `object` with `arguments`.
+pub fn call(object: u32, slot: u16, arguments: &[Argument]) -> Vec<u8> {
+    let mut writer = Writer::new(request::CALL);
+    writer.u32(object).u16(slot).u16(arguments.len() as u16);
+    for argument in arguments {
+        writer.u8(argument.passing).u16(argument.kind).value(&argument.value);
+    }
+    writer.finish()
+}
+
+/// The answer to `Call`: the method's status and the values its places hold after it.
+pub fn called(status: HResult, changed: &[Value]) -> Vec<u8> {
+    let mut writer = reply(request::CALL);
+    writer.i32(status).u16(changed.len() as u16);
+    for value in changed {
+        writer.value(value);
+    }
+    writer.finish()
+}
+
+/// Reads [`called`]'s answer.
+pub fn read_called(body: &[u8]) -> Option<(HResult, Vec<Value>)> {
+    let mut reader = reading_reply(body, request::CALL)?;
+    let status = reader.i32()?;
+    let total = count(&mut reader)?;
+    let changed = (0..total)
+        .map(|_| reader.value())
+        .collect::<Option<Vec<_>>>()?;
+    reader.ended().then_some((status, changed))
+}
+
 /// Whether the message body `body` is an answer rather than a request.
 pub fn is_reply(body: &[u8]) -> bool {
     body.first().is_some_and(|kind| kind & request::REPLY != 0)
@@ -555,6 +611,28 @@ pub fn read_request(body: &[u8]) -> Option<Request> {
             object: reader.u32()?,
             cookie: reader.u32()?,
         },
+        request::CALL => {
+            let object = reader.u32()?;
+            let slot = reader.u16()?;
+            let total = count(&mut reader)?;
+            let arguments = (0..total)
+                .map(|_| {
+                    let how = reader.u8()?;
+                    let kind = reader.u16()?;
+                    let value = reader.value()?;
+                    (how <= passing::PLACE).then_some(Argument {
+                        passing: how,
+                        kind,
+                        value,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Request::Call {
+                object,
+                slot,
+                arguments,
+            }
+        }
         _ => return None,
     };
     reader.ended().then_some(request)
@@ -802,6 +880,32 @@ mod tests {
         assert_eq!(read_released(&released(1)[4..]), Some(1));
         assert!(is_reply(&created(0, 9)[4..]));
         assert!(!is_reply(&create([0; 16])[4..]));
+    }
+
+    #[test]
+    fn vtable_calls_round_trip() {
+        let arguments = vec![
+            Argument {
+                passing: passing::WORD,
+                kind: 3,
+                value: Value::Plain { kind: 3, word: 7 },
+            },
+            Argument {
+                passing: passing::PLACE,
+                kind: 8,
+                value: Value::Text(None),
+            },
+        ];
+        assert_eq!(
+            read_request(body(&call(2, 9, &arguments))),
+            Some(Request::Call {
+                object: 2,
+                slot: 9,
+                arguments,
+            })
+        );
+        let changed = vec![Value::Text(Some(vec![104, 105]))];
+        assert_eq!(read_called(body(&called(0, &changed))), Some((0, changed)));
     }
 
     #[test]

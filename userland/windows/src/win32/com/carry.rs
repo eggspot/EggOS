@@ -246,6 +246,27 @@ pub(super) fn cell_value(base: u16, cell: &Variant) -> Variant {
     }
 }
 
+/// Writes `value` into the program's place `target` for an `[out]` parameter of kind `base`,
+/// which held nothing to give back (D746).
+///
+/// # Safety
+/// `target` must be the program's writable place of a value of `base`.
+pub(super) unsafe fn write_fresh(target: usize, base: u16, value: Variant) {
+    let size = match base {
+        kind::VARIANT => core::mem::size_of::<Variant>(),
+        kind::DECIMAL => DECIMAL_BYTES,
+        _ if base & kind::ARRAY != 0 => WORD_BYTES,
+        _ => variant::value_size(base).unwrap_or(WORD_BYTES).min(WORD_BYTES),
+    };
+    let source: *const u8 = match base {
+        kind::VARIANT => (&raw const value).cast(),
+        kind::DECIMAL => (&raw const value).cast(),
+        _ => value.data.as_ptr().cast(),
+    };
+    // SAFETY: the caller's duty: `size` writable bytes; the place now owns the value.
+    unsafe { core::ptr::copy_nonoverlapping(source, target as *mut u8, size) };
+}
+
 /// Writes `value` into the program's place `target` that a `VT_BYREF` of base kind `base`
 /// points at, giving back what was there.
 ///

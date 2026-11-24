@@ -21,6 +21,7 @@ mod oleaut32;
 mod picture;
 mod proxy;
 mod type_info;
+mod universal;
 
 pub(super) use local_server::{
     reported as reported_class_sockets, serve_ready as serve_class_requests,

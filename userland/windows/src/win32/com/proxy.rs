@@ -15,6 +15,7 @@
 
 use super::super::{file, processes, registry};
 use super::carry::{self, Objects};
+use super::universal::{self, Shapes};
 use super::{channel, local_server};
 use crate::com::guid::{self, Guid};
 use crate::com::variant::{self, Variant, kind};
@@ -85,6 +86,37 @@ pub(crate) struct Proxy {
     link: *mut Link,
     id: u32,
     interface: Guid,
+    shapes: *mut Shapes,
+}
+
+/// The proxy `this`.
+///
+/// # Safety
+/// `this` must be a live proxy.
+pub(super) unsafe fn view<'a>(this: *mut Proxy) -> &'a Proxy {
+    // SAFETY: the caller's duty.
+    unsafe { proxy(this) }
+}
+
+/// The method shapes of a universal proxy (D746).
+pub(super) fn shapes_of(found: &Proxy) -> Option<&Shapes> {
+    // SAFETY: a universal proxy's shapes live as long as it does; null for others.
+    unsafe { found.shapes.as_ref() }
+}
+
+pub(super) fn link_of(found: &Proxy) -> *mut Link {
+    found.link
+}
+
+pub(super) fn id_of(found: &Proxy) -> u32 {
+    found.id
+}
+
+/// Sends `message` on the proxy's link and waits for the answer, serving the other end
+/// meanwhile.
+pub(super) fn ask_link(found: &Proxy, message: &[u8]) -> Option<Vec<u8>> {
+    // SAFETY: the proxy's live link.
+    ask(unsafe { &*found.link }, message)
 }
 
 fn connect(class: &Guid) -> Option<usize> {
@@ -226,6 +258,7 @@ fn new_proxy_with(
             link,
             id,
             interface,
+            shapes: core::ptr::null_mut(),
         })
     };
     Ok(proxy)
@@ -287,6 +320,7 @@ fn is_proxy_table(table: usize) -> bool {
         super::PROXY.address(),
         super::CONTAINER_PROXY.address(),
         super::POINT_PROXY.address(),
+        universal::table_address(),
     ]
     .contains(&table)
 }
@@ -321,6 +355,11 @@ fn remote_interface(found: &Proxy, wanted: Guid) -> Result<*mut Proxy, HResult> 
         super::POINT_PROXY.address()
     } else if dispatch {
         super::PROXY.address()
+    } else if let Some(shapes) = super::type_info::interface_shapes(&wanted) {
+        let made = new_proxy_with(found.link, id, universal::table_address(), wanted)?;
+        // SAFETY: the proxy just made, which nothing else holds yet.
+        unsafe { (*made).shapes = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(shapes)) };
+        return Ok(made);
     } else {
         let _ = ask(link, &wire::release(id));
         return Err(E_NOINTERFACE);
@@ -339,7 +378,10 @@ pub(super) unsafe extern "efiapi" fn query_interface(
 ) -> HResult {
     // SAFETY: the caller's duty.
     let found = unsafe { proxy(this) };
-    let own = own_interfaces(found.table);
+    let own = match found.table == universal::table_address() {
+        true => [guid::UNKNOWN, found.interface],
+        false => own_interfaces(found.table),
+    };
     // SAFETY: the caller's duty: null or a GUID.
     let wanted = unsafe { Guid::read(interface) };
     let Some(wanted) = wanted.filter(|wanted| !own.contains(wanted)) else {
@@ -386,6 +428,10 @@ pub(super) unsafe extern "efiapi" fn release(this: *mut Proxy) -> u32 {
     let _ = ask(unsafe { &*found.link }, &wire::release(found.id));
     // SAFETY: the proxy's own reference to its link.
     unsafe { drop_link(found.link) };
+    if !found.shapes.is_null() {
+        // SAFETY: made by `Box::into_raw` for this proxy, which is going.
+        drop(unsafe { alloc::boxed::Box::from_raw(found.shapes) });
+    }
     // SAFETY: the proxy's block; no reference is left.
     unsafe { crate::com::free(this.cast()) };
     0
