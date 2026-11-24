@@ -10,6 +10,7 @@
 
 pub mod case_mapping;
 pub mod conformance_layout;
+pub mod descriptor_layout;
 pub mod enum_tag;
 pub mod field_layout;
 pub mod grapheme;
@@ -37,6 +38,8 @@ mod entry;
 mod failures;
 #[cfg(eggos_user)]
 mod generic;
+#[cfg(eggos_user)]
+mod generic_metadata;
 #[cfg(eggos_user)]
 mod heap_object;
 #[cfg(eggos_user)]
@@ -68,9 +71,9 @@ pub use runtime::*;
 #[cfg(eggos_user)]
 mod runtime {
     use super::{
-        cast, characters, class_metadata, conformance, dispatch_overlay, failures, heap_object,
-        metadata, overlays, print, protocols, standard_protocols, storage, string, swift_object,
-        type_lookup, type_name, weak,
+        cast, characters, class_metadata, conformance, dispatch_overlay, failures,
+        generic_metadata, heap_object, metadata, overlays, print, protocols, standard_protocols,
+        storage, string, swift_object, type_lookup, type_name, weak,
     };
     use crate::libsystem::{abort, stdio, write_error};
 
@@ -122,6 +125,7 @@ mod runtime {
             .or_else(|| overlays::resolve(name))
             .or_else(|| dispatch_overlay::resolve(name))
             .or_else(|| class_metadata::resolve(name))
+            .or_else(|| generic_metadata::resolve(name))
     }
 
     fn report(prefix: &[u8], parts: &[&[u8]]) {

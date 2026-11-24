@@ -2,9 +2,11 @@
 //! names by a mangled name (`mangling.rs`), usually through a symbolic reference to a context
 //! descriptor bound to generic arguments: the runtime's own descriptors and the standard
 //! library's substitutions give its own metadata, a program's non-generic type its metadata
-//! accessor's answer. Also `Optional`'s metadata accessor.
+//! accessor's answer, a program's generic type its instance for the arguments (D740). Also
+//! `Optional`'s metadata accessor.
 
 use super::generic;
+use super::generic_metadata;
 use super::mangling::{self, Generic, Item, Resolver, Standard};
 use super::metadata::{self, Metadata, context, relative, word, word32};
 use super::storage;
@@ -115,6 +117,9 @@ impl Resolver for Lookup {
                 if descriptor == metadata::DICTIONARY_STORAGE_DESCRIPTOR.address() =>
             {
                 storage::dictionary_storage(key, value)
+            }
+            (Generic::Descriptor(descriptor), _) => {
+                generic_metadata::instantiate_bound(descriptor, arguments)
             }
             _ => None,
         }

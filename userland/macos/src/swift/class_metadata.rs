@@ -3,9 +3,13 @@
 //! instance size as the layer's Objective-C runtime knows it (an AppKit class of the layer's
 //! is not Apple's size), write the field offsets, the metadata's instance size and alignment
 //! and the class's `class_ro_t` and ivar offsets to match, and realize the class in the
-//! Objective-C runtime; `swift_getInitializedObjCClass` realizes one.
+//! Objective-C runtime; `swift_getInitializedObjCClass` realizes one. Before the layout, a
+//! class gets its superclass, inheritance and vtable from `generic_metadata` (D740), and after
+//! it a class the runtime made (a generic instance, a relocated class) is entered in the
+//! Objective-C runtime.
 
 use super::field_layout::lay_out;
+use super::generic_metadata;
 use super::metadata::{word, word32};
 use crate::objc::abi::{ClassObject, ClassReadOnly};
 use crate::objc::class;
@@ -95,12 +99,14 @@ fn lay_out_class(
 
 extern "C" fn init_class_metadata(
     metadata: usize,
-    _: usize,
+    layout_flags: usize,
     count: usize,
     field_types: *const usize,
     field_offsets: *mut usize,
 ) -> Dependency {
+    generic_metadata::finish_class(metadata, layout_flags);
     lay_out_class(metadata, count, field_types, field_offsets);
+    generic_metadata::register_class(metadata);
     let _ = class::prepare(metadata as *mut ClassObject);
     Dependency {
         metadata: 0,

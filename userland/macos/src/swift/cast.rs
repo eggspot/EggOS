@@ -60,6 +60,13 @@ extern "C" fn get_objc_class_from_metadata(metadata: Metadata) -> usize {
     class_of_metadata(metadata).unwrap_or(0)
 }
 
+extern "C" fn get_objc_class_from_object(object: Id) -> usize {
+    match object.is_null() {
+        true => 0,
+        false => class::class_of(object) as usize,
+    }
+}
+
 /// `swift_getObjectType`: the dynamic type of the object `object`.
 pub extern "C" fn get_object_type(object: Id) -> Metadata {
     get_objc_class_metadata(class::class_of(object) as usize)
@@ -391,6 +398,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         }
         b"_swift_getObjCClassMetadata" => get_objc_class_metadata as *const () as usize,
         b"_swift_getObjCClassFromMetadata" => get_objc_class_from_metadata as *const () as usize,
+        b"_swift_getObjCClassFromObject" => get_objc_class_from_object as *const () as usize,
         b"_swift_getObjectType" => get_object_type as *const () as usize,
         b"_swift_getForeignTypeMetadata" => get_foreign_type_metadata as *const () as usize,
         b"_$ss018_bridgeAnyObjectToB0yypyXlSgF" => {

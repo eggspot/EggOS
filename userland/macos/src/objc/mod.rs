@@ -96,6 +96,89 @@ mod runtime {
 
     static SELECTORS: Exclusive<SelectorTable> = Exclusive::new(SelectorTable::new());
 
+    static STUB_CATEGORIES: Exclusive<Buffer<(usize, usize)>> = Exclusive::new(Buffer::new());
+
+    const LAST_STUB_ISA: usize = 15;
+
+    /// Whether `class` is a Swift resilient class stub rather than a class object: its first
+    /// word is a small marker, and its initializer makes the class (D740).
+    pub fn is_class_stub(class: usize) -> bool {
+        // SAFETY: a class object or class stub pointer the image holds, mapped.
+        let isa = unsafe { (class as *const usize).read() };
+        (1..=LAST_STUB_ISA).contains(&isa)
+    }
+
+    fn attach_category(runtime: &mut Runtime, record: &ClassRecord, category: &Category) {
+        class::attach_list(runtime, record, category.instance_methods);
+        class::attach_list(runtime, record.pair(), category.class_methods);
+    }
+
+    fn attach_stub_categories(stub: usize, class: *mut ClassObject) {
+        let Some(record) = class::record_of(class) else {
+            return;
+        };
+        let mut waiting = Buffer::new();
+        STUB_CATEGORIES.with(|pending| {
+            for &(owner, category) in pending.as_slice() {
+                if owner == stub && !waiting.push(category) {
+                    return;
+                }
+            }
+            pending.retain(|&(owner, _)| owner != stub);
+        });
+        RUNTIME.with(|runtime| {
+            for &category in waiting.as_slice() {
+                // SAFETY: a category of a mapped image's category list.
+                attach_category(runtime, record, unsafe { &*(category as *const Category) });
+            }
+        });
+        waiting.free();
+    }
+
+    /// Enters a Swift class the Swift runtime made or finished at run time (a generic class's
+    /// instance, a class behind a resilient class stub) in the class table under `name`, and
+    /// attaches the categories that waited on `stub` (0 for none); false if there is no
+    /// memory.
+    pub fn register_swift_class(class: *mut ClassObject, name: *const u8, stub: usize) -> bool {
+        if class::record_of(class).is_none() {
+            let entered = RUNTIME.with(|runtime| {
+                class::register_pair(runtime, class, name, 0, b"").is_some()
+            });
+            if !entered {
+                return false;
+            }
+        }
+        if stub != 0 {
+            attach_stub_categories(stub, class);
+        }
+        true
+    }
+
+    type StubInitializer = extern "C" fn(usize, usize) -> usize;
+
+    extern "C" fn objc_load_class_reference(slot: *mut usize) -> usize {
+        // SAFETY: the program's class reference slot, in its writable data.
+        let reference = unsafe { slot.read() };
+        if reference & 1 == 0 {
+            return reference;
+        }
+        let stub = reference & !1;
+        // SAFETY: a resilient class stub: its marker, then the function that makes the class.
+        let initializer = unsafe { ((stub + 8) as *const usize).read() };
+        let initializer = crate::callback::native_callable(initializer);
+        // SAFETY: the stub's initializer, which takes the stub and returns the class.
+        let initializer: StubInitializer = unsafe { core::mem::transmute(initializer) };
+        let class = initializer(stub, 0);
+        // SAFETY: as above.
+        unsafe { slot.write(class) };
+        attach_stub_categories(stub, class as *mut ClassObject);
+        class
+    }
+
+    fn stub_resolve(name: &[u8]) -> Option<u64> {
+        (name == b"_objc_loadClassref").then_some(objc_load_class_reference as *const () as u64)
+    }
+
     /// Holds the runtime's class and selector tables across a `fork` (D709).
     pub fn hold_across_fork() {
         RUNTIME.hold_across_fork();
@@ -179,6 +262,7 @@ mod runtime {
             .or_else(|| block::resolve(name))
             .or_else(|| weak::resolve(name))
             .or_else(|| associated::resolve(name))
+            .or_else(|| stub_resolve(name))
     }
 
     const CLASS_PREFIX: &[u8] = b"_OBJC_CLASS_$_";
@@ -304,10 +388,16 @@ mod runtime {
                 // SAFETY: a category of the image's category list, mapped.
                 let category = unsafe { &*(category as *const Category) };
                 let Some(record) = class::record_of(category.class) else {
+                    let owner = category.class as usize;
+                    if owner != 0 && is_class_stub(owner) {
+                        let entry = (owner, category as *const Category as usize);
+                        STUB_CATEGORIES.with(|pending| pending.push(entry))
+                            .then_some(())
+                            .ok_or(out_of_memory)?;
+                    }
                     continue;
                 };
-                class::attach_list(runtime, record, category.instance_methods);
-                class::attach_list(runtime, record.pair(), category.class_methods);
+                attach_category(runtime, record, category);
             }
             runtime.load_lists = [
                 sections

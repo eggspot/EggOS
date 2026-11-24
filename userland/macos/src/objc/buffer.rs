@@ -83,6 +83,19 @@ impl<T: Copy> Buffer<T> {
         Some(value)
     }
 
+    /// Keeps only the values `keep` accepts, in order.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        let mut kept = 0;
+        for index in 0..self.length {
+            let value = self.as_slice()[index];
+            if keep(&value) {
+                self.as_mut_slice()[kept] = value;
+                kept += 1;
+            }
+        }
+        self.length = kept;
+    }
+
     /// Frees the values' block; the buffer is empty afterwards.
     pub fn free(&mut self) {
         heap::release(self.pointer.cast());
