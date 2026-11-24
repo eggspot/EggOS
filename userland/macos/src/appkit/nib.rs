@@ -9,7 +9,7 @@
 
 use super::{
     NSAPPLICATION, NSBUTTON, NSMENU, NSMENUITEM, NSTEXTFIELD, NSVIEW, NSVIEWCONTROLLER, NSWINDOW,
-    NSWINDOWCONTROLLER, application, responds, store, storyboard, view, with_text,
+    NSWINDOWCONTROLLER, application, responds, segues, store, storyboard, view, with_text,
 };
 use crate::foundation::nib_archive::{
     self, ClassEntry, Connection, NibArchive, NibValue, ObjectEntry, Span, Tables, ValueEntry,
@@ -44,6 +44,7 @@ const OBJECT_CLASSES: [&[u8]; 4] = [
 ];
 const PLACEHOLDER_KEYS: [&[u8]; 3] = [b"NSStoryboardIdentifier", b"NSIdentifier", b"identifier"];
 const WINDOW_CLASSES: [&[u8]; 1] = [b"NSWindow"];
+const SEGUE_TEMPLATES_KEY: &[u8] = b"NSStoryboardSegueTemplates";
 
 #[derive(Clone, Copy, Default)]
 enum Slot {
@@ -310,8 +311,8 @@ impl Loader<'_, '_, '_> {
         match class {
             b"NSWindowTemplate" => self.window(index),
             b"NSCustomObject" => self.custom_object(index),
-            b"NSViewController" => new_of(class_pointer(&NSVIEWCONTROLLER)),
-            b"NSWindowController" => new_of(class_pointer(&NSWINDOWCONTROLLER)),
+            b"NSViewController" => self.controller(index, class_pointer(&NSVIEWCONTROLLER)),
+            b"NSWindowController" => self.controller(index, class_pointer(&NSWINDOWCONTROLLER)),
             b"NSClassSwapper" => self.swapped(index),
             b"NSStoryboardControllerPlaceholder" | b"NSStoryboardScenePlaceholder" => {
                 self.placeholder(index)
@@ -390,9 +391,62 @@ impl Loader<'_, '_, '_> {
             .unwrap_or(core::ptr::null_mut());
         let controller = descends(class, &NSVIEWCONTROLLER) || descends(class, &NSWINDOWCONTROLLER);
         match controller {
-            true => new_of(class),
+            true => self.controller(index, class),
             false => self.view(index),
         }
+    }
+
+    fn controller(&mut self, index: usize, class: *mut ClassObject) -> Id {
+        let made = new_of(class);
+        if made.is_null() {
+            return made;
+        }
+        let archive = self.archive;
+        let Some(list) = archive.reference(index, SEGUE_TEMPLATES_KEY) else {
+            return made;
+        };
+        let templates = new_of(class_pointer(&NSMUTABLEARRAY));
+        if templates.is_null() {
+            return made;
+        }
+        for member in archive.members(list) {
+            if let NibValue::Object(target) = member {
+                let template = self.segue_template(target);
+                if !template.is_null() {
+                    send1(templates, sel!("addObject:"), template as usize);
+                    objc_release(template);
+                }
+            }
+        }
+        send1(made, sel!("_setStoryboardSegueTemplates:"), templates as usize);
+        objc_release(templates);
+        made
+    }
+
+    fn segue_template(&self, index: usize) -> Id {
+        let kind = self
+            .archive
+            .class_name(index)
+            .map_or(segues::kind::SHOW, segues::kind_of_class);
+        let text = |keys: &[&[u8]]| {
+            keys.iter()
+                .find_map(|key| self.archive.string(index, key))
+                .map_or(core::ptr::null_mut(), segues::retained_text)
+        };
+        let identifier = text(&[b"NSIdentifier", b"identifier"]);
+        let destination = text(&[
+            b"NSDestinationControllerIdentifier",
+            b"NSDestinationIdentifier",
+            b"destinationIdentifier",
+        ]);
+        let segue_class = text(&[b"NSSegueClassName", b"customClass"]);
+        let template = segues::new_template(identifier, destination, segue_class, kind);
+        for owned in [identifier, destination, segue_class] {
+            if !owned.is_null() {
+                objc_release(owned);
+            }
+        }
+        template
     }
 
     fn placeholder(&mut self, index: usize) -> Id {

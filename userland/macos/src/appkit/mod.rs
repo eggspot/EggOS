@@ -35,6 +35,7 @@ mod screen;
 mod scroll_view;
 mod server;
 mod sound;
+mod segues;
 mod storyboard;
 mod table_view;
 mod tracking;
@@ -98,6 +99,8 @@ class_pairs! {
     NSVIEWCONTROLLER, NSVIEWCONTROLLER_META;
     NSWINDOWCONTROLLER, NSWINDOWCONTROLLER_META;
     NSSTORYBOARD, NSSTORYBOARD_META;
+    NSSTORYBOARDSEGUE, NSSTORYBOARDSEGUE_META;
+    NSSTORYBOARDSEGUETEMPLATE, NSSTORYBOARDSEGUETEMPLATE_META;
     NSPANEL, NSPANEL_META;
     NSABOUTPANEL, NSABOUTPANEL_META;
     NSLAYOUTANCHOR, NSLAYOUTANCHOR_META;
@@ -227,6 +230,7 @@ pub fn set_up() -> bool {
             && open_panel::define(runtime)
             && controllers::define(runtime)
             && storyboard::define(runtime)
+            && segues::define(runtime)
             && panel::define(runtime)
             && layout::define(runtime)
             && layout::extend_views(runtime)
@@ -253,6 +257,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSPanel" => class(&NSPANEL_META),
         b"_OBJC_CLASS_$_NSStoryboard" => class(&NSSTORYBOARD),
         b"_OBJC_METACLASS_$_NSStoryboard" => class(&NSSTORYBOARD_META),
+        b"_OBJC_CLASS_$_NSStoryboardSegue" => class(&NSSTORYBOARDSEGUE),
+        b"_OBJC_METACLASS_$_NSStoryboardSegue" => class(&NSSTORYBOARDSEGUE_META),
         b"_OBJC_CLASS_$_NSResponder" => class(&NSRESPONDER),
         b"_OBJC_METACLASS_$_NSResponder" => class(&NSRESPONDER_META),
         b"_OBJC_CLASS_$_NSView" => class(&NSVIEW),

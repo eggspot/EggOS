@@ -2,14 +2,18 @@
 //! `loadView` from its nib (`nibName`, File's Owner the controller) or as a plain NSView, then
 //! `viewDidLoad`; a window controller owns a window, loaded from its nib the first time it is
 //! asked for, shown by `showWindow:`, and a content view controller whose view becomes the
-//! window's content view. Both keep the storyboard that made them.
+//! window's content view. Both keep the storyboard that made them. A view controller keeps
+//! its child controllers (`addChildViewController:` and kin) and the controllers it presents
+//! in windows of their own or as sheets, sends the appearance calls (`viewWillAppear`,
+//! `viewDidAppear` and their disappearing pair) to itself and its children as its window
+//! shows and closes, and performs its storyboard's segues (`segues.rs`, D749).
 
 use super::{NSRESPONDER, NSVIEW, NSVIEWCONTROLLER, NSVIEWCONTROLLER_META, NSWINDOWCONTROLLER};
 use super::{NSWINDOWCONTROLLER_META, nib, store, with_text};
-use crate::foundation::{NSBUNDLE, class_pointer, new_instance};
+use crate::foundation::{NSARRAY, NSBUNDLE, NSMUTABLEARRAY, class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
-use crate::objc::reference_count::dispose;
-use crate::objc::{Runtime, methods, sel, send, send1};
+use crate::objc::reference_count::{dispose, objc_release, objc_retain};
+use crate::objc::{Runtime, message, methods, sel, send, send_bool, send1, send2};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -23,6 +27,13 @@ struct ViewControllerFields {
     storyboard: Id,
     identifier: Id,
     loaded: bool,
+    appeared: bool,
+    children: Id,
+    parent: Id,
+    presented: Id,
+    presenting: Id,
+    holder: Id,
+    templates: Id,
 }
 
 #[repr(C)]
@@ -36,6 +47,7 @@ struct WindowControllerFields {
     storyboard: Id,
     document: Id,
     loaded: bool,
+    templates: Id,
 }
 
 fn view_fields(object: Id) -> &'static mut ViewControllerFields {
@@ -76,6 +88,10 @@ extern "C" fn view_dealloc(this: Id, _: Sel) {
         &mut fields.nib_bundle,
         &mut fields.storyboard,
         &mut fields.identifier,
+        &mut fields.children,
+        &mut fields.presented,
+        &mut fields.holder,
+        &mut fields.templates,
     ] {
         store(slot, core::ptr::null_mut());
     }
@@ -127,8 +143,6 @@ extern "C" fn view_loaded(this: Id, _: Sel) -> u8 {
 
 extern "C" fn nothing(_: Id, _: Sel) {}
 
-extern "C" fn nothing_animated(_: Id, _: Sel, _: u8) {}
-
 macro_rules! object_property {
     ($getter:ident, $setter:ident, $fields:ident, $field:ident) => {
         extern "C" fn $getter(this: Id, _: Sel) -> Id {
@@ -176,16 +190,253 @@ extern "C" fn nib_bundle(this: Id, _: Sel) -> Id {
     view_fields(this).nib_bundle
 }
 
-extern "C" fn present_as_window(_: Id, _: Sel, controller: Id) {
-    let window = new_instance(class_pointer(&super::NSWINDOW));
-    let window = send(window, sel!("init"));
-    if window.is_null() || controller.is_null() {
+fn mutable_array() -> Id {
+    objc_retain(send(class_pointer(&NSMUTABLEARRAY).cast(), sel!("array")))
+}
+
+fn list_of(slot: &mut Id) -> Id {
+    if slot.is_null() {
+        *slot = mutable_array();
+    }
+    *slot
+}
+
+fn count_of(list: Id) -> usize {
+    match list.is_null() {
+        true => 0,
+        false => send(list, sel!("count")) as usize,
+    }
+}
+
+fn items_of(list: Id) -> alloc::vec::Vec<Id> {
+    (0..count_of(list))
+        .map(|index| send1(list, sel!("objectAtIndex:"), index))
+        .collect()
+}
+
+fn appear(controller: Id, showing: bool) {
+    if controller.is_null() || view_fields(controller).appeared == showing {
+        return;
+    }
+    let (will, did) = match showing {
+        true => (sel!("viewWillAppear"), sel!("viewDidAppear")),
+        false => (sel!("viewWillDisappear"), sel!("viewDidDisappear")),
+    };
+    send(controller, will);
+    view_fields(controller).appeared = showing;
+    for child in items_of(view_fields(controller).children) {
+        appear(child, showing);
+    }
+    send(controller, did);
+}
+
+/// Sends the appearance calls to `controller` and its children as its window shows (or, for
+/// `false`, closes).
+pub fn set_appeared(controller: Id, showing: bool) {
+    appear(controller, showing);
+}
+
+fn present_in_window(this: Id, controller: Id) {
+    if controller.is_null() {
+        return;
+    }
+    let window = send(new_instance(class_pointer(&super::NSWINDOW)), sel!("init"));
+    if window.is_null() {
         return;
     }
     let holder = new_instance(class_pointer(&NSWINDOWCONTROLLER));
     let holder = window_init_with_window(holder, sel!("initWithWindow:"), window);
+    objc_release(window);
+    if holder.is_null() {
+        return;
+    }
     set_content(holder, sel!("setContentViewController:"), controller);
+    store(&mut view_fields(controller).holder, holder);
+    objc_release(holder);
+    if !this.is_null() && this != controller {
+        view_fields(controller).presenting = this;
+        let presented = list_of(&mut view_fields(this).presented);
+        send1(presented, sel!("addObject:"), controller as usize);
+    }
     send1(holder, sel!("showWindow:"), 0);
+}
+
+extern "C" fn present_as_window(this: Id, _: Sel, controller: Id) {
+    present_in_window(this, controller);
+}
+
+extern "C" fn present_as_popover(
+    this: Id,
+    _: Sel,
+    controller: Id,
+    _rect: eggos_macos_gui::geometry::Frame,
+    _view: Id,
+    _edge: usize,
+    _behavior: isize,
+) {
+    present_in_window(this, controller);
+}
+
+extern "C" fn dismiss_view_controller(this: Id, _: Sel, controller: Id) {
+    if controller.is_null() {
+        return;
+    }
+    let holder = view_fields(controller).holder;
+    appear(controller, false);
+    if !holder.is_null() {
+        close(holder, sel!("close"));
+    }
+    store(&mut view_fields(controller).holder, core::ptr::null_mut());
+    view_fields(controller).presenting = core::ptr::null_mut();
+    let presented = view_fields(this).presented;
+    if !presented.is_null() {
+        send1(presented, sel!("removeObject:"), controller as usize);
+    }
+}
+
+extern "C" fn dismiss_controller(this: Id, _: Sel, _sender: Id) {
+    let presenting = view_fields(this).presenting;
+    if !presenting.is_null() {
+        send1(presenting, sel!("dismissViewController:"), this as usize);
+        return;
+    }
+    let holder = view_fields(this).holder;
+    if !holder.is_null() {
+        appear(this, false);
+        close(holder, sel!("close"));
+    }
+}
+
+extern "C" fn children(this: Id, _: Sel) -> Id {
+    match view_fields(this).children.is_null() {
+        true => send(class_pointer(&NSARRAY).cast(), sel!("array")),
+        false => view_fields(this).children,
+    }
+}
+
+fn detach(child: Id) {
+    let parent = view_fields(child).parent;
+    if parent.is_null() {
+        return;
+    }
+    objc_retain(child);
+    let list = view_fields(parent).children;
+    if !list.is_null() {
+        send1(list, sel!("removeObject:"), child as usize);
+    }
+    view_fields(child).parent = core::ptr::null_mut();
+    if view_fields(child).appeared {
+        appear(child, false);
+    }
+    objc_release(child);
+}
+
+extern "C" fn insert_child(this: Id, _: Sel, child: Id, index: isize) {
+    if child.is_null() || child == this {
+        return;
+    }
+    detach(child);
+    let list = list_of(&mut view_fields(this).children);
+    let at = (index.max(0) as usize).min(count_of(list));
+    send2(list, sel!("insertObject:atIndex:"), child as usize, at);
+    view_fields(child).parent = this;
+    if view_fields(this).appeared {
+        appear(child, true);
+    }
+}
+
+extern "C" fn add_child(this: Id, sel: Sel, child: Id) {
+    let end = count_of(view_fields(this).children) as isize;
+    insert_child(this, sel, child, end);
+}
+
+extern "C" fn set_children(this: Id, sel: Sel, list: Id) {
+    for child in items_of(view_fields(this).children) {
+        detach(child);
+    }
+    for child in items_of(list) {
+        add_child(this, sel, child);
+    }
+}
+
+extern "C" fn remove_child_at(this: Id, _: Sel, index: isize) {
+    let list = view_fields(this).children;
+    if index < 0 || index as usize >= count_of(list) {
+        return;
+    }
+    detach(send1(list, sel!("objectAtIndex:"), index as usize));
+}
+
+extern "C" fn remove_from_parent(this: Id, _: Sel) {
+    detach(this);
+}
+
+extern "C" fn parent(this: Id, _: Sel) -> Id {
+    view_fields(this).parent
+}
+
+extern "C" fn presenting(this: Id, _: Sel) -> Id {
+    view_fields(this).presenting
+}
+
+extern "C" fn presented(this: Id, sel: Sel) -> Id {
+    match view_fields(this).presented.is_null() {
+        true => children(core::ptr::null_mut(), sel),
+        false => view_fields(this).presented,
+    }
+}
+
+extern "C" fn transition(this: Id, _: Sel, from: Id, to: Id, _options: usize, completion: Id) {
+    if !from.is_null() && !to.is_null() {
+        let old = send(from, sel!("view"));
+        let new = send(to, sel!("view"));
+        let superview = send(old, sel!("superview"));
+        if !superview.is_null() {
+            let frame: extern "C" fn(Id, Sel) -> eggos_macos_gui::geometry::Frame =
+                message::msg_send_as();
+            super::send_frame(new, sel!("setFrame:"), frame(old, sel!("frame")));
+            send2(
+                superview,
+                sel!("replaceSubview:with:"),
+                old as usize,
+                new as usize,
+            );
+        }
+        if view_fields(this).appeared {
+            appear(from, false);
+            appear(to, true);
+        }
+    }
+    if !completion.is_null() {
+        let invoke = crate::objc::block::invoke_address(completion);
+        // SAFETY: a completion handler is a block taking only itself.
+        let invoke: extern "C" fn(Id) = unsafe { core::mem::transmute(invoke) };
+        invoke(completion);
+    }
+}
+
+extern "C" fn perform_segue(this: Id, _: Sel, identifier: Id, sender: Id) {
+    let fields = view_fields(this);
+    super::segues::perform_from(this, (fields.templates, fields.storyboard), identifier, sender);
+}
+
+extern "C" fn window_perform_segue(this: Id, _: Sel, identifier: Id, sender: Id) {
+    let fields = window_fields(this);
+    super::segues::perform_from(this, (fields.templates, fields.storyboard), identifier, sender);
+}
+
+extern "C" fn should_perform(_: Id, _: Sel, _: Id, _: Id) -> u8 {
+    1
+}
+
+extern "C" fn prepare(_: Id, _: Sel, _: Id, _: Id) {}
+
+extern "C" fn set_templates(this: Id, _: Sel, templates: Id) {
+    store(&mut view_fields(this).templates, templates);
+}
+
+extern "C" fn set_window_templates(this: Id, _: Sel, templates: Id) {
+    store(&mut window_fields(this).templates, templates);
 }
 
 extern "C" fn window_init(this: Id, _: Sel) -> Id {
@@ -223,6 +474,7 @@ extern "C" fn window_dealloc(this: Id, _: Sel) {
         &mut fields.nib_name,
         &mut fields.storyboard,
         &mut fields.document,
+        &mut fields.templates,
     ] {
         store(slot, core::ptr::null_mut());
     }
@@ -285,13 +537,19 @@ extern "C" fn set_content(this: Id, _: Sel, controller: Id) {
 extern "C" fn show_window(this: Id, _: Sel, _sender: Id) {
     let window = send(this, sel!("window"));
     if !window.is_null() {
+        let content = window_fields(this).content;
+        let visible = send_bool(window, sel!("isVisible"), 0);
         send1(window, sel!("makeKeyAndOrderFront:"), this as usize);
+        if !visible {
+            appear(content, true);
+        }
     }
 }
 
 extern "C" fn close(this: Id, _: Sel) {
     let window = window_fields(this).window;
     if !window.is_null() {
+        appear(window_fields(this).content, false);
         send(window, sel!("close"));
     }
 }
@@ -335,7 +593,24 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "identifier" => view_identifier,
         "setIdentifier:" => set_view_identifier,
         "presentViewControllerAsModalWindow:" => present_as_window,
-        "dismissController:" => nothing_animated,
+        "presentViewControllerAsSheet:" => present_as_window,
+        "presentViewController:asPopoverRelativeToRect:ofView:preferredEdge:behavior:" => present_as_popover,
+        "dismissViewController:" => dismiss_view_controller,
+        "dismissController:" => dismiss_controller,
+        "childViewControllers" => children,
+        "setChildViewControllers:" => set_children,
+        "addChildViewController:" => add_child,
+        "insertChildViewController:atIndex:" => insert_child,
+        "removeChildViewControllerAtIndex:" => remove_child_at,
+        "removeFromParentViewController" => remove_from_parent,
+        "parentViewController" => parent,
+        "presentingViewController" => presenting,
+        "presentedViewControllers" => presented,
+        "transitionFromViewController:toViewController:options:completionHandler:" => transition,
+        "performSegueWithIdentifier:sender:" => perform_segue,
+        "shouldPerformSegueWithIdentifier:sender:" => should_perform,
+        "prepareForSegue:sender:" => prepare,
+        "_setStoryboardSegueTemplates:" => set_templates,
     ];
     let window_methods = methods![
         "init" => window_init,
@@ -359,6 +634,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "setStoryboard:" => set_window_storyboard,
         "document" => document,
         "setDocument:" => set_document,
+        "performSegueWithIdentifier:sender:" => window_perform_segue,
+        "shouldPerformSegueWithIdentifier:sender:" => should_perform,
+        "prepareForSegue:sender:" => prepare,
+        "_setStoryboardSegueTemplates:" => set_window_templates,
     ];
     super::define(
         runtime,
