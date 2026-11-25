@@ -188,6 +188,7 @@ fn paint_radio(canvas: &mut Canvas<'_>, rect: Rect, title: &str, on: bool, look:
         count: 1,
         selected: if on { 0 } else { 1 },
         horizontal: false,
+        pitch: widget::CONTROL_HEIGHT,
     };
     widget::paint(canvas, &kind, rect, look);
     if rect.width < LABEL_OFFSET {

@@ -1,16 +1,20 @@
 //! First run (D224, docs/ux/first-run-accessibility-v0.3.md section 1): `settings --first-run`'s
-//! window, `Welcome to EggOS`, asking where the person comes from, the keyboard layout and the
-//! time zone on three pages with `Skip`, `Back` and `Next`. Every choice is saved and applied
-//! the moment it is made, as the Settings panes save; ending the window saves the profile in
-//! force when none was saved, so the question is asked once.
+//! window, `Welcome to EggOS`, asking where the person comes from, the keyboard layout, the
+//! time zone and the edition (D771, docs/ux/first-run-edition-v0.1.md) on four pages with
+//! `Skip`, `Back` and `Next`. Every choice is saved and applied the moment it is made, as the
+//! Settings panes save; ending the window saves the profile in force when none was saved, so
+//! the question is asked once, and ending it from the edition page starts installing the
+//! edition chosen in the background.
 
 use crate::art;
+use crate::edition_choice::{self, EditionFacts};
 use crate::facts::Facts;
 use crate::settings_window::{
     CAPACITY, CONTROL_SIDES, LAYOUT_TITLES, PRIMARY_MODIFIERS, PROFILE_LABELS, Request,
     dead_keys_text, third_level_text, time_text,
 };
 use crate::zone_picker::{self, PickerLayout, ZonePicker};
+use eggos_components::editions::EDITIONS;
 use eggos_runtime::errno::Errno;
 use eggos_toolkit::text::Text;
 use eggos_toolkit::theme::Token;
@@ -28,9 +32,14 @@ pub const NO_DISK: &str = "No disk attached: these choices last until power-off.
 /// The try field's placeholder, which also names it for agents.
 pub const TRY_PLACEHOLDER: &str = "Type here to try it";
 
-const PAGES: usize = 3;
-const HEADINGS: [&str; PAGES] = ["Where are you coming from?", "Keyboard", "Time zone"];
-const STEPS: [&str; PAGES] = ["Step 1 of 3", "Step 2 of 3", "Step 3 of 3"];
+const PAGES: usize = 4;
+const HEADINGS: [&str; PAGES] = [
+    "Where are you coming from?",
+    "Keyboard",
+    "Time zone",
+    "Which edition?",
+];
+const STEPS: [&str; PAGES] = ["Step 1 of 4", "Step 2 of 4", "Step 3 of 4", "Step 4 of 4"];
 const PADDING: i32 = 16;
 const CARDS: (i32, i32) = (112, 64);
 const CARD: (i32, i32) = (128, 112);
@@ -45,6 +54,23 @@ const TRY_FIELD: (i32, i32, i32) = (16, 120, 304);
 const NOW_LINE: i32 = 244;
 const WINDOW_CHROME: (i32, i32) = (2, 30);
 const ZONE_PAGE: usize = 2;
+const EDITION_PAGE: usize = 3;
+const EDITION_ORDER: [usize; 4] = [1, 2, 3, 0];
+const EDITION_TITLES: [&str; 4] = [
+    EDITIONS[EDITION_ORDER[0]].title,
+    EDITIONS[EDITION_ORDER[1]].title,
+    EDITIONS[EDITION_ORDER[2]].title,
+    EDITIONS[EDITION_ORDER[3]].title,
+];
+const DEFAULT_EDITION: usize = 1;
+const EDITION_ROWS: i32 = 64;
+const EDITION_PITCH: i32 = 56;
+const RADIO_INSET: i32 = 6;
+const SIZE_INSET: i32 = 12;
+const SUMMARY: (i32, i32, i32) = (40, 32, 584);
+const INSTALLS_LINE: i32 = 300;
+const SECOND_LINE: i32 = 320;
+const LINE_WIDTH: i32 = 608;
 
 /// Where the window's outside top-left goes, relative to a work area `width` by `height` at
 /// `scale`, to sit at its centre; never above or left of it.
@@ -61,14 +87,18 @@ pub fn centred_in(width: i32, height: i32, scale: u32) -> (i32, i32) {
 }
 
 /// What the program must do for the first run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirstRunRequest {
     /// Save this choice and apply it now, then say how it went ([`FirstRunWindow::chosen`]):
     /// a [`Request::SetProfile`], [`Request::SetKeyboardLayout`] or [`Request::SetTimeZone`].
     Choose(Request),
     /// End the window, saving the profile at this index of `PROFILES` first when it is
-    /// `Some` (none was saved yet).
-    Finish { save_profile: Option<usize> },
+    /// `Some` (none was saved yet), and starting `component edition` for the edition at this
+    /// index of `EDITIONS` when `install_edition` is `Some` (D771).
+    Finish {
+        save_profile: Option<usize>,
+        install_edition: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +119,10 @@ struct Widgets {
     dead_keys: WidgetId,
     keyboard_line: WidgetId,
     now: WidgetId,
+    editions: WidgetId,
+    edition_sizes: [WidgetId; 4],
+    installs: WidgetId,
+    installs_more: WidgetId,
 }
 
 /// The first run's window: its widgets, the page shown and the choices in force.
@@ -98,6 +132,8 @@ pub struct FirstRunWindow {
     widgets: Widgets,
     zones: ZonePicker,
     facts: Facts,
+    editions: EditionFacts,
+    edition: usize,
     page: usize,
     profile_saved: bool,
 }
@@ -241,6 +277,54 @@ impl FirstRunWindow {
         );
         label(&mut tree, pages[2], PADDING, NOW_LINE, "Now");
         let now = value(&mut tree, pages[2], NOW_LINE, "");
+        let editions = add(
+            &mut tree,
+            pages[EDITION_PAGE],
+            Place::at(
+                PADDING,
+                EDITION_ROWS + RADIO_INSET,
+                Length::Content,
+                Length::Content,
+            ),
+            Kind::spaced_radios(&EDITION_TITLES, 0, EDITION_PITCH),
+        );
+        let edition_sizes: [WidgetId; 4] = core::array::from_fn(|row| {
+            let top = EDITION_ROWS + EDITION_PITCH * row as i32;
+            add(
+                &mut tree,
+                pages[EDITION_PAGE],
+                Place::at(
+                    SUMMARY.0,
+                    top + SUMMARY.1,
+                    Length::Px(SUMMARY.2),
+                    Length::Content,
+                ),
+                Kind::label(EDITIONS[EDITION_ORDER[row]].summary, Token::TextDim),
+            );
+            add(
+                &mut tree,
+                pages[EDITION_PAGE],
+                Place::right(PADDING, top + SIZE_INSET),
+                Kind::label("", Token::TextDim),
+            )
+        });
+        let installs = add(
+            &mut tree,
+            pages[EDITION_PAGE],
+            Place::at(
+                PADDING,
+                INSTALLS_LINE,
+                Length::Px(LINE_WIDTH),
+                Length::Content,
+            ),
+            Kind::label("", Token::TextDim),
+        );
+        let installs_more = add(
+            &mut tree,
+            pages[EDITION_PAGE],
+            Place::at(PADDING, SECOND_LINE, Length::Px(LINE_WIDTH), Length::Content),
+            Kind::label("", Token::TextDim),
+        );
         let status = add(
             &mut tree,
             root,
@@ -270,9 +354,15 @@ impl FirstRunWindow {
                 dead_keys,
                 keyboard_line,
                 now,
+                editions,
+                edition_sizes,
+                installs,
+                installs_more,
             },
             zones,
             facts,
+            editions: EditionFacts::default(),
+            edition: DEFAULT_EDITION,
             page: 0,
             profile_saved,
         };
@@ -280,8 +370,52 @@ impl FirstRunWindow {
         window.show_keyboard_lines();
         window.show_now(facts.now_s);
         window.restore_status();
+        window.show_editions(EditionFacts::default());
         window.show_page(0, 0);
         window
+    }
+
+    /// Shows what each edition would install here and selects the recorded one, or
+    /// `Personal` (D771).
+    pub fn show_editions(&mut self, editions: EditionFacts) {
+        self.edition = editions.recorded.unwrap_or(DEFAULT_EDITION);
+        self.editions = editions;
+        for (row, &index) in EDITION_ORDER.iter().enumerate() {
+            let size = edition_choice::size_line(&self.editions, index);
+            self.tree
+                .set_text(self.widgets.edition_sizes[row], size.as_str());
+        }
+        self.show_edition(self.edition);
+    }
+
+    /// The edition selected: its index in `EDITIONS`.
+    pub fn edition(&self) -> usize {
+        self.edition
+    }
+
+    /// The installs line and the line under it, as shown.
+    pub fn edition_lines(&self) -> (&str, Option<&str>) {
+        let more = self
+            .tree
+            .is_shown(self.widgets.installs_more)
+            .then(|| self.tree.text_of(self.widgets.installs_more).unwrap_or(""));
+        (
+            self.tree.text_of(self.widgets.installs).unwrap_or(""),
+            more,
+        )
+    }
+
+    fn show_edition(&mut self, index: usize) {
+        if let Some(row) = EDITION_ORDER.iter().position(|&each| each == index) {
+            self.tree.set_selected(self.widgets.editions, row);
+        }
+        let (first, second, refused) = edition_choice::lines(&self.editions, index);
+        let token = if refused { Token::Text } else { Token::TextDim };
+        crate::agents_pane::show_line(&mut self.tree, self.widgets.installs, &first, token);
+        let installs_more = self.widgets.installs_more;
+        self.tree
+            .set_text(installs_more, second.as_deref().unwrap_or(""));
+        self.tree.set_shown(installs_more, second.is_some());
     }
 
     /// The widget tree, for the toolkit's loop.
@@ -294,7 +428,7 @@ impl FirstRunWindow {
         &self.tree
     }
 
-    /// The page shown: 0, 1 or 2.
+    /// The page shown: 0 to 3.
     pub fn page(&self) -> usize {
         self.page
     }
@@ -344,7 +478,7 @@ impl FirstRunWindow {
         self.tree.set_text(self.widgets.step, STEPS[page]);
         self.tree.set_enabled(self.widgets.back, page > 0);
         let next = match page {
-            ZONE_PAGE => "Done",
+            EDITION_PAGE => "Done",
             _ => "Next",
         };
         self.tree.set_text(self.widgets.next, next);
@@ -356,7 +490,8 @@ impl FirstRunWindow {
         let focus = match page {
             0 => self.widgets.cards,
             1 => self.widgets.layout,
-            _ => self.zones.field(),
+            ZONE_PAGE => self.zones.field(),
+            _ => self.widgets.editions,
         };
         self.tree.set_focus(Some(focus), now_ms);
     }
@@ -404,12 +539,17 @@ impl FirstRunWindow {
     }
 
     fn finish(&self) -> FirstRunRequest {
+        let installs = self.page == EDITION_PAGE
+            && !self.editions.plans[self.edition].components.is_empty()
+            && !edition_choice::held_back(&self.editions, self.edition);
         FirstRunRequest::Finish {
             save_profile: (!self.profile_saved).then_some(self.facts.profile),
+            install_edition: installs.then_some(self.edition),
         }
     }
 
-    /// What the window asked to close with (its close control) means: the same as `Skip`.
+    /// What the window asked to close with (its close control) means: the same as `Skip`
+    /// (on the edition page, the installs start too).
     pub fn close_requested(&self) -> FirstRunRequest {
         self.finish()
     }
@@ -423,14 +563,26 @@ impl FirstRunWindow {
                 self.show_page(self.page - 1, now_ms);
                 return None;
             }
-            Response::Activated(id) if id == widgets.next && self.page < PAGES - 1 => {
-                self.show_page(self.page + 1, now_ms);
-                return None;
-            }
-            Response::Activated(id) if id == widgets.next && !self.in_zone_field() => {
+            Response::Activated(id)
+                if id == widgets.next && !(self.page == ZONE_PAGE && self.in_zone_field()) =>
+            {
+                if self.page + 1 < PAGES {
+                    self.show_page(self.page + 1, now_ms);
+                    return None;
+                }
                 return Some(self.finish());
             }
-            Response::Opened(id, _) if id == self.zones.list() => return Some(self.finish()),
+            Response::Opened(id, _) if id == self.zones.list() && self.page == ZONE_PAGE => {
+                self.show_page(EDITION_PAGE, now_ms);
+                return None;
+            }
+            Response::Chosen(id, row) if id == widgets.editions => {
+                let index = *EDITION_ORDER.get(row)?;
+                self.show_edition(index);
+                self.edition = index;
+                return (self.editions.recorded != Some(index))
+                    .then_some(FirstRunRequest::Choose(Request::SetEdition(index)));
+            }
             Response::Chosen(id, profile) if id == widgets.cards => {
                 self.show_profile(profile);
                 return (profile != self.facts.profile)
@@ -473,6 +625,16 @@ impl FirstRunWindow {
                 }
                 self.show_keyboard_lines();
                 "keyboard layout"
+            }
+            Request::SetEdition(index) => {
+                match result {
+                    Ok(()) => self.editions.recorded = Some(index),
+                    Err(_) => {
+                        self.edition = self.editions.recorded.unwrap_or(DEFAULT_EDITION);
+                        self.show_edition(self.edition);
+                    }
+                }
+                "edition"
             }
             Request::SetTimeZone(zone) => {
                 match result {
@@ -628,22 +790,143 @@ mod tests {
         assert_eq!(
             click(&mut window, 64, 410),
             Some(FirstRunRequest::Finish {
-                save_profile: Some(1)
+                save_profile: Some(1),
+                install_edition: None,
             })
         );
         let mut saved = FirstRunWindow::new(Facts::example(), true);
-        assert_eq!(
-            saved.close_requested(),
-            FirstRunRequest::Finish { save_profile: None }
-        );
+        let nothing = FirstRunRequest::Finish {
+            save_profile: None,
+            install_edition: None,
+        };
+        assert_eq!(saved.close_requested(), nothing);
         click(&mut saved, 576, 410);
         click(&mut saved, 576, 410);
         assert_eq!(saved.page(), 2);
         assert_eq!(saved.widgets().focus(), Some(saved.zones.field()));
+        assert_eq!(saved.widgets().text_of(saved.widgets.next), Some("Next"));
+        assert_eq!(click(&mut saved, 576, 410), None);
+        assert_eq!(saved.page(), 3);
         assert_eq!(saved.widgets().text_of(saved.widgets.next), Some("Done"));
+        assert_eq!(click(&mut saved, 576, 410), Some(nothing));
+    }
+
+    fn edition_facts() -> EditionFacts {
+        use crate::edition_choice::{EditionPlan, Planned, StoreReach};
+        let planned = |name: &str, title: &str, bytes: u64| Planned {
+            name: String::from(name),
+            title: String::from(title),
+            bytes,
+        };
+        let personal = alloc::vec![
+            planned("windows-apps", "Windows apps", 1_887_437),
+            planned("mac-apps", "Mac apps", 1_468_007),
+        ];
+        let mut professional = personal.clone();
+        professional.push(planned("management", "Management", 209_715));
+        EditionFacts {
+            recorded: None,
+            plans: [
+                EditionPlan {
+                    components: Vec::new(),
+                    keeps_others: true,
+                },
+                EditionPlan {
+                    components: personal,
+                    keeps_others: false,
+                },
+                EditionPlan {
+                    components: professional.clone(),
+                    keeps_others: false,
+                },
+                EditionPlan {
+                    components: professional,
+                    keeps_others: false,
+                },
+            ],
+            free_bytes: Some(1_200 << 20),
+            store: StoreReach::Attached,
+        }
+    }
+
+    #[test]
+    fn the_edition_page_records_a_choice_and_done_installs_it() {
+        let mut window = FirstRunWindow::new(Facts::example(), true);
+        window.show_editions(edition_facts());
+        for _ in 0..3 {
+            click(&mut window, 576, 410);
+        }
+        assert_eq!(window.page(), 3);
+        assert_eq!(window.widgets().focus(), Some(window.widgets.editions));
+        assert_eq!(rect(&window, window.widgets.editions).1, 70);
+        assert_eq!(window.edition(), 1);
         assert_eq!(
-            click(&mut saved, 576, 410),
-            Some(FirstRunRequest::Finish { save_profile: None })
+            window.edition_lines(),
+            (
+                "Installs Windows apps, Mac apps: 3.2 MB.",
+                Some("Downloads start when you press Done; EggOS is ready to use meanwhile.")
+            )
+        );
+        assert_eq!(
+            window.widgets().text_of(window.widgets.edition_sizes[0]),
+            Some("3.2 MB")
+        );
+        assert_eq!(
+            window.widgets().text_of(window.widgets.edition_sizes[3]),
+            Some("Installed")
+        );
+        assert_eq!(
+            press(&mut window, key::DOWN, 0),
+            Some(FirstRunRequest::Choose(Request::SetEdition(2)))
+        );
+        window.chosen(Request::SetEdition(2), Ok(()));
+        assert_eq!(
+            press(&mut window, key::END, 0),
+            Some(FirstRunRequest::Choose(Request::SetEdition(0)))
+        );
+        assert_eq!(window.edition_lines().0, "Nothing to add.");
+        window.chosen(Request::SetEdition(0), Err(Errno::EPERM));
+        assert_eq!(window.edition(), 2);
+        assert_eq!(
+            window.status(),
+            "Not allowed: this user may not set the edition."
+        );
+        assert_eq!(
+            window.close_requested(),
+            FirstRunRequest::Finish {
+                save_profile: None,
+                install_edition: Some(2),
+            }
+        );
+        click(&mut window, 472, 410);
+        assert_eq!(window.page(), 2);
+        assert_eq!(
+            window.close_requested(),
+            FirstRunRequest::Finish {
+                save_profile: None,
+                install_edition: None,
+            }
+        );
+    }
+
+    #[test]
+    fn too_little_space_records_the_edition_and_installs_nothing() {
+        let mut window = FirstRunWindow::new(Facts::example(), true);
+        let mut facts = edition_facts();
+        facts.free_bytes = Some(600 * 1024);
+        facts.recorded = Some(3);
+        window.show_editions(facts);
+        assert_eq!(window.edition(), 3);
+        for _ in 0..3 {
+            click(&mut window, 576, 410);
+        }
+        assert!(window.edition_lines().0.starts_with("Not enough space: "));
+        assert_eq!(
+            click(&mut window, 576, 410),
+            Some(FirstRunRequest::Finish {
+                save_profile: None,
+                install_edition: None,
+            })
         );
     }
 
@@ -719,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_the_zone_field_moves_to_the_list_and_enter_on_a_row_is_done() {
+    fn enter_in_the_zone_field_moves_to_the_list_and_enter_on_a_row_turns_the_page() {
         let mut window = FirstRunWindow::new(Facts::example(), true);
         click(&mut window, 576, 410);
         click(&mut window, 576, 410);
@@ -742,10 +1025,8 @@ mod tests {
         );
         window.chosen(Request::SetTimeZone(paramaribo), Ok(()));
         assert!(window.zone_lines().2.ends_with("UTC-03:00"));
-        assert_eq!(
-            press(&mut window, key::ENTER, 0),
-            Some(FirstRunRequest::Finish { save_profile: None })
-        );
+        assert_eq!(press(&mut window, key::ENTER, 0), None);
+        assert_eq!(window.page(), 3);
     }
 
     type Described = (Role, u16, String, String);
@@ -812,7 +1093,17 @@ mod tests {
         let third = described(&mut window);
         assert!(named(&third, Role::TextField, zone_picker::PLACEHOLDER).is_some());
         assert!(third.iter().any(|element| element.0 == Role::List));
-        assert!(named(&third, Role::Button, "Done").is_some());
+        assert!(named(&third, Role::Button, "Next").is_some());
         assert!(named(&third, Role::Label, "Now").is_some());
+        click(&mut window, 576, 410);
+        let fourth = described(&mut window);
+        let editions: Vec<_> = fourth
+            .iter()
+            .filter(|element| element.0 == Role::Radio)
+            .map(|element| element.2.as_str())
+            .collect();
+        assert_eq!(editions, EDITION_TITLES);
+        assert!(named(&fourth, Role::Button, "Done").is_some());
+        assert!(named(&fourth, Role::Label, HEADINGS[3]).is_some());
     }
 }

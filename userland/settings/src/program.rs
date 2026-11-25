@@ -33,6 +33,7 @@ use eggos_settings::command::{
     self, MAX_ARGUMENTS, PairingAsked, USAGE, USAGE_STATUS, WindowAsked,
 };
 use eggos_settings::components_pane::{ComponentJob, ComponentsRead};
+use eggos_settings::edition_choice::{self, EditionFacts, StoreReach};
 use eggos_settings::facts::Facts;
 use eggos_settings::managed::PolicyFile;
 use eggos_settings_file::policy;
@@ -1945,7 +1946,7 @@ impl Application<CAPACITY> for Settings {
                 }
                 self.window.show_wifi(wifi_status(), wifi_chosen());
             }
-            Some(Request::OpenComponents) => {}
+            Some(Request::OpenComponents | Request::SetEdition(_)) => {}
             Some(Request::CopyToClipboard) => {
                 if let Some(server) = self.server.as_ref() {
                     let _ = server.set_clipboard(self.window.windows_pane().to_copy());
@@ -2462,6 +2463,59 @@ fn open_window(
     }
 }
 
+fn save_edition(index: usize) -> Result<(), Errno> {
+    let edition = eggos_components::editions::EDITIONS
+        .get(index)
+        .ok_or(Errno::EINVAL)?;
+    for folder in ["/var/lib", "/var/lib/eggos"] {
+        let folder = CPath::new(folder);
+        match syscall(
+            number::MKDIRAT,
+            [AT_FDCWD, folder.pointer(), DIRECTORY_MODE, 0, 0, 0],
+        ) {
+            Ok(_) | Err(Errno::EEXIST) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    write_file(eggos_components::editions::RECORD, edition.name.as_bytes())
+}
+
+fn edition_facts() -> EditionFacts {
+    let mut files = LinuxFiles::new();
+    let arch = eggos_app::linux::machine().name();
+    let store = component_manager::find_store(&mut files, arch);
+    let installed = component_manager::installed(&mut files);
+    let recorded = component_command::recorded_edition(&mut files).and_then(|name| {
+        eggos_components::editions::EDITIONS
+            .iter()
+            .position(|edition| edition.name == name)
+    });
+    let free_bytes = [component_manager::COMPONENTS, "/var/lib", "/"]
+        .iter()
+        .find_map(|place| files.space(place.as_bytes()).ok())
+        .map(|space| space.available);
+    let network_up = network_adapter()
+        .is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
+        || wifi_status().joined.is_some();
+    let index = store.as_ref().map(|store| &store.index);
+    EditionFacts {
+        recorded,
+        plans: core::array::from_fn(|at| {
+            edition_choice::plan(
+                &eggos_components::editions::EDITIONS[at],
+                index,
+                &installed,
+            )
+        }),
+        free_bytes,
+        store: match (store.is_some(), network_up) {
+            (true, _) => StoreReach::Attached,
+            (false, true) => StoreReach::Downloadable,
+            (false, false) => StoreReach::Offline,
+        },
+    }
+}
+
 struct FirstRun {
     window: FirstRunWindow,
     server: Option<WindowServer>,
@@ -2484,6 +2538,7 @@ impl FirstRun {
                 save_keyboard(choice).and_then(|()| apply_keyboard(choice, self.server.as_ref()))
             }
             Request::SetTimeZone(index) => save_time_zone(index),
+            Request::SetEdition(index) => save_edition(index),
             _ => return,
         };
         self.window.chosen(request, result);
@@ -2492,10 +2547,17 @@ impl FirstRun {
 
 fn finish_first_run(request: FirstRunRequest) -> ! {
     if let FirstRunRequest::Finish {
-        save_profile: Some(index),
+        save_profile,
+        install_edition,
     } = request
     {
-        save_profile(index);
+        if let Some(index) = save_profile {
+            save_profile(index);
+        }
+        let editions = &eggos_components::editions::EDITIONS;
+        if let Some(edition) = install_edition.and_then(|index| editions.get(index)) {
+            let _ = start_component_job(&ComponentJob::Edition(String::from(edition.name)));
+        }
     }
     eggos_runtime::syscall::exit(0)
 }
@@ -2544,6 +2606,7 @@ fn open_first_run() -> i32 {
         window: FirstRunWindow::new(facts(Some(window.server())), profile_saved),
         server: WindowServer::open().ok(),
     };
+    first_run.window.show_editions(edition_facts());
     let served = application::run(&mut window, &mut first_run);
     let closing = first_run.window.close_requested();
     if let Err(error) = served {

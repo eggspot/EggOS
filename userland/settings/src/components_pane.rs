@@ -140,6 +140,8 @@ pub enum ComponentJob {
     Install(String),
     /// `component remove <name> --yes`, once the pane confirmed it (D458).
     Remove(String),
+    /// `component edition <name>`, from first run's edition page (D771).
+    Edition(String),
 }
 
 impl ComponentJob {
@@ -154,9 +156,14 @@ impl ComponentJob {
             Self::Cancel => &["cancel"],
             Self::Install(_) => &["install"],
             Self::Remove(_) => &["remove"],
+            Self::Edition(_) => &["edition"],
         };
         let mut words: Vec<String> = words.iter().map(|word| String::from(*word)).collect();
-        if let Self::Update(Some(name)) | Self::Install(name) | Self::Remove(name) = self {
+        if let Self::Update(Some(name))
+        | Self::Install(name)
+        | Self::Remove(name)
+        | Self::Edition(name) = self
+        {
             words.push(name.clone());
         }
         if let Self::Remove(_) = self {

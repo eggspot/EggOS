@@ -16,6 +16,7 @@ pub mod automatic_clock;
 pub mod command;
 pub mod components_pane;
 pub mod disk;
+pub mod edition_choice;
 pub mod facts;
 pub mod first_run;
 pub mod grant_prompt;

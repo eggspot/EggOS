@@ -350,12 +350,14 @@ pub enum Kind {
     Button { text: Text<32>, primary: bool },
     /// A checkbox and its label.
     Checkbox { text: Text<32>, checked: bool },
-    /// A group of radio buttons, one always selected, side by side when `horizontal`.
+    /// A group of radio buttons, one always selected, side by side when `horizontal`, else
+    /// one under the other `pitch` apart.
     Radios {
         options: [&'static str; MAX_OPTIONS],
         count: usize,
         selected: usize,
         horizontal: bool,
+        pitch: i32,
     },
     /// A radio group drawn as cards (Settings' profile picker): `count` cards of `card`
     /// size, `gap` apart, with their labels and art; `ring` is the card the focus ring is on.
@@ -466,6 +468,28 @@ impl Kind {
             count,
             selected: selected.min(count.saturating_sub(1)),
             horizontal,
+            pitch: CONTROL_HEIGHT,
+        }
+    }
+
+    /// A radio group of `options` one under the other, `pitch` apart (at least a control's
+    /// height), leaving room for a line under each.
+    pub fn spaced_radios(options: &[&'static str], selected: usize, pitch: i32) -> Self {
+        match Self::radios(options, selected, false) {
+            Self::Radios {
+                options,
+                count,
+                selected,
+                horizontal,
+                ..
+            } => Self::Radios {
+                options,
+                count,
+                selected,
+                horizontal,
+                pitch: pitch.max(CONTROL_HEIGHT),
+            },
+            other => other,
         }
     }
 
@@ -690,6 +714,7 @@ impl Kind {
                 options,
                 count,
                 horizontal,
+                pitch,
                 ..
             } => {
                 let widths = options[..*count]
@@ -700,7 +725,10 @@ impl Kind {
                         widths.sum::<i32>() + RADIO_GAP * (*count as i32 - 1).max(0),
                         CONTROL_HEIGHT,
                     ),
-                    false => (widths.max().unwrap_or(0), CONTROL_HEIGHT * *count as i32),
+                    false => (
+                        widths.max().unwrap_or(0),
+                        pitch * (*count as i32 - 1).max(0) + CONTROL_HEIGHT,
+                    ),
                 }
             }
             Self::Cards {
@@ -765,6 +793,7 @@ pub fn radio_rect(kind: &Kind, rect: Rect, index: usize) -> Rect {
     let Kind::Radios {
         options,
         horizontal,
+        pitch,
         ..
     } = kind
     else {
@@ -781,7 +810,7 @@ pub fn radio_rect(kind: &Kind, rect: Rect, index: usize) -> Rect {
         }
         false => Rect::new(
             rect.x,
-            rect.y + CONTROL_HEIGHT * index as i32,
+            rect.y + pitch * index as i32,
             width_of(options[index]),
             CONTROL_HEIGHT,
         ),

@@ -2412,6 +2412,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 let next = match code {
                     key::UP | key::LEFT => selected.checked_sub(1),
                     key::DOWN | key::RIGHT => Some(selected + 1).filter(|&next| next < count),
+                    key::HOME => Some(0).filter(|&first| first != selected),
+                    key::END => count.checked_sub(1).filter(|&last| last != selected),
                     key::SPACE => None,
                     _ => return self.default_or(code, unused),
                 };

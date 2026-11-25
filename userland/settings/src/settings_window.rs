@@ -631,6 +631,10 @@ pub enum Request {
     SetSwitchKey(SwitchKey),
     /// Save and apply `keyboard.on_screen` as mode `0` to `2` (auto, always, never) (D317).
     SetOnScreenKeyboard(usize),
+    /// Record the edition at this index of `eggos_components::editions::EDITIONS` as chosen
+    /// (`/var/lib/eggos/edition`, the record `component edition` makes), then say how it went
+    /// (first run's edition page, D771).
+    SetEdition(usize),
     /// Save the time zone at this index of `eggos_calendar::zone::ZONES` as `time.zone`, then
     /// say how it went ([`SettingsWindow::time_zone_saved`]) (D194).
     SetTimeZone(usize),
