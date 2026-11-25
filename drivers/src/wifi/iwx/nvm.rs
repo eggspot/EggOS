@@ -28,6 +28,8 @@ const MAC_SKU_MIMO_DISABLED: u32 = 1 << 5;
 const CHANNEL_VALID: u32 = 1 << 0;
 const CHANNEL_ACTIVE: u32 = 1 << 3;
 const CHANNEL_RADAR: u32 = 1 << 4;
+const CHANNEL_40_MHZ: u32 = 1 << 9;
+const CHANNEL_80_MHZ: u32 = 1 << 10;
 
 const CHANNELS_V3: usize = 51;
 const CHANNELS_V4: usize = 110;
@@ -56,6 +58,10 @@ pub struct Channel {
     pub active: bool,
     /// Whether radar detection rules apply.
     pub radar: bool,
+    /// Whether it may be part of a 40 MHz channel (D784).
+    pub forty: bool,
+    /// Whether it may be part of an 80 MHz channel (D784).
+    pub eighty: bool,
 }
 
 impl Channel {
@@ -133,6 +139,8 @@ pub fn parse(
                 band,
                 active: flags & CHANNEL_ACTIVE != 0,
                 radar: flags & CHANNEL_RADAR != 0,
+                forty: flags & CHANNEL_40_MHZ != 0,
+                eighty: flags & CHANNEL_80_MHZ != 0,
             })
         })
         .collect();

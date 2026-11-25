@@ -92,6 +92,18 @@ pub fn association_request(
     ssid: &[u8],
     rsn: Option<&[u8]>,
 ) -> Vec<u8> {
+    association_request_offering(own, bssid, ssid, rsn, &[])
+}
+
+/// [`association_request`] with `offered`, the high-throughput capability elements
+/// ([`crate::capabilities::offered`], D784), after the RSN element.
+pub fn association_request_offering(
+    own: Address,
+    bssid: Address,
+    ssid: &[u8],
+    rsn: Option<&[u8]>,
+    offered: &[u8],
+) -> Vec<u8> {
     let mut frame = header(SUBTYPE_ASSOCIATION_REQUEST, 0, bssid, own, bssid);
     let mut capability = CAPABILITY_ESS | CAPABILITY_SHORT_SLOT;
     let protected = rsn.is_some();
@@ -109,6 +121,7 @@ pub fn association_request(
     if let Some(rsn) = rsn {
         frame.extend_from_slice(rsn);
     }
+    frame.extend_from_slice(offered);
     frame
 }
 

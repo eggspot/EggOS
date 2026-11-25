@@ -2,7 +2,11 @@
 //! context for a client station with the network's BSSID, the binding between them, the station
 //! entry for the access point, the management transmit queue and session protection, then frames
 //! sent through that queue with the firmware choosing their rate. Association state changes
-//! (the association id, the beacon interval) go to the MAC context afterwards.
+//! (the association id, the beacon interval) go to the MAC context afterwards. A network that
+//! offers HT, VHT or HE is joined at its width (20, 40 or 80 MHz), the firmware's rate control
+//! told the modes, streams and short guard intervals both sides have, and the device and MAC
+//! power tables are set: the device saves power, the station stays awake for frames (no PS-Poll
+//! and no U-APSD) unless asked (D784).
 
 use super::devices::{Adapter, Family};
 use super::firmware::Firmware;
@@ -23,6 +27,28 @@ const SCD_QUEUE_CONFIG: u8 = 0x17;
 const RLC_CONFIG: u8 = 0x08;
 const MAC_CONF_GROUP: u8 = 0x3;
 const SESSION_PROTECTION: u8 = 0x05;
+const TLC_MNG_CONFIG: u8 = 0x0f;
+const POWER_TABLE: u8 = 0x77;
+const MAC_POWER_TABLE: u8 = 0xa9;
+const DEVICE_POWER_SAVE: u16 = 1 << 0;
+const MAC_POWER_MANAGEMENT: u16 = 1 << 0;
+const MAC_POWER_SAVE: u16 = 1 << 1;
+const KEEP_ALIVE_SECONDS: u16 = 25;
+const STATION_FAT_SHIFT: u32 = 26;
+const STATION_MIMO_TWO: u32 = 1 << 28;
+const STATION_AGGREGATION_SIZE_SHIFT: u32 = 19;
+const STATION_AGGREGATION_MASK: u32 = (7 << 19) | (7 << 23);
+const TLC_CHAINS_A_B: u8 = 3;
+const TLC_CHAIN_A: u8 = 1;
+const TLC_FLAG_STBC: u16 = 1 << 0;
+const TLC_FLAG_LDPC: u16 = 1 << 1;
+const LEGACY_RATES_2_4: u16 = 0x0fff;
+const LEGACY_RATES_5: u16 = 0x0ff0;
+const HT_MCS: u16 = 0x00ff;
+const VHT_MCS: u16 = 0x03ff;
+const HE_MCS: u16 = 0x0fff;
+const MPDU_BYTES_HT: u16 = 3839;
+const MPDU_BYTES_VHT: u16 = 3895;
 
 const ACTION_ADD: u32 = 1;
 const ACTION_MODIFY: u32 = 2;
@@ -111,6 +137,81 @@ impl JoinError {
     }
 }
 
+/// The width a network is joined at: the firmware's channel mode (0 for 20 MHz, 1 for 40, 2
+/// for 80), the centre channel and where the primary channel sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Width {
+    pub mode: u8,
+    pub center: u8,
+    pub control: u8,
+}
+
+impl Width {
+    /// 20 MHz on `channel`.
+    pub const fn twenty(channel: u8) -> Self {
+        Self {
+            mode: 0,
+            center: channel,
+            control: 0,
+        }
+    }
+
+    /// The width for primary channel `primary` that the network offers and the channel allows:
+    /// 80 MHz around `vht_center` when the network's VHT operation names it (`vht_width` 1),
+    /// else 40 with the secondary channel `secondary_above` (or below), else 20.
+    pub fn offered(
+        channel: &Channel,
+        secondary_above: Option<bool>,
+        vht_center: Option<u8>,
+    ) -> Self {
+        let primary = channel.number;
+        if let Some(center) = vht_center.filter(|_| channel.eighty) {
+            let control = match i16::from(primary) - i16::from(center) {
+                -6 => 1,
+                -2 => 0,
+                2 => 4,
+                6 => 5,
+                _ => return Self::twenty(primary),
+            };
+            return Self {
+                mode: 2,
+                center,
+                control,
+            };
+        }
+        match secondary_above.filter(|_| channel.forty) {
+            Some(true) => Self {
+                mode: 1,
+                center: primary + 2,
+                control: 0,
+            },
+            Some(false) if primary > 2 => Self {
+                mode: 1,
+                center: primary - 2,
+                control: 4,
+            },
+            _ => Self::twenty(primary),
+        }
+    }
+}
+
+/// The rate modes both the adapter and the network have (D784).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateMode {
+    Legacy,
+    Ht,
+    Vht,
+    He,
+}
+
+/// What the firmware's rate control may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rates {
+    pub mode: RateMode,
+    /// 1 or 2 spatial streams.
+    pub streams: u8,
+}
+
 /// The network to join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
@@ -118,6 +219,9 @@ pub struct Target {
     pub channel: Channel,
     /// Its beacon interval, in time units.
     pub beacon_interval: u16,
+    /// The width it is joined at.
+    pub width: Width,
+    pub rates: Rates,
 }
 
 /// A joined network's transmit queue and what the MAC context needs again.
@@ -157,8 +261,13 @@ fn rx_chain_info(firmware: &Firmware) -> u32 {
     (valid << RX_CHAIN_VALID_SHIFT) | (1 << RX_CHAIN_COUNT_SHIFT) | (1 << RX_CHAIN_MIMO_COUNT_SHIFT)
 }
 
-/// The PHY context command for `channel`, 20 MHz wide.
-pub fn phy_context(channel: &Channel, firmware: &Firmware, action: u32) -> alloc::vec::Vec<u8> {
+/// The PHY context command for `channel` at `width`.
+pub fn phy_context(
+    channel: &Channel,
+    width: &Width,
+    firmware: &Firmware,
+    action: u32,
+) -> alloc::vec::Vec<u8> {
     let band = match channel.band {
         Band::TwoPointFour => PHY_BAND_2_4,
         Band::Five => PHY_BAND_5,
@@ -169,13 +278,17 @@ pub fn phy_context(channel: &Channel, firmware: &Firmware, action: u32) -> alloc
     put32(&mut command, 4, action);
     let after_channel = match wide {
         true => {
-            put32(&mut command, 8, u32::from(channel.number));
+            put32(&mut command, 8, u32::from(width.center));
             command[12] = band;
+            command[13] = width.mode;
+            command[14] = width.control;
             16
         }
         false => {
             command[8] = band;
-            command[9] = channel.number;
+            command[9] = width.center;
+            command[10] = width.mode;
+            command[11] = width.control;
             12
         }
     };
@@ -239,9 +352,101 @@ fn add_station(target: &Target, update: bool) -> [u8; 48] {
         put(&mut command, 8, &target.bssid);
     }
     command[16] = STATION_ID;
-    put32(&mut command, 24, STATION_FAT_MASK | STATION_MIMO_MASK);
+    let mut flags = u32::from(target.width.mode) << STATION_FAT_SHIFT;
+    let mut mask = STATION_FAT_MASK | STATION_MIMO_MASK;
+    if target.rates.streams >= 2 && target.rates.mode != RateMode::Legacy {
+        flags |= STATION_MIMO_TWO;
+    }
+    if target.rates.mode != RateMode::Legacy {
+        flags |= 3 << STATION_AGGREGATION_SIZE_SHIFT;
+        mask |= STATION_AGGREGATION_MASK;
+    }
+    put32(&mut command, 20, flags);
+    put32(&mut command, 24, mask);
     command[35] = STATION_LINK;
     command
+}
+
+/// The rate control's configuration for `target` (`TLC_MNG_CONFIG`, version 3 or 4).
+fn rate_control(target: &Target, version: Option<u8>) -> alloc::vec::Vec<u8> {
+    let rates = target.rates;
+    let (mode, mcs, mpdu) = match rates.mode {
+        RateMode::Legacy => (0, 0, MPDU_BYTES_HT),
+        RateMode::Ht => (1, HT_MCS, MPDU_BYTES_HT),
+        RateMode::Vht => (2, VHT_MCS, MPDU_BYTES_VHT),
+        RateMode::He => (3, HE_MCS, MPDU_BYTES_VHT),
+    };
+    let legacy = match target.channel.band {
+        Band::TwoPointFour => LEGACY_RATES_2_4,
+        Band::Five => LEGACY_RATES_5,
+    };
+    let chains = match rates.streams >= 2 {
+        true => TLC_CHAINS_A_B,
+        false => TLC_CHAIN_A,
+    };
+    let short_gi = match rates.mode {
+        RateMode::Legacy => 0,
+        _ => (1u8 << (target.width.mode + 1)) - 1,
+    };
+    let flags = match rates.mode {
+        RateMode::Legacy => 0,
+        _ => TLC_FLAG_STBC | TLC_FLAG_LDPC,
+    };
+    let four = version == Some(4);
+    let mut command = alloc::vec![0u8; if four { 28 } else { 24 }];
+    command[0] = STATION_ID;
+    command[4] = target.width.mode;
+    command[5] = mode;
+    command[6] = chains;
+    if four {
+        command[7] = short_gi;
+    }
+    put(&mut command, 8, &flags.to_le_bytes());
+    put(&mut command, 10, &legacy.to_le_bytes());
+    let per_stream = if four { 3 } else { 2 };
+    for stream in 0..usize::from(rates.streams.clamp(1, 2)) {
+        put(&mut command, 12 + stream * per_stream * 2, &mcs.to_le_bytes());
+    }
+    let after = 12 + 2 * per_stream * 2;
+    put(&mut command, after, &mpdu.to_le_bytes());
+    if !four {
+        command[after + 2] = short_gi;
+    }
+    command
+}
+
+/// The device power table: power saving on (D784).
+fn device_power() -> [u8; 4] {
+    let mut command = [0u8; 4];
+    put(&mut command, 0, &DEVICE_POWER_SAVE.to_le_bytes());
+    command
+}
+
+/// The MAC power table: power management with a keep-alive, and the station's own power save
+/// (PS-Poll, no U-APSD) only when `station_saves` (D784).
+fn mac_power(beacon_interval: u16, station_saves: bool) -> [u8; 44] {
+    let mut command = [0u8; 44];
+    let mut flags = MAC_POWER_MANAGEMENT;
+    if station_saves {
+        flags |= MAC_POWER_SAVE;
+    }
+    put(&mut command, 4, &flags.to_le_bytes());
+    let keep_alive = KEEP_ALIVE_SECONDS.max((3 * u32::from(beacon_interval) / 1000) as u16);
+    put(&mut command, 6, &keep_alive.to_le_bytes());
+    command
+}
+
+/// Sets the device's and the joined station's power tables (D784).
+pub fn set_power<R: RegisterIo, M: DmaMemory>(
+    transport: &mut Transport<R, M>,
+    link: &Link<M>,
+    station_saves: bool,
+    wait: &mut dyn Wait,
+) -> Result<(), JoinError> {
+    transport.send_command(LEGACY_GROUP, POWER_TABLE, &device_power(), wait)?;
+    let table = mac_power(link.target.beacon_interval, station_saves);
+    transport.send_command(LEGACY_GROUP, MAC_POWER_TABLE, &table, wait)?;
+    Ok(())
 }
 
 /// Readies the firmware to talk to `target`: its PHY, MAC and binding contexts, its station,
@@ -265,7 +470,7 @@ pub fn join<R: RegisterIo, M: DmaMemory, A: DmaAllocator<Memory = M>>(
     transport.send_command(
         LEGACY_GROUP,
         PHY_CONTEXT,
-        &phy_context(&target.channel, firmware, ACTION_ADD),
+        &phy_context(&target.channel, &target.width, firmware, ACTION_ADD),
         wait,
     )?;
     if firmware.command_version(DATA_PATH_GROUP, RLC_CONFIG) == Some(2) {
@@ -349,9 +554,11 @@ pub fn join<R: RegisterIo, M: DmaMemory, A: DmaAllocator<Memory = M>>(
     })
 }
 
-/// Tells the firmware the station is associated with association id `association`.
+/// Tells the firmware the station is associated with association id `association`, then gives
+/// its rate control the target's modes, streams and width (D784).
 pub fn associated<R: RegisterIo, M: DmaMemory>(
     transport: &mut Transport<R, M>,
+    firmware: &Firmware,
     link: &Link<M>,
     association: u16,
     wait: &mut dyn Wait,
@@ -364,10 +571,13 @@ pub fn associated<R: RegisterIo, M: DmaMemory>(
         &add_station(&link.target, true),
         wait,
     )?);
-    match status & 0xff {
-        ADD_STATION_SUCCESS => Ok(()),
-        _ => Err(JoinError::Refused(status)),
+    if status & 0xff != ADD_STATION_SUCCESS {
+        return Err(JoinError::Refused(status));
     }
+    let version = firmware.command_version(DATA_PATH_GROUP, TLC_MNG_CONFIG);
+    let command = rate_control(&link.target, version);
+    transport.send_command(DATA_PATH_GROUP, TLC_MNG_CONFIG, &command, wait)?;
+    Ok(())
 }
 
 fn queue_off(firmware: &Firmware) -> (u8, u8, alloc::vec::Vec<u8>) {
@@ -412,7 +622,12 @@ pub fn leave<R: RegisterIo, M: DmaMemory>(
     transport.send_command(
         LEGACY_GROUP,
         PHY_CONTEXT,
-        &phy_context(&link.target.channel, firmware, ACTION_REMOVE),
+        &phy_context(
+            &link.target.channel,
+            &link.target.width,
+            firmware,
+            ACTION_REMOVE,
+        ),
         wait,
     )?;
     drop(link);
@@ -564,7 +779,31 @@ mod tests {
             band: Band::TwoPointFour,
             active: true,
             radar: false,
+            forty: true,
+            eighty: false,
         }
+    }
+
+    #[test]
+    fn widths_follow_what_the_network_offers_and_the_channel_allows() {
+        let five = Channel {
+            number: 44,
+            band: Band::Five,
+            active: true,
+            radar: false,
+            forty: true,
+            eighty: true,
+        };
+        assert_eq!(
+            Width::offered(&five, Some(false), Some(42)),
+            Width {
+                mode: 2,
+                center: 42,
+                control: 4,
+            }
+        );
+        assert_eq!(Width::offered(&channel(), Some(true), None).center, 8);
+        assert_eq!(Width::offered(&channel(), None, None), Width::twenty(6));
     }
 
     #[test]
@@ -573,7 +812,16 @@ mod tests {
             bssid: [2, 3, 4, 5, 6, 7],
             channel: channel(),
             beacon_interval: 100,
+            width: Width::twenty(6),
+            rates: Rates {
+                mode: RateMode::Ht,
+                streams: 2,
+            },
         };
+        let tlc = rate_control(&target, Some(4));
+        assert_eq!((tlc[5], tlc[6]), (1, TLC_CHAINS_A_B));
+        assert_eq!(u16::from_le_bytes([tlc[12], tlc[13]]), HT_MCS);
+        assert_eq!(u16::from_le_bytes([tlc[18], tlc[19]]), HT_MCS);
         let command = mac_context([0, 1, 2, 3, 4, 5], &target, ACTION_ADD, None);
         assert_eq!(command.len(), 148);
         assert_eq!(status_of(&command[8..]), MAC_TYPE_BSS_STATION);

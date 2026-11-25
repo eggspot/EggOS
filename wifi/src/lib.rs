@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+pub mod capabilities;
 pub mod client;
 pub mod eap;
 pub mod enterprise;

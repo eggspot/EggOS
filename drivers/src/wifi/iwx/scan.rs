@@ -381,12 +381,16 @@ mod tests {
                     band: Band::TwoPointFour,
                     active: true,
                     radar: false,
+                    forty: false,
+                    eighty: false,
                 },
                 Channel {
                     number: 36,
                     band: Band::Five,
                     active: true,
                     radar: false,
+                    forty: false,
+                    eighty: false,
                 },
             ],
         }

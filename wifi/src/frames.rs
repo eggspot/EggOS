@@ -12,6 +12,14 @@ const BEACON_FIXED_BYTES: usize = 12;
 const ELEMENT_SSID: u8 = 0;
 const ELEMENT_DS_PARAMETERS: u8 = 3;
 const ELEMENT_RSN: u8 = 48;
+const ELEMENT_HT_CAPABILITIES: u8 = 45;
+const ELEMENT_HT_OPERATION: u8 = 61;
+const ELEMENT_VHT_CAPABILITIES: u8 = 191;
+const ELEMENT_VHT_OPERATION: u8 = 192;
+const ELEMENT_EXTENSION: u8 = 255;
+const EXTENSION_HE_CAPABILITIES: u8 = 35;
+const SECONDARY_ABOVE: u8 = 1;
+const SECONDARY_BELOW: u8 = 3;
 const CAPABILITY_PRIVACY: u16 = 1 << 4;
 const MANAGEMENT_PROTECTION_REQUIRED: u16 = 1 << 6;
 const MAX_SSID_BYTES: usize = 32;
@@ -62,6 +70,34 @@ pub struct Network {
     pub ssid_length: usize,
     pub channel: Option<u8>,
     pub security: Security,
+    /// What its high-throughput elements offer (D784).
+    pub phy: Phy,
+}
+
+/// Where a 40 MHz network's secondary channel is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Secondary {
+    #[default]
+    None,
+    Above,
+    Below,
+}
+
+/// The rates and widths a network's beacon offers (IEEE 802.11-2020, 9.4.2.56, 9.4.2.57,
+/// 9.4.2.157, 9.4.2.158 and 9.4.2.248).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Phy {
+    /// HT (802.11n).
+    pub ht: bool,
+    pub secondary: Secondary,
+    /// VHT (802.11ac).
+    pub vht: bool,
+    /// The VHT operation's channel width: 0 for 20 or 40 MHz, 1 for 80, 2 for 160, 3 for 80+80.
+    pub vht_width: u8,
+    /// The VHT operation's first centre channel.
+    pub vht_center: u8,
+    /// HE (802.11ax).
+    pub he: bool,
 }
 
 impl Network {
@@ -169,6 +205,7 @@ pub fn network(frame: &[u8]) -> Option<Network> {
         } else {
             Security::Open
         },
+        phy: Phy::default(),
     };
     let mut elements = frame.get(HEADER_BYTES + BEACON_FIXED_BYTES..)?;
     while elements.len() >= 2 {
@@ -181,6 +218,24 @@ pub fn network(frame: &[u8]) -> Option<Network> {
             }
             ELEMENT_DS_PARAMETERS if length == 1 => network.channel = Some(body[0]),
             ELEMENT_RSN => network.security = rsn_security(body),
+            ELEMENT_HT_CAPABILITIES => network.phy.ht = true,
+            ELEMENT_HT_OPERATION if length >= 2 => {
+                network.phy.ht = true;
+                network.phy.secondary = match body[1] & 0x3 {
+                    SECONDARY_ABOVE => Secondary::Above,
+                    SECONDARY_BELOW => Secondary::Below,
+                    _ => Secondary::None,
+                };
+            }
+            ELEMENT_VHT_CAPABILITIES => network.phy.vht = true,
+            ELEMENT_VHT_OPERATION if length >= 3 => {
+                network.phy.vht = true;
+                network.phy.vht_width = body[0];
+                network.phy.vht_center = body[1];
+            }
+            ELEMENT_EXTENSION if body.first() == Some(&EXTENSION_HE_CAPABILITIES) => {
+                network.phy.he = true;
+            }
             _ => {}
         }
         elements = &elements[2 + length..];
@@ -290,6 +345,19 @@ mod tests {
         assert_eq!(found.channel, Some(6));
         assert_eq!(found.bssid, [2, 0, 0, 0, 0, 1]);
         assert_eq!(found.security, Security::Wpa2Personal);
+    }
+
+    #[test]
+    fn a_beacon_s_high_throughput_elements_say_its_widths() {
+        let mut elements = vec![0, 1, b'x', 3, 1, 36];
+        elements.extend_from_slice(&[ELEMENT_HT_OPERATION, 22, 36, SECONDARY_ABOVE]);
+        elements.extend_from_slice(&[0; 20]);
+        elements.extend_from_slice(&[ELEMENT_VHT_OPERATION, 5, 1, 42, 0, 0xfa, 0xff]);
+        elements.extend_from_slice(&[ELEMENT_EXTENSION, 2, EXTENSION_HE_CAPABILITIES, 0]);
+        let phy = network(&beacon(&elements, false)).unwrap().phy;
+        assert!(phy.ht && phy.vht && phy.he);
+        assert_eq!(phy.secondary, Secondary::Above);
+        assert_eq!((phy.vht_width, phy.vht_center), (1, 42));
     }
 
     #[test]

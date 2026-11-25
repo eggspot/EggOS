@@ -669,10 +669,44 @@ fn connect<P: Platform>(
         timed_out,
         sent_away,
     };
+    let phy = network.phy;
+    let streams = match nvm.mimo && nvm.tx_chains.count_ones() >= 2 {
+        true => 2,
+        false => 1,
+    };
+    let secondary_above = match phy.secondary {
+        wifi_frames::Secondary::Above => Some(true),
+        wifi_frames::Secondary::Below => Some(false),
+        wifi_frames::Secondary::None => None,
+    };
+    let vht_center = (phy.vht && nvm.very_high_throughput && phy.vht_width == 1)
+        .then_some(phy.vht_center);
+    let width = match phy.ht && nvm.high_throughput {
+        true => station::Width::offered(&channel, secondary_above, vht_center),
+        false => station::Width::twenty(channel.number),
+    };
+    let mode = match (phy.ht && nvm.high_throughput, phy.vht && nvm.very_high_throughput) {
+        _ if phy.he && nvm.high_efficiency && nvm.high_throughput => station::RateMode::He,
+        (true, true) if channel.band == eggos_drivers::wifi::iwx::nvm::Band::Five => {
+            station::RateMode::Vht
+        }
+        (true, _) => station::RateMode::Ht,
+        _ => station::RateMode::Legacy,
+    };
+    let ours = eggos_wifi::capabilities::Ours {
+        ht: nvm.high_throughput,
+        vht: nvm.very_high_throughput,
+        he: nvm.high_efficiency,
+        streams,
+        forty: width.mode >= 1,
+    };
+    let offered = eggos_wifi::capabilities::offered(&ours, &phy);
     let target = Target {
         bssid,
         channel,
         beacon_interval: seen.beacon_interval,
+        width,
+        rates: station::Rates { mode, streams },
     };
     let joining_failed = |error: station::JoinError| Failure::adapter(error.description());
     let mut link = station::join(
@@ -750,7 +784,8 @@ fn connect<P: Platform>(
                 return Err(REFUSED);
             }
         }
-        let request = client::association_request(own, bssid, network.ssid(), rsn);
+        let request =
+            client::association_request_offering(own, bssid, network.ssid(), rsn, &offered);
         link.send(transport, &request).map_err(joining_failed)?;
         let (status, association) = wait_frame::<P, _>(
             transport,
@@ -762,6 +797,7 @@ fn connect<P: Platform>(
         }
         station::associated(
             transport,
+            firmware,
             &link,
             association,
             &mut Pauses::<P>::within(INIT_TIMEOUT_MS),
@@ -829,12 +865,16 @@ fn connect<P: Platform>(
         }
     };
     match attempt() {
-        Ok((keys, supplicant)) => Ok(Connection {
-            link,
-            keys,
-            management_protected: akm.is_some_and(Akm::protects_management),
-            supplicant,
-        }),
+        Ok((keys, supplicant)) => {
+            let mut pauses = Pauses::<P>::within(INIT_TIMEOUT_MS);
+            let _ = station::set_power(transport, &link, false, &mut pauses);
+            Ok(Connection {
+                link,
+                keys,
+                management_protected: akm.is_some_and(Akm::protects_management),
+                supplicant,
+            })
+        }
         Err(failure) => {
             let _ = link.send(transport, &client::deauthentication(own, bssid, LEAVING));
             let _ = station::leave(
