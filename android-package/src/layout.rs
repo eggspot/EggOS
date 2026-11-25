@@ -48,7 +48,69 @@ pub struct ViewNode {
     pub input_type: Option<u32>,
     /// `android:imeOptions`' action (`actionDone` is 6), D762.
     pub ime_action: Option<u32>,
+    /// `android:layout_width` and `android:layout_height` (D763).
+    pub layout_width: Option<Extent>,
+    pub layout_height: Option<Extent>,
+    /// `android:scaleType`, as `ImageView.ScaleType`'s ordinal (`fitCenter` is 3), D763.
+    pub scale_type: Option<u32>,
     pub children: Vec<ViewNode>,
+}
+
+/// A view's width or height in its layout (D763).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extent {
+    MatchParent,
+    WrapContent,
+    /// A dimension, as binary XML encodes it (see [`dimension_pixels`]).
+    Dimension(u32),
+}
+
+const TYPE_DIMENSION: u8 = 0x05;
+const MATCH_PARENT: u32 = u32::MAX;
+const WRAP_CONTENT: u32 = u32::MAX - 1;
+const BASE_DENSITY: i64 = 160;
+const SCALE_TYPE_NAMES: [&str; 8] = [
+    "matrix",
+    "fitXY",
+    "fitStart",
+    "fitCenter",
+    "fitEnd",
+    "center",
+    "centerCrop",
+    "centerInside",
+];
+
+/// A dimension's size in pixels on a screen of `dpi` dots per inch: its mantissa and radix
+/// (`23p0`, `16p7`, `8p15`, `0p23`) and its unit (`px`, `dp`, `sp`, `pt`, `in`, `mm`).
+pub fn dimension_pixels(data: u32, dpi: u32) -> i32 {
+    let mantissa = i64::from((data as i32) >> 8);
+    let fraction_bits = match (data >> 4) & 3 {
+        0 => 0,
+        1 => 7,
+        2 => 15,
+        _ => 23,
+    };
+    let dpi = i64::from(dpi);
+    let scaled = match data & 0xf {
+        0 => mantissa,
+        1 | 2 => mantissa * dpi / BASE_DENSITY,
+        3 => mantissa * dpi / 72,
+        4 => mantissa * dpi,
+        5 => mantissa * dpi * 10 / 254,
+        _ => mantissa,
+    };
+    (scaled >> fraction_bits) as i32
+}
+
+fn extent(attribute: &Attribute) -> Option<Extent> {
+    match (attribute.kind, attribute.data, attribute.text.as_deref()) {
+        (TYPE_DIMENSION, data, _) => Some(Extent::Dimension(data)),
+        (TYPE_INT_DEC | TYPE_INT_HEX, MATCH_PARENT, _) => Some(Extent::MatchParent),
+        (TYPE_INT_DEC | TYPE_INT_HEX, WRAP_CONTENT, _) => Some(Extent::WrapContent),
+        (_, _, Some("match_parent" | "fill_parent")) => Some(Extent::MatchParent),
+        (_, _, Some("wrap_content")) => Some(Extent::WrapContent),
+        _ => None,
+    }
 }
 
 const INPUT_TYPE_NAMES: [(&str, u32); 10] = [
@@ -136,6 +198,18 @@ fn node(name: String, attributes: &[Attribute]) -> ViewNode {
             "onClick" => view.on_click = attribute.text.clone(),
             "src" | "srcCompat" if attribute.kind == TYPE_REFERENCE => {
                 view.image = Some(attribute.data)
+            }
+            "layout_width" => view.layout_width = extent(attribute),
+            "layout_height" => view.layout_height = extent(attribute),
+            "scaleType" => {
+                view.scale_type = match attribute.kind {
+                    TYPE_INT_DEC | TYPE_INT_HEX => Some(attribute.data),
+                    _ => attribute
+                        .text
+                        .as_deref()
+                        .and_then(|name| SCALE_TYPE_NAMES.iter().position(|known| *known == name))
+                        .map(|ordinal| ordinal as u32),
+                }
             }
             "inputType" => {
                 view.input_type = match attribute.kind {
@@ -300,5 +374,14 @@ mod tests {
         assert_eq!(root.children[0].text, Some(Text::Resource(0x7f0f_0001)));
         assert_eq!(root.children[1].id, Some(0x7f08_0002));
         assert_eq!(root.children[1].on_click.as_deref(), Some("greet"));
+    }
+
+    #[test]
+    fn dimensions_become_pixels_at_the_screen_s_density() {
+        let dp = |value: i32| ((value as u32) << 8) | 1;
+        assert_eq!(dimension_pixels(dp(48), 160), 48);
+        assert_eq!(dimension_pixels(dp(48), 320), 96);
+        assert_eq!(dimension_pixels(10 << 8, 320), 10);
+        assert_eq!(dimension_pixels(((3 << 7) << 8) | (1 << 4) | 1, 160), 3);
     }
 }

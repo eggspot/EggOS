@@ -64,6 +64,7 @@ const PADDING: i32 = 16;
 const STACK_ABOVE_RUN: usize = 4096;
 const MOST_FRAMES: usize = 64;
 const IME_ACTION_MASK: u32 = 0xff;
+const BITMAP_IMAGE: u32 = u32::MAX;
 const MOST_CAUSES: usize = 8;
 #[cfg(target_arch = "x86_64")]
 const MACHINE: compiler::Machine = compiler::Machine::X86_64;
@@ -90,6 +91,8 @@ struct State {
     code_length: usize,
     failed_classes: BTreeSet<String>,
     depth: usize,
+    placed_images: Vec<(u32, i32, i32)>,
+    scaled_images: BTreeMap<(u32, i32, i32), u32>,
 }
 
 static STATE: AtomicPtr<State> = AtomicPtr::new(core::ptr::null_mut());
@@ -630,7 +633,20 @@ fn static_field_class(field: u64, table: *const usize) {
 extern "C" fn static_get(words: *const u64, table: *const usize) -> u64 {
     let [field] = arguments::<1>(words);
     static_field_class(field, table);
-    state().statics.get(&(field as u32)).copied().unwrap_or(0)
+    if let Some(&value) = state().statics.get(&(field as u32)) {
+        return value;
+    }
+    let class = state().dex.field_class(field as u32).unwrap_or_default();
+    if class != framework::SCALE_TYPE {
+        return 0;
+    }
+    let constant = new_object(Object {
+        class,
+        text: state().dex.field_name(field as u32),
+        ..Object::default()
+    });
+    state().statics.insert(field as u32, constant);
+    constant
 }
 
 extern "C" fn static_put(words: *const u64, table: *const usize) -> u64 {
@@ -989,6 +1005,9 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
             image: node.image.and_then(load_image),
             input_type: node.input_type.unwrap_or(0),
             ime_action: node.ime_action.unwrap_or(0),
+            width: pixels_of(node.layout_width),
+            height: pixels_of(node.layout_height),
+            scale_type: node.scale_type,
             ..View::default()
         }),
         ..Object::default()
@@ -1081,6 +1100,13 @@ extern "C" fn get_text(words: *const u64, _: *const usize) -> u64 {
 extern "C" fn get_string(words: *const u64, _: *const usize) -> u64 {
     let [_, id] = arguments::<2>(words);
     new_string(resource_string(u64::from(id as u32)).unwrap_or_default())
+}
+
+fn pixels_of(extent: Option<layout::Extent>) -> Option<i32> {
+    match extent? {
+        layout::Extent::Dimension(data) => Some(layout::dimension_pixels(data, SCREEN_DPI)),
+        _ => None,
+    }
 }
 
 fn text_field(view: u64) -> Option<&'static mut View> {
@@ -1385,27 +1411,27 @@ fn item_clicked(view: u64, position: usize) {
 
 const LARGEST_IMAGE: u32 = 1024;
 
-fn load_image(id: u32) -> Option<u32> {
-    let path = resource_string(u64::from(id))?;
-    let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
-    if path.ends_with(".xml") {
-        return load_vector(&file);
-    }
-    if path.ends_with(".webp") {
+/// The screen's density the layer draws Android apps at, in dots per inch: `mdpi`, one
+/// device-independent pixel a pixel (D763).
+const SCREEN_DPI: u32 = 160;
+
+fn keep_image(width: usize, pixels: Vec<u32>) -> Option<u32> {
+    let images = &mut state().images;
+    images.push((width, pixels));
+    u32::try_from(images.len() - 1).ok()
+}
+
+fn decode_picture(file: &[u8], webp: bool) -> Option<(usize, Vec<u32>)> {
+    if webp {
         let decoded =
-            eggos_image::decode(&read_file(&file)?, &eggos_image::Limits::DEFAULT).ok()?;
+            eggos_image::decode(&read_file(file)?, &eggos_image::Limits::DEFAULT).ok()?;
         if decoded.width > LARGEST_IMAGE || decoded.height > LARGEST_IMAGE {
             return None;
         }
         let pixels = decoded.pixels.into_iter().map(premultiplied).collect();
-        let images = &mut state().images;
-        images.push((decoded.width as usize, pixels));
-        return u32::try_from(images.len() - 1).ok();
+        return Some((decoded.width as usize, pixels));
     }
-    if !path.ends_with(".png") {
-        return None;
-    }
-    let bytes = read_file(&file)?;
+    let bytes = read_file(file)?;
     let mut source = eggos_png::inflate::SliceSource::new(&bytes);
     let decoder = eggos_png::rows::RowDecoder::open(&mut source).ok()?;
     let header = decoder.header();
@@ -1423,9 +1449,40 @@ fn load_image(id: u32) -> Option<u32> {
             }
         })
         .ok()?;
-    let images = &mut state().images;
-    images.push((width, pixels));
-    u32::try_from(images.len() - 1).ok()
+    Some((width, pixels))
+}
+
+/// Picture file `file` (a PNG or WebP drawn for `density`) decoded and scaled to the screen's
+/// density (D763), kept among the layer's images.
+fn load_picture(file: &[u8], webp: bool, density: u32) -> Option<u32> {
+    let (width, pixels) = decode_picture(file, webp)?;
+    let height = pixels.len() / width.max(1);
+    if density == 0 || density == SCREEN_DPI {
+        return keep_image(width, pixels);
+    }
+    let scale = |length: usize| (length * SCREEN_DPI as usize / density as usize).max(1);
+    let (new_width, new_height) = (scale(width), scale(height));
+    keep_image(
+        new_width,
+        crate::image_fit::resample(&pixels, width, new_width, new_height),
+    )
+}
+
+fn load_image(id: u32) -> Option<u32> {
+    let (path, density) = {
+        let table = state().resources.as_ref()?;
+        let (path, density) = table.density_variant(id, SCREEN_DPI)?;
+        (String::from(path), density)
+    };
+    let file = [state().folder.as_slice(), b"/", path.as_bytes()].concat();
+    if path.ends_with(".xml") {
+        return load_vector(&file);
+    }
+    match (path.ends_with(".webp"), path.ends_with(".png")) {
+        (true, _) => load_picture(&file, true, density),
+        (false, true) => load_picture(&file, false, density),
+        _ => None,
+    }
 }
 
 fn load_vector(file: &[u8]) -> Option<u32> {
@@ -1448,9 +1505,103 @@ fn premultiplied(pixel: u32) -> u32 {
 }
 
 fn paint_image(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
-    if let Some((width, pixels)) = state().images.get(data as usize) {
-        canvas.composite((rect.x, rect.y), pixels, *width, false);
+    let Some(&(image, x, y)) = state().placed_images.get(data as usize) else {
+        return;
+    };
+    if let Some((width, pixels)) = state().images.get(image as usize) {
+        let clip = canvas.narrow(rect);
+        canvas.composite((rect.x + x, rect.y + y), pixels, *width, false);
+        canvas.restore(clip);
     }
+}
+
+/// Image `image` fitted in a `area`-sized box by scale type `kind` (D763): the image to draw
+/// (scaled once and kept) and where in the box it goes.
+fn fitted_image(image: u32, kind: u32, area: (i32, i32)) -> Option<(u32, i32, i32)> {
+    let (width, pixels) = state().images.get(image as usize)?;
+    let size = (*width as i32, (pixels.len() / (*width).max(1)) as i32);
+    let placed = crate::image_fit::fit(kind, size, area);
+    if (placed.width, placed.height) == size {
+        return Some((image, placed.x, placed.y));
+    }
+    let key = (image, placed.width, placed.height);
+    if let Some(&scaled) = state().scaled_images.get(&key) {
+        return Some((scaled, placed.x, placed.y));
+    }
+    let resampled = crate::image_fit::resample(
+        pixels,
+        *width,
+        placed.width as usize,
+        placed.height as usize,
+    );
+    let scaled = keep_image(placed.width as usize, resampled)?;
+    state().scaled_images.insert(key, scaled);
+    Some((scaled, placed.x, placed.y))
+}
+
+extern "C" fn decode_resource(words: *const u64, _: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    bitmap_of(load_image(id as u32))
+}
+
+extern "C" fn decode_file(words: *const u64, _: *const usize) -> u64 {
+    let [path] = arguments::<1>(words);
+    let Some(path) = object(path).and_then(|path| path.text.clone()) else {
+        return 0;
+    };
+    let webp = path.ends_with(".webp");
+    bitmap_of(load_picture(path.as_bytes(), webp, SCREEN_DPI))
+}
+
+fn bitmap_of(image: Option<u32>) -> u64 {
+    let Some(image) = image else {
+        return 0;
+    };
+    let mut fields = BTreeMap::new();
+    fields.insert(BITMAP_IMAGE, u64::from(image));
+    new_object(Object {
+        class: String::from(framework::BITMAP),
+        fields,
+        ..Object::default()
+    })
+}
+
+fn bitmap_size(bitmap: u64) -> (u64, u64) {
+    let image = object(bitmap).and_then(|bitmap| bitmap.fields.get(&BITMAP_IMAGE).copied());
+    let Some((width, pixels)) = image.and_then(|image| state().images.get(image as usize)) else {
+        return (0, 0);
+    };
+    (*width as u64, (pixels.len() / (*width).max(1)) as u64)
+}
+
+extern "C" fn bitmap_width(words: *const u64, _: *const usize) -> u64 {
+    let [bitmap] = arguments::<1>(words);
+    bitmap_size(bitmap).0
+}
+
+extern "C" fn bitmap_height(words: *const u64, _: *const usize) -> u64 {
+    let [bitmap] = arguments::<1>(words);
+    bitmap_size(bitmap).1
+}
+
+extern "C" fn set_image_bitmap(words: *const u64, _: *const usize) -> u64 {
+    let [view, bitmap] = arguments::<2>(words);
+    let image = object(bitmap).and_then(|bitmap| bitmap.fields.get(&BITMAP_IMAGE).copied());
+    if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
+        view.image = image.map(|image| image as u32);
+    }
+    0
+}
+
+extern "C" fn set_scale_type(words: *const u64, _: *const usize) -> u64 {
+    let [view, kind] = arguments::<2>(words);
+    let name = object(kind).and_then(|kind| kind.text.clone()).unwrap_or_default();
+    let ordinal = framework::SCALE_TYPES.iter().position(|known| *known == name);
+    if let (Some(view), Some(ordinal)) = (object(view).and_then(|view| view.view.as_mut()), ordinal)
+    {
+        view.scale_type = Some(ordinal as u32);
+    }
+    0
 }
 
 extern "C" fn inflater_from(_: *const u64, _: *const usize) -> u64 {
@@ -1556,6 +1707,12 @@ fn native_entry(native: Native) -> Entry {
         Native::SetAdapter => set_adapter,
         Native::SetOnItemClickListener => set_on_item_click_listener,
         Native::SetImageResource => set_image_resource,
+        Native::DecodeResource => decode_resource,
+        Native::DecodeFile => decode_file,
+        Native::BitmapWidth => bitmap_width,
+        Native::BitmapHeight => bitmap_height,
+        Native::SetImageBitmap => set_image_bitmap,
+        Native::SetScaleType => set_scale_type,
         Native::InflaterFrom => inflater_from,
         Native::Inflate => inflate_layout,
         Native::ExceptionInit => exception_init,
@@ -1729,15 +1886,28 @@ impl ContentWindow {
             else {
                 return 0;
             };
-            let height = (pixels.len() / (*width).max(1)) as i32;
-            let size = (Length::Px(*width as i32), Length::Px(height));
-            let place = Place::at(x, y, size.0, size.1);
+            let natural = (*width as i32, (pixels.len() / (*width).max(1)) as i32);
+            let wanted = view_state.as_ref().map(|state| (state.width, state.height));
+            let area = match wanted {
+                Some((width, height)) => (width.unwrap_or(natural.0), height.unwrap_or(natural.1)),
+                None => natural,
+            };
+            let kind = view_state
+                .as_ref()
+                .and_then(|state| state.scale_type)
+                .unwrap_or(crate::image_fit::scale_type::FIT_CENTER);
+            let Some(placed) = fitted_image(index, kind, area) else {
+                return 0;
+            };
+            let placed_images = &mut state().placed_images;
+            placed_images.push(placed);
+            let place = Place::at(x, y, Length::Px(area.0), Length::Px(area.1));
             let painted = Kind::Custom {
                 painter: paint_image,
-                data: index,
+                data: (placed_images.len() - 1) as u32,
             };
             let _ = self.tree.add(None, place, painted);
-            return height + PADDING;
+            return area.1 + PADDING;
         }
         if class.as_str() == LIST_VIEW || class.as_str() == RECYCLER_VIEW {
             let items = leaked_items(list_items(view));
@@ -1929,6 +2099,8 @@ pub fn run(startup: &Startup) -> i32 {
         code_length: code.len(),
         failed_classes: BTreeSet::new(),
         depth: 0,
+        placed_images: Vec::new(),
+        scaled_images: BTreeMap::new(),
         stack_top: stack_pointer().saturating_add(STACK_ABOVE_RUN),
     };
     STATE.store(Box::leak(Box::new(initial)), Ordering::Release);

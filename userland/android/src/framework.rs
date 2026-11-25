@@ -150,6 +150,18 @@ pub enum Native {
     GetInputType,
     /// `TextView.setImeOptions(int)`.
     SetImeOptions,
+    /// `BitmapFactory.decodeResource(Resources, int)` (D763): the drawable's picture.
+    DecodeResource,
+    /// `BitmapFactory.decodeFile(String)`: a PNG or WebP file's picture.
+    DecodeFile,
+    /// `Bitmap.getWidth()`.
+    BitmapWidth,
+    /// `Bitmap.getHeight()`.
+    BitmapHeight,
+    /// `ImageView.setImageBitmap(Bitmap)`.
+    SetImageBitmap,
+    /// `ImageView.setScaleType(ImageView.ScaleType)`.
+    SetScaleType,
 }
 
 const THROWABLE: &str = "Ljava/lang/Throwable;";
@@ -267,6 +279,12 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "setInputType") if text => Native::SetInputType,
         (_, "getInputType") if text => Native::GetInputType,
         (_, "setImeOptions") if text => Native::SetImeOptions,
+        (BITMAP_FACTORY, "decodeResource") => Native::DecodeResource,
+        (BITMAP_FACTORY, "decodeFile") => Native::DecodeFile,
+        (BITMAP, "getWidth") => Native::BitmapWidth,
+        (BITMAP, "getHeight") => Native::BitmapHeight,
+        (IMAGE_VIEW, "setImageBitmap") => Native::SetImageBitmap,
+        (IMAGE_VIEW, "setScaleType") => Native::SetScaleType,
         (IMAGE_VIEW, "setImageResource") if takes_int => Native::SetImageResource,
         (LAYOUT_INFLATER, "from") => Native::InflaterFrom,
         (_, "getLayoutInflater") if activity => Native::InflaterFrom,
@@ -497,7 +515,30 @@ pub struct View {
     pub input_type: u32,
     /// The editor action Enter reports (`imeOptions`; 0, `IME_NULL`, when none).
     pub ime_action: u32,
+    /// Its width and height in pixels when its layout fixes them (D763).
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    /// An image view's `ScaleType` ordinal; `fitCenter` when unset.
+    pub scale_type: Option<u32>,
 }
+
+/// `android.graphics.Bitmap` (D763): a picture the layer decoded.
+pub const BITMAP: &str = "Landroid/graphics/Bitmap;";
+/// `android.graphics.BitmapFactory`.
+pub const BITMAP_FACTORY: &str = "Landroid/graphics/BitmapFactory;";
+/// `ImageView.ScaleType`, whose constants the layer makes on their first use.
+pub const SCALE_TYPE: &str = "Landroid/widget/ImageView$ScaleType;";
+/// `ImageView.ScaleType`'s constants, by ordinal.
+pub const SCALE_TYPES: [&str; 8] = [
+    "MATRIX",
+    "FIT_XY",
+    "FIT_START",
+    "FIT_CENTER",
+    "FIT_END",
+    "CENTER",
+    "CENTER_CROP",
+    "CENTER_INSIDE",
+];
 
 const INPUT_CLASS: u32 = 0xf;
 const CLASS_TEXT: u32 = 0x1;

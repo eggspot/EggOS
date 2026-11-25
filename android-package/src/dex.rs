@@ -279,6 +279,16 @@ impl<'a> Dex<'a> {
         self.type_name(u32::from(half(self.bytes, at)?))
     }
 
+    /// The name of field `index` (D763).
+    pub fn field_name(&self, index: u32) -> Option<String> {
+        let (count, offset) = self.fields;
+        if index >= count {
+            return None;
+        }
+        let at = offset as usize + FIELD_ID_BYTES * index as usize;
+        self.string(word(self.bytes, at + 4)?)
+    }
+
     /// The index of field `name` of class `class` in the field table, if the file names it
     /// (D516).
     pub fn field_named(&self, class: &str, name: &str) -> Option<u32> {

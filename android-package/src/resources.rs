@@ -36,6 +36,29 @@ pub struct ResourceTable {
 }
 
 const MOST_VARIANTS: usize = 32;
+const DENSITY_QUALIFIERS: [(&str, u32); 8] = [
+    ("ldpi", 120),
+    ("mdpi", 160),
+    ("tvdpi", 213),
+    ("hdpi", 240),
+    ("xhdpi", 320),
+    ("xxhdpi", 480),
+    ("xxxhdpi", 640),
+    ("nodpi", 0),
+];
+
+/// The density a resource file's folder qualifiers name (`res/drawable-xhdpi-v4/a.png` is
+/// 320); `None` for a folder without one or for `nodpi` and `anydpi`.
+pub fn density_of(path: &str) -> Option<u32> {
+    let folder = path.rsplit('/').nth(1)?;
+    folder.split('-').skip(1).find_map(|qualifier| {
+        DENSITY_QUALIFIERS
+            .iter()
+            .find(|(name, _)| *name == qualifier)
+            .map(|(_, density)| *density)
+            .filter(|&density| density > 0)
+    })
+}
 const DENSITIES: [&str; 6] = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi"];
 const ICON_FILES: [&str; 2] = [".png", ".webp"];
 
@@ -193,6 +216,31 @@ impl ResourceTable {
             .map(|(_, path)| path)
     }
 
+    /// The file of drawable resource `id` best for a screen of `dpi` dots per inch, with the
+    /// density it was drawn for (D763): one drawn for exactly that density, else the least
+    /// dense above it (scaled down), else the densest below it (scaled up); a `nodpi` or
+    /// `anydpi` file counts as drawn for the screen.
+    pub fn density_variant(&self, id: u32, dpi: u32) -> Option<(&str, u32)> {
+        let densities = self
+            .variants(id)
+            .iter()
+            .map(|path| (path.as_str(), density_of(path).unwrap_or(dpi)));
+        let mut best: Option<(&str, u32)> = None;
+        for (path, density) in densities {
+            let better = match best {
+                None => true,
+                Some((_, chosen)) if chosen == dpi => false,
+                Some(_) if density == dpi => true,
+                Some((_, chosen)) if chosen < dpi => density > chosen,
+                Some((_, chosen)) => density >= dpi && density < chosen,
+            };
+            if better {
+                best = Some((path, density));
+            }
+        }
+        best
+    }
+
     /// Colour resource `id`'s value, `0xAARRGGBB`.
     pub fn colour(&self, id: u32) -> Option<u32> {
         self.colours.get(&id).copied()
@@ -311,5 +359,25 @@ mod tests {
             Some("res/mipmap-xxxhdpi-v4/ic_launcher.png")
         );
         assert_eq!(table.icon_file(0x7f0d_0001), None);
+    }
+
+    #[test]
+    fn the_density_nearest_above_the_screen_wins() {
+        let mut table = ResourceTable::default();
+        table.variants.insert(
+            0x7f08_0001,
+            vec![
+                String::from("res/drawable-mdpi-v4/a.png"),
+                String::from("res/drawable-xxhdpi-v4/a.png"),
+                String::from("res/drawable-xhdpi-v4/a.png"),
+            ],
+        );
+        let chosen = |dpi| table.density_variant(0x7f08_0001, dpi);
+        assert_eq!(chosen(320), Some(("res/drawable-xhdpi-v4/a.png", 320)));
+        assert_eq!(chosen(240), Some(("res/drawable-xhdpi-v4/a.png", 320)));
+        assert_eq!(chosen(160), Some(("res/drawable-mdpi-v4/a.png", 160)));
+        assert_eq!(chosen(640), Some(("res/drawable-xxhdpi-v4/a.png", 480)));
+        assert_eq!(density_of("res/drawable-anydpi-v24/a.xml"), None);
+        assert_eq!(density_of("res/drawable/a.png"), None);
     }
 }

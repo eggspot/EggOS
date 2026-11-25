@@ -258,7 +258,7 @@ and is not listed per item.
 - [x] Android: stack traces, `ExceptionInInitializerError`, exceptions crossing the framework's code (D504) — code written, unbuilt, D761
 - [x] Android: `TextWatcher`, `onEditorAction`, input types (numbers, passwords) (D507) — code written, unbuilt, D762
 - [ ] Android: `RecyclerView` view types, recycling holders, item decorations, grids; row views shown as themselves (D511, D516)
-- [ ] Android: density buckets, `scaleType`, `setImageBitmap` (D509)
+- [x] Android: density buckets, `scaleType`, `setImageBitmap` (D509) — code written, unbuilt, D763
 - [ ] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500)
 - [ ] iOS: multi-touch, pinches and rotations, velocities, recognizers that wait for each other to fail, safe areas, `UIScreen` and size classes (D501, D505, D515)
 - [ ] Auto Layout: priorities and inequalities, right-to-left leading/trailing, stack view distributions and alignments, baselines (D506, D510)
