@@ -440,15 +440,17 @@ impl<R: RegisterIo> DisplayEngine<R> {
 
     /// Whether digital port `port` is one of the engine's Type-C ports (D525).
     pub fn is_type_c(&self, port: usize) -> bool {
-        use super::intel_type_c::{FIRST_PORT, MOST_PORTS};
-        self.type_c.is_some() && (FIRST_PORT..FIRST_PORT + MOST_PORTS).contains(&port)
+        use super::intel_type_c::{first_port, ports};
+        self.type_c.is_some_and(|flavour| {
+            (first_port(flavour)..first_port(flavour) + ports(flavour)).contains(&port)
+        })
     }
 
     /// The Type-C ports the engine has (D525), counted from port D.
     pub fn type_c_ports(&self) -> usize {
         match self.type_c {
             Some(super::intel_type_c::Flavour::Meteor) => super::intel_cx0::TYPE_C_PORTS,
-            Some(_) => super::intel_type_c::MOST_PORTS,
+            Some(flavour) => super::intel_type_c::ports(flavour),
             None => 0,
         }
     }
@@ -470,7 +472,15 @@ impl<R: RegisterIo> DisplayEngine<R> {
             return connect(&self.regs, flavour, index, keep_waiting);
         }
         let connected = connect(&self.regs, flavour, index, keep_waiting)?;
-        power_aux(&self.regs, index, connected.mode, keep_waiting)?;
+        match flavour {
+            Flavour::Ice => super::intel_type_c::power_ice_aux(
+                &self.regs,
+                index,
+                connected.mode,
+                keep_waiting,
+            )?,
+            _ => power_aux(&self.regs, index, connected.mode, keep_waiting)?,
+        }
         Ok(connected)
     }
 
@@ -488,13 +498,18 @@ impl<R: RegisterIo> DisplayEngine<R> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<crate::display_port::Drive, crate::display_port::TrainingError> {
         let buffer = DDI_BUF_CTL + port * PORT_REGISTER_STRIDE;
-        let alder = self.type_c == Some(super::intel_type_c::Flavour::Alder);
+        use super::intel_type_c::{Flavour, first_port};
+        let alder = self.type_c == Some(Flavour::Alder);
         let dekel = self.is_type_c(port) && self.generation != Generation::Display14;
-        let type_c = dekel.then(|| TypeCDrive {
-            index: port - super::intel_type_c::FIRST_PORT,
+        let type_c = self.type_c.filter(|_| dekel).map(|flavour| TypeCDrive {
+            index: port - first_port(flavour),
             high_rate: rate >= HBR2,
             alder,
+            mg: flavour == Flavour::Ice,
         });
+        let combo = matches!(self.generation, Generation::Display11 | Generation::Display12)
+            && !self.is_type_c(port)
+            && port < COMBO_PORTS;
         let kept = match type_c {
             Some(_) => self.regs.read32(buffer) & TYPE_C_PHY_OWNERSHIP,
             None => 0,
@@ -510,6 +525,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             pattern_register: self.generation.pattern_register(port, pipe),
             lanes,
             type_c,
+            combo: combo.then_some(port),
             c10,
             kept,
             keep_waiting,
@@ -832,13 +848,13 @@ impl<R: RegisterIo> DisplayEngine<R> {
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), ModeError> {
         use super::intel_combo_phy::reference_khz;
-        use super::intel_type_c::{FIRST_PORT, pll_enable, set_lane_count, ungate_clock};
+        use super::intel_type_c::{
+            Flavour, first_port, pll_enable, set_lane_count, ungate_clock, ungate_ice_clock,
+        };
         let flavour = self.type_c.ok_or(ModeError::Unsupported)?;
-        let index = port - FIRST_PORT;
+        let index = port - first_port(flavour);
         let reference = reference_khz(self.regs.read32(STRAPS) >> REFERENCE_SHIFT & 0x7)
             .ok_or(ModeError::Unsupported)?;
-        let setting =
-            super::intel_dekel::pll_setting(link_khz, reference).ok_or(ModeError::Unsupported)?;
         let enable = pll_enable(flavour, index);
         let wait_for = |bit: u32, keep_waiting: &mut dyn FnMut() -> bool| {
             while self.regs.read32(enable) & bit == 0 {
@@ -848,6 +864,25 @@ impl<R: RegisterIo> DisplayEngine<R> {
             }
             Ok(())
         };
+        if flavour == Flavour::Ice {
+            let setting = super::intel_mg_phy::pll_setting(link_khz, reference)
+                .ok_or(ModeError::Unsupported)?;
+            self.regs.write32(enable, PLL_POWER_ENABLE);
+            wait_for(PLL_POWER_STATE, keep_waiting)?;
+            let phy = super::intel_mg_phy::MgPhy::new(&self.regs, index);
+            phy.program_pll(&setting);
+            self.regs.write32(enable, PLL_POWER_ENABLE | PLL_ENABLE);
+            wait_for(PLL_LOCKED, keep_waiting)?;
+            self.regs
+                .write32(DDI_CLOCK_SELECT + 4 * port, DDI_CLOCK_TYPE_C_PLL);
+            ungate_ice_clock(&self.regs, index);
+            set_lane_count(&self.regs, flavour, index, lanes)
+                .map_err(|_| ModeError::Unsupported)?;
+            phy.set_lane_mode(lanes);
+            return Ok(());
+        }
+        let setting =
+            super::intel_dekel::pll_setting(link_khz, reference).ok_or(ModeError::Unsupported)?;
         self.regs.write32(enable, PLL_POWER_ENABLE);
         wait_for(PLL_POWER_STATE, keep_waiting)?;
         let dekel = super::intel_dekel::Dekel::new(&self.regs, index);
@@ -1125,6 +1160,7 @@ struct TypeCDrive {
     index: usize,
     high_rate: bool,
     alder: bool,
+    mg: bool,
 }
 
 struct PortLink<'a, R: RegisterIo> {
@@ -1134,6 +1170,7 @@ struct PortLink<'a, R: RegisterIo> {
     pattern_register: usize,
     lanes: usize,
     type_c: Option<TypeCDrive>,
+    combo: Option<usize>,
     c10: Option<u32>,
     kept: u32,
     keep_waiting: &'a mut dyn FnMut() -> bool,
@@ -1167,11 +1204,14 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
         let buffer = DDI_BUF_CTL + self.port * PORT_REGISTER_STRIDE;
         if let Some(type_c) = self.type_c {
             let level = super::intel_dekel::drive_level(drive.swing, drive.pre_emphasis);
-            super::intel_dekel::Dekel::new(self.regs, type_c.index).set_drive(
-                level,
-                type_c.high_rate,
-                type_c.alder,
-            );
+            match type_c.mg {
+                true => super::intel_mg_phy::MgPhy::new(self.regs, type_c.index).set_drive(level),
+                false => super::intel_dekel::Dekel::new(self.regs, type_c.index).set_drive(
+                    level,
+                    type_c.high_rate,
+                    type_c.alder,
+                ),
+            }
             self.regs
                 .write32(buffer, DDI_BUF_ENABLE | width | self.kept);
             return;
@@ -1185,6 +1225,12 @@ impl<R: RegisterIo> crate::display_port::Link for PortLink<'_, R> {
             if let Ok(mut phy) = phy {
                 let _ = phy.set_drive(level, link_khz, lanes);
             }
+            self.regs.write32(buffer, DDI_BUF_ENABLE | width);
+            return;
+        }
+        if let Some(phy) = self.combo {
+            let level = super::intel_dekel::drive_level(drive.swing, drive.pre_emphasis);
+            super::intel_combo_phy::set_drive(self.regs, phy, level);
             self.regs.write32(buffer, DDI_BUF_ENABLE | width);
             return;
         }

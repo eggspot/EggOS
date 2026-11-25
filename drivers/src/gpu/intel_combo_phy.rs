@@ -137,6 +137,67 @@ pub fn port_clock_khz(pll: &ComboPll, reference_khz: u32) -> u32 {
     (dco / u64::from(pll.pdiv * pll.kdiv * pll.qdiv.max(1)).max(1)) as u32
 }
 
+const PHY_BASES: [usize; 2] = [0x16_2000, 0x6_c000];
+const TX_BASE: usize = 0x680;
+const TX_LANE_FIRST: usize = 0x200;
+const TX_LANE_STRIDE: usize = 0x100;
+const DW2: usize = 2 * 4;
+const DW4: usize = 4 * 4;
+const DW5: usize = 5 * 4;
+const DW7: usize = 7 * 4;
+const TRAINING_ENABLE: u32 = 1 << 31;
+const TAP3_DISABLE: u32 = 1 << 29;
+const SCALING_MODE_MASK: u32 = 0x7 << 18;
+const SCALING_MODE: u32 = 2 << 18;
+const TERMINATION_MASK: u32 = 0x7 << 3;
+const TERMINATION: u32 = 6 << 3;
+const RCOMP_SCALAR: u32 = 0x98;
+const SWING_MASK: u32 = 1 << 15 | 0x7 << 11 | 0xff;
+const CURSOR_MASK: u32 = 0x3f << 12 | 0x3f << 6 | 0x3f;
+const N_SCALAR_MASK: u32 = 0x7f << 24;
+const LANES: usize = 4;
+const DRIVE_TABLE: [(u32, u32, u32, u32, u32); 10] = [
+    (0xa, 0x35, 0x3f, 0x00, 0x00),
+    (0xa, 0x4f, 0x37, 0x00, 0x08),
+    (0xc, 0x71, 0x2f, 0x00, 0x10),
+    (0x6, 0x7f, 0x2b, 0x00, 0x14),
+    (0xa, 0x4c, 0x3f, 0x00, 0x00),
+    (0xc, 0x73, 0x34, 0x00, 0x0b),
+    (0x6, 0x7f, 0x2f, 0x00, 0x10),
+    (0xc, 0x6c, 0x3c, 0x00, 0x03),
+    (0x6, 0x7f, 0x35, 0x00, 0x0a),
+    (0x6, 0x7f, 0x3f, 0x00, 0x00),
+];
+
+/// Sets combo PHY `phy`'s (0 for port A, 1 for B) transmitters to drive level `level` (from
+/// [`super::intel_dekel::drive_level`]) from Intel's DisplayPort table (D788): the swing
+/// select, the N scalar and the cursor coefficients, with training turned off while they
+/// change.
+pub fn set_drive(regs: &(impl crate::io::RegisterIo + ?Sized), phy: usize, level: usize) {
+    let Some(&base) = PHY_BASES.get(phy) else {
+        return;
+    };
+    let (swing, n_scalar, cursor, post_2, post_1) = DRIVE_TABLE[level.min(DRIVE_TABLE.len() - 1)];
+    let group = base + TX_BASE;
+    let lane = |index: usize| base + TX_BASE + TX_LANE_FIRST + index * TX_LANE_STRIDE;
+    let modify = |at: usize, mask: u32, value: u32| {
+        regs.write32(at, regs.read32(at) & !mask | value);
+    };
+    modify(group + DW5, TRAINING_ENABLE, 0);
+    modify(
+        group + DW5,
+        SCALING_MODE_MASK | TERMINATION_MASK | TAP3_DISABLE,
+        SCALING_MODE | TERMINATION | TAP3_DISABLE,
+    );
+    for index in 0..LANES {
+        let swing_bits = (swing >> 3) << 15 | (swing & 0x7) << 11 | RCOMP_SCALAR;
+        modify(lane(index) + DW2, SWING_MASK, swing_bits);
+        modify(lane(index) + DW4, CURSOR_MASK, post_1 << 12 | post_2 << 6 | cursor);
+        modify(lane(index) + DW7, N_SCALAR_MASK, n_scalar << 24);
+    }
+    modify(group + DW5, TRAINING_ENABLE, TRAINING_ENABLE);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

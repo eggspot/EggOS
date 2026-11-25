@@ -13,6 +13,7 @@ pub mod intel_cx0;
 pub mod intel_dekel;
 pub mod intel_dmc;
 pub mod intel_hdmi;
+pub mod intel_mg_phy;
 pub mod intel_modeset;
 pub mod intel_type_c;
 pub mod nvidia_bios;

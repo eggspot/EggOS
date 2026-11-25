@@ -59,12 +59,20 @@ const METEOR_BUFFER_STRIDE: usize = 0x200;
 const TCSS_POWER_REQUEST: u32 = 1 << 5;
 const TCSS_POWER_STATE: u32 = 1 << 4;
 const TIGER_LAKE: u8 = 0x9a;
+const ICE_LAKE: u8 = 0x8a;
+const ICE_FIRST_PORT: usize = 2;
+const ICE_PORTS: usize = 4;
+const ICE_CLOCK_GATE_FIRST: u32 = 10;
+const ICE_AUX_POWER_TYPE_C: usize = 2;
+const ICE_AUX_POWER_THUNDERBOLT: usize = 8;
 const ALDER_LAKE_P: [u16; 7] = [0x46a0, 0x46b0, 0x46c0, 0x46d0, 0xa720, 0xa7a0, 0xa7a8];
 const ALDER_LAKE_P_SINGLES: [u16; 6] = [0x4626, 0x4628, 0x462a, 0xa721, 0xa7a1, 0xa7a9];
 
 /// How a display engine reaches its Type-C PHYs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavour {
+    /// Ice Lake (D788): ports C to F, the MG PHY, ownership through the FIA, no TC-cold.
+    Ice,
     /// Tiger Lake: TC-cold through PCODE, ownership through the FIA.
     Tiger,
     /// Alder Lake-P and Raptor Lake-P: readiness in the TCSS, ownership in `DDI_BUF_CTL`.
@@ -78,6 +86,7 @@ pub enum Flavour {
 pub fn flavour(device: u16) -> Option<Flavour> {
     match (device >> 8) as u8 {
         TIGER_LAKE => return Some(Flavour::Tiger),
+        ICE_LAKE => return Some(Flavour::Ice),
         METEOR_LAKE => return Some(Flavour::Meteor),
         _ => {}
     }
@@ -190,6 +199,30 @@ pub fn power_aux(
             Mode::DisplayPortAlternate => AUX_POWER_TYPE_C,
             Mode::Thunderbolt => AUX_POWER_THUNDERBOLT,
         };
+    power_aux_well(regs, well, keep_waiting)
+}
+
+/// Turns on Ice Lake's AUX power well for Type-C port `index` (0 for port C) in `mode` (D788):
+/// wells 2 to 5 for DisplayPort, 8 to 11 for Thunderbolt.
+pub fn power_ice_aux(
+    regs: &(impl RegisterIo + ?Sized),
+    index: usize,
+    mode: Mode,
+    keep_waiting: &mut dyn FnMut() -> bool,
+) -> Result<(), TypeCError> {
+    let well = index
+        + match mode {
+            Mode::DisplayPortAlternate => ICE_AUX_POWER_TYPE_C,
+            Mode::Thunderbolt => ICE_AUX_POWER_THUNDERBOLT,
+        };
+    power_aux_well(regs, well, keep_waiting)
+}
+
+fn power_aux_well(
+    regs: &(impl RegisterIo + ?Sized),
+    well: usize,
+    keep_waiting: &mut dyn FnMut() -> bool,
+) -> Result<(), TypeCError> {
     let request = 2 << (2 * well);
     let state = 1 << (2 * well);
     regs.write32(AUX_POWER_WELLS, regs.read32(AUX_POWER_WELLS) | request);
@@ -236,10 +269,32 @@ pub fn set_lane_count(
     Ok(())
 }
 
+/// The DDI index of `flavour`'s first Type-C port: port C on Ice Lake, port D after.
+pub fn first_port(flavour: Flavour) -> usize {
+    match flavour {
+        Flavour::Ice => ICE_FIRST_PORT,
+        _ => FIRST_PORT,
+    }
+}
+
+/// How many Type-C ports `flavour` has at most.
+pub fn ports(flavour: Flavour) -> usize {
+    match flavour {
+        Flavour::Ice => ICE_PORTS,
+        _ => MOST_PORTS,
+    }
+}
+
+/// Ungates Ice Lake's Type-C port `index`'s clock to its DDI (D788).
+pub fn ungate_ice_clock(regs: &(impl RegisterIo + ?Sized), index: usize) {
+    let bit = ICE_CLOCK_GATE_FIRST + index as u32;
+    regs.write32(CLOCK_GATES, regs.read32(CLOCK_GATES) & !(1 << bit));
+}
+
 /// The enable register of Type-C port `index`'s PLL (D526).
 pub fn pll_enable(flavour: Flavour, index: usize) -> usize {
     let (first, stride) = match flavour {
-        Flavour::Tiger => PLL_ENABLES[0],
+        Flavour::Ice | Flavour::Tiger => PLL_ENABLES[0],
         Flavour::Alder | Flavour::Meteor => PLL_ENABLES[1],
     };
     first + stride * index
@@ -278,12 +333,16 @@ pub fn connect(
     if first == COLD {
         return Err(TypeCError::Cold);
     }
-    let modular = flavour != Flavour::Tiger || first & MODULAR_FIA != 0;
+    let modular = match flavour {
+        Flavour::Ice => false,
+        Flavour::Tiger => first & MODULAR_FIA != 0,
+        _ => true,
+    };
     let (base, slot) = fia(modular, index);
     let lane_state = regs.read32(base + LANE_STATE);
     let status_place = TCSS_STATUS + 4 * index;
     let mode = match flavour {
-        Flavour::Tiger => {
+        Flavour::Ice | Flavour::Tiger => {
             let live = |bit: u32| lane_state & 1 << (slot * 8 + bit) != 0;
             match lane_state {
                 COLD => return Err(TypeCError::Cold),
@@ -306,7 +365,7 @@ pub fn connect(
             _ => return Err(TypeCError::NotConnected),
         },
     };
-    let port = FIRST_PORT + index;
+    let port = first_port(flavour) + index;
     if mode == Mode::Thunderbolt {
         return Ok(Connected {
             port,
@@ -323,7 +382,9 @@ pub fn connect(
         );
     }
     let ready = match flavour {
-        Flavour::Tiger => wait(regs, base + PHY_READY, 1 << slot, 1 << slot, keep_waiting),
+        Flavour::Ice | Flavour::Tiger => {
+            wait(regs, base + PHY_READY, 1 << slot, 1 << slot, keep_waiting)
+        }
         Flavour::Alder => wait(regs, status_place, TCSS_READY, TCSS_READY, keep_waiting),
         Flavour::Meteor => {
             wait(regs, status_place, TCSS_READY, TCSS_READY, keep_waiting)
@@ -340,7 +401,7 @@ pub fn connect(
         return Err(TypeCError::NotReady);
     }
     match flavour {
-        Flavour::Tiger => {
+        Flavour::Ice | Flavour::Tiger => {
             let taken = regs.read32(base + PHY_TAKEN);
             regs.write32(base + PHY_TAKEN, taken | 1 << slot);
         }

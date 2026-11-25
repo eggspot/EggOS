@@ -176,7 +176,7 @@ and is not listed per item.
 - [x] Wi-Fi: PMKSA caching, answering SA Query, and BIP on group management frames (D285) — code written, unbuilt, D785
 - [x] Wi-Fi: 6 GHz channels and SAE hash-to-element (D275, D285) — code written, unbuilt, D786
 - [x] Intel HDMI: HDMI 2.0 scrambling above 340 MHz, AVI and audio infoframes, deep colour, HDMI on display 11 and later (D466) — code written, unbuilt, D787
-- [ ] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465)
+- [x] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465) — code written, unbuilt, D788
 - [x] ACPI `_PRT` legacy PCI interrupt routing through the AML interpreter (D413) — code written, unbuilt, D621
 - [x] INTx through `interrupt-map` on device-tree PCI hosts, with level lines masked on arrival on aarch64 (D413) — code written, unbuilt, D623
 - [x] INTx on riscv64 device-tree PCI hosts: a PLIC or APLIC source masked on arrival (D623) — code written, unbuilt, D632
