@@ -48,6 +48,12 @@ fn serve(window: &mut SettingsWindow, disks: &mut MemoryDisks, request: Option<R
             window.show_disks(list(disks));
             window.show_formatted(device, &label, result, 0);
         }
+        Some(Request::ReadInstallPlan(device)) => {
+            let layout = eggos_files::partitions::disk_layout(disks, device)
+                .ok()
+                .map(|(_, layout)| layout);
+            window.show_install_plan(device, layout, 0);
+        }
         Some(Request::InstallDisk(device)) => {
             let result = storage::boot_files(disks)
                 .and_then(|files| storage::install(disks, device, &files))

@@ -6,6 +6,7 @@
 use crate::settings_window::{CAPACITY, Request};
 use alloc::vec::Vec;
 use eggos_eggfs::{CheckMode, DiskCheck, Outcome};
+use eggos_files::partitions::DiskLayout;
 use eggos_files::storage::{
     self, DEVICES, DiskRecord, INSTALLED_NOTE, NO_DISK_TO_INSTALL_ON, NO_DISKS, NOTHING_TO_DO,
     StorageError, allowed, confirm_placeholder, confirm_text, contents_text, erases_text,
@@ -127,11 +128,13 @@ struct Widgets {
     install_field: WidgetId,
     install_cancel: WidgetId,
     install_now: WidgetId,
+    plan: plan::PlanWidgets,
 }
 
 /// How many widgets the installer adds to the pane (docs/ux/installer-v0.4.md section 1): the
-/// button, the install line, the panel with its painter, five lines, the field and two buttons.
-pub const INSTALLER_WIDGETS: usize = 12;
+/// button, the install line, the panel with its painter, five lines, the field and two buttons,
+/// and the plan panel's (D783).
+pub const INSTALLER_WIDGETS: usize = 12 + plan::WIDGETS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Report {
@@ -162,6 +165,8 @@ pub struct StoragePane {
     boot_files: bool,
     install_open: bool,
     installed: Option<&'static str>,
+    plan: Option<plan::Plan>,
+    plan_open: bool,
 }
 
 fn add(tree: &mut WidgetTree<CAPACITY>, parent: WidgetId, place: Place, kind: Kind) -> WidgetId {
@@ -516,6 +521,7 @@ impl StoragePane {
             ),
             Kind::button("Install", true),
         );
+        let plan = plan::build(tree, pane, install_panel);
         tree.set_shown_items(list, 0);
         tree.set_shown(panel, false);
         tree.set_shown(install_panel, false);
@@ -547,6 +553,7 @@ impl StoragePane {
                 install_field,
                 install_cancel,
                 install_now,
+                plan,
             },
             disks: Vec::new(),
             list_error: None,
@@ -558,6 +565,8 @@ impl StoragePane {
             boot_files: false,
             install_open: false,
             installed: None,
+            plan: None,
+            plan_open: false,
         };
         storage.refresh(tree);
         storage
@@ -757,7 +766,7 @@ impl StoragePane {
         }
         let allowed = allowed(&record);
         let report = self.report.filter(|report| report.device == record.device);
-        let free = !self.busy && !self.panel_open && !self.install_open;
+        let free = !self.busy && !self.panel_open && !self.install_open && !self.plan_open;
         tree.set_enabled(widgets.list, free);
         tree.set_enabled(widgets.check, free && allowed.check);
         tree.set_enabled(
@@ -806,16 +815,26 @@ impl StoragePane {
     ) {
         let widgets = self.widgets;
         let [first, second] = install_writes_lines(record);
-        let lines = [
-            (install_question(record.device), Token::Text),
-            (erases_text(record), Token::TextDim),
-            (first, Token::TextDim),
-            (second, Token::TextDim),
-            (confirm_text(record), Token::TextDim),
-        ];
+        let lines = match self.plan.as_ref().and_then(plan::Plan::confirmation) {
+            Some([question, change, writes, boot, last]) => [
+                (question, Token::Text),
+                (change, Token::TextDim),
+                (writes, Token::TextDim),
+                (boot, Token::TextDim),
+                (last, Token::TextDim),
+            ],
+            None => [
+                (install_question(record.device), Token::Text),
+                (erases_text(record), Token::TextDim),
+                (first, Token::TextDim),
+                (second, Token::TextDim),
+                (confirm_text(record), Token::TextDim),
+            ],
+        };
         for (id, (words, ink)) in widgets.install_lines.iter().zip(lines) {
             show_line(tree, *id, &words, ink);
         }
+        tree.set_shown(widgets.plan.back, self.plan.is_some());
         let placeholder = confirm_placeholder(record.device);
         tree.change(widgets.install_field, |kind| {
             if let Kind::TextField(field) = kind {
@@ -849,6 +868,8 @@ impl StoragePane {
 
     fn close_install_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, focus_at_ms: Option<u32>) {
         let widgets = self.widgets;
+        self.plan = None;
+        tree.set_shown(widgets.plan.back, false);
         tree.set_shown(widgets.install_panel, false);
         tree.set_default_button(self.default_button);
         self.install_open = false;
@@ -865,12 +886,11 @@ impl StoragePane {
         };
         let typed = trimmed_text(tree, widgets.install_field) == record.short_name();
         tree.set_enabled(widgets.install_now, typed && !self.busy);
-        show_line(
-            tree,
-            widgets.install_lines[4],
-            &confirm_text(record),
-            Token::TextDim,
-        );
+        let last = match self.plan.as_ref().and_then(plan::Plan::confirmation) {
+            Some([.., last]) => last,
+            None => confirm_text(record),
+        };
+        show_line(tree, widgets.install_lines[4], &last, Token::TextDim);
     }
 
     fn install_now(&mut self, tree: &mut WidgetTree<CAPACITY>) -> Option<Request> {
@@ -884,6 +904,7 @@ impl StoragePane {
             widgets.install_field,
             widgets.install_cancel,
             widgets.install_now,
+            widgets.plan.back,
         ] {
             tree.set_enabled(id, false);
         }
@@ -893,7 +914,121 @@ impl StoragePane {
             &installing_text(device),
             Token::Text,
         );
-        Some(Request::InstallDisk(device))
+        match self.plan.as_ref().filter(|plan| !plan.whole_disk) {
+            Some(plan) => Some(Request::InstallAlongside(device, plan.size_gib)),
+            None => Some(Request::InstallDisk(device)),
+        }
+    }
+
+    /// The program read `device`'s layout for `Install EggOS...` (D783): a disk that holds
+    /// partitions gets the plan panel first, any other the confirmation at once.
+    pub fn show_install_plan(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        device: &'static str,
+        layout: Option<DiskLayout>,
+        now_ms: u32,
+    ) {
+        let Some(record) = self.selected(tree).cloned().filter(|record| record.device == device)
+        else {
+            return;
+        };
+        match layout.filter(plan::Plan::wanted) {
+            Some(layout) => {
+                let plan = plan::Plan::new(device, record.short_name(), layout);
+                self.widgets.plan.show(tree, &plan);
+                self.plan = Some(plan);
+                self.open_plan_panel(tree, now_ms);
+            }
+            None => {
+                self.plan = None;
+                self.open_install_panel(tree, &record, now_ms);
+            }
+        }
+    }
+
+    fn open_plan_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        let widgets = self.widgets;
+        tree.set_shown(widgets.install_panel, false);
+        tree.set_shown(widgets.plan.panel, true);
+        tree.set_default_button(widgets.plan.next);
+        self.install_open = false;
+        self.plan_open = true;
+        self.refresh(tree);
+        tree.set_focus(Some(widgets.plan.choice()), now_ms);
+    }
+
+    fn close_plan_panel(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        let widgets = self.widgets;
+        tree.set_shown(widgets.plan.panel, false);
+        tree.set_default_button(self.default_button);
+        self.plan = None;
+        self.plan_open = false;
+        self.refresh(tree);
+        tree.set_focus(Some(widgets.install), now_ms);
+    }
+
+    fn plan_changed(&mut self, tree: &mut WidgetTree<CAPACITY>) {
+        let widgets = self.widgets;
+        if let Some(plan) = self.plan.as_mut() {
+            widgets.plan.read(tree, plan);
+            widgets.plan.show(tree, plan);
+        }
+    }
+
+    fn plan_next(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        let widgets = self.widgets;
+        let Some(record) = self.selected(tree).cloned() else {
+            return;
+        };
+        if let Some(plan) = self.plan.as_mut() {
+            widgets.plan.read(tree, plan);
+        }
+        tree.set_shown(widgets.plan.panel, false);
+        self.plan_open = false;
+        self.open_install_panel(tree, &record, now_ms);
+    }
+
+    fn plan_back(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        let widgets = self.widgets;
+        tree.set_shown(widgets.install_panel, false);
+        tree.set_shown(widgets.plan.back, false);
+        tree.set_text(widgets.install_field, "");
+        if let Some(plan) = self.plan.as_ref() {
+            widgets.plan.show(tree, plan);
+        }
+        self.open_plan_panel(tree, now_ms);
+    }
+
+    /// Shows how installing EggOS alongside on `device` went (D783): the done sentence for the
+    /// status line, or the refusal's for the panel.
+    pub fn show_installed_alongside(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        device: &'static str,
+        result: Result<alloc::string::String, alloc::string::String>,
+        now_ms: u32,
+    ) {
+        self.busy = false;
+        let widgets = self.widgets;
+        match result {
+            Ok(done) => {
+                self.installed = Some(device);
+                self.close_install_panel(tree, Some(now_ms));
+                for id in widgets.report {
+                    tree.set_shown(id, false);
+                }
+                show_line(tree, widgets.status, &done, Token::Text);
+            }
+            Err(sentence) => {
+                for id in [widgets.install_field, widgets.install_cancel, widgets.plan.back] {
+                    tree.set_enabled(id, true);
+                }
+                self.update_install_now(tree);
+                show_line(tree, widgets.install_lines[4], &sentence, Token::Text);
+            }
+        }
+        self.refresh(tree);
     }
 
     /// Shows how installing EggOS on `device` went, at `now_ms`: done, the panel closes and the
@@ -1087,13 +1222,39 @@ impl StoragePane {
                 None
             }
             Response::Activated(id) if id == widgets.install => {
-                if let Some(record) = self.selected(tree).cloned()
-                    && install_allowed(&record, self.boot_files).is_ok()
-                    && !self.busy
-                    && !self.panel_open
-                {
-                    self.open_install_panel(tree, &record, now_ms);
+                match self.selected(tree).cloned() {
+                    Some(record)
+                        if install_allowed(&record, self.boot_files).is_ok()
+                            && !self.busy
+                            && !self.panel_open =>
+                    {
+                        Some(Request::ReadInstallPlan(record.device))
+                    }
+                    _ => None,
                 }
+            }
+            Response::Chosen(id, _) if id == widgets.plan.choice() => {
+                self.plan_changed(tree);
+                None
+            }
+            Response::Adjusted(id, _) if id == widgets.plan.slider => {
+                self.plan_changed(tree);
+                None
+            }
+            Response::Activated(id) if id == widgets.plan.next && self.plan_open => {
+                self.plan_next(tree, now_ms);
+                None
+            }
+            Response::Activated(id) if id == widgets.plan.cancel && self.plan_open => {
+                self.close_plan_panel(tree, now_ms);
+                None
+            }
+            Response::Unused { code: key::ESC, .. } if self.plan_open => {
+                self.close_plan_panel(tree, now_ms);
+                None
+            }
+            Response::Activated(id) if id == widgets.plan.back && !self.busy => {
+                self.plan_back(tree, now_ms);
                 None
             }
             Response::Edited(id) if id == widgets.install_field => {
@@ -1187,6 +1348,8 @@ impl StoragePane {
         [widgets.question, widgets.erases, widgets.confirm].map(|id| tree.text_of(id))
     }
 }
+
+mod plan;
 
 #[cfg(test)]
 mod tests;

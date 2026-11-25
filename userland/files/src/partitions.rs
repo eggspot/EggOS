@@ -809,6 +809,92 @@ pub fn installed_beside_text(layout: &DiskLayout, device: &str, entry_added: boo
     alloc::format!("Installed EggOS beside {beside}. {next}")
 }
 
+/// The Storage pane's plan panel's texts (D783; installer dual boot v0.1 sections 2 and 3)
+/// for installing `size_gib` GiB at `placement`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanTexts {
+    /// Line 38: `Found: Windows.`
+    pub found: String,
+    /// Radio 1: `Install alongside Windows`.
+    pub alongside: String,
+    /// Line 41: `Windows 218 GB · EggOS 36 GB`.
+    pub legend: String,
+    /// Line 44: `Windows keeps 218 GB.`
+    pub keeps: String,
+    /// The confirmation's five lines (28 to 32), the last ending `Type <short> to confirm.`
+    pub confirmation: [String; 5],
+}
+
+/// The plan panel's texts for `layout` on `device` (short name `short`).
+pub fn plan_texts(
+    layout: &DiskLayout,
+    device: &str,
+    short: &str,
+    placement: &Placement,
+    size_gib: u64,
+) -> PlanTexts {
+    let names = joined_names(&layout.systems);
+    let total: u64 = layout.partitions.iter().map(PartitionRecord::size_bytes).sum();
+    let found = match names.is_empty() {
+        true => alloc::format!("Found: {} partitions, {} GB.", layout.partitions.len(), whole_gb(total)),
+        false => alloc::format!("Found: {names}."),
+    };
+    let alongside = match (names.is_empty(), layout.systems.len() > 2) {
+        (true, _) | (_, true) => String::from("Install alongside what is on it"),
+        (false, false) => alloc::format!("Install alongside {names}"),
+    };
+    let kept = if names.is_empty() { String::from("what is on it") } else { names };
+    let shrunk = match *placement {
+        Placement::ShrunkTail { partition, following, .. } => {
+            let (before, after) = shrunk_sizes(layout, partition, size_gib * GIB, following);
+            (after != before).then(|| (system_named(layout, partition), before, after))
+        }
+        Placement::Unallocated(_) => None,
+    };
+    let (legend, keeps, change) = match shrunk {
+        Some((name, before, after)) => (
+            alloc::format!("{name} {} GB \u{b7} EggOS {size_gib} GB", whole_gb(after)),
+            alloc::format!("{name} keeps {} GB.", whole_gb(after)),
+            alloc::format!(
+                "Shrinks {name} from {} GB to {} GB. Nothing is erased.",
+                whole_gb(before),
+                whole_gb(after)
+            ),
+        ),
+        None => (
+            alloc::format!("EggOS {size_gib} GB"),
+            alloc::format!("Uses unallocated space. {kept} is not touched."),
+            alloc::format!("Uses {size_gib} GB of unallocated space. Nothing is erased."),
+        ),
+    };
+    let bitlocker = layout
+        .partitions
+        .iter()
+        .any(|partition| partition.file_system == FileSystemKind::Bitlocker);
+    let last = match (bitlocker, shrunk.is_some()) {
+        (true, _) => alloc::format!("Have your BitLocker recovery key ready. Type {short} to confirm."),
+        (false, true) => alloc::format!("Back up first: a resize can fail. Type {short} to confirm."),
+        (false, false) => alloc::format!("Changes the partition table. Type {short} to confirm."),
+    };
+    let boot = match efi_system_partition(layout) {
+        Some(_) => String::from("and adds EggOS to the EFI system partition."),
+        None => String::from("and its own EFI system partition, 256 MB."),
+    };
+    PlanTexts {
+        found,
+        alongside,
+        legend,
+        keeps,
+        confirmation: [
+            alloc::format!("Install EggOS beside {kept} on {device}?"),
+            change,
+            alloc::format!("Writes an EggOS partition, {size_gib} GB, for your files,"),
+            boot,
+            last,
+        ],
+    }
+}
+
 /// What a whole-disk install erases, naming the systems (section 7): `Windows and 3 more
 /// partitions`; `None` when no system is on the disk.
 pub fn erased_systems_text(layout: &DiskLayout) -> Option<String> {

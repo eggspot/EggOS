@@ -1661,10 +1661,80 @@ enum DiskWork {
     Check(&'static str, CheckMode),
     Format(&'static str, Text<LABEL_BYTES>),
     Install(&'static str),
+    InstallAlongside(&'static str, u64),
 }
 
 const LABEL_BYTES: usize = 64;
 const COMMAND_LINE_BYTES: usize = 1024;
+
+fn beside_sentence(error: &storage::BesideError) -> alloc::string::String {
+    use eggos_files::shrink::ShrinkError;
+    use storage::BesideError;
+    alloc::string::String::from(match error {
+        BesideError::Storage(error) => return error.sentence(),
+        BesideError::Shrink(ShrinkError::Read | ShrinkError::Write) => {
+            "Could not shrink the partition: the disk could not be read or written."
+        }
+        BesideError::Shrink(_) => "Could not shrink the partition: nothing was changed.",
+        BesideError::SystemPartitionNotFat32 | BesideError::SystemPartitionFull => {
+            "Could not write the EFI system partition: nothing was changed."
+        }
+        BesideError::LoaderNameTooLong => {
+            "The loader's name does not fit the EFI system partition."
+        }
+        BesideError::Partition(_) => {
+            "Could not write the partition table: the old one was put back."
+        }
+    })
+}
+
+fn install_alongside(
+    disks: &mut crate::disk_system::LinuxDisks,
+    device: &'static str,
+    size_gib: u64,
+) -> Result<alloc::string::String, alloc::string::String> {
+    use eggos_files::partitions::{self, Placement};
+    let (device, layout) =
+        partitions::disk_layout(disks, device).map_err(|error| error.sentence())?;
+    let placement = partitions::place(&layout).map_err(|refusal| {
+        let (first, second) = partitions::refusal_lines(refusal, &layout);
+        alloc::format!("{first} {second}")
+    })?;
+    let files = storage::boot_files(disks).map_err(|error| error.sentence())?;
+    let system_partition = partitions::system_partition(&layout);
+    let sectors = (size_gib << 30) / storage::SECTOR_BYTES;
+    let installed = match placement {
+        Placement::Unallocated(room) => {
+            storage::install_beside(disks, device, system_partition, room, sectors, &files)
+        }
+        Placement::ShrunkTail {
+            partition,
+            shrink_bytes,
+            following,
+        } => {
+            let shrunk = layout
+                .partitions
+                .iter()
+                .find(|each| each.number == partition)
+                .ok_or_else(|| alloc::string::String::from("The partition is gone."))?;
+            let from_following = following.map_or(0, |run| run.size_bytes());
+            let needed = (size_gib << 30).saturating_sub(from_following).max(1 << 20);
+            storage::install_shrinking(
+                disks,
+                device,
+                shrunk,
+                shrink_bytes.min(needed),
+                following,
+                system_partition,
+                sectors,
+                &files,
+            )
+        }
+    };
+    installed
+        .map(|_| partitions::installed_beside_text(&layout, device, false))
+        .map_err(|error| beside_sentence(&error))
+}
 
 struct LinuxGrantFiles;
 
@@ -1998,6 +2068,16 @@ impl Application<CAPACITY> for Settings {
             }
             Some(Request::InstallDisk(device)) => {
                 self.disk_work = Some(DiskWork::Install(device));
+            }
+            Some(Request::InstallAlongside(device, size_gib)) => {
+                self.disk_work = Some(DiskWork::InstallAlongside(device, size_gib));
+            }
+            Some(Request::ReadInstallPlan(device)) => {
+                let mut disks = crate::disk_system::LinuxDisks;
+                let layout = eggos_files::partitions::disk_layout(&mut disks, device)
+                    .ok()
+                    .map(|(_, layout)| layout);
+                self.window.show_install_plan(device, layout, now_ms);
             }
             Some(Request::ReadGrants) => {
                 let read = grants_read(self.window.facts().on_disk);
@@ -2395,6 +2475,12 @@ impl Settings {
                     .map(|_| ());
                 self.window.show_disks(storage::list(&mut disks));
                 self.window.show_disk_installed(device, result, now_ms);
+            }
+            DiskWork::InstallAlongside(device, size_gib) => {
+                let result = install_alongside(&mut disks, device, size_gib);
+                self.window.show_disks(storage::list(&mut disks));
+                self.window
+                    .show_disk_installed_alongside(device, result, now_ms);
             }
         }
     }

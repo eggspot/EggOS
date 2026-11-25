@@ -740,6 +740,13 @@ pub enum Request {
     /// Install EggOS on this disk (D241), read the disks again, then show both
     /// ([`SettingsWindow::show_installed`]).
     InstallDisk(&'static str),
+    /// Read this disk's partitions and systems for the plan panel
+    /// ([`SettingsWindow::show_install_plan`]) (D783).
+    ReadInstallPlan(&'static str),
+    /// Install EggOS on this disk alongside what it holds, this many GiB, as `disk install
+    /// --alongside --yes --size` does, then show how it went
+    /// ([`SettingsWindow::show_disk_installed_alongside`]) (D783).
+    InstallAlongside(&'static str, u64),
     /// Read the agents' grants and show them ([`SettingsWindow::show_grants`]) (D193).
     ReadGrants,
     /// Write [`SettingsWindow::grants_to_write`] as the grants file, read it again, then show
@@ -3015,6 +3022,29 @@ impl SettingsWindow {
     ) {
         self.storage
             .show_installed(&mut self.tree, device, result, now_ms);
+    }
+
+    /// Gives the Storage pane `device`'s layout for its plan panel, or `None` when it could not
+    /// be read (D783).
+    pub fn show_install_plan(
+        &mut self,
+        device: &'static str,
+        layout: Option<eggos_files::partitions::DiskLayout>,
+        now_ms: u32,
+    ) {
+        self.storage
+            .show_install_plan(&mut self.tree, device, layout, now_ms);
+    }
+
+    /// Shows how installing EggOS alongside went: the done sentence, or the refusal's (D783).
+    pub fn show_disk_installed_alongside(
+        &mut self,
+        device: &'static str,
+        result: Result<alloc::string::String, alloc::string::String>,
+        now_ms: u32,
+    ) {
+        self.storage
+            .show_installed_alongside(&mut self.tree, device, result, now_ms);
     }
 
     /// Tells the Storage pane whether the kernel kept the boot files installing needs.
