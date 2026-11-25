@@ -6,6 +6,8 @@ pub mod amd_atom_interpreter;
 pub mod amd_dcn;
 pub mod amd_discovery;
 pub mod amd_dmcub;
+pub mod amd_dmub_command;
+pub mod amd_dp;
 pub mod intel;
 pub mod intel_aux;
 pub mod intel_combo_phy;

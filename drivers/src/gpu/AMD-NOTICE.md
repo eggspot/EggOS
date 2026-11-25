@@ -34,6 +34,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 which AMD publishes under the MIT licence above, copyright 2019 and 2020 Advanced Micro Devices,
 Inc.): the same windows, regions and order of register writes, written in EggOS's own code.
 
+`amd_dmcub.rs`'s mailbox rings and `amd_dmub_command.rs` (D790) use the command layouts and
+values of AMD's `dmub_cmd.h` (`drivers/gpu/drm/amd/display/dmub/inc/`) and the transmitter
+control's parameters and actions of AMD's `atomfirmware.h` (`drivers/gpu/drm/amd/include/`),
+both published by AMD under the MIT licence above; `amd_dp.rs` and `amd_dcn.rs`'s DIG back-end
+places come from the register headers above. They are written in EggOS's own code.
+
 ## AMD's display core (DC)
 
 `amd_dcn.rs`'s mode setting (D521) follows the order and the field meanings of AMD's display

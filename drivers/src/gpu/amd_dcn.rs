@@ -14,6 +14,11 @@
 //! hub's viewport and request timing (the firmware's, rescaled to the new line time), the
 //! scaler (bypassed, one to one) and the stream's attributes take the new timing, and both
 //! start again.
+//!
+//! Links (D790): the lit output's DIG back end is the one whose front-end mask holds the
+//! stream; training drives its DPHY's pattern ([`DisplayEngine::send_training_pattern`]) and
+//! its lane count, while DMCUB runs the PHY itself (`super::amd_dp`). A link trained again
+//! bounds new modes by what it carries as well as by the firmware's pixel clock.
 
 use crate::edid::Timing;
 use crate::io::RegisterIo;
@@ -80,6 +85,23 @@ const DP_MSA_TOTALS: u32 = 0x214c;
 const DP_MSA_STARTS: u32 = 0x214d;
 const DP_MSA_SYNCS: u32 = 0x214e;
 const DP_MSA_SIZE: u32 = 0x214f;
+const DIG_BE_CNTL: u32 = 0x20b0;
+const DIG_BE_EN_CNTL: u32 = 0x20b1;
+const DP_LINK_CNTL: u32 = 0x2108;
+const DP_CONFIG: u32 = 0x210b;
+const DP_DPHY_CNTL: u32 = 0x2117;
+const DP_DPHY_TRAINING_PATTERN_SEL: u32 = 0x2118;
+const BACK_END_STRIDE: u32 = 0x100;
+const FRONT_END_MASK_SHIFT: u32 = 8;
+const FRONT_END_MASK: u32 = 0x7f;
+const HOT_PLUG_SHIFT: u32 = 28;
+const HOT_PLUG_MASK: u32 = 0x7;
+const DIG_ENABLE: u32 = 1;
+const TRAINING_COMPLETE: u32 = 1 << 4;
+const EMBEDDED_PANEL_MODE: u32 = 1 << 17;
+const LANES_MASK: u32 = 0x3;
+const DPHY_BYPASS: u32 = 1 << 16;
+const TRAINING_PATTERN_MASK: u32 = 0x3;
 const PIXEL_RATE_CONTROL: u32 = 0x0080;
 const DP_DTO_PHASE: u32 = 0x0081;
 const DP_DTO_MODULO: u32 = 0x0082;
@@ -173,13 +195,19 @@ pub struct LitSurface {
     pub height: u32,
 }
 
-/// The output the lit pipe drives: its timing generator, its DisplayPort stream encoder, and
-/// the pixel clock the firmware set, in hertz, which bounds what the trained link carries.
+/// The output the lit pipe drives: its timing generator, its DisplayPort stream encoder (DIG
+/// front end) and back end, and the pixel clock the firmware set, in hertz, which bounds what
+/// the trained link and the pipe's clocks carry; the back end's hot-plug pin (from 0), whether
+/// it runs an embedded panel, and its lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LitOutput {
     pub timing_generator: usize,
     pub stream: usize,
     pub link_pixel_hz: u32,
+    pub back_end: usize,
+    pub hot_plug: u8,
+    pub embedded: bool,
+    pub lanes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +274,7 @@ pub struct DisplayEngine<R: RegisterIo> {
     pipe: usize,
     output: Option<LitOutput>,
     pixel_hz: u32,
+    link_capacity_hz: Option<u32>,
 }
 
 impl<R: RegisterIo> DisplayEngine<R> {
@@ -268,6 +297,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             pipe: 0,
             output: None,
             pixel_hz: 0,
+            link_capacity_hz: None,
         };
         let lit = (0..MOST_PIPES)
             .map(|pipe| engine.surface_of(pipe))
@@ -308,11 +338,84 @@ impl<R: RegisterIo> DisplayEngine<R> {
             return None;
         }
         let (phase, modulo) = (clock(DP_DTO_PHASE), clock(DP_DTO_MODULO));
-        (phase != 0 && phase <= modulo).then_some(LitOutput {
+        if phase == 0 || phase > modulo {
+            return None;
+        }
+        let back_end = (0..MOST_STREAMS)
+            .find(|&back_end| {
+                let read = |place| self.read_at(place, BACK_END_STRIDE, back_end);
+                let fronts = read(DIG_BE_CNTL) >> FRONT_END_MASK_SHIFT & FRONT_END_MASK;
+                read(DIG_BE_EN_CNTL) & DIG_ENABLE != 0 && fronts & (1 << stream) != 0
+            })
+            .unwrap_or(stream);
+        let read = |place| self.read_at(place, BACK_END_STRIDE, back_end);
+        Some(LitOutput {
             timing_generator,
             stream,
             link_pixel_hz: phase,
+            back_end,
+            hot_plug: (read(DIG_BE_CNTL) >> HOT_PLUG_SHIFT & HOT_PLUG_MASK) as u8,
+            embedded: read(DP_LINK_CNTL) & EMBEDDED_PANEL_MODE != 0,
+            lanes: (read(DP_CONFIG) & LANES_MASK) as usize + 1,
         })
+    }
+
+    /// Sends DisplayPort training pattern `pattern` (1 to 4) on the lit output's back end, or
+    /// pixels with 0.
+    pub fn send_training_pattern(&self, pattern: u8) {
+        let Some(output) = self.output else {
+            return;
+        };
+        let read = |place| self.read_at(place, BACK_END_STRIDE, output.back_end);
+        let write = |place, value| self.write_at(place, BACK_END_STRIDE, output.back_end, value);
+        let link = read(DP_LINK_CNTL) & !TRAINING_COMPLETE;
+        match pattern {
+            0 => write(DP_LINK_CNTL, link | TRAINING_COMPLETE),
+            _ => {
+                let code = u32::from(pattern - 1) & TRAINING_PATTERN_MASK;
+                write(DP_DPHY_TRAINING_PATTERN_SEL, code);
+                write(DP_LINK_CNTL, link);
+            }
+        }
+        write(DP_DPHY_CNTL, read(DP_DPHY_CNTL) & !DPHY_BYPASS);
+    }
+
+    /// Stops (`running` false) or starts the lit output's DisplayPort stream, waiting while
+    /// `keep_waiting` allows for it to follow.
+    pub fn run_stream(
+        &self,
+        running: bool,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), Refusal> {
+        let output = self.output.ok_or(Refusal::NoDisplayPortOutput)?;
+        let control = self.read_at(DP_STREAM_CONTROL, STREAM_STRIDE, output.stream);
+        let wanted = match running {
+            true => control | STREAM_ENABLE,
+            false => control & !STREAM_ENABLE,
+        };
+        self.write_at(DP_STREAM_CONTROL, STREAM_STRIDE, output.stream, wanted);
+        let status = (DP_STREAM_CONTROL, STREAM_STRIDE, output.stream);
+        self.wait_for(status, STREAM_RUNNING, running, keep_waiting)
+    }
+
+    /// Sets the lit output's back end to `lanes` lanes (1, 2 or 4), before its PHY is enabled.
+    pub fn set_lanes(&self, lanes: usize) {
+        let Some(output) = self.output else {
+            return;
+        };
+        let lanes = lanes.clamp(1, 4) as u32 - 1;
+        let config = self.read_at(DP_CONFIG, BACK_END_STRIDE, output.back_end) & !LANES_MASK;
+        self.write_at(DP_CONFIG, BACK_END_STRIDE, output.back_end, config | lanes);
+    }
+
+    /// Records that the lit output's link was trained again on `lanes` lanes at `link_khz`
+    /// (8b/10b, 24 bits a pixel): new modes then fit what it carries as well.
+    pub fn retrained(&mut self, lanes: usize, link_khz: u32) {
+        let carried = u64::from(link_khz) * 1000 * lanes as u64 / 3;
+        self.link_capacity_hz = Some(carried.min(u64::from(u32::MAX)) as u32);
+        if let Some(output) = self.output.as_mut() {
+            output.lanes = lanes;
+        }
     }
 
     fn read_at(&self, place: u32, stride: u32, index: usize) -> u32 {
@@ -362,7 +465,10 @@ impl<R: RegisterIo> DisplayEngine<R> {
             .clock_khz
             .checked_mul(1000)
             .ok_or(Refusal::BeyondLink)?;
-        if pixel_hz == 0 || pixel_hz > output.link_pixel_hz {
+        let ceiling = output
+            .link_pixel_hz
+            .min(self.link_capacity_hz.unwrap_or(u32::MAX));
+        if pixel_hz == 0 || pixel_hz > ceiling {
             return Err(Refusal::BeyondLink);
         }
         let shape = GeneratorTiming::of(timing).ok_or(Refusal::UnfitTiming)?;
@@ -719,6 +825,10 @@ mod tests {
                 timing_generator: 0,
                 stream: 3,
                 link_pixel_hz: 148_500_000,
+                back_end: 3,
+                hot_plug: 0,
+                embedded: false,
+                lanes: 1,
             })
         );
         let timing = Timing::reduced_blanking(1280, 720, 60).unwrap();
@@ -750,6 +860,40 @@ mod tests {
             engine.set_mode(&faster, 0, 3840, &mut || true),
             Err(Refusal::BeyondLink)
         );
+        engine.retrained(1, 162_000);
+        assert_eq!(
+            engine.set_mode(&timing, 0xf4_0080_0000, 1280, &mut || true),
+            Err(Refusal::BeyondLink)
+        );
+    }
+
+    #[test]
+    fn the_back_end_feeding_the_stream_takes_the_training_patterns() {
+        let regs = Registers::default();
+        lit_on(&regs, 0);
+        lit_output(&regs, 0, 1);
+        let back_end = |place| at(place, BACK_END_STRIDE, 4);
+        regs.set(back_end(DIG_BE_EN_CNTL), DIG_ENABLE);
+        regs.set(
+            back_end(DIG_BE_CNTL),
+            (1 << 1) << FRONT_END_MASK_SHIFT | 2 << HOT_PLUG_SHIFT,
+        );
+        regs.set(back_end(DP_CONFIG), 3);
+        regs.set(back_end(DP_LINK_CNTL), TRAINING_COMPLETE);
+        let (engine, _) =
+            DisplayEngine::take(&regs, (3, 1, 4), (BASE, CLOCK_BASE), (1920, 1080)).unwrap();
+        let output = engine.output().unwrap();
+        assert_eq!((output.back_end, output.hot_plug, output.lanes), (4, 2, 4));
+        engine.send_training_pattern(2);
+        assert_eq!(regs.get(back_end(DP_DPHY_TRAINING_PATTERN_SEL)), 1);
+        assert_eq!(regs.get(back_end(DP_LINK_CNTL)) & TRAINING_COMPLETE, 0);
+        engine.send_training_pattern(0);
+        assert_eq!(
+            regs.get(back_end(DP_LINK_CNTL)) & TRAINING_COMPLETE,
+            TRAINING_COMPLETE
+        );
+        engine.set_lanes(2);
+        assert_eq!(regs.get(back_end(DP_CONFIG)) & LANES_MASK, 1);
     }
 
     #[test]

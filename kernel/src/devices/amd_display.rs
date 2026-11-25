@@ -15,6 +15,12 @@
 //! Modes (D521): when the lit pipe drives a DisplayPort stream on the DTO, the display can
 //! change size: the new size's CVT reduced blanking timing at 60 Hz, up to the firmware mode's
 //! pixel rate and the bytes of the firmware's framebuffer, shown blank from both surfaces.
+//!
+//! Once DMCUB runs (D790), outbox 1 is turned on and the lit DisplayPort output's sink is read
+//! through AUX on the channel of its DIG back end: its receiver capabilities, its EDID (its
+//! name in the sinks text, its preferred timing used for a mode of that size) and its link
+//! status; a link that lost clock recovery, equalisation or alignment is trained again at the
+//! sink's highest rate and lanes.
 
 use super::{Deadline, Probe, ProbeError};
 use crate::display::{Mode, Rect, Scanout};
@@ -24,7 +30,9 @@ use alloc::vec::Vec;
 use eggos_drivers::edid::Timing;
 use eggos_drivers::gpu::amd_dcn::{self, DisplayEngine, Refusal};
 use eggos_drivers::gpu::amd_discovery::{dmcub_file_name, dmcub_firmware};
-use eggos_drivers::gpu::amd_dmcub::{self, Dmcub};
+use eggos_drivers::gpu::amd_dmcub::{self, Dmcub, Mailbox};
+use eggos_drivers::gpu::amd_dmub_command::{self, Transmitter};
+use eggos_drivers::gpu::amd_dp::{self, AuxChannel, Wait};
 use eggos_drivers::io::Mmio;
 use eggos_hal::PhysicalRange;
 use eggos_hal::handoff::pixel_format;
@@ -37,10 +45,51 @@ struct Surface {
     address: u64,
 }
 
+struct SharedMailbox {
+    base: usize,
+}
+
+impl Mailbox for SharedMailbox {
+    fn write(&mut self, at: usize, bytes: &[u8]) {
+        for (index, byte) in bytes.iter().enumerate() {
+            // SAFETY: the mailbox's 16 KiB stay mapped for good and ring offsets stay inside.
+            unsafe { core::ptr::write_volatile((self.base + at + index) as *mut u8, *byte) };
+        }
+    }
+
+    fn read(&self, at: usize, out: &mut [u8]) {
+        for (index, byte) in out.iter_mut().enumerate() {
+            // SAFETY: the mailbox's 16 KiB stay mapped for good and ring offsets stay inside.
+            *byte = unsafe { core::ptr::read_volatile((self.base + at + index) as *const u8) };
+        }
+    }
+}
+
+struct PolledWait {
+    polls_left: u32,
+}
+
+const SPINS_PER_MICROSECOND: u32 = 1000;
+
+impl Wait for PolledWait {
+    fn keep_waiting(&mut self) -> bool {
+        self.polls_left = self.polls_left.saturating_sub(1);
+        self.polls_left > 0
+    }
+
+    fn pause(&mut self, microseconds: u32) {
+        for _ in 0..microseconds.saturating_mul(SPINS_PER_MICROSECOND) {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 struct AmdDisplay {
     engine: DisplayEngine<Mmio>,
     dmcub: Dmcub<Mmio>,
     dmcub_block: Surface,
+    mailbox: Option<SharedMailbox>,
+    preferred: Option<Timing>,
     mode: Mode,
     stride: usize,
     frame: Vec<u32>,
@@ -109,6 +158,90 @@ impl AmdDisplay {
     }
 }
 
+impl AmdDisplay {
+    fn bring_up_link(&mut self) {
+        let Some(output) = self.engine.output() else {
+            return;
+        };
+        let Some(mailbox) = self.mailbox.as_mut() else {
+            return;
+        };
+        let mut wait = PolledWait {
+            polls_left: DMCUB_POLLS,
+        };
+        let mut aux = AuxChannel {
+            dmcub: &self.dmcub,
+            mailbox,
+            instance: output.back_end as u8,
+            wait: &mut wait,
+        };
+        let mut capabilities = [0u8; RECEIVER_CAPABILITY_BYTES];
+        if aux.read_dpcd(0, &mut capabilities).is_err() {
+            self.sinks.push_str("amd dp sink did not answer on AUX\n");
+            return;
+        }
+        let mut block = [0u8; eggos_drivers::edid::BLOCK_BYTES];
+        if aux.read_edid(&mut block).is_ok()
+            && let Some(edid) = eggos_drivers::edid::Edid::parse(&block)
+        {
+            self.sinks.push_str(&alloc::format!(
+                "amd dp sink {} {}{}{} {:04x}\n",
+                edid.name(),
+                edid.maker[0] as char,
+                edid.maker[1] as char,
+                edid.maker[2] as char,
+                edid.product
+            ));
+            self.preferred = edid.preferred;
+        }
+        let mut status = [0u8; LINK_STATUS_BYTES];
+        let trained = aux.read_dpcd(LANE_STATUS, &mut status).is_ok()
+            && link_holds(&status, output.lanes);
+        if trained {
+            return;
+        }
+        let rate = match capabilities[1] {
+            code @ (0x06 | 0x0a | 0x14 | 0x1e) => code,
+            _ => 0x06,
+        };
+        let lanes = match capabilities[2] & 0x1f {
+            4.. => 4,
+            2 | 3 => 2,
+            _ => 1,
+        };
+        let transmitter = Transmitter {
+            phy: output.back_end as u8,
+            hot_plug: output.hot_plug + 1,
+            front_end: output.stream as u8,
+            connector: match output.embedded {
+                true => amd_dmub_command::CONNECTOR_EMBEDDED_DISPLAY_PORT,
+                false => amd_dmub_command::CONNECTOR_DISPLAY_PORT,
+            },
+            lanes: output.lanes as u8,
+        };
+        let line = match amd_dp::retrain(&mut self.engine, &mut aux, transmitter, rate, lanes) {
+            Ok(_) => alloc::format!(
+                "amd dp link trained again: {lanes} lanes at {} Mbps\n",
+                amd_dp::rate_khz(rate) / 100
+            ),
+            Err(_) => String::from("amd dp link training failed\n"),
+        };
+        self.sinks.push_str(&line);
+    }
+}
+
+const RECEIVER_CAPABILITY_BYTES: usize = 16;
+const LANE_STATUS: u32 = 0x202;
+const LINK_STATUS_BYTES: usize = 3;
+const LANE_DONE: u8 = 0x7;
+const INTERLANE_ALIGNED: u8 = 1;
+
+fn link_holds(status: &[u8; LINK_STATUS_BYTES], lanes: usize) -> bool {
+    let lane = |index: usize| status[index / 2] >> (4 * (index % 2)) & 0xf;
+    (0..lanes.clamp(1, 4)).all(|index| lane(index) & LANE_DONE == LANE_DONE)
+        && status[2] & INTERLANE_ALIGNED != 0
+}
+
 impl Scanout for AmdDisplay {
     fn mode(&self) -> Mode {
         self.mode
@@ -162,7 +295,20 @@ impl Scanout for AmdDisplay {
                 left = left.saturating_sub(1);
                 left > 0
             })
-            .map_err(amd_dmcub::DmcubError::description)
+            .map_err(amd_dmcub::DmcubError::description)?;
+        let mut mailbox = SharedMailbox {
+            base: self.dmcub_block.pixels + layout.mailbox.0 as usize,
+        };
+        let mut left = DMCUB_POLLS;
+        self.dmcub
+            .send(&mut mailbox, &amd_dmub_command::outbox1_enable(), &mut || {
+                left = left.saturating_sub(1);
+                left > 0
+            })
+            .map_err(amd_dmcub::DmcubError::description)?;
+        self.mailbox = Some(mailbox);
+        self.bring_up_link();
+        Ok(())
     }
 
     fn pointer_image(&mut self) -> Option<&mut [u32]> {
@@ -208,7 +354,10 @@ impl Scanout for AmdDisplay {
     }
 
     fn change_mode(&mut self, mode: Mode, deadline: &mut Deadline) -> Result<(), &'static str> {
-        let timing = Timing::reduced_blanking(mode.width, mode.height, REFRESH_HZ)
+        let timing = self
+            .preferred
+            .filter(|timing| (timing.width, timing.height) == (mode.width, mode.height))
+            .or_else(|| Timing::reduced_blanking(mode.width, mode.height, REFRESH_HZ))
             .ok_or(Refusal::UnfitTiming.description())?;
         let pitch = mode.width.next_multiple_of(amd_dcn::PITCH_ALIGNMENT_PIXELS);
         let stride = pitch as usize * 4;
@@ -372,6 +521,8 @@ pub fn take(
         engine,
         dmcub: Dmcub::new(dmcub_regs, segment_base),
         dmcub_block: surface(dmcub),
+        mailbox: None,
+        preferred: None,
         mode,
         stride: stride as usize,
         frame,
@@ -393,6 +544,14 @@ pub fn take(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_holds_while_every_lane_is_done_and_the_lanes_are_aligned() {
+        assert!(link_holds(&[0x77, 0x77, 0x01], 4));
+        assert!(!link_holds(&[0x77, 0x37, 0x01], 4));
+        assert!(link_holds(&[0x77, 0x00, 0x01], 2));
+        assert!(!link_holds(&[0x77, 0x77, 0x00], 4));
+    }
 
     #[test]
     fn the_second_surface_and_the_cursor_follow_the_firmware_s_aligned() {

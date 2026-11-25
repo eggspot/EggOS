@@ -10,6 +10,12 @@
 //! offset (`DCN_VM_FB_LOCATION_BASE` and `DCN_VM_FB_OFFSET`). Register places are from AMD's
 //! `dcn_3_1_2_offset.h` and `_sh_mask.h`, the sequence and layout from AMD's DMUB service
 //! (`dmub_srv.c`, `dmub_dcn31.c`), all MIT (`AMD-NOTICE.md`).
+//!
+//! Commands (D790): the mailbox's first 8 KiB are the inbox ring of 64-byte commands, its
+//! second 8 KiB outbox 1's ring of DMCUB's notifications. [`Dmcub::send`] writes a command at
+//! the inbox's write pointer (a byte offset in the ring), moves the pointer past it and waits
+//! until DMCUB's read pointer reaches it, so DMCUB has run the command; [`Dmcub::receive`]
+//! takes the next notification from outbox 1 and moves its read pointer past it.
 
 use crate::io::RegisterIo;
 
@@ -68,6 +74,21 @@ const DMUIF_RESET: u32 = 1 << 8;
 const FB_FIELD: u32 = 0x00ff_ffff;
 const FIRMWARE_RUNNING: u32 = 1;
 const MAILBOX_READY: u32 = 1 << 1;
+const RING_BYTES: u32 = MAILBOX_HALF_BYTES as u32;
+
+/// The bytes of one mailbox command or notification.
+pub const COMMAND_BYTES: usize = 64;
+
+/// A mailbox command or notification.
+pub type Command = [u8; COMMAND_BYTES];
+
+/// The mailbox's memory, which DMCUB shares: the inbox ring, then outbox 1's.
+pub trait Mailbox {
+    /// Writes `bytes` `at` bytes from the mailbox's start.
+    fn write(&mut self, at: usize, bytes: &[u8]);
+    /// Reads `out.len()` bytes from `at` bytes past the mailbox's start.
+    fn read(&self, at: usize, out: &mut [u8]);
+}
 
 /// Where each region goes in DMCUB's block of video memory, from its start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,12 +137,21 @@ pub fn layout(instructions: u64, data: u64, bios: u64) -> Layout {
 pub enum DmcubError {
     /// The firmware did not say it runs in time.
     NotStarted,
+    /// The firmware does not run, so it cannot take commands.
+    NotRunning,
+    /// The inbox stayed full.
+    InboxFull,
+    /// The firmware did not take a command in time.
+    NotTaken,
 }
 
 impl DmcubError {
     pub fn description(self) -> &'static str {
         match self {
             Self::NotStarted => "the display microcontroller did not start",
+            Self::NotRunning => "the display microcontroller is not running",
+            Self::InboxFull => "the display microcontroller's inbox stayed full",
+            Self::NotTaken => "the display microcontroller did not take a command in time",
         }
     }
 }
@@ -245,6 +275,50 @@ impl<R: RegisterIo> Dmcub<R> {
         }
         Ok(())
     }
+
+    /// Puts `command` in the inbox and waits, while `keep_waiting` allows, until the firmware
+    /// has taken it.
+    pub fn send(
+        &self,
+        mailbox: &mut dyn Mailbox,
+        command: &Command,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), DmcubError> {
+        if !self.running() {
+            return Err(DmcubError::NotRunning);
+        }
+        let write = self.read(INBOX_WRITE) % RING_BYTES;
+        let next = (write + COMMAND_BYTES as u32) % RING_BYTES;
+        while self.read(INBOX_READ) % RING_BYTES == next {
+            if !keep_waiting() {
+                return Err(DmcubError::InboxFull);
+            }
+            core::hint::spin_loop();
+        }
+        mailbox.write(write as usize, command);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        self.write(INBOX_WRITE, next);
+        while self.read(INBOX_READ) % RING_BYTES != next {
+            if !keep_waiting() {
+                return Err(DmcubError::NotTaken);
+            }
+            core::hint::spin_loop();
+        }
+        Ok(())
+    }
+
+    /// The next notification in outbox 1, if the firmware posted one; taking it frees its place.
+    pub fn receive(&self, mailbox: &dyn Mailbox) -> Option<Command> {
+        let read = self.read(OUTBOX_1_READ) % RING_BYTES;
+        if read == self.read(OUTBOX_1_WRITE) % RING_BYTES {
+            return None;
+        }
+        let mut notification = [0u8; COMMAND_BYTES];
+        mailbox.read(MAILBOX_HALF_BYTES as usize + read as usize, &mut notification);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        self.write(OUTBOX_1_READ, (read + COMMAND_BYTES as u32) % RING_BYTES);
+        Some(notification)
+    }
 }
 
 #[cfg(test)]
@@ -314,5 +388,42 @@ mod tests {
         assert_eq!(at(INBOX_BASE), Some(WINDOW_MAILBOX));
         assert_eq!(at(CONTROL).unwrap() & ENABLE, ENABLE);
         assert_eq!(at(CONTROL_2).unwrap() & SOFT_RESET, 0);
+    }
+
+    struct Shared(alloc::vec::Vec<u8>);
+
+    impl Mailbox for Shared {
+        fn write(&mut self, at: usize, bytes: &[u8]) {
+            self.0[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        fn read(&self, at: usize, out: &mut [u8]) {
+            out.copy_from_slice(&self.0[at..at + out.len()]);
+        }
+    }
+
+    #[test]
+    fn a_command_goes_at_the_write_pointer_and_notifications_come_from_outbox_one() {
+        let regs = Registers::default();
+        let place = |place: u32| ((BASE + place) * 4) as usize;
+        regs.0.borrow_mut().insert(place(CONTROL), ENABLE);
+        regs.0.borrow_mut().insert(place(INBOX_WRITE), 8128);
+        regs.0.borrow_mut().insert(place(INBOX_READ), 8128);
+        let dmcub = Dmcub::new(&regs, BASE);
+        let mut shared = Shared(alloc::vec![0; 2 * MAILBOX_HALF_BYTES as usize]);
+        let command = [7u8; COMMAND_BYTES];
+        let mut taken = || {
+            regs.0.borrow_mut().insert(place(INBOX_READ), 0);
+            true
+        };
+        dmcub.send(&mut shared, &command, &mut taken).unwrap();
+        assert_eq!(&shared.0[8128..8192], &command[..]);
+        assert_eq!(regs.0.borrow().get(&place(INBOX_WRITE)), Some(&0));
+        assert_eq!(dmcub.receive(&shared), None);
+        shared.0[8192 + 64] = 1;
+        regs.0.borrow_mut().insert(place(OUTBOX_1_READ), 64);
+        regs.0.borrow_mut().insert(place(OUTBOX_1_WRITE), 128);
+        assert_eq!(dmcub.receive(&shared).map(|got| got[0]), Some(1));
+        assert_eq!(regs.0.borrow().get(&place(OUTBOX_1_READ)), Some(&128));
+        assert_eq!(dmcub.receive(&shared), None);
     }
 }
