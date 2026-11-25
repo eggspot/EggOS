@@ -1,15 +1,15 @@
-//! The layer's run on x86_64 (D472): the app's files read, its methods compiled into one block
-//! of memory made executable, the entry table filled (the runtime's helpers, then one entry
-//! per method of the app's DEX file: compiled code, a framework native, or the missing-method
-//! stop), the launcher activity created and its `<init>` and `onCreate` called through the
-//! table, and the text view it set shown in a window. Objects are boxes the layer keeps for
-//! the app's life; the app runs on this one thread. Virtual calls are dispatched on the
-//! receiver's class, each class's static initializer runs on its first static field or new
-//! object, arrays are objects with elements, and an uncaught `throw` stops the app with the
-//! exception's class (D499). `setContentView(R.layout.…)` inflates the compiled layout the
-//! resource table names into framework views, and the window shows them as labels and buttons
-//! whose clicks call the activity's `android:onClick` method or the view's click listener,
-//! then shows the texts they changed (D500).
+//! The layer's run on x86_64, aarch64 and riscv64 (D472, D760): the app's files read, its methods
+//! compiled into one block of memory made executable, the entry table filled (the runtime's
+//! helpers, then one entry per method of the app's DEX file: compiled code, a framework native, or
+//! the missing-method stop), the launcher activity created and its `<init>` and `onCreate` called
+//! through the table, and the text view it set shown in a window. Objects are boxes the layer's
+//! collector frees once unreachable (D759); the app runs on this one thread. Virtual calls are
+//! dispatched on the receiver's class, each class's static initializer runs on its first static
+//! field or new object, arrays are objects with elements, and an uncaught `throw` stops the app
+//! with the exception's class (D499). `setContentView(R.layout.…)` inflates the compiled layout the
+//! resource table names into framework views, and the window shows them as labels and buttons whose
+//! clicks call the activity's `android:onClick` method or the view's click listener, then shows the
+//! texts they changed (D500).
 
 use crate::collector;
 use crate::framework::{
@@ -37,7 +37,7 @@ use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 use eggos_toolkit::window::Window;
 
-type Entry = extern "sysv64" fn(*const u64, *const usize) -> u64;
+type Entry = extern "C" fn(*const u64, *const usize) -> u64;
 
 const AT_CURRENT_FOLDER: usize = -100isize as usize;
 const READ_ONLY: usize = 0;
@@ -60,6 +60,12 @@ const DEEPEST_VIEW: usize = 32;
 const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
 const STACK_ABOVE_RUN: usize = 4096;
+#[cfg(target_arch = "x86_64")]
+const MACHINE: compiler::Machine = compiler::Machine::X86_64;
+#[cfg(target_arch = "aarch64")]
+const MACHINE: compiler::Machine = compiler::Machine::Aarch64;
+#[cfg(target_arch = "riscv64")]
+const MACHINE: compiler::Machine = compiler::Machine::Riscv64;
 
 struct State {
     dex: Dex<'static>,
@@ -167,6 +173,7 @@ fn executable(code: &[u8]) -> Option<usize> {
     // SAFETY: the mapping is `length` bytes, at least `code.len()`, writable, and only this
     // function uses it until it is made executable below.
     unsafe { core::ptr::copy_nonoverlapping(code.as_ptr(), base as *mut u8, code.len()) };
+    synchronize_instructions(base, code.len());
     // SAFETY: changes the protection of the mapping made above, which nothing writes after.
     let protected = unsafe {
         syscall::call(
@@ -177,14 +184,41 @@ fn executable(code: &[u8]) -> Option<usize> {
     (protected == 0).then_some(base)
 }
 
+#[cfg(target_arch = "x86_64")]
+fn synchronize_instructions(_: usize, _: usize) {}
+
+#[cfg(target_arch = "aarch64")]
+fn synchronize_instructions(base: usize, length: usize) {
+    const LINE: usize = 64;
+    for line in (base & !(LINE - 1)..base + length).step_by(LINE) {
+        // SAFETY: cleans the data cache line holding written code to the point of unification.
+        unsafe { core::arch::asm!("dc cvau, {}", in(reg) line, options(nostack)) };
+    }
+    // SAFETY: waits for the cleaning above.
+    unsafe { core::arch::asm!("dsb ish", options(nostack)) };
+    for line in (base & !(LINE - 1)..base + length).step_by(LINE) {
+        // SAFETY: drops stale instructions for the line from the instruction cache.
+        unsafe { core::arch::asm!("ic ivau, {}", in(reg) line, options(nostack)) };
+    }
+    // SAFETY: waits for the invalidation and refetches the following instructions.
+    unsafe { core::arch::asm!("dsb ish", "isb", options(nostack)) };
+}
+
+#[cfg(target_arch = "riscv64")]
+fn synchronize_instructions(_: usize, _: usize) {
+    // SAFETY: orders the stores of the code before this thread fetches it.
+    unsafe { core::arch::asm!("fence.i", options(nostack)) };
+}
+
 fn new_object(object: Object) -> u64 {
     let address = Box::leak(Box::new(object)) as *mut Object as u64;
     state().heap.note(address);
     address
 }
 
-fn callee_saved_registers() -> [u64; 6] {
-    let mut saved = [0u64; 6];
+#[cfg(target_arch = "x86_64")]
+fn callee_saved_registers() -> [u64; 12] {
+    let mut saved = [0u64; 12];
     // SAFETY: copies the callee-saved registers into a local array; nothing else changes.
     unsafe {
         core::arch::asm!(
@@ -201,13 +235,53 @@ fn callee_saved_registers() -> [u64; 6] {
     saved
 }
 
-fn stack_pointer() -> usize {
-    let pointer: usize;
-    // SAFETY: reads the stack pointer only.
+#[cfg(target_arch = "aarch64")]
+fn callee_saved_registers() -> [u64; 12] {
+    let mut saved = [0u64; 12];
+    // SAFETY: copies the callee-saved registers into a local array; nothing else changes.
     unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) pointer, options(nomem, nostack, preserves_flags))
+        core::arch::asm!(
+            "stp x19, x20, [{0}]",
+            "stp x21, x22, [{0}, #16]",
+            "stp x23, x24, [{0}, #32]",
+            "stp x25, x26, [{0}, #48]",
+            "stp x27, x28, [{0}, #64]",
+            "stp x29, x30, [{0}, #80]",
+            in(reg) saved.as_mut_ptr(),
+            options(nostack, preserves_flags),
+        )
     };
-    pointer
+    saved
+}
+
+#[cfg(target_arch = "riscv64")]
+fn callee_saved_registers() -> [u64; 12] {
+    let mut saved = [0u64; 12];
+    // SAFETY: copies the callee-saved registers into a local array; nothing else changes.
+    unsafe {
+        core::arch::asm!(
+            "sd s0, 0({0})",
+            "sd s1, 8({0})",
+            "sd s2, 16({0})",
+            "sd s3, 24({0})",
+            "sd s4, 32({0})",
+            "sd s5, 40({0})",
+            "sd s6, 48({0})",
+            "sd s7, 56({0})",
+            "sd s8, 64({0})",
+            "sd s9, 72({0})",
+            "sd s10, 80({0})",
+            "sd s11, 88({0})",
+            in(reg) saved.as_mut_ptr(),
+            options(nostack),
+        )
+    };
+    saved
+}
+
+fn stack_pointer() -> usize {
+    let marker = 0u8;
+    core::hint::black_box(&marker) as *const u8 as usize
 }
 
 fn references_of(address: u64, found: &mut Vec<u64>) {
@@ -274,7 +348,7 @@ fn arguments<const N: usize>(words: *const u64) -> [u64; N] {
     unsafe { core::ptr::read_unaligned(words.cast::<[u64; N]>()) }
 }
 
-extern "sysv64" fn string(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn string(words: *const u64, _: *const usize) -> u64 {
     at_safepoint();
     let [index] = arguments::<1>(words);
     let text = state().dex.string(index as u32);
@@ -285,7 +359,7 @@ extern "sysv64" fn string(words: *const u64, _: *const usize) -> u64 {
     })
 }
 
-extern "sysv64" fn new_instance(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn new_instance(words: *const u64, table: *const usize) -> u64 {
     at_safepoint();
     let [index] = arguments::<1>(words);
     let class = state().dex.type_name(index as u32).unwrap_or_default();
@@ -320,7 +394,7 @@ fn raise(table: *const usize, class: &str) -> u64 {
     0
 }
 
-extern "sysv64" fn field_get(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn field_get(words: *const u64, table: *const usize) -> u64 {
     let [target, field] = arguments::<2>(words);
     let Some(target) = object(target) else {
         return raise(table, framework::NULL_POINTER);
@@ -328,7 +402,7 @@ extern "sysv64" fn field_get(words: *const u64, table: *const usize) -> u64 {
     target.fields.get(&(field as u32)).copied().unwrap_or(0)
 }
 
-extern "sysv64" fn field_put(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn field_put(words: *const u64, table: *const usize) -> u64 {
     let [target, field, value] = arguments::<3>(words);
     let Some(target) = object(target) else {
         return raise(table, framework::NULL_POINTER);
@@ -337,7 +411,7 @@ extern "sysv64" fn field_put(words: *const u64, table: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn divide_int(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn divide_int(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
     match right as u32 as i32 {
         0 => raise(table, framework::ARITHMETIC),
@@ -345,7 +419,7 @@ extern "sysv64" fn divide_int(words: *const u64, table: *const usize) -> u64 {
     }
 }
 
-extern "sysv64" fn remainder_int(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn remainder_int(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
     match right as u32 as i32 {
         0 => raise(table, framework::ARITHMETIC),
@@ -353,7 +427,7 @@ extern "sysv64" fn remainder_int(words: *const u64, table: *const usize) -> u64 
     }
 }
 
-extern "sysv64" fn divide_long(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn divide_long(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
     match right as i64 {
         0 => raise(table, framework::ARITHMETIC),
@@ -361,7 +435,7 @@ extern "sysv64" fn divide_long(words: *const u64, table: *const usize) -> u64 {
     }
 }
 
-extern "sysv64" fn remainder_long(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn remainder_long(words: *const u64, table: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
     match right as i64 {
         0 => raise(table, framework::ARITHMETIC),
@@ -370,8 +444,7 @@ extern "sysv64" fn remainder_long(words: *const u64, table: *const usize) -> u64
 }
 
 fn entry_at(address: usize) -> Entry {
-    // SAFETY: every address the layer calls is a compiled method in the executable block or
-    // one of the layer's `extern "sysv64"` functions, all of type `Entry`.
+    // SAFETY: a compiled method or one of the layer's helpers, all of type `Entry`.
     unsafe { core::mem::transmute::<usize, Entry>(address) }
 }
 
@@ -405,7 +478,7 @@ fn initialize(class: &str, table: *const usize) {
     entry_at(address)(no_arguments.as_ptr(), table);
 }
 
-extern "sysv64" fn invoke_virtual(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn invoke_virtual(words: *const u64, table: *const usize) -> u64 {
     let [method, receiver] = arguments::<2>(words);
     let Some(class) = object(receiver).map(|receiver| receiver.class.clone()) else {
         return raise(table, framework::NULL_POINTER);
@@ -433,13 +506,13 @@ fn static_field_class(field: u64, table: *const usize) {
     }
 }
 
-extern "sysv64" fn static_get(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn static_get(words: *const u64, table: *const usize) -> u64 {
     let [field] = arguments::<1>(words);
     static_field_class(field, table);
     state().statics.get(&(field as u32)).copied().unwrap_or(0)
 }
 
-extern "sysv64" fn static_put(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn static_put(words: *const u64, table: *const usize) -> u64 {
     let [field, value] = arguments::<2>(words);
     static_field_class(field, table);
     state().statics.insert(field as u32, value);
@@ -448,7 +521,7 @@ extern "sysv64" fn static_put(words: *const u64, table: *const usize) -> u64 {
 
 const LARGEST_ARRAY: usize = 1 << 24;
 
-extern "sysv64" fn new_array(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn new_array(words: *const u64, table: *const usize) -> u64 {
     at_safepoint();
     let [length, index] = arguments::<2>(words);
     let length = length as u32 as i32;
@@ -491,14 +564,14 @@ fn element_index(array: &Object, index: u64, table: *const usize) -> Option<usiz
     }
 }
 
-extern "sysv64" fn array_length(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn array_length(words: *const u64, table: *const usize) -> u64 {
     let [array] = arguments::<1>(words);
     elements_of(array, table)
         .and_then(|array| array.elements.as_ref())
         .map_or(0, |elements| elements.len() as u64)
 }
 
-extern "sysv64" fn array_get(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn array_get(words: *const u64, table: *const usize) -> u64 {
     let [array, index] = arguments::<2>(words);
     let Some(array) = elements_of(array, table) else {
         return 0;
@@ -512,7 +585,7 @@ extern "sysv64" fn array_get(words: *const u64, table: *const usize) -> u64 {
         .map_or(0, |elements| elements[index])
 }
 
-extern "sysv64" fn array_put(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn array_put(words: *const u64, table: *const usize) -> u64 {
     let [array, index, value] = arguments::<3>(words);
     let Some(array) = elements_of(array, table) else {
         return 0;
@@ -527,7 +600,7 @@ extern "sysv64" fn array_put(words: *const u64, table: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn throw(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn throw(words: *const u64, table: *const usize) -> u64 {
     let [exception] = arguments::<1>(words);
     match object(exception) {
         Some(_) => set_pending(table, exception),
@@ -538,7 +611,7 @@ extern "sysv64" fn throw(words: *const u64, table: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn catches(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn catches(words: *const u64, table: *const usize) -> u64 {
     let [index] = arguments::<1>(words);
     let Some(exception) = object(pending(table)) else {
         return 0;
@@ -547,13 +620,13 @@ extern "sysv64" fn catches(words: *const u64, table: *const usize) -> u64 {
     u64::from(framework::is_instance(&state().dex, &exception.class, &wanted) == Some(true))
 }
 
-extern "sysv64" fn take_exception(_: *const u64, table: *const usize) -> u64 {
+extern "C" fn take_exception(_: *const u64, table: *const usize) -> u64 {
     let exception = pending(table);
     set_pending(table, 0);
     exception
 }
 
-extern "sysv64" fn exception_init(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn exception_init(words: *const u64, _: *const usize) -> u64 {
     let [this, message] = arguments::<2>(words);
     let text = object(message).and_then(|message| message.text.clone());
     if let Some(this) = object(this)
@@ -564,7 +637,7 @@ extern "sysv64" fn exception_init(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn get_message(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn get_message(words: *const u64, _: *const usize) -> u64 {
     let [this] = arguments::<1>(words);
     match object(this).and_then(|this| this.text.clone()) {
         Some(text) => new_string(text),
@@ -576,7 +649,7 @@ fn class_of(index: u64) -> String {
     state().dex.type_name(index as u32).unwrap_or_default()
 }
 
-extern "sysv64" fn check_cast(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn check_cast(words: *const u64, table: *const usize) -> u64 {
     let [value, index] = arguments::<2>(words);
     if let Some(value) = object(value) {
         let wanted = class_of(index);
@@ -587,7 +660,7 @@ extern "sysv64" fn check_cast(words: *const u64, table: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn instance_of(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn instance_of(words: *const u64, _: *const usize) -> u64 {
     let [value, index] = arguments::<2>(words);
     let Some(value) = object(value) else {
         return 0;
@@ -604,52 +677,52 @@ fn double_of(word: u64) -> f64 {
     f64::from_bits(word)
 }
 
-extern "sysv64" fn remainder_float(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn remainder_float(words: *const u64, _: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
     let remainder = eggos_math::fmod(f64::from(float_of(left)), f64::from(float_of(right)));
     u64::from((remainder as f32).to_bits())
 }
 
-extern "sysv64" fn remainder_double(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn remainder_double(words: *const u64, _: *const usize) -> u64 {
     let [left, right] = arguments::<2>(words);
     eggos_math::fmod(double_of(left), double_of(right)).to_bits()
 }
 
-extern "sysv64" fn float_to_int(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn float_to_int(words: *const u64, _: *const usize) -> u64 {
     let [value] = arguments::<1>(words);
     u64::from(float_of(value) as i32 as u32)
 }
 
-extern "sysv64" fn float_to_long(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn float_to_long(words: *const u64, _: *const usize) -> u64 {
     let [value] = arguments::<1>(words);
     float_of(value) as i64 as u64
 }
 
-extern "sysv64" fn double_to_int(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn double_to_int(words: *const u64, _: *const usize) -> u64 {
     let [value] = arguments::<1>(words);
     u64::from(double_of(value) as i32 as u32)
 }
 
-extern "sysv64" fn double_to_long(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn double_to_long(words: *const u64, _: *const usize) -> u64 {
     let [value] = arguments::<1>(words);
     double_of(value) as i64 as u64
 }
 
-extern "sysv64" fn missing_method(_: *const u64, _: *const usize) -> u64 {
+extern "C" fn missing_method(_: *const u64, _: *const usize) -> u64 {
     stop(&[b"android: the app called a method the Android layer does not provide yet"])
 }
 
-extern "sysv64" fn nothing(_: *const u64, _: *const usize) -> u64 {
+extern "C" fn nothing(_: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn set_content_view(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_content_view(words: *const u64, _: *const usize) -> u64 {
     let [_, view] = arguments::<2>(words);
     state().content = Some(view);
     0
 }
 
-extern "sysv64" fn text_view_init(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn text_view_init(words: *const u64, _: *const usize) -> u64 {
     let [view, _] = arguments::<2>(words);
     if let Some(view) = object(view) {
         view.text = Some(String::new());
@@ -658,7 +731,7 @@ extern "sysv64" fn text_view_init(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn set_text(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_text(words: *const u64, _: *const usize) -> u64 {
     let [view, text] = arguments::<2>(words);
     let text = object(text)
         .and_then(|text| text.text.clone())
@@ -736,7 +809,7 @@ fn inflate(layout_id: u64) -> u64 {
     inflate_node(&node, 0)
 }
 
-extern "sysv64" fn set_content_layout(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_content_layout(words: *const u64, _: *const usize) -> u64 {
     let [_, layout_id] = arguments::<2>(words);
     let root = inflate(u64::from(layout_id as u32));
     state().content = Some(root);
@@ -757,7 +830,7 @@ fn find_view(view: u64, id: u32, depth: usize) -> Option<u64> {
         .find_map(|child| find_view(child, id, depth + 1))
 }
 
-extern "sysv64" fn find_view_by_id(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn find_view_by_id(words: *const u64, _: *const usize) -> u64 {
     let [this, id] = arguments::<2>(words);
     let is_view = object(this).is_some_and(|this| this.view.is_some());
     let root = match is_view {
@@ -768,7 +841,7 @@ extern "sysv64" fn find_view_by_id(words: *const u64, _: *const usize) -> u64 {
         .unwrap_or(0)
 }
 
-extern "sysv64" fn view_init(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn view_init(words: *const u64, _: *const usize) -> u64 {
     let [view] = arguments::<1>(words);
     if let Some(view) = object(view) {
         let shows_text = TEXT_VIEWS.contains(&view.class.as_str());
@@ -783,7 +856,7 @@ extern "sysv64" fn view_init(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn set_on_click_listener(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_on_click_listener(words: *const u64, _: *const usize) -> u64 {
     let [view, listener] = arguments::<2>(words);
     if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
         view.listener = listener;
@@ -791,7 +864,7 @@ extern "sysv64" fn set_on_click_listener(words: *const u64, _: *const usize) -> 
     0
 }
 
-extern "sysv64" fn set_text_resource(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_text_resource(words: *const u64, _: *const usize) -> u64 {
     let [view, id] = arguments::<2>(words);
     let text = resource_string(u64::from(id as u32)).unwrap_or_default();
     if let Some(view) = object(view) {
@@ -800,7 +873,7 @@ extern "sysv64" fn set_text_resource(words: *const u64, _: *const usize) -> u64 
     0
 }
 
-extern "sysv64" fn get_text(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn get_text(words: *const u64, _: *const usize) -> u64 {
     let [view] = arguments::<1>(words);
     let text = object(view)
         .and_then(|view| view.text.clone())
@@ -808,12 +881,12 @@ extern "sysv64" fn get_text(words: *const u64, _: *const usize) -> u64 {
     new_string(text)
 }
 
-extern "sysv64" fn get_string(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn get_string(words: *const u64, _: *const usize) -> u64 {
     let [_, id] = arguments::<2>(words);
     new_string(resource_string(u64::from(id as u32)).unwrap_or_default())
 }
 
-extern "sysv64" fn set_hint(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_hint(words: *const u64, _: *const usize) -> u64 {
     let [view, hint] = arguments::<2>(words);
     let hint = object(hint).and_then(|hint| hint.text.clone());
     if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
@@ -822,7 +895,7 @@ extern "sysv64" fn set_hint(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn list_init(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn list_init(words: *const u64, _: *const usize) -> u64 {
     let [list] = arguments::<1>(words);
     if let Some(list) = object(list) {
         list.elements = Some(Vec::new());
@@ -852,7 +925,7 @@ fn list_index(elements: &[u64], index: u64, table: *const usize) -> Option<usize
 
 const INDEX_OUT_OF_BOUNDS: &str = "Ljava/lang/IndexOutOfBoundsException;";
 
-extern "sysv64" fn list_add(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn list_add(words: *const u64, table: *const usize) -> u64 {
     let [list, value] = arguments::<2>(words);
     let Some(elements) = list_elements(list, table) else {
         return 0;
@@ -861,7 +934,7 @@ extern "sysv64" fn list_add(words: *const u64, table: *const usize) -> u64 {
     1
 }
 
-extern "sysv64" fn list_get(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn list_get(words: *const u64, table: *const usize) -> u64 {
     let [list, index] = arguments::<2>(words);
     let Some(elements) = list_elements(list, table) else {
         return 0;
@@ -869,7 +942,7 @@ extern "sysv64" fn list_get(words: *const u64, table: *const usize) -> u64 {
     list_index(elements, index, table).map_or(0, |index| elements[index])
 }
 
-extern "sysv64" fn list_set(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn list_set(words: *const u64, table: *const usize) -> u64 {
     let [list, index, value] = arguments::<3>(words);
     let Some(elements) = list_elements(list, table) else {
         return 0;
@@ -880,7 +953,7 @@ extern "sysv64" fn list_set(words: *const u64, table: *const usize) -> u64 {
     }
 }
 
-extern "sysv64" fn list_remove(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn list_remove(words: *const u64, table: *const usize) -> u64 {
     let [list, index] = arguments::<2>(words);
     let Some(elements) = list_elements(list, table) else {
         return 0;
@@ -891,12 +964,12 @@ extern "sysv64" fn list_remove(words: *const u64, table: *const usize) -> u64 {
     }
 }
 
-extern "sysv64" fn list_size(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn list_size(words: *const u64, table: *const usize) -> u64 {
     let [list] = arguments::<1>(words);
     list_elements(list, table).map_or(0, |elements| elements.len() as u64)
 }
 
-extern "sysv64" fn list_clear(words: *const u64, table: *const usize) -> u64 {
+extern "C" fn list_clear(words: *const u64, table: *const usize) -> u64 {
     let [list] = arguments::<1>(words);
     if let Some(elements) = list_elements(list, table) {
         elements.clear();
@@ -904,7 +977,7 @@ extern "sysv64" fn list_clear(words: *const u64, table: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn adapter_init(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn adapter_init(words: *const u64, _: *const usize) -> u64 {
     let [adapter, _, _, items] = arguments::<4>(words);
     if let Some(adapter) = object(adapter) {
         adapter.reference = items;
@@ -912,7 +985,7 @@ extern "sysv64" fn adapter_init(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn set_adapter(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_adapter(words: *const u64, _: *const usize) -> u64 {
     let [view, adapter] = arguments::<2>(words);
     if let Some(view) = object(view) {
         view.reference = adapter;
@@ -920,7 +993,7 @@ extern "sysv64" fn set_adapter(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn set_on_item_click_listener(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_on_item_click_listener(words: *const u64, _: *const usize) -> u64 {
     let [view, listener] = arguments::<2>(words);
     if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
         view.listener = listener;
@@ -1076,14 +1149,14 @@ fn paint_image(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
     }
 }
 
-extern "sysv64" fn inflater_from(_: *const u64, _: *const usize) -> u64 {
+extern "C" fn inflater_from(_: *const u64, _: *const usize) -> u64 {
     new_object(Object {
         class: String::from("Landroid/view/LayoutInflater;"),
         ..Object::default()
     })
 }
 
-extern "sysv64" fn inflate_layout(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn inflate_layout(words: *const u64, _: *const usize) -> u64 {
     let [_, layout_id] = arguments::<2>(words);
     inflate(u64::from(layout_id as u32))
 }
@@ -1121,7 +1194,7 @@ fn adapter_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
     Some(rows)
 }
 
-extern "sysv64" fn set_image_resource(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_image_resource(words: *const u64, _: *const usize) -> u64 {
     let [view, id] = arguments::<2>(words);
     let image = load_image(id as u32);
     if let Some(view) = object(view).and_then(|view| view.view.as_mut()) {
@@ -1130,7 +1203,7 @@ extern "sysv64" fn set_image_resource(words: *const u64, _: *const usize) -> u64
     0
 }
 
-extern "sysv64" fn add_view(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn add_view(words: *const u64, _: *const usize) -> u64 {
     let [group, child] = arguments::<2>(words);
     if let Some(group) = object(group).and_then(|group| group.view.as_mut()) {
         group.children.push(child);
@@ -1138,7 +1211,7 @@ extern "sysv64" fn add_view(words: *const u64, _: *const usize) -> u64 {
     0
 }
 
-extern "sysv64" fn set_orientation(words: *const u64, _: *const usize) -> u64 {
+extern "C" fn set_orientation(words: *const u64, _: *const usize) -> u64 {
     let [layout, orientation] = arguments::<2>(words);
     if let Some(layout) = object(layout).and_then(|layout| layout.view.as_mut()) {
         layout.vertical = orientation as u32 == 1;
@@ -1219,7 +1292,7 @@ fn compile_all(dex: &Dex<'_>) -> (Vec<u8>, BTreeMap<u32, usize>) {
             let Some(body) = method.code else {
                 continue;
             };
-            match compiler::compile(&body) {
+            match compiler::compile_for(MACHINE, &body) {
                 Ok(done) => {
                     compiled.insert(method.index, code.len());
                     code.extend_from_slice(&done.code);

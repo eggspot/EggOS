@@ -11,12 +11,27 @@
 extern crate alloc;
 
 #[cfg(any(test, eggos_user))]
-#[cfg_attr(not(all(eggos_user, target_arch = "x86_64")), allow(dead_code))]
+#[cfg_attr(
+    not(all(
+        eggos_user,
+        any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+    )),
+    allow(dead_code)
+)]
 mod collector;
 #[cfg(any(test, eggos_user))]
-#[cfg_attr(not(all(eggos_user, target_arch = "x86_64")), allow(dead_code))]
+#[cfg_attr(
+    not(all(
+        eggos_user,
+        any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+    )),
+    allow(dead_code)
+)]
 mod framework;
-#[cfg(all(eggos_user, target_arch = "x86_64"))]
+#[cfg(all(
+    eggos_user,
+    any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+))]
 mod layer;
 #[cfg(any(test, eggos_user))]
 mod vector_raster;
@@ -25,17 +40,26 @@ mod vector_raster;
 #[global_allocator]
 static MEMORY: eggos_runtime::pages::Pages = eggos_runtime::pages::Pages;
 
-#[cfg(all(eggos_user, target_arch = "x86_64"))]
+#[cfg(all(
+    eggos_user,
+    any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+))]
 eggos_runtime::main!(layer::run);
 
-#[cfg(all(eggos_user, not(target_arch = "x86_64")))]
-eggos_runtime::main!(compiles_for_x86_64_only);
+#[cfg(all(
+    eggos_user,
+    not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+))]
+eggos_runtime::main!(compiles_for_other_machines_only);
 
-#[cfg(all(eggos_user, not(target_arch = "x86_64")))]
-fn compiles_for_x86_64_only(_: &eggos_runtime::startup::Startup) -> i32 {
+#[cfg(all(
+    eggos_user,
+    not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))
+))]
+fn compiles_for_other_machines_only(_: &eggos_runtime::startup::Startup) -> i32 {
     eggos_runtime::syscall::write_all(
         2,
-        b"android: the Android layer compiles apps for x86_64 only so far\n",
+        b"android: the Android layer compiles apps for x86_64, aarch64 and riscv64 so far\n",
     );
     1
 }

@@ -12,12 +12,18 @@
 //! division and Java's float conversions through the runtime's helpers ([`helper`]), for
 //! x86_64 (D471, D472, D499); exceptions are caught by the method's `try` blocks or passed to
 //! its caller (D504). A method using anything else (`filled-new-array`, method handles) is
-//! refused with the opcode and place, and the layer reports it.
+//! refused with the opcode and place, and the layer reports it. For aarch64 and riscv64
+//! (D760) the instructions are first lowered to machine-independent operations ([`lower`]),
+//! which each back end emits with its most used registers kept in callee-saved machine
+//! registers.
 
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
+pub mod aarch64;
+pub mod lower;
+pub mod riscv64;
 pub mod x86_64;
 
 use alloc::vec::Vec;
@@ -122,6 +128,38 @@ pub mod helper {
 /// The entry-table place of the method with index `method` in the DEX file's method table.
 pub fn method_entry(method: u32) -> usize {
     helper::COUNT + method as usize
+}
+
+/// The machines this compiler writes code for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Machine {
+    X86_64,
+    Aarch64,
+    Riscv64,
+}
+
+impl Machine {
+    /// The machine this program runs on, if the compiler writes code for it.
+    pub const fn host() -> Option<Self> {
+        if cfg!(target_arch = "x86_64") {
+            Some(Self::X86_64)
+        } else if cfg!(target_arch = "aarch64") {
+            Some(Self::Aarch64)
+        } else if cfg!(target_arch = "riscv64") {
+            Some(Self::Riscv64)
+        } else {
+            None
+        }
+    }
+}
+
+/// Compiles `code` for `machine`.
+pub fn compile_for(machine: Machine, code: &Code<'_>) -> Result<Compiled, CompileError> {
+    match machine {
+        Machine::X86_64 => x86_64::compile(code),
+        Machine::Aarch64 => aarch64::compile(code),
+        Machine::Riscv64 => riscv64::compile(code),
+    }
 }
 
 /// Compiles `code` for x86_64.
