@@ -495,6 +495,11 @@ fn lower_one(
             &[constant(index)],
             Some((Width::Long, a)),
         )),
+        0x1c => ops.push(call(
+            helper::CONST_CLASS,
+            &[constant(index)],
+            Some((Width::Long, a)),
+        )),
         0x22 => ops.push(call(
             helper::NEW_INSTANCE,
             &[constant(index)],

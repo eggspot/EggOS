@@ -94,6 +94,21 @@ struct State {
     depth: usize,
     placed_images: Vec<(u32, i32, i32)>,
     scaled_images: BTreeMap<(u32, i32, i32), u32>,
+    below: Vec<Shown>,
+    fragments: Vec<u64>,
+    generation: u64,
+    request: Option<(u32, u64)>,
+    result: (u32, u64),
+}
+
+/// An activity under the one shown (D765): it, its content, and what it asked the one
+/// above it for (`startActivityForResult`'s request code).
+#[derive(Debug, Clone, Copy)]
+struct Shown {
+    activity: u64,
+    content: Option<u64>,
+    request: Option<(u32, u64)>,
+    result: (u32, u64),
 }
 
 static STATE: AtomicPtr<State> = AtomicPtr::new(core::ptr::null_mut());
@@ -309,6 +324,7 @@ fn references_of(address: u64, found: &mut Vec<u64>) {
         found.push(view.editor_listener);
     }
     found.push(held.reference);
+    found.extend(held.extras.iter().map(|(_, value)| *value));
 }
 
 /// Collects when one is due, at an allocation compiled code asks for: its frames and
@@ -335,12 +351,28 @@ fn collect() {
         0 => 0,
         _ => pending(table()),
     };
-    let own = [current.content.unwrap_or(0), current.activity, exception];
+    let own = [
+        current.content.unwrap_or(0),
+        current.activity,
+        exception,
+        current.result.1,
+        current.request.map_or(0, |(_, caller)| caller),
+    ];
+    let below = current.below.iter().flat_map(|shown| {
+        [
+            shown.activity,
+            shown.content.unwrap_or(0),
+            shown.result.1,
+            shown.request.map_or(0, |(_, caller)| caller),
+        ]
+    });
     let roots = registers
         .into_iter()
         .chain(stack)
         .chain(current.statics.values().copied())
-        .chain(own);
+        .chain(own)
+        .chain(below)
+        .chain(current.fragments.iter().copied());
     let marked = collector::trace(roots, &current.heap.objects, references_of);
     for address in collector::unmarked(&current.heap.objects, &marked) {
         current.heap.objects.remove(&address);
@@ -930,6 +962,7 @@ extern "C" fn nothing(_: *const u64, _: *const usize) -> u64 {
 extern "C" fn set_content_view(words: *const u64, _: *const usize) -> u64 {
     let [_, view] = arguments::<2>(words);
     state().content = Some(view);
+    state().generation += 1;
     0
 }
 
@@ -1030,6 +1063,7 @@ extern "C" fn set_content_layout(words: *const u64, _: *const usize) -> u64 {
     let [_, layout_id] = arguments::<2>(words);
     let root = inflate(u64::from(layout_id as u32));
     state().content = Some(root);
+    state().generation += 1;
     0
 }
 
@@ -1774,6 +1808,25 @@ fn native_entry(native: Native) -> Entry {
         Native::GetText => get_text,
         Native::GetString => get_string,
         Native::GetResources => get_resources,
+        Native::IntentInit => intent_init,
+        Native::IntentAction => intent_action,
+        Native::PutExtra => put_extra,
+        Native::GetExtra => get_extra,
+        Native::HasExtra => has_extra,
+        Native::StartActivity => start_activity_native,
+        Native::StartActivityForResult => start_activity_for_result,
+        Native::Finish => finish,
+        Native::GetIntent => get_intent,
+        Native::SetResult => set_result,
+        Native::GetFragmentManager => get_fragment_manager,
+        Native::BeginTransaction => begin_transaction,
+        Native::TransactionAdd => transaction_add,
+        Native::TransactionReplace => transaction_replace,
+        Native::TransactionRemove => transaction_remove,
+        Native::Commit => commit,
+        Native::ReturnThis => return_this,
+        Native::FragmentHost => fragment_host,
+        Native::FragmentView => fragment_view,
         Native::GetDimension => get_dimension,
         Native::GetDimensionPixels => get_dimension_pixels,
         Native::GetColour => get_colour,
@@ -1848,7 +1901,354 @@ fn helpers() -> [Entry; helper::COUNT] {
     entries[helper::DOUBLE_TO_LONG] = double_to_long;
     entries[helper::CATCHES] = catches;
     entries[helper::TAKE_EXCEPTION] = take_exception;
+    entries[helper::CONST_CLASS] = const_class;
     entries
+}
+
+extern "C" fn const_class(words: *const u64, _: *const usize) -> u64 {
+    at_safepoint();
+    let [index] = arguments::<1>(words);
+    new_object(Object {
+        class: String::from(framework::CLASS_CLASS),
+        text: state().dex.type_name(index as u32),
+        ..Object::default()
+    })
+}
+
+extern "C" fn intent_init(words: *const u64, _: *const usize) -> u64 {
+    let [intent, _, class] = arguments::<3>(words);
+    let target = object(class).and_then(|class| class.text.clone());
+    if let Some(intent) = object(intent) {
+        intent.text = target;
+    }
+    0
+}
+
+extern "C" fn intent_action(_: *const u64, _: *const usize) -> u64 {
+    0
+}
+
+fn extra_name(name: u64) -> String {
+    object(name).and_then(|name| name.text.clone()).unwrap_or_default()
+}
+
+extern "C" fn put_extra(words: *const u64, _: *const usize) -> u64 {
+    let [intent, name, value] = arguments::<3>(words);
+    let name = extra_name(name);
+    if let Some(intent) = object(intent) {
+        intent.extras.retain(|(kept, _)| *kept != name);
+        intent.extras.push((name, value));
+    }
+    intent
+}
+
+fn extra(intent: u64, name: u64) -> Option<u64> {
+    let name = extra_name(name);
+    let intent = object(intent)?;
+    intent
+        .extras
+        .iter()
+        .find(|(kept, _)| *kept == name)
+        .map(|(_, value)| *value)
+}
+
+extern "C" fn get_extra(words: *const u64, _: *const usize) -> u64 {
+    let [intent, name, default] = arguments::<3>(words);
+    extra(intent, name).unwrap_or(default)
+}
+
+extern "C" fn has_extra(words: *const u64, _: *const usize) -> u64 {
+    let [intent, name] = arguments::<2>(words);
+    u64::from(extra(intent, name).is_some())
+}
+
+/// Starts the activity `intent` names over the one shown (D765): made, its intent kept,
+/// `<init>`, `onCreate`, `onStart` and `onResume` called; `request` is the request code when it
+/// was started for a result.
+fn start_activity(intent: u64, request: Option<u32>) {
+    let Some(class) = object(intent).and_then(|intent| intent.text.clone()) else {
+        return;
+    };
+    if state().dex.class_index(&class).is_none() {
+        return;
+    }
+    initialize(&class, table());
+    if failed() {
+        return;
+    }
+    let current = state();
+    let caller = current.activity;
+    current.below.push(Shown {
+        activity: caller,
+        content: current.content,
+        request: current.request,
+        result: current.result,
+    });
+    let made = new_object(Object {
+        class: class.clone(),
+        reference: intent,
+        ..Object::default()
+    });
+    let current = state();
+    current.activity = made;
+    current.content = None;
+    current.request = request.map(|code| (code, caller));
+    current.result = (0, 0);
+    current.generation += 1;
+    for (name, words) in [
+        ("<init>", &[made][..]),
+        ("onCreate", &[made, 0][..]),
+        ("onStart", &[made][..]),
+        ("onResume", &[made][..]),
+    ] {
+        if let Some(address) = compiled_method(&class, name) {
+            call_at(address, words);
+            if failed() {
+                return;
+            }
+        }
+    }
+}
+
+extern "C" fn start_activity_native(words: *const u64, _: *const usize) -> u64 {
+    let [_, intent] = arguments::<2>(words);
+    start_activity(intent, None);
+    0
+}
+
+extern "C" fn start_activity_for_result(words: *const u64, _: *const usize) -> u64 {
+    let [_, intent, code] = arguments::<3>(words);
+    let request = (code as u32 as i32 >= 0).then_some(code as u32);
+    start_activity(intent, request);
+    0
+}
+
+/// Finishes the activity shown (D765): the one under it is shown again and, when it asked for a
+/// result, told it with `onActivityResult`; finishing the last one ends the app.
+fn finish_activity() {
+    let current = state();
+    let Some(under) = current.below.pop() else {
+        syscall::exit(0);
+    };
+    let finished_request = current.request;
+    let finished_result = current.result;
+    current.activity = under.activity;
+    current.content = under.content;
+    current.request = under.request;
+    current.result = under.result;
+    current.generation += 1;
+    let class = object(under.activity).map(|shown| shown.class.clone()).unwrap_or_default();
+    if let Some((code, _)) = finished_request
+        && let Some(address) = compiled_method(&class, "onActivityResult")
+    {
+        let (result, data) = finished_result;
+        call_at(address, &[under.activity, u64::from(code), u64::from(result), data]);
+    }
+    if let Some(address) = compiled_method(&class, "onResume") {
+        call_at(address, &[under.activity]);
+    }
+}
+
+extern "C" fn finish(words: *const u64, _: *const usize) -> u64 {
+    let [activity] = arguments::<1>(words);
+    if activity == state().activity {
+        finish_activity();
+    }
+    0
+}
+
+extern "C" fn get_intent(words: *const u64, _: *const usize) -> u64 {
+    let [activity] = arguments::<1>(words);
+    object(activity).map_or(0, |activity| activity.reference)
+}
+
+extern "C" fn set_result(words: *const u64, _: *const usize) -> u64 {
+    let [activity, code, data] = arguments::<3>(words);
+    if activity == state().activity {
+        state().result = (code as u32, data);
+    }
+    0
+}
+
+/// The back key (D765): the shown activity's own `onBackPressed`, else it finishes.
+fn back() {
+    let activity = state().activity;
+    let class = object(activity).map(|shown| shown.class.clone()).unwrap_or_default();
+    match compiled_method(&class, "onBackPressed") {
+        Some(address) => {
+            call_at(address, &[activity]);
+        }
+        None => finish_activity(),
+    }
+}
+
+extern "C" fn get_fragment_manager(words: *const u64, _: *const usize) -> u64 {
+    let [owner] = arguments::<1>(words);
+    new_object(Object {
+        class: String::from(framework::FRAGMENT_MANAGER),
+        reference: owner,
+        ..Object::default()
+    })
+}
+
+extern "C" fn begin_transaction(words: *const u64, _: *const usize) -> u64 {
+    let [manager] = arguments::<1>(words);
+    new_object(Object {
+        class: String::from(framework::FRAGMENT_TRANSACTION),
+        reference: manager,
+        elements: Some(Vec::new()),
+        ..Object::default()
+    })
+}
+
+const FRAGMENT_ADD: u64 = 1;
+const FRAGMENT_REPLACE: u64 = 2;
+const FRAGMENT_REMOVE: u64 = 3;
+const FRAGMENT_HOST: u32 = u32::MAX - 1;
+
+fn keep_operation(transaction: u64, kind: u64, container: u64, fragment: u64) -> u64 {
+    if let Some(elements) = object(transaction).and_then(|kept| kept.elements.as_mut()) {
+        elements.extend_from_slice(&[kind, container, fragment]);
+    }
+    transaction
+}
+
+extern "C" fn transaction_add(words: *const u64, _: *const usize) -> u64 {
+    let [transaction, first, second] = arguments::<3>(words);
+    match first > u64::from(u32::MAX) {
+        true => keep_operation(transaction, FRAGMENT_ADD, 0, first),
+        false => keep_operation(transaction, FRAGMENT_ADD, first, second),
+    }
+}
+
+extern "C" fn transaction_replace(words: *const u64, _: *const usize) -> u64 {
+    let [transaction, container, fragment] = arguments::<3>(words);
+    keep_operation(transaction, FRAGMENT_REPLACE, container, fragment)
+}
+
+extern "C" fn transaction_remove(words: *const u64, _: *const usize) -> u64 {
+    let [transaction, fragment] = arguments::<2>(words);
+    keep_operation(transaction, FRAGMENT_REMOVE, 0, fragment)
+}
+
+fn host_activity(fragment: u64) -> u64 {
+    object(fragment)
+        .and_then(|fragment| fragment.fields.get(&FRAGMENT_HOST).copied())
+        .unwrap_or(state().activity)
+}
+
+fn show_fragment(fragment: u64, container: u64, replace: bool) {
+    let Some(class) = object(fragment).map(|fragment| fragment.class.clone()) else {
+        return;
+    };
+    let host = state().activity;
+    if let Some(kept) = object(fragment) {
+        kept.fields.insert(FRAGMENT_HOST, host);
+    }
+    if !state().fragments.contains(&fragment) {
+        state().fragments.push(fragment);
+    }
+    if let Some(address) = compiled_method(&class, "onCreate") {
+        call_at(address, &[fragment, 0]);
+    }
+    let view = match compiled_method(&class, "onCreateView") {
+        Some(address) => {
+            let inflater = inflater_from(core::ptr::null(), core::ptr::null());
+            call_at(address, &[fragment, inflater, container, 0])
+        }
+        None => 0,
+    };
+    if failed() {
+        return;
+    }
+    if let Some(kept) = object(fragment) {
+        kept.reference = view;
+    }
+    if let Some(children) = object(container)
+        .and_then(|container| container.view.as_mut())
+        .map(|container| &mut container.children)
+    {
+        if replace {
+            children.clear();
+        }
+        if view != 0 {
+            children.push(view);
+        }
+    }
+    if view != 0
+        && let Some(address) = compiled_method(&class, "onViewCreated")
+    {
+        call_at(address, &[fragment, view, 0]);
+    }
+}
+
+fn hide_fragment(fragment: u64) {
+    let view = object(fragment).map_or(0, |fragment| fragment.reference);
+    if let Some(root) = state().content {
+        detach_view(root, view, 0);
+    }
+    state().fragments.retain(|&kept| kept != fragment);
+}
+
+fn detach_view(parent: u64, view: u64, depth: usize) {
+    if depth > DEEPEST_VIEW {
+        return;
+    }
+    let Some(children) = object(parent).and_then(|parent| parent.view.as_mut()) else {
+        return;
+    };
+    children.children.retain(|&child| child != view);
+    for child in children.children.clone() {
+        detach_view(child, view, depth + 1);
+    }
+}
+
+extern "C" fn commit(words: *const u64, _: *const usize) -> u64 {
+    let [transaction] = arguments::<1>(words);
+    let operations = object(transaction)
+        .and_then(|kept| kept.elements.clone())
+        .unwrap_or_default();
+    for operation in operations.chunks_exact(3) {
+        let (kind, container_id, fragment) = (operation[0], operation[1], operation[2]);
+        if kind == FRAGMENT_REMOVE {
+            hide_fragment(fragment);
+            continue;
+        }
+        let container = state()
+            .content
+            .and_then(|root| find_view(root, container_id as u32, 0));
+        let Some(container) = container else {
+            continue;
+        };
+        if kind == FRAGMENT_REPLACE {
+            for shown in state().fragments.clone() {
+                if host_activity(shown) == state().activity {
+                    hide_fragment(shown);
+                }
+            }
+        }
+        show_fragment(fragment, container, kind == FRAGMENT_REPLACE);
+        if failed() {
+            break;
+        }
+    }
+    state().generation += 1;
+    0
+}
+
+extern "C" fn return_this(words: *const u64, _: *const usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    this
+}
+
+extern "C" fn fragment_host(words: *const u64, _: *const usize) -> u64 {
+    let [fragment] = arguments::<1>(words);
+    host_activity(fragment)
+}
+
+extern "C" fn fragment_view(words: *const u64, _: *const usize) -> u64 {
+    let [fragment] = arguments::<1>(words);
+    object(fragment).map_or(0, |fragment| fragment.reference)
 }
 
 fn compile_all(dex: &Dex<'_>) -> (Vec<u8>, BTreeMap<u32, usize>) {
@@ -1946,6 +2346,7 @@ struct ContentWindow {
     tree: WidgetTree<MOST_WIDGETS>,
     shown: Vec<(WidgetId, u64)>,
     lists: Vec<(WidgetId, u64)>,
+    generation: u64,
 }
 
 impl ContentWindow {
@@ -2043,7 +2444,24 @@ impl ContentWindow {
         ROW
     }
 
+    /// Makes the window's widgets again when the activity shown or its content changed
+    /// (D765): another activity started or finished, or a fragment transaction committed.
+    fn rebuild_if_changed(&mut self) {
+        if self.generation == state().generation {
+            return;
+        }
+        self.generation = state().generation;
+        self.tree = WidgetTree::<MOST_WIDGETS>::new();
+        self.shown.clear();
+        self.lists.clear();
+        state().placed_images.clear();
+        if let Some(root) = state().content {
+            self.add(root, PADDING, PADDING, 0);
+        }
+    }
+
     fn refresh(&mut self) {
+        self.rebuild_if_changed();
         for &(widget, view) in &self.shown {
             if let Some(text) = object(view).and_then(|view| view.text.clone()) {
                 self.tree.set_text(widget, &text);
@@ -2105,6 +2523,13 @@ impl Application<MOST_WIDGETS> for ContentWindow {
             }
             Response::Edited(widget) | Response::Cut(widget) => self.edited(widget),
             Response::Unused { code: key::ENTER, .. } => self.entered(),
+            Response::Unused {
+                code: key::ESC | key::BACK,
+                ..
+            } => {
+                back();
+                self.refresh();
+            }
             Response::Chosen(widget, position) | Response::Opened(widget, position) => {
                 if let Some(&(_, view)) = self.lists.iter().find(|(shown, _)| *shown == widget) {
                     item_clicked(view, position);
@@ -2124,10 +2549,9 @@ fn show(title: &str) -> i32 {
         tree: WidgetTree::<MOST_WIDGETS>::new(),
         shown: Vec::new(),
         lists: Vec::new(),
+        generation: u64::MAX,
     };
-    if let Some(root) = state().content {
-        content.add(root, PADDING, PADDING, 0);
-    }
+    content.rebuild_if_changed();
     match application::run(&mut window, &mut content) {
         Ok(()) => 0,
         Err(_) => 1,
@@ -2197,6 +2621,11 @@ pub fn run(startup: &Startup) -> i32 {
         depth: 0,
         placed_images: Vec::new(),
         scaled_images: BTreeMap::new(),
+        below: Vec::new(),
+        fragments: Vec::new(),
+        generation: 0,
+        request: None,
+        result: (0, 0),
         stack_top: stack_pointer().saturating_add(STACK_ABOVE_RUN),
     };
     STATE.store(Box::leak(Box::new(initial)), Ordering::Release);

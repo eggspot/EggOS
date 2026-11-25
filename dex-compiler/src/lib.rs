@@ -121,8 +121,10 @@ pub mod helper {
     pub const CATCHES: usize = 25;
     /// `move-exception`: the pending exception, no longer pending.
     pub const TAKE_EXCEPTION: usize = 26;
+    /// `const-class` (D765): the `Class` object of the type with the index in the first word.
+    pub const CONST_CLASS: usize = 27;
     /// How many helpers come before the methods.
-    pub const COUNT: usize = 27;
+    pub const COUNT: usize = 28;
 }
 
 /// The entry-table place of the method with index `method` in the DEX file's method table.

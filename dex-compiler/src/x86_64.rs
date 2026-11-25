@@ -605,9 +605,10 @@ fn emit(
             emitter.constant(Width::Long, EAX, instruction.literal);
             emitter.store(Width::Long, EAX, a);
         }
-        0x1a | 0x1b | 0x22 => {
+        0x1a | 0x1b | 0x1c | 0x22 => {
             let entry = match opcode {
                 0x22 => helper::NEW_INSTANCE,
+                0x1c => helper::CONST_CLASS,
                 _ => helper::STRING,
             };
             emitter.argument_constant(0, i64::from(instruction.index));

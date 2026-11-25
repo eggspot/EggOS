@@ -32,11 +32,31 @@ pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
 pub const RECYCLER_VIEW: &str = "Landroidx/recyclerview/widget/RecyclerView;";
 /// The view holder class whose `itemView` field holds a row's view.
 pub const VIEW_HOLDER: &str = "Landroidx/recyclerview/widget/RecyclerView$ViewHolder;";
-const REPLACED: [&str; 3] = [
+const REPLACED: [&str; 7] = [
     RECYCLER_VIEW,
     "Landroidx/recyclerview/widget/LinearLayoutManager;",
     "Landroidx/recyclerview/widget/GridLayoutManager;",
+    FRAGMENT,
+    FRAGMENT_MANAGER,
+    FRAGMENT_TRANSACTION,
+    "Landroidx/fragment/app/BackStackRecord;",
 ];
+
+/// `android.content.Intent` (D765).
+pub const INTENT: &str = "Landroid/content/Intent;";
+/// `java.lang.Class`, which `const-class` makes.
+pub const CLASS_CLASS: &str = "Ljava/lang/Class;";
+/// AndroidX's `Fragment`, which the layer stands in for (D765), and the platform's.
+pub const FRAGMENT: &str = "Landroidx/fragment/app/Fragment;";
+const PLATFORM_FRAGMENT: &str = "Landroid/app/Fragment;";
+/// AndroidX's `FragmentManager`.
+pub const FRAGMENT_MANAGER: &str = "Landroidx/fragment/app/FragmentManager;";
+/// AndroidX's `FragmentTransaction`.
+pub const FRAGMENT_TRANSACTION: &str = "Landroidx/fragment/app/FragmentTransaction;";
+const FRAGMENTS: [&str; 2] = [FRAGMENT, PLATFORM_FRAGMENT];
+const FRAGMENT_MANAGERS: [&str; 2] = [FRAGMENT_MANAGER, "Landroid/app/FragmentManager;"];
+const FRAGMENT_TRANSACTIONS: [&str; 2] =
+    [FRAGMENT_TRANSACTION, "Landroid/app/FragmentTransaction;"];
 
 /// Whether the layer stands in for `class` even when the app's DEX file defines it.
 pub fn is_replaced(class: &str) -> bool {
@@ -174,6 +194,45 @@ pub enum Native {
     GetInteger,
     /// `Resources.getBoolean(int)`.
     GetBoolean,
+    /// `Intent(Context, Class)` (D765): an explicit intent for an activity of the app.
+    IntentInit,
+    /// `Intent(String)` and `Intent()`: an intent by action, or empty.
+    IntentAction,
+    /// `Intent.putExtra(String, value)`: the value kept under its name; the intent returned.
+    PutExtra,
+    /// `Intent.getStringExtra(String)`, and the other getters with a default.
+    GetExtra,
+    /// `Intent.hasExtra(String)`.
+    HasExtra,
+    /// `Activity.startActivity(Intent)`.
+    StartActivity,
+    /// `Activity.startActivityForResult(Intent, int)`.
+    StartActivityForResult,
+    /// `Activity.finish()` and the default `onBackPressed()`.
+    Finish,
+    /// `Activity.getIntent()`.
+    GetIntent,
+    /// `Activity.setResult(int[, Intent])`.
+    SetResult,
+    /// `getSupportFragmentManager()`, `getFragmentManager()`, `getChildFragmentManager()`.
+    GetFragmentManager,
+    /// `FragmentManager.beginTransaction()`.
+    BeginTransaction,
+    /// `FragmentTransaction.add(int, Fragment[, String])` or `add(Fragment, String)`: kept for
+    /// `commit`.
+    TransactionAdd,
+    /// `FragmentTransaction.replace(int, Fragment[, String])`.
+    TransactionReplace,
+    /// `FragmentTransaction.remove(Fragment)`.
+    TransactionRemove,
+    /// `FragmentTransaction.commit()` and its kin: the operations done.
+    Commit,
+    /// A method that answers its receiver (`addToBackStack`, `setReorderingAllowed`).
+    ReturnThis,
+    /// `Fragment.getActivity()`, `requireActivity()`, `getContext()`, `requireContext()`.
+    FragmentHost,
+    /// `Fragment.getView()` and `requireView()`.
+    FragmentView,
 }
 
 const THROWABLE: &str = "Ljava/lang/Throwable;";
@@ -278,6 +337,41 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "findViewById") if activity || view => Native::FindViewById,
         (_, "getString") if context => Native::GetString,
         (_, "getResources") if context => Native::GetResources,
+        (INTENT, "<init>") if shorty == "VLL" => Native::IntentInit,
+        (INTENT, "<init>") => Native::IntentAction,
+        (INTENT, "putExtra") => Native::PutExtra,
+        (INTENT, "hasExtra") => Native::HasExtra,
+        (INTENT, name) if name.starts_with("get") && name.ends_with("Extra") => Native::GetExtra,
+        (_, "startActivity") if activity => Native::StartActivity,
+        (_, "startActivityForResult") if activity => Native::StartActivityForResult,
+        (_, "finish" | "onBackPressed") if activity => Native::Finish,
+        (_, "getIntent") if activity => Native::GetIntent,
+        (_, "setResult") if activity => Native::SetResult,
+        (_, "getSupportFragmentManager" | "getFragmentManager") if activity => {
+            Native::GetFragmentManager
+        }
+        (_, "getChildFragmentManager" | "getParentFragmentManager")
+            if FRAGMENTS.contains(&class) =>
+        {
+            Native::GetFragmentManager
+        }
+        (_, "beginTransaction") if FRAGMENT_MANAGERS.contains(&class) => Native::BeginTransaction,
+        (_, "add") if FRAGMENT_TRANSACTIONS.contains(&class) => Native::TransactionAdd,
+        (_, "replace") if FRAGMENT_TRANSACTIONS.contains(&class) => Native::TransactionReplace,
+        (_, "remove") if FRAGMENT_TRANSACTIONS.contains(&class) => Native::TransactionRemove,
+        (_, "commit" | "commitNow" | "commitAllowingStateLoss" | "commitNowAllowingStateLoss")
+            if FRAGMENT_TRANSACTIONS.contains(&class) =>
+        {
+            Native::Commit
+        }
+        (_, _) if FRAGMENT_TRANSACTIONS.contains(&class) => Native::ReturnThis,
+        (_, "getActivity" | "requireActivity" | "getContext" | "requireContext")
+            if FRAGMENTS.contains(&class) =>
+        {
+            Native::FragmentHost
+        }
+        (_, "getView" | "requireView") if FRAGMENTS.contains(&class) => Native::FragmentView,
+        (_, "<init>") if FRAGMENTS.contains(&class) => Native::Nothing,
         (_, "getColor") if context => Native::GetColour,
         (RESOURCES, "getString") => Native::GetString,
         (RESOURCES, "getDimension") => Native::GetDimension,
@@ -514,6 +608,8 @@ pub struct Object {
     pub reference: u64,
     /// An exception's stack trace: the methods it was made in, innermost first (D761).
     pub trace: alloc::vec::Vec<u32>,
+    /// An intent's extras by name (D765): a string's object or a number.
+    pub extras: alloc::vec::Vec<(String, u64)>,
 }
 
 /// What a view holds (D500): its id, the views inside it (a layout's), whether a linear
