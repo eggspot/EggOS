@@ -2,7 +2,8 @@
 //! with X25519 key exchange, AES-GCM and ChaCha20-Poly1305 records ([`client`]), and the
 //! server's certificate checked against the trusted roots ([`x509`], [`chain`]) read from PEM
 //! ([`pem`]) in DER ([`der`]). EggOS's own services answer TLS too: a server handshake
-//! ([`server`]) with EggOS's self-signed certificate ([`certificate`], D193).
+//! ([`server`]) with EggOS's self-signed certificate ([`certificate`], D193). A client may
+//! prove itself with its own P-256 certificate ([`private_key`], D779).
 //!
 //! Nothing here allocates, reads a clock or touches a socket: the caller passes the time, the
 //! randomness, the buffers, the roots and a [`client::Transport`] for the bytes, so the same
@@ -16,6 +17,7 @@ pub mod chain;
 pub mod client;
 pub mod der;
 pub mod pem;
+pub mod private_key;
 pub mod server;
 pub mod x509;
 

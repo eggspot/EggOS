@@ -1,7 +1,9 @@
 //! Intel's Wi-Fi 6 and 6E adapters on PCI (D274; the driver is `eggos_drivers::wifi::iwx`,
 //! D272): the probe finds the adapter and keeps its registers; once the file systems are mounted
 //! a kernel thread waits for the `wifi-firmware` component's file, powers the adapter up and
-//! hands it the firmware. What it reached shows in `/proc/driver/wifi`.
+//! hands it the firmware. What it reached shows in `/proc/driver/wifi`. Enterprise networks
+//! sign in over 802.1X before the four-way handshake (D779), and a station moves to a clearly
+//! stronger access point of the same network when the scan hears one.
 
 use super::dma::DmaRegion;
 use super::interrupts::DeviceEvents;
@@ -26,7 +28,13 @@ use eggos_drivers::wifi::iwx::scan;
 use eggos_drivers::wifi::iwx::station::{self, Link, Target};
 use eggos_drivers::wifi::iwx::transport::{self, Transport, Wait};
 use eggos_hal::Platform;
+use eggos_tls::chain::NoRoots;
+use eggos_tls::client::ClientIdentity;
+use eggos_tls::pem::Certificates;
+use eggos_tls::{Buffers, TrustAnchors, private_key};
 use eggos_wifi::client;
+use eggos_wifi::enterprise::{self, Credentials, Method};
+use eggos_wifi::tunnel::Exchange;
 use eggos_wifi::frames::{self as wifi_frames, Network, Security};
 use eggos_wifi::handshake::{self, Akm, Keys, Supplicant};
 use eggos_wifi::sae::{self, Sae};
@@ -45,9 +53,21 @@ const SCAN_INTERVAL_MS: u64 = 30_000;
 const ANSWER_TIMEOUT_MS: u64 = 2000;
 const HANDSHAKE_TIMEOUT_MS: u64 = 5000;
 const SAE_COMMIT_TRIES: usize = 3;
-/// The file that names the network to join (D278): `ssid=<name>` and `passphrase=<words>` lines.
+const FIRST_EAP_TIMEOUT_MS: u64 = 1500;
+const EAP_ANSWER_TIMEOUT_MS: u64 = 10_000;
+const LARGEST_PEM: u64 = 64 * 1024;
+const MAX_CLIENT_CHAIN: usize = 4;
+/// The file that names the network to join (D278): `ssid=<name>` and `passphrase=<words>`
+/// lines; an Enterprise network (D779) has `security=enterprise`, `eap=peap` or `eap=tls`,
+/// `identity=`, `password=`, `anonymous=`, `domain=` and the PEM files' paths `ca=`, `cert=`
+/// and `key=`.
 pub const SETTINGS_PATH: &str = "/var/lib/eggos/wifi.conf";
 const LARGEST_SETTINGS: usize = 4096;
+const DEFAULT_CA_PATH: &[u8] = b"/var/lib/eggos/wifi/ca.pem";
+const DEFAULT_CERTIFICATE_PATH: &[u8] = b"/var/lib/eggos/wifi/client.pem";
+const DEFAULT_KEY_PATH: &[u8] = b"/var/lib/eggos/wifi/key.pem";
+const ROAM_MARGIN_DBM: i8 = 10;
+const ROAM_WEAK_DBM: i8 = -70;
 
 static CONNECTED: SpinLock<Option<alloc::string::String>> = SpinLock::new(None);
 static JOINING: SpinLock<Option<alloc::string::String>> = SpinLock::new(None);
@@ -93,7 +113,19 @@ const WRONG_PASSPHRASE: Failure = Failure::of(
 const REFUSED: Failure = Failure::of("refused", "the network refused the station");
 const UNSUPPORTED: Failure = Failure::of(
     "unsupported-security",
-    "the network's security is not WPA3-Personal, WPA2-Personal or open",
+    "the network's security is not WPA2 or WPA3, Personal or Enterprise, or open",
+);
+const NEEDS_SIGN_IN: Failure = Failure::of(
+    "needs-sign-in",
+    "the network signs in with an account or a certificate",
+);
+const SECURITY_MISMATCH: Failure = Failure::of(
+    "security-mismatch",
+    "the network's security is not the one its settings name",
+);
+const UNREADABLE_FILES: Failure = Failure::of(
+    "unreadable-files",
+    "the CA certificate, client certificate or private key cannot be read",
 );
 const DROPPED: Failure = Failure::of("dropped", "the network ended the connection");
 
@@ -156,8 +188,7 @@ impl<P: Platform> crate::net::NetDevice for WifiDevice<P> {
 struct Joined {
     link: Link<DmaRegion>,
     keys: Option<Keys>,
-    ssid: Vec<u8>,
-    passphrase: Vec<u8>,
+    wanted: Wanted,
     packet_number: u64,
     last_unicast: u64,
     last_group: u64,
@@ -334,23 +365,210 @@ pub fn escaped_name(name: &[u8]) -> alloc::string::String {
     text
 }
 
-fn wanted() -> Option<(Vec<u8>, Vec<u8>)> {
+#[derive(Clone, PartialEq, Eq)]
+struct EnterpriseSettings {
+    certificate_method: bool,
+    identity: Vec<u8>,
+    password: Vec<u8>,
+    anonymous: Vec<u8>,
+    domain: Vec<u8>,
+    ca_path: Vec<u8>,
+    certificate_path: Vec<u8>,
+    key_path: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Wanted {
+    ssid: Vec<u8>,
+    passphrase: Vec<u8>,
+    enterprise: Option<EnterpriseSettings>,
+}
+
+impl core::fmt::Debug for Wanted {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Wanted({})", escaped_name(&self.ssid))
+    }
+}
+
+fn read_small(path: &[u8], largest: u64) -> Option<Vec<u8>> {
     let root = vfs::root();
-    let node = vfs::resolve(root, root, SETTINGS_PATH.as_bytes()).ok()?;
+    let node = vfs::resolve(root, root, path).ok()?;
     let size = node.attributes().size;
-    if node.kind() != NodeKind::Regular || size > LARGEST_SETTINGS as u64 {
+    if node.kind() != NodeKind::Regular || size > largest {
         return None;
     }
-    let bytes = ProgramBytes::read(node, size, size).ok()?;
-    let (mut ssid, mut passphrase) = (None, Vec::new());
-    for line in bytes.bytes().split(|&byte| byte == b'\n') {
-        if let Some(value) = line.strip_prefix(b"ssid=") {
-            ssid = Some(value.to_vec());
-        } else if let Some(value) = line.strip_prefix(b"passphrase=") {
-            passphrase = value.to_vec();
+    Some(ProgramBytes::read(node, size, size).ok()?.bytes().to_vec())
+}
+
+fn wanted() -> Option<Wanted> {
+    let bytes = read_small(SETTINGS_PATH.as_bytes(), LARGEST_SETTINGS as u64)?;
+    let mut ssid = None;
+    let mut passphrase = Vec::new();
+    let mut is_enterprise = false;
+    let mut enterprise = EnterpriseSettings {
+        certificate_method: false,
+        identity: Vec::new(),
+        password: Vec::new(),
+        anonymous: Vec::new(),
+        domain: Vec::new(),
+        ca_path: DEFAULT_CA_PATH.to_vec(),
+        certificate_path: DEFAULT_CERTIFICATE_PATH.to_vec(),
+        key_path: DEFAULT_KEY_PATH.to_vec(),
+    };
+    for line in bytes.split(|&byte| byte == b'\n') {
+        let Some(at) = line.iter().position(|&byte| byte == b'=') else {
+            continue;
+        };
+        let (key, value) = (&line[..at], line[at + 1..].to_vec());
+        match key {
+            b"ssid" => ssid = Some(value),
+            b"passphrase" => passphrase = value,
+            b"security" => is_enterprise = value == b"enterprise",
+            b"eap" => enterprise.certificate_method = value == b"tls",
+            b"identity" => enterprise.identity = value,
+            b"password" => enterprise.password = value,
+            b"anonymous" => enterprise.anonymous = value,
+            b"domain" => enterprise.domain = value,
+            b"ca" if !value.is_empty() => enterprise.ca_path = value,
+            b"cert" if !value.is_empty() => enterprise.certificate_path = value,
+            b"key" if !value.is_empty() => enterprise.key_path = value,
+            _ => {}
         }
     }
-    Some((ssid?, passphrase))
+    Some(Wanted {
+        ssid: ssid?,
+        passphrase,
+        enterprise: is_enterprise.then_some(enterprise),
+    })
+}
+
+struct RootsFile<'a> {
+    pem: &'a [u8],
+}
+
+impl TrustAnchors for RootsFile<'_> {
+    fn each(&mut self, visit: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, NoRoots> {
+        let mut der = alloc::vec![0u8; 8192];
+        let mut decoder = Certificates::new(&mut der);
+        Ok(decoder.feed(self.pem, visit) || decoder.finish(visit))
+    }
+}
+
+fn certificates_in(pem: &[u8]) -> Vec<Vec<u8>> {
+    let mut der = alloc::vec![0u8; 8192];
+    let mut decoder = Certificates::new(&mut der);
+    let mut found: Vec<Vec<u8>> = Vec::new();
+    let mut keep = |certificate: &[u8]| {
+        found.push(certificate.to_vec());
+        found.len() >= MAX_CLIENT_CHAIN
+    };
+    if !decoder.feed(pem, &mut keep) {
+        decoder.finish(&mut keep);
+    }
+    found
+}
+
+struct LinkExchange<'t, P: Platform> {
+    transport: &'t mut Transport<Mmio, DmaRegion>,
+    link: &'t mut Link<DmaRegion>,
+    own: [u8; 6],
+    bssid: [u8; 6],
+    ax210: bool,
+    platform: core::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: Platform> Exchange for LinkExchange<'_, P> {
+    fn exchange(&mut self, eapol: &[u8]) -> Option<Vec<u8>> {
+        let frame = client::data_frame(
+            self.own,
+            self.bssid,
+            self.bssid,
+            client::ETHERTYPE_EAPOL,
+            eapol,
+        );
+        self.link.send(&*self.transport, &frame).ok()?;
+        let awaited = Awaited {
+            own: self.own,
+            bssid: self.bssid,
+            ax210: self.ax210,
+            milliseconds: EAP_ANSWER_TIMEOUT_MS,
+            timed_out: NO_ANSWER,
+            sent_away: REFUSED,
+        };
+        wait_frame::<P, _>(self.transport, awaited, |frame| eapol_from(frame, self.bssid)).ok()
+    }
+}
+
+fn enterprise_failure(failure: enterprise::Failure) -> Failure {
+    Failure::of(failure.code(), failure.sentence())
+}
+
+fn sign_in<P: Platform>(
+    exchange: &mut LinkExchange<'_, P>,
+    settings: &EnterpriseSettings,
+) -> Result<enterprise::Authenticated, Failure> {
+    let ca = read_small(&settings.ca_path, LARGEST_PEM).ok_or(UNREADABLE_FILES)?;
+    let (chain, mut key) = match settings.certificate_method {
+        true => {
+            let certificate =
+                read_small(&settings.certificate_path, LARGEST_PEM).ok_or(UNREADABLE_FILES)?;
+            let key_text = read_small(&settings.key_path, LARGEST_PEM).ok_or(UNREADABLE_FILES)?;
+            let key = private_key::p256_from_pem(&key_text).map_err(|_| UNREADABLE_FILES)?;
+            let chain = certificates_in(&certificate);
+            if chain.is_empty() {
+                return Err(UNREADABLE_FILES);
+            }
+            (chain, key)
+        }
+        false => (Vec::new(), [0u8; 32]),
+    };
+    let chain_views: Vec<&[u8]> = chain.iter().map(Vec::as_slice).collect();
+    let method = match settings.certificate_method {
+        true => Method::Tls {
+            identity: ClientIdentity {
+                chain: &chain_views,
+                private_key: &key,
+            },
+        },
+        false => Method::Peap {
+            user: &settings.identity,
+            password: &settings.password,
+        },
+    };
+    let outer_identity = match settings.certificate_method {
+        true => &settings.identity,
+        false => &settings.anonymous,
+    };
+    let credentials = Credentials {
+        method,
+        outer_identity,
+        server_domain: &settings.domain,
+    };
+    let first = wait_frame::<P, _>(
+        exchange.transport,
+        Awaited {
+            own: exchange.own,
+            bssid: exchange.bssid,
+            ax210: exchange.ax210,
+            milliseconds: FIRST_EAP_TIMEOUT_MS,
+            timed_out: NO_ANSWER,
+            sent_away: REFUSED,
+        },
+        |frame| eapol_from(frame, exchange.bssid),
+    )
+    .ok();
+    // SAFETY: `Buffers` is three byte arrays, so all-zero bytes are a valid value.
+    let mut buffers = unsafe { alloc::boxed::Box::<Buffers>::new_zeroed().assume_init() };
+    let mut random = |out: &mut [u8]| crate::random::fill::<P>(out);
+    let mut context = enterprise::Context {
+        anchors: &mut RootsFile { pem: &ca },
+        buffers: &mut buffers,
+        now: crate::wall_clock::seconds::<P>() as i64,
+        random: &mut random,
+    };
+    let outcome = enterprise::authenticate(exchange, first, &credentials, &mut context);
+    key.fill(0);
+    outcome.map_err(enterprise_failure)
 }
 
 struct Awaited {
@@ -413,8 +631,9 @@ fn connect<P: Platform>(
     adapter: &Adapter,
     nvm: &nvm::Nvm,
     seen: &Seen,
-    passphrase: &[u8],
+    wanted: &Wanted,
 ) -> Result<Connection, Failure> {
+    let passphrase = &wanted.passphrase[..];
     let network = seen.network;
     let channel = nvm
         .channels
@@ -425,17 +644,21 @@ fn connect<P: Platform>(
             "channel",
             "the network's channel is not one the adapter may use",
         ))?;
-    let akm = match network.security {
-        Security::Open => None,
-        Security::Wpa2Personal => Some(Akm::Psk),
-        Security::Wpa3Personal => Some(Akm::Sae),
+    let akm = match (network.security, wanted.enterprise.is_some()) {
+        (Security::Open, false) => None,
+        (Security::Wpa2Personal, false) => Some(Akm::Psk),
+        (Security::Wpa3Personal, false) => Some(Akm::Sae),
+        (Security::Wpa2Enterprise, true) => Some(Akm::Ieee8021x),
+        (Security::Wpa3Enterprise, true) => Some(Akm::Ieee8021xSha256),
+        (Security::Wpa2Enterprise | Security::Wpa3Enterprise, false) => {
+            return Err(NEEDS_SIGN_IN);
+        }
+        (Security::Open | Security::Wpa2Personal | Security::Wpa3Personal, true) => {
+            return Err(SECURITY_MISMATCH);
+        }
         _ => return Err(UNSUPPORTED),
     };
-    let rsn: Option<&[u8]> = match akm {
-        None => None,
-        Some(Akm::Psk) => Some(&wifi_frames::WPA2_PERSONAL_RSN),
-        Some(Akm::Sae) => Some(&wifi_frames::WPA3_PERSONAL_RSN),
-    };
+    let rsn: Option<&[u8]> = akm.map(Akm::rsn);
     let (own, bssid) = (nvm.address, network.bssid);
     let ax210 = adapter.family == devices::Family::Ax210;
     let answer = |timed_out: Failure, sent_away: Failure, milliseconds: u64| Awaited {
@@ -547,30 +770,48 @@ fn connect<P: Platform>(
         let Some(akm) = akm else {
             return Ok((None, None));
         };
-        let pmk = match sae_pmk {
-            Some(pmk) => pmk,
-            None => handshake::pmk_from_passphrase(passphrase, network.ssid())
+        let mut pending_key_frame = None;
+        let pmk = match (sae_pmk, &wanted.enterprise) {
+            (Some(pmk), _) => pmk,
+            (None, Some(settings)) => {
+                set_status("signing in");
+                let mut exchange = LinkExchange::<P> {
+                    transport: &mut *transport,
+                    link: &mut link,
+                    own,
+                    bssid,
+                    ax210,
+                    platform: core::marker::PhantomData,
+                };
+                let authenticated = sign_in(&mut exchange, settings)?;
+                pending_key_frame = authenticated.key_frame;
+                authenticated.pmk
+            }
+            (None, None) => handshake::pmk_from_passphrase(passphrase, network.ssid())
                 .ok_or(WRONG_PASSPHRASE)?,
         };
         let mut nonce = [0u8; handshake::NONCE_BYTES];
         crate::random::fill::<P>(&mut nonce);
         let mut supplicant = Supplicant::for_akm(akm, pmk, own, bssid, nonce);
         let mut answered = false;
+        let mismatch = match wanted.enterprise {
+            Some(_) => REFUSED,
+            None => WRONG_PASSPHRASE,
+        };
         loop {
-            let timed_out = if answered {
-                WRONG_PASSPHRASE
-            } else {
-                NO_ANSWER
+            let timed_out = if answered { mismatch } else { NO_ANSWER };
+            let message = match pending_key_frame.take() {
+                Some(frame) => frame,
+                None => wait_frame::<P, _>(
+                    transport,
+                    answer(timed_out, mismatch, HANDSHAKE_TIMEOUT_MS),
+                    |frame| eapol_from(frame, bssid),
+                )?,
             };
-            let message = wait_frame::<P, _>(
-                transport,
-                answer(timed_out, WRONG_PASSPHRASE, HANDSHAKE_TIMEOUT_MS),
-                |frame| eapol_from(frame, bssid),
-            )?;
             let reply = match supplicant.receive(&message) {
                 Ok(reply) => reply,
-                Err(handshake::HandshakeError::BadMic) => return Err(WRONG_PASSPHRASE),
-                Err(_) if answered => return Err(WRONG_PASSPHRASE),
+                Err(handshake::HandshakeError::BadMic) => return Err(mismatch),
+                Err(_) if answered => return Err(mismatch),
                 Err(_) => continue,
             };
             let frame = client::data_frame(
@@ -591,7 +832,7 @@ fn connect<P: Platform>(
         Ok((keys, supplicant)) => Ok(Connection {
             link,
             keys,
-            management_protected: akm == Some(Akm::Sae),
+            management_protected: akm.is_some_and(Akm::protects_management),
             supplicant,
         }),
         Err(failure) => {
@@ -852,7 +1093,7 @@ impl Station {
             set_status("scanning");
         }
         let hidden = match (self.joined.is_none(), wanted_hidden(), wanted()) {
-            (true, true, Some((ssid, _))) => Some(ssid),
+            (true, true, Some(wanted)) => Some(wanted.ssid),
             _ => None,
         };
         let result = scan::scan(
@@ -877,11 +1118,20 @@ impl Station {
         }
     }
 
-    fn join<P: Platform>(&mut self, ssid: &[u8], passphrase: &[u8]) -> Result<(), Failure> {
+    fn join<P: Platform>(&mut self, wanted: &Wanted) -> Result<(), Failure> {
         let seen = networks()
             .into_iter()
-            .find(|seen| seen.network.ssid() == ssid)
+            .find(|seen| seen.network.ssid() == wanted.ssid.as_slice())
             .ok_or(NOT_IN_RANGE)?;
+        self.join_access_point::<P>(wanted, seen)
+    }
+
+    fn join_access_point<P: Platform>(
+        &mut self,
+        wanted: &Wanted,
+        seen: Seen,
+    ) -> Result<(), Failure> {
+        let ssid = wanted.ssid.as_slice();
         set_status("connecting");
         let joined = connect::<P>(
             &mut self.transport,
@@ -889,7 +1139,7 @@ impl Station {
             &self.adapter,
             &self.nvm,
             &seen,
-            passphrase,
+            wanted,
         );
         let joined = match joined {
             Ok(joined) => joined,
@@ -902,8 +1152,7 @@ impl Station {
         self.joined = Some(Joined {
             link: joined.link,
             keys: joined.keys,
-            ssid: ssid.to_vec(),
-            passphrase: passphrase.to_vec(),
+            wanted: wanted.clone(),
             packet_number: 0,
             last_unicast: 0,
             last_group: 0,
@@ -974,12 +1223,46 @@ impl Station {
         Ok(())
     }
 
-    fn joined_matches(&self, chosen: &Option<(Vec<u8>, Vec<u8>)>) -> bool {
+    fn joined_matches(&self, chosen: &Option<Wanted>) -> bool {
         match (&self.joined, chosen) {
-            (Some(joined), Some((ssid, passphrase))) => {
-                &joined.ssid == ssid && &joined.passphrase == passphrase
-            }
+            (Some(joined), Some(wanted)) => &joined.wanted == wanted,
             _ => false,
+        }
+    }
+
+    fn stronger_access_point(&self) -> Option<Seen> {
+        let joined = self.joined.as_ref()?;
+        let current = joined.link.target().bssid;
+        let heard = networks();
+        let signal = heard
+            .iter()
+            .find(|seen| seen.network.bssid == current)
+            .map_or(i8::MIN, |seen| seen.signal);
+        if signal > ROAM_WEAK_DBM {
+            return None;
+        }
+        let security = heard
+            .iter()
+            .find(|seen| seen.network.bssid == current)
+            .map(|seen| seen.network.security);
+        heard.into_iter().find(|seen| {
+            seen.network.bssid != current
+                && seen.network.ssid() == joined.wanted.ssid.as_slice()
+                && security.is_none_or(|security| seen.network.security == security)
+                && seen.signal >= signal.saturating_add(ROAM_MARGIN_DBM)
+        })
+    }
+
+    fn roam<P: Platform>(&mut self) {
+        let Some(target) = self.stronger_access_point() else {
+            return;
+        };
+        let Some(wanted) = self.joined.as_ref().map(|joined| joined.wanted.clone()) else {
+            return;
+        };
+        self.leave::<P>(true);
+        if let Err(failure) = self.join_access_point::<P>(&wanted, target) {
+            *FAILURE.lock() = Some(failure);
         }
     }
 }
@@ -1050,7 +1333,7 @@ fn bring_up<P: Platform>(found: Found) {
 }
 
 fn run<P: Platform>(mut station: Station) {
-    let mut chosen: Option<(Vec<u8>, Vec<u8>)> = None;
+    let mut chosen: Option<Wanted> = None;
     let mut last_scan_ms: Option<u64> = None;
     let mut next_try_ms = 0u64;
     let mut last_settings_ms: Option<u64> = None;
@@ -1062,7 +1345,7 @@ fn run<P: Platform>(mut station: Station) {
             let settings = wanted();
             if settings != chosen {
                 chosen = settings;
-                *JOINING.lock() = chosen.as_ref().map(|(ssid, _)| escaped_name(ssid));
+                *JOINING.lock() = chosen.as_ref().map(|wanted| escaped_name(&wanted.ssid));
                 if station.joined.is_some() && !station.joined_matches(&chosen) {
                     station.leave::<P>(true);
                     set_status("ready");
@@ -1080,12 +1363,13 @@ fn run<P: Platform>(mut station: Station) {
             if last_scan_ms.is_none_or(|at| now.saturating_sub(at) >= SCAN_INTERVAL_MS) {
                 station.scan::<P>();
                 last_scan_ms = Some(crate::net::now_ms::<P>());
+                station.roam::<P>();
             }
             if station.joined.is_none()
-                && let Some((ssid, passphrase)) = chosen.clone()
+                && let Some(wanted) = chosen.clone()
                 && crate::net::now_ms::<P>() >= next_try_ms
             {
-                let outcome = station.join::<P>(&ssid, &passphrase);
+                let outcome = station.join::<P>(&wanted);
                 *FAILURE.lock() = outcome.err();
                 if outcome.is_err() {
                     next_try_ms = last_scan_ms.unwrap_or(0).saturating_add(SCAN_INTERVAL_MS);

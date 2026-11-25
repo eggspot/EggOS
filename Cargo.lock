@@ -276,6 +276,7 @@ dependencies = [
  "eggos-math",
  "eggos-net",
  "eggos-settings-file",
+ "eggos-tls",
  "eggos-toolkit",
  "eggos-translate",
  "eggos-wayland",
@@ -528,6 +529,7 @@ name = "eggos-wifi"
 version = "0.4.0"
 dependencies = [
  "eggos-crypto",
+ "eggos-tls",
 ]
 
 [[package]]

@@ -267,7 +267,7 @@ fn der_integer(out: &mut [u8], at: usize, value: &[u8]) -> usize {
     2 + padded + kept.len()
 }
 
-fn signature_der(signature: &[u8; p256::SIGNATURE_BYTES], out: &mut [u8; 72]) -> usize {
+pub(crate) fn signature_der(signature: &[u8; p256::SIGNATURE_BYTES], out: &mut [u8; 72]) -> usize {
     let mut length = 2;
     length += der_integer(out, length, &signature[..SCALAR_BYTES]);
     length += der_integer(out, length, &signature[SCALAR_BYTES..]);
@@ -518,6 +518,7 @@ pub fn accept<'b>(
         pending_end: 0,
         closed: false,
         certificate_validity: None,
+        exporter_secret: None,
         buffers,
     })
 }

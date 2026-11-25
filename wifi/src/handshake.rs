@@ -3,9 +3,13 @@
 //! descriptor version 2), and the GTK unwrapped from message 3's key data. WPA3-Personal's
 //! handshake after SAE (D285) derives the PTK with KDF-SHA-256, signs with AES-CMAC (key
 //! descriptor version 0, the AKM's own) and also unwraps the IGTK protected management frames
-//! use.
+//! use. WPA2-Enterprise (AKM 1) keys like WPA2-Personal and WPA3-Enterprise (AKM 5) like
+//! WPA3-Personal but with key descriptor version 3, both from the PMK 802.1X's EAP method gave
+//! (D779).
 
-use crate::frames::{Address, WPA2_PERSONAL_RSN, WPA3_PERSONAL_RSN};
+use crate::frames::{
+    Address, WPA2_ENTERPRISE_RSN, WPA2_PERSONAL_RSN, WPA3_ENTERPRISE_RSN, WPA3_PERSONAL_RSN,
+};
 use crate::kdf::kdf_sha256;
 use eggos_crypto::aes::Aes;
 use eggos_crypto::cmac::cmac;
@@ -27,6 +31,7 @@ const EAPOL_KEY: u8 = 3;
 const DESCRIPTOR_RSN: u8 = 2;
 const KEY_INFO_VERSION_HMAC_SHA1_AES: u16 = 2;
 const KEY_INFO_VERSION_AKM_DEFINED: u16 = 0;
+const KEY_INFO_VERSION_AES_CMAC: u16 = 3;
 const KEY_INFO_PAIRWISE: u16 = 1 << 3;
 const KEY_INFO_INSTALL: u16 = 1 << 6;
 const KEY_INFO_ACK: u16 = 1 << 7;
@@ -54,21 +59,40 @@ pub enum Akm {
     Psk,
     /// WPA3-Personal: a PMK from SAE, KDF-SHA-256 and AES-CMAC MICs, management frames protected.
     Sae,
+    /// WPA2-Enterprise: a PMK from 802.1X, then as [`Akm::Psk`].
+    Ieee8021x,
+    /// WPA3-Enterprise: a PMK from 802.1X, then KDF-SHA-256 and AES-CMAC MICs, management frames
+    /// protected.
+    Ieee8021xSha256,
 }
 
 impl Akm {
     fn key_info_version(self) -> u16 {
         match self {
-            Akm::Psk => KEY_INFO_VERSION_HMAC_SHA1_AES,
+            Akm::Psk | Akm::Ieee8021x => KEY_INFO_VERSION_HMAC_SHA1_AES,
             Akm::Sae => KEY_INFO_VERSION_AKM_DEFINED,
+            Akm::Ieee8021xSha256 => KEY_INFO_VERSION_AES_CMAC,
         }
     }
 
-    fn rsn(self) -> &'static [u8] {
+    /// The RSN element the station sends for this key management.
+    pub fn rsn(self) -> &'static [u8] {
         match self {
             Akm::Psk => &WPA2_PERSONAL_RSN,
             Akm::Sae => &WPA3_PERSONAL_RSN,
+            Akm::Ieee8021x => &WPA2_ENTERPRISE_RSN,
+            Akm::Ieee8021xSha256 => &WPA3_ENTERPRISE_RSN,
         }
+    }
+
+    /// Whether keys come by PRF-SHA1 and MICs by HMAC-SHA1, as in WPA2.
+    pub fn uses_sha1(self) -> bool {
+        matches!(self, Akm::Psk | Akm::Ieee8021x)
+    }
+
+    /// Whether management frames are protected, so message 3 must carry the IGTK.
+    pub fn protects_management(self) -> bool {
+        matches!(self, Akm::Sae | Akm::Ieee8021xSha256)
     }
 }
 
@@ -114,7 +138,7 @@ pub fn ptk_for(
     a_nonce: &[u8; NONCE_BYTES],
     s_nonce: &[u8; NONCE_BYTES],
 ) -> Ptk {
-    if akm == Akm::Psk {
+    if akm.uses_sha1() {
         return ptk(pmk, authenticator, supplicant, a_nonce, s_nonce);
     }
     let mut data = [0u8; 6 + 6 + NONCE_BYTES + NONCE_BYTES];
@@ -222,7 +246,7 @@ pub fn mic(kck: &[u8; KCK_BYTES], frame: &[u8]) -> [u8; MIC_BYTES] {
 
 /// The MIC `akm` puts on an EAPOL frame under `kck`, the frame's MIC field taken as zero.
 pub fn mic_for(akm: Akm, kck: &[u8; KCK_BYTES], frame: &[u8]) -> [u8; MIC_BYTES] {
-    if akm == Akm::Psk {
+    if akm.uses_sha1() {
         return mic(kck, frame);
     }
     let mut copy = [0u8; MAX_KEY_FRAME_BYTES];
@@ -421,7 +445,7 @@ impl Supplicant {
             .map_err(|_| HandshakeError::BadKeyData)?;
         let (gtk_index, gtk) = group_key(&data[..unwrapped]).ok_or(HandshakeError::BadKeyData)?;
         let igtk = integrity_group_key(&data[..unwrapped]);
-        if self.akm == Akm::Sae && igtk.is_none() {
+        if self.akm.protects_management() && igtk.is_none() {
             return Err(HandshakeError::BadKeyData);
         }
         let mut keys = Keys {

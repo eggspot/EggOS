@@ -13,10 +13,14 @@ const ELEMENT_SSID: u8 = 0;
 const ELEMENT_DS_PARAMETERS: u8 = 3;
 const ELEMENT_RSN: u8 = 48;
 const CAPABILITY_PRIVACY: u16 = 1 << 4;
+const MANAGEMENT_PROTECTION_REQUIRED: u16 = 1 << 6;
 const MAX_SSID_BYTES: usize = 32;
 
-/// The RSN suite selector OUI 00-0F-AC and the suites a WPA2/WPA3-Personal network uses.
+/// The RSN suite selector OUI 00-0F-AC and the suites WPA2/WPA3-Personal and -Enterprise
+/// networks use.
 pub mod suite {
+    pub const IEEE_8021X: u32 = 0x000f_ac01;
+    pub const IEEE_8021X_SHA256: u32 = 0x000f_ac05;
     pub const CCMP: u32 = 0x000f_ac04;
     pub const GCMP_256: u32 = 0x000f_ac09;
     pub const PSK: u32 = 0x000f_ac02;
@@ -74,9 +78,14 @@ pub enum Security {
     Legacy,
     /// RSN with CCMP and a pre-shared key: WPA2-Personal.
     Wpa2Personal,
-    /// RSN with SAE: WPA3-Personal, which needs SAE (not yet).
+    /// RSN with SAE: WPA3-Personal.
     Wpa3Personal,
-    /// RSN with something else (802.1X, other ciphers).
+    /// RSN with CCMP and 802.1X (D779): WPA2-Enterprise, joined with AKM 1.
+    Wpa2Enterprise,
+    /// RSN with CCMP and only 802.1X-SHA256, or it with management frame protection required:
+    /// WPA3-Enterprise, joined with AKM 5 (D779).
+    Wpa3Enterprise,
+    /// RSN with something else (Suite B, FT-only, other ciphers).
     Other,
 }
 
@@ -93,7 +102,11 @@ pub fn rsn_security(element: &[u8]) -> Security {
     let parse = || -> Option<Security> {
         let after_group = 2 + 4;
         let (after_pairwise, pairwise) = suites(after_group)?;
-        let (_, management) = suites(after_pairwise)?;
+        let (after_management, management) = suites(after_pairwise)?;
+        let capabilities = element
+            .get(after_management..after_management + 2)
+            .map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+        let protection_required = capabilities & MANAGEMENT_PROTECTION_REQUIRED != 0;
         let ccmp = pairwise
             .as_chunks::<4>()
             .0
@@ -106,17 +119,29 @@ pub fn rsn_security(element: &[u8]) -> Security {
                 .iter()
                 .any(|suite| selector(suite) == wanted)
         };
-        Some(
-            match (
-                ccmp,
-                has(suite::PSK) || has(suite::PSK_SHA256),
-                has(suite::SAE),
-            ) {
-                (true, true, _) => Security::Wpa2Personal,
-                (true, false, true) => Security::Wpa3Personal,
-                _ => Security::Other,
-            },
-        )
+        let personal = match (
+            ccmp,
+            has(suite::PSK) || has(suite::PSK_SHA256),
+            has(suite::SAE),
+        ) {
+            (true, true, _) => Security::Wpa2Personal,
+            (true, false, true) => Security::Wpa3Personal,
+            _ => Security::Other,
+        };
+        let enterprise = match (
+            ccmp,
+            has(suite::IEEE_8021X),
+            has(suite::IEEE_8021X_SHA256),
+        ) {
+            (true, _, true) if protection_required => Security::Wpa3Enterprise,
+            (true, true, _) => Security::Wpa2Enterprise,
+            (true, false, true) => Security::Wpa3Enterprise,
+            _ => Security::Other,
+        };
+        Some(match personal {
+            Security::Other => enterprise,
+            found => found,
+        })
     };
     parse().unwrap_or(Security::Other)
 }
@@ -224,6 +249,21 @@ pub const WPA3_PERSONAL_RSN: [u8; 28] = [
     6,
 ];
 
+/// The RSN element a WPA2-Enterprise station sends (D779): WPA2-Personal's with AKM 1, 802.1X.
+pub const WPA2_ENTERPRISE_RSN: [u8; 22] = {
+    let mut element = WPA2_PERSONAL_RSN;
+    element[19] = 1;
+    element
+};
+
+/// The RSN element a WPA3-Enterprise station sends (D779): WPA3-Personal's with AKM 5,
+/// 802.1X-SHA256, management frames protected.
+pub const WPA3_ENTERPRISE_RSN: [u8; 28] = {
+    let mut element = WPA3_PERSONAL_RSN;
+    element[19] = 5;
+    element
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +309,18 @@ mod tests {
         let mut rsn = WPA2_PERSONAL_RSN;
         rsn[19] = 8;
         assert_eq!(rsn_security(&rsn[2..]), Security::Wpa3Personal);
+        assert_eq!(
+            rsn_security(&WPA2_ENTERPRISE_RSN[2..]),
+            Security::Wpa2Enterprise
+        );
+        assert_eq!(
+            rsn_security(&WPA3_ENTERPRISE_RSN[2..]),
+            Security::Wpa3Enterprise
+        );
+        let mut transition = WPA3_ENTERPRISE_RSN;
+        transition[20] = 0x80;
+        assert_eq!(rsn_security(&transition[2..]), Security::Wpa3Enterprise);
+        transition[19] = 1;
+        assert_eq!(rsn_security(&transition[2..]), Security::Wpa2Enterprise);
     }
 }

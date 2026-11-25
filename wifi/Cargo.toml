@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 eggos-crypto = { path = "../crypto" }
+eggos-tls = { path = "../tls" }
 
 [lints]
 workspace = true

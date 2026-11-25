@@ -578,3 +578,35 @@ fn decryption_undoes_fips_197_appendix_c() {
     wide.decrypt_block(&mut block);
     assert_eq!(block, plain);
 }
+
+#[test]
+fn md4_matches_rfc_1320_appendix_a5() {
+    assert_eq!(
+        crate::md4::md4(&[]).to_vec(),
+        hex("31d6cfe0d16ae931b73c59d7e0c089c0")
+    );
+    assert_eq!(
+        crate::md4::md4(&[b"a", b"bc"]).to_vec(),
+        hex("a448017aaf21d8525fc10ae87aa6729d")
+    );
+    assert_eq!(
+        crate::md4::md4(&[b"message digest"]).to_vec(),
+        hex("d9130a8164549fe818874806e1c7014b")
+    );
+}
+
+#[test]
+fn des_encrypts_the_textbook_block_and_spreads_seven_byte_keys() {
+    assert_eq!(
+        crate::des::encrypt(
+            &array("133457799bbcdff1"),
+            &array("0123456789abcdef")
+        )
+        .to_vec(),
+        hex("85e813540f0ab405")
+    );
+    assert_eq!(
+        crate::des::key_from_seven(&[0xff; 7]),
+        [0xfe; 8]
+    );
+}

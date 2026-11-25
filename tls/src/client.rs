@@ -1,8 +1,11 @@
 //! The TLS 1.3 client (RFC 8446): one full handshake with X25519 key exchange, the server's
 //! certificates checked ([`crate::chain`]) and its signature and Finished verified, then
 //! application data in records protected with AES-128-GCM, AES-256-GCM or
-//! ChaCha20-Poly1305. No session resumption, no early data, no client certificates (an empty
-//! one answers a request), no HelloRetryRequest: X25519 is the only group offered.
+//! ChaCha20-Poly1305. No session resumption, no early data, no HelloRetryRequest: X25519 is
+//! the only group offered. A server's certificate request is answered with the client's own
+//! P-256 certificate and signature when [`connect_as`] was given one ([`ClientIdentity`], for
+//! 802.1X's EAP-TLS, D779), else with an empty certificate; [`Session::export`] gives keying
+//! material (RFC 8446 section 7.5).
 
 use crate::chain::{self, CertificateError, MAX_CHAIN, TrustAnchors};
 use crate::x509::{self, PublicKey, SignatureAlgorithm};
@@ -101,6 +104,8 @@ pub enum Error {
     BadFinished,
     /// A handshake message is longer than the client keeps.
     TooLarge,
+    /// The client's own private key cannot sign.
+    BadClientKey,
 }
 
 impl Error {
@@ -119,6 +124,7 @@ impl Error {
             Self::BadSignature => "the server's TLS signature is wrong",
             Self::BadFinished => "the server's TLS handshake does not check out",
             Self::TooLarge => "the server's TLS handshake message is over 32 KiB",
+            Self::BadClientKey => "the client's private key cannot sign",
         }
     }
 }
@@ -710,6 +716,22 @@ fn scheme_algorithm(scheme: u16, kind: KeyKind) -> Option<SignatureAlgorithm> {
     }
 }
 
+/// The client's own certificate chain (leaf first, DER) and the leaf's P-256 private key.
+#[derive(Clone, Copy)]
+pub struct ClientIdentity<'a> {
+    pub chain: &'a [&'a [u8]],
+    pub private_key: &'a [u8; 32],
+}
+
+impl fmt::Debug for ClientIdentity<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ClientIdentity({} certificates)", self.chain.len())
+    }
+}
+
+const ECDSA_P256_SHA256: u16 = 0x0403;
+const CLIENT_CONTEXT: &[u8] = b"TLS 1.3, client CertificateVerify\0";
+
 /// What the client brings to a handshake.
 #[derive(Debug, Clone, Copy)]
 pub struct Settings<'a> {
@@ -796,6 +818,7 @@ pub struct Session<'b> {
     pub(crate) pending_end: usize,
     pub(crate) closed: bool,
     pub(crate) certificate_validity: Option<(i64, i64)>,
+    pub(crate) exporter_secret: Option<Digest>,
 }
 
 impl fmt::Debug for Session<'_> {
@@ -812,6 +835,18 @@ pub fn connect<'b>(
     settings: &Settings<'_>,
     randomness: &[u8; RANDOMNESS_BYTES],
     anchors: &mut dyn TrustAnchors,
+) -> Result<Session<'b>, Error> {
+    connect_as(transport, buffers, settings, randomness, anchors, None)
+}
+
+/// [`connect`], answering a certificate request with `identity` when there is one.
+pub fn connect_as<'b>(
+    transport: &mut dyn Transport,
+    buffers: &'b mut Buffers,
+    settings: &Settings<'_>,
+    randomness: &[u8; RANDOMNESS_BYTES],
+    anchors: &mut dyn TrustAnchors,
+    identity: Option<&ClientIdentity<'_>>,
 ) -> Result<Session<'b>, Error> {
     let mut secret = [0u8; 32];
     secret.copy_from_slice(&randomness[64..]);
@@ -993,8 +1028,25 @@ pub fn connect<'b>(
         finished_hash.as_bytes(),
     );
 
+    let exporter_secret = derive_secret(
+        hash,
+        master.as_bytes(),
+        b"exp master",
+        finished_hash.as_bytes(),
+    );
+
     transport.send(&[CHANGE_CIPHER_SPEC, 3, 3, 0, 1, 1])?;
-    if let Some((context, context_length)) = requested {
+    if let (Some((context, context_length)), Some(identity)) = (requested, identity) {
+        send_client_certificate(
+            transport,
+            buffers,
+            &mut client_protection,
+            &mut transcript,
+            hash,
+            &context[..context_length],
+            identity,
+        )?;
+    } else if let Some((context, context_length)) = requested {
         let mut message = [0u8; 4 + 1 + 255 + 3];
         message[0] = CERTIFICATE;
         let body_length = 1 + context_length + 3;
@@ -1040,8 +1092,76 @@ pub fn connect<'b>(
         pending_end: 0,
         closed: false,
         certificate_validity,
+        exporter_secret: Some(exporter_secret),
         buffers,
     })
+}
+
+fn send_client_certificate(
+    transport: &mut dyn Transport,
+    buffers: &mut Buffers,
+    protection: &mut Protection,
+    transcript: &mut Transcript,
+    hash: HashAlgorithm,
+    context: &[u8],
+    identity: &ClientIdentity<'_>,
+) -> Result<(), Error> {
+    let Buffers {
+        handshake,
+        outgoing,
+        ..
+    } = buffers;
+    let list_length: usize = identity
+        .chain
+        .iter()
+        .map(|certificate| 3 + certificate.len() + 2)
+        .sum();
+    let body_length = 1 + context.len() + 3 + list_length;
+    if 4 + body_length > handshake.len() {
+        return Err(Error::TooLarge);
+    }
+    handshake[0] = CERTIFICATE;
+    handshake[1..4].copy_from_slice(&(body_length as u32).to_be_bytes()[1..]);
+    handshake[4] = context.len() as u8;
+    let mut at = 5 + context.len();
+    handshake[5..at].copy_from_slice(context);
+    handshake[at..at + 3].copy_from_slice(&(list_length as u32).to_be_bytes()[1..]);
+    at += 3;
+    for certificate in identity.chain {
+        handshake[at..at + 3].copy_from_slice(&(certificate.len() as u32).to_be_bytes()[1..]);
+        at += 3;
+        handshake[at..at + certificate.len()].copy_from_slice(certificate);
+        at += certificate.len();
+        handshake[at..at + 2].fill(0);
+        at += 2;
+    }
+    transcript.update(&handshake[..at]);
+    send_protected(transport, outgoing, protection, HANDSHAKE, &handshake[..at])?;
+
+    let mut content = [0x20u8; 64 + 34 + 64];
+    content[64..64 + CLIENT_CONTEXT.len()].copy_from_slice(CLIENT_CONTEXT);
+    let digest = transcript.hash(hash);
+    let end = 64 + CLIENT_CONTEXT.len() + digest.as_bytes().len();
+    content[64 + CLIENT_CONTEXT.len()..end].copy_from_slice(digest.as_bytes());
+    let signed = eggos_crypto::sha2::digest(HashAlgorithm::Sha256, &content[..end]);
+    let signature = eggos_crypto::p256::sign(identity.private_key, signed.as_bytes())
+        .map_err(|_| Error::BadClientKey)?;
+    let mut der = [0u8; 72];
+    let der_length = crate::server::signature_der(&signature, &mut der);
+    let mut verify = [0u8; 8 + 72];
+    verify[0] = CERTIFICATE_VERIFY;
+    verify[3] = (4 + der_length) as u8;
+    verify[4..6].copy_from_slice(&ECDSA_P256_SHA256.to_be_bytes());
+    verify[6..8].copy_from_slice(&(der_length as u16).to_be_bytes());
+    verify[8..8 + der_length].copy_from_slice(&der[..der_length]);
+    transcript.update(&verify[..8 + der_length]);
+    send_protected(
+        transport,
+        outgoing,
+        protection,
+        HANDSHAKE,
+        &verify[..8 + der_length],
+    )
 }
 
 impl Session<'_> {
@@ -1054,6 +1174,25 @@ impl Session<'_> {
     /// `notAfter`, in seconds since 1970 (UTC); `None` for a server's session.
     pub fn certificate_validity(&self) -> Option<(i64, i64)> {
         self.certificate_validity
+    }
+
+    /// TLS-Exporter (RFC 8446 section 7.5): keying material for `label` and `context` filling
+    /// `out`; false for a server's session, which keeps no exporter secret.
+    pub fn export(&self, label: &[u8], context: &[u8], out: &mut [u8]) -> bool {
+        let Some(secret) = &self.exporter_secret else {
+            return false;
+        };
+        let hash = self.suite.hash();
+        let derived = derive_secret(hash, secret.as_bytes(), label, empty_hash(hash).as_bytes());
+        let context_hash = eggos_crypto::sha2::digest(hash, context);
+        expand_label(
+            hash,
+            derived.as_bytes(),
+            b"exporter",
+            context_hash.as_bytes(),
+            out,
+        );
+        true
     }
 
     /// Sends `data` in records.

@@ -5,7 +5,8 @@
 //! signatures that certificates and TLS servers make: ECDSA on P-256 and P-384 (FIPS 186-5,
 //! [`ecdsa`]) and RSA with PKCS #1 v1.5 and PSS padding (RFC 8017, [`rsa`]), over
 //! [`bignum`]'s modular arithmetic, and signing with ECDSA on P-256 for EggOS's own TLS server
-//! ([`p256`]).
+//! ([`p256`]). MD4 and DES ([`md4`], [`des`]) exist only for MS-CHAPv2 inside 802.1X's PEAP
+//! (D779).
 //!
 //! Code that handles secrets (hashing, MACs, AES, GCM, ChaCha20, Poly1305, X25519, P-256
 //! signing) takes the same time and touches the same memory whatever the secret is: no branch
@@ -23,11 +24,13 @@ pub mod chacha20;
 pub mod chacha20poly1305;
 pub mod cmac;
 pub mod constant_time;
+pub mod des;
 pub mod ecdsa;
 pub mod ed25519;
 pub mod gcm;
 pub mod hmac;
 pub mod key_wrap;
+pub mod md4;
 pub mod p256;
 pub mod poly1305;
 pub mod rsa;
