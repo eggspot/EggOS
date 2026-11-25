@@ -143,6 +143,20 @@ const DDI_PORT_SHIFT: u32 = 28;
 const DDI_MODE_DP_SST: u32 = 2 << 24;
 const DDI_SYNC_VERTICAL_HIGH: u32 = 1 << 17;
 const DDI_SYNC_HORIZONTAL_HIGH: u32 = 1 << 16;
+const DDI_BPC_10: u32 = 1 << 20;
+const DDI_BPC_12: u32 = 3 << 20;
+const DDI_HDMI_SCRAMBLING: u32 = 1 << 0;
+const DDI_HIGH_TMDS_CHARACTER_RATE: u32 = 1 << 4;
+const PIPE_BPC_10: u32 = 1 << 5;
+const PIPE_BPC_12: u32 = 3 << 5;
+const VIDEO_DIP_OFFSET: usize = 0x200;
+const VIDEO_DIP_GCP: usize = 0x210;
+const VIDEO_DIP_AVI_DATA: usize = 0x220;
+const VIDEO_DIP_AVI: u32 = 1 << 12;
+const VIDEO_DIP_GCP_ENABLE: u32 = 1 << 16;
+const GCP_COLOUR_INDICATION: u32 = 1 << 2;
+const HDMI_1_4_MAX_KHZ: u32 = 300_000;
+const HDMI_2_0_MAX_KHZ: u32 = 594_000;
 const TRANS_CLK_SEL: usize = 0x46140;
 const TRANS_CLK_PORT_SHIFT: u32 = 29;
 const PIPE_CONF: usize = 0x70008;
@@ -589,40 +603,150 @@ impl<R: RegisterIo> DisplayEngine<R> {
         Ok(())
     }
 
-    /// The EDID of an HDMI sink on digital port `port` (B to D), read over GMBUS (D466), when
-    /// one answers.
+    /// The EDID of an HDMI sink on digital port `port`, read over GMBUS (D466), with what its
+    /// first CEA extension says it takes (D787), when one answers.
     pub fn probe_hdmi_sink(
         &self,
         port: usize,
         keep_waiting: &mut dyn FnMut() -> bool,
-    ) -> Option<crate::edid::Edid> {
+    ) -> Option<(crate::edid::Edid, super::intel_hdmi::HdmiSink)> {
+        use super::intel_hdmi::{HdmiSink, hdmi_sink, read_at, read_edid};
         let pins = super::intel_hdmi::gmbus_pins(port)?;
         let mut block = [0u8; crate::edid::BLOCK_BYTES];
-        super::intel_hdmi::read_edid(&self.regs, pins, &mut block, keep_waiting).ok()?;
-        crate::edid::Edid::parse(&block)
+        read_edid(&self.regs, pins, &mut block, keep_waiting).ok()?;
+        let edid = crate::edid::Edid::parse(&block)?;
+        let mut extension = [0u8; crate::edid::BLOCK_BYTES];
+        let extensions = block[crate::edid::BLOCK_BYTES - 2];
+        let sink = match extensions > 0
+            && read_at(&self.regs, pins, 128, &mut extension, keep_waiting).is_ok()
+        {
+            true => hdmi_sink(&extension),
+            false => HdmiSink::default(),
+        };
+        Some((edid, sink))
     }
 
-    /// Lights pipe `pipe` on HDMI port `port` (B to D) with `timing`, showing the surface at
-    /// global-GTT address `surface`, rows `stride_bytes` long (D466, display 9): a free HDMI PLL
-    /// set for the pixel clock and routed to the port, the transcoder's timings, clock and
-    /// HDMI function at 8 bits a colour, the port's buffer, then the pipe and its plane on. No
-    /// link to train: TMDS runs at the pixel clock.
+    /// Lights pipe `pipe` on HDMI port `port` with `timing`, showing the surface at global-GTT
+    /// address `surface`, rows `stride_bytes` long (D466, D787): display 9's ports B to D or
+    /// display 11 and 12's combo ports A and B. The colour depth is the deepest `sink` takes
+    /// within its and the source's TMDS limits (8, 10 or 12 bits); the PLL runs at the TMDS
+    /// character rate, scrambling and the 1/40 clock ratio set in the sink's SCDC and the
+    /// transcoder above 340 MHz; the AVI infoframe (and the general control packet for deep
+    /// colour) go out in the data islands; then the port's buffer, the pipe and its plane.
     #[allow(clippy::too_many_arguments)]
     pub fn set_mode_hdmi(
         &self,
         pipe: usize,
         port: usize,
         timing: &crate::edid::Timing,
+        sink: &super::intel_hdmi::HdmiSink,
         surface: u32,
         stride_bytes: u32,
         keep_waiting: &mut dyn FnMut() -> bool,
     ) -> Result<(), ModeError> {
-        let display_9 = self.generation == Generation::Display9;
-        if !display_9 || port == 0 || port > 3 || pipe >= MAX_PIPES - 1 {
+        use super::intel_hdmi::{
+            SCRAMBLING_ABOVE_KHZ, avi_infoframe, deep_colour, dip_words, gmbus_pins,
+            scdc_tmds_config, write_scdc,
+        };
+        if pipe >= MAX_PIPES - 1 {
             return Err(ModeError::Unsupported);
         }
+        let source_max_khz = match self.generation {
+            Generation::Display9 => HDMI_1_4_MAX_KHZ,
+            _ => HDMI_2_0_MAX_KHZ,
+        };
+        let (bits, tmds_khz) = deep_colour(sink, timing.clock_khz, source_max_khz);
+        let scrambling = tmds_khz > SCRAMBLING_ABOVE_KHZ;
+        match self.generation {
+            Generation::Display9 if (1..=3).contains(&port) => {
+                self.clock_display_9_hdmi(port, tmds_khz, keep_waiting)?
+            }
+            Generation::Display11 | Generation::Display12 if port < COMBO_PORTS => {
+                use super::intel_combo_phy::{for_hdmi, reference_khz};
+                let reference = reference_khz(self.regs.read32(STRAPS) >> REFERENCE_SHIFT & 0x7)
+                    .ok_or(ModeError::Unsupported)?;
+                let settings = for_hdmi(tmds_khz, reference).ok_or(ModeError::Unsupported)?;
+                self.program_combo_pll(port, &settings, keep_waiting)?
+            }
+            _ => return Err(ModeError::Unsupported),
+        }
+        if scrambling {
+            let pins = gmbus_pins(port).ok_or(ModeError::Unsupported)?;
+            let (register, value) = scdc_tmds_config(true);
+            write_scdc(&self.regs, pins, register, value, keep_waiting)
+                .map_err(|_| ModeError::Unsupported)?;
+        }
+        let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
+        for (index, value) in super::intel_modeset::timing_registers(timing)
+            .iter()
+            .enumerate()
+        {
+            let at = match index {
+                6 => PIPE_SOURCE,
+                index => 4 * index,
+            };
+            self.regs.write32(transcoder + at, *value);
+        }
+        let clock_shift = self.generation.transcoder_clock_shift();
+        self.regs
+            .write32(TRANS_CLK_SEL + 4 * pipe, (port as u32 + 1) << clock_shift);
+        let depth = match bits {
+            12 => (DDI_BPC_12, PIPE_BPC_12),
+            10 => (DDI_BPC_10, PIPE_BPC_10),
+            _ => (0, 0),
+        };
+        let mut function =
+            DDI_FUNC_ENABLE | self.generation.port_select(port) | DDI_MODE_HDMI | depth.0;
+        if scrambling {
+            function |= DDI_HDMI_SCRAMBLING | DDI_HIGH_TMDS_CHARACTER_RATE;
+        }
+        if timing.vertical_sync_positive {
+            function |= DDI_SYNC_VERTICAL_HIGH;
+        }
+        if timing.horizontal_sync_positive {
+            function |= DDI_SYNC_HORIZONTAL_HIGH;
+        }
+        self.regs
+            .write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
+        let island = transcoder + VIDEO_DIP_OFFSET;
+        for (index, word) in dip_words(&avi_infoframe(0)).iter().enumerate() {
+            self.regs
+                .write32(transcoder + VIDEO_DIP_AVI_DATA + 4 * index, *word);
+        }
+        let mut islands = VIDEO_DIP_AVI;
+        if bits > 8 {
+            self.regs
+                .write32(transcoder + VIDEO_DIP_GCP, GCP_COLOUR_INDICATION);
+            islands |= VIDEO_DIP_GCP_ENABLE;
+        }
+        self.regs.write32(island, islands);
+        self.regs
+            .write32(DDI_BUF_CTL + port * PORT_REGISTER_STRIDE, DDI_BUF_ENABLE);
+        self.regs
+            .write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE | depth.1);
+        let at = |register: usize| register + pipe * PIPE_STRIDE;
+        self.regs.write32(
+            at(PLANE_SIZE),
+            (timing.height - 1) << 16 | (timing.width - 1),
+        );
+        self.regs
+            .write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
+        self.regs.write32(
+            at(PLANE_CTL),
+            PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT,
+        );
+        self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
+        Ok(())
+    }
+
+    fn clock_display_9_hdmi(
+        &self,
+        port: usize,
+        tmds_khz: u32,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
         let settings =
-            super::intel_hdmi::hdmi_pll(timing.clock_khz).ok_or(ModeError::Unsupported)?;
+            super::intel_hdmi::hdmi_pll(tmds_khz).ok_or(ModeError::Unsupported)?;
         let pll = HDMI_PLLS
             .into_iter()
             .find(|&pll| self.regs.read32(DPLL_ENABLES[pll]) & PLL_ENABLE == 0)
@@ -649,46 +773,6 @@ impl<R: RegisterIo> DisplayEngine<R> {
             DPLL_CTRL2,
             routing | 1 << route | (pll as u32) << (route + 1),
         );
-        let transcoder = TRANSCODER + pipe * TRANSCODER_STRIDE;
-        for (index, value) in super::intel_modeset::timing_registers(timing)
-            .iter()
-            .enumerate()
-        {
-            let at = match index {
-                6 => PIPE_SOURCE,
-                index => 4 * index,
-            };
-            self.regs.write32(transcoder + at, *value);
-        }
-        self.regs.write32(
-            TRANS_CLK_SEL + 4 * pipe,
-            (port as u32 + 1) << TRANS_CLK_PORT_SHIFT,
-        );
-        let mut function = DDI_FUNC_ENABLE | (port as u32) << DDI_PORT_SHIFT | DDI_MODE_HDMI;
-        if timing.vertical_sync_positive {
-            function |= DDI_SYNC_VERTICAL_HIGH;
-        }
-        if timing.horizontal_sync_positive {
-            function |= DDI_SYNC_HORIZONTAL_HIGH;
-        }
-        self.regs
-            .write32(DDI_FUNC_CTL + pipe * TRANSCODER_STRIDE, function);
-        self.regs
-            .write32(DDI_BUF_CTL + port * PORT_REGISTER_STRIDE, DDI_BUF_ENABLE);
-        self.regs
-            .write32(PIPE_CONF + pipe * PIPE_STRIDE, PIPE_CONF_ENABLE);
-        let at = |register: usize| register + pipe * PIPE_STRIDE;
-        self.regs.write32(
-            at(PLANE_SIZE),
-            (timing.height - 1) << 16 | (timing.width - 1),
-        );
-        self.regs
-            .write32(at(PLANE_STRIDE), stride_bytes / STRIDE_UNIT);
-        self.regs.write32(
-            at(PLANE_CTL),
-            PLANE_ENABLE | PLANE_FORMAT_XRGB_8888 << PLANE_FORMAT_SHIFT,
-        );
-        self.regs.write32(at(PLANE_SURF), surface & SURFACE_MASK);
         Ok(())
     }
 
@@ -791,6 +875,15 @@ impl<R: RegisterIo> DisplayEngine<R> {
         let reference = reference_khz(self.regs.read32(STRAPS) >> REFERENCE_SHIFT & 0x7)
             .ok_or(ModeError::Unsupported)?;
         let settings = for_display_port(rate, reference).ok_or(ModeError::Unsupported)?;
+        self.program_combo_pll(port, &settings, keep_waiting)
+    }
+
+    fn program_combo_pll(
+        &self,
+        port: usize,
+        settings: &super::intel_combo_phy::ComboPll,
+        keep_waiting: &mut dyn FnMut() -> bool,
+    ) -> Result<(), ModeError> {
         let pll = (0..COMBO_PLL_ENABLES.len())
             .find(|&pll| self.regs.read32(COMBO_PLL_ENABLES[pll]) & PLL_ENABLE == 0)
             .ok_or(ModeError::Unsupported)?;

@@ -12,6 +12,8 @@ const CENTRAL_FREQUENCY_8400: u32 = 3;
 const PDIV_SHIFT: u32 = 2;
 const KDIV_SHIFT: u32 = 6;
 const DCO_FRACTION_SHIFT: u32 = 10;
+const QDIV_RATIO_SHIFT: u32 = 10;
+const QDIV_MODE: u32 = 1 << 9;
 
 /// A combo PLL's settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +24,8 @@ pub struct ComboPll {
     pub pdiv: u32,
     /// The K divider: 1, 2 or 3.
     pub kdiv: u32,
+    /// The Q divider: 1, or more with a K divider of 2 (HDMI, D787).
+    pub qdiv: u32,
 }
 
 impl ComboPll {
@@ -43,7 +47,11 @@ impl ComboPll {
             2 => 2,
             _ => 4,
         };
-        pdiv << PDIV_SHIFT | kdiv << KDIV_SHIFT | CENTRAL_FREQUENCY_8400
+        let qdiv = match self.qdiv {
+            0 | 1 => 0,
+            ratio => (ratio & 0xff) << QDIV_RATIO_SHIFT | QDIV_MODE,
+        };
+        qdiv | pdiv << PDIV_SHIFT | kdiv << KDIV_SHIFT | CENTRAL_FREQUENCY_8400
     }
 }
 
@@ -79,6 +87,42 @@ pub fn for_display_port(rate: u8, reference_khz: u32) -> Option<ComboPll> {
         dco_fraction: fraction as u32,
         pdiv,
         kdiv,
+        qdiv: 1,
+    })
+}
+
+const DCO_LOWEST_KHZ: u64 = 7_998_000;
+const DCO_HIGHEST_KHZ: u64 = 10_000_000;
+const DCO_MIDDLE_KHZ: u64 = 8_999_000;
+
+/// The PLL for an HDMI TMDS character rate of `tmds_khz` (D787): the oscillator five times the
+/// rate times a divider the P and K dividers make, within 7998 to 10000 MHz, nearest the
+/// middle of that range.
+pub fn for_hdmi(tmds_khz: u32, reference_khz: u32) -> Option<ComboPll> {
+    let reference = match reference_khz {
+        HALVED_REFERENCE_KHZ => u64::from(reference_khz / 2),
+        0 => return None,
+        reference => u64::from(reference),
+    };
+    let (dco, pdiv, kdiv, qdiv) = [2u32, 3, 5, 7]
+        .into_iter()
+        .flat_map(|pdiv| [1u32, 2, 3].into_iter().map(move |kdiv| (pdiv, kdiv)))
+        .flat_map(|(pdiv, kdiv)| {
+            let most = if kdiv == 2 { 255 } else { 1 };
+            (1..=most).map(move |qdiv| (pdiv, kdiv, qdiv))
+        })
+        .map(|(pdiv, kdiv, qdiv)| {
+            let divider = u64::from(pdiv * kdiv * qdiv);
+            (5 * u64::from(tmds_khz) * divider, pdiv, kdiv, qdiv)
+        })
+        .filter(|(dco, ..)| (DCO_LOWEST_KHZ..=DCO_HIGHEST_KHZ).contains(dco))
+        .min_by_key(|(dco, ..)| dco.abs_diff(DCO_MIDDLE_KHZ))?;
+    Some(ComboPll {
+        dco_integer: (dco / reference) as u32,
+        dco_fraction: (((dco % reference) << FRACTION_BITS) / reference) as u32,
+        pdiv,
+        kdiv,
+        qdiv,
     })
 }
 
@@ -90,7 +134,7 @@ pub fn port_clock_khz(pll: &ComboPll, reference_khz: u32) -> u32 {
     };
     let dco = reference * u64::from(pll.dco_integer)
         + ((reference * u64::from(pll.dco_fraction)) >> FRACTION_BITS);
-    (dco / u64::from(pll.pdiv * pll.kdiv).max(1)) as u32
+    (dco / u64::from(pll.pdiv * pll.kdiv * pll.qdiv.max(1)).max(1)) as u32
 }
 
 #[cfg(test)]
@@ -121,6 +165,14 @@ mod tests {
             assert_eq!(port_clock_khz(&pll, 24_000), khz);
         }
         assert_eq!(for_display_port(0x10, 24_000), None);
+    }
+
+    #[test]
+    fn an_hdmi_oscillator_is_five_times_the_rate_times_its_dividers() {
+        let pll = for_hdmi(594_000, 24_000).unwrap();
+        assert_eq!(pll.pdiv * pll.kdiv, 3);
+        assert_eq!(port_clock_khz(&pll, 24_000) / 5, 594_000);
+        assert!(for_hdmi(148_500, 24_000).is_some());
     }
 
     #[test]

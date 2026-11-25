@@ -175,7 +175,7 @@ and is not listed per item.
 - [x] Wi-Fi: power saving (the firmware's power tables and PS-Poll/U-APSD off by default), and HT/VHT/HE rates and widths in the link setup (D277, D279) — code written, unbuilt, D784
 - [x] Wi-Fi: PMKSA caching, answering SA Query, and BIP on group management frames (D285) — code written, unbuilt, D785
 - [x] Wi-Fi: 6 GHz channels and SAE hash-to-element (D275, D285) — code written, unbuilt, D786
-- [ ] Intel HDMI: HDMI 2.0 scrambling above 340 MHz, AVI and audio infoframes, deep colour, HDMI on display 11 and later (D466)
+- [x] Intel HDMI: HDMI 2.0 scrambling above 340 MHz, AVI and audio infoframes, deep colour, HDMI on display 11 and later (D466) — code written, unbuilt, D787
 - [ ] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465)
 - [x] ACPI `_PRT` legacy PCI interrupt routing through the AML interpreter (D413) — code written, unbuilt, D621
 - [x] INTx through `interrupt-map` on device-tree PCI hosts, with level lines masked on arrival on aarch64 (D413) — code written, unbuilt, D623
