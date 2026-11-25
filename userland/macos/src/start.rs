@@ -241,7 +241,13 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     let uses_appkit = program.libraries().any(|library| {
         matches!(
             Library::provided(library.path),
-            Some(Library::AppKit | Library::UiKit | Library::Cocoa | Library::CoreGraphics)
+            Some(
+                Library::AppKit
+                    | Library::UiKit
+                    | Library::Cocoa
+                    | Library::Carbon
+                    | Library::CoreGraphics
+            )
         )
     });
     if uses_appkit && !appkit::set_up() {
@@ -866,6 +872,7 @@ enum Library {
     AppKit,
     UiKit,
     Cocoa,
+    Carbon,
     SwiftCore,
     SwiftCoreFoundation,
     SwiftCoreGraphics,
@@ -885,6 +892,7 @@ impl Library {
             macho::APPKIT => Self::AppKit,
             macho::UIKIT => Self::UiKit,
             macho::COCOA => Self::Cocoa,
+            macho::CARBON => Self::Carbon,
             macho::LIBSWIFT_CORE => Self::SwiftCore,
             macho::LIBSWIFT_CORE_FOUNDATION => Self::SwiftCoreFoundation,
             macho::LIBSWIFT_CORE_GRAPHICS => Self::SwiftCoreGraphics,
@@ -909,6 +917,7 @@ impl Library {
             Self::AppKit => b"AppKit",
             Self::UiKit => b"UIKit",
             Self::Cocoa => b"Cocoa",
+            Self::Carbon => b"Carbon",
             Self::SwiftCore => b"libswiftCore",
             Self::SwiftCoreFoundation => b"libswiftCoreFoundation",
             Self::SwiftCoreGraphics => b"libswiftCoreGraphics",

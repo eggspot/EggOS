@@ -15,6 +15,7 @@ mod about;
 mod alert;
 mod application;
 mod attributed_string;
+mod carbon;
 mod control;
 mod controllers;
 mod core_graphics;
@@ -370,6 +371,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         _ => application::resolve(name)
             .or_else(|| drawing::resolve(name))
             .or_else(|| image::resolve(name))
+            .or_else(|| carbon::resolve(name))
             .or_else(|| core_graphics::resolve(name)),
     }
 }

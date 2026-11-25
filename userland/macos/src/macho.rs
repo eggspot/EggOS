@@ -32,6 +32,7 @@ pub const UIKIT: &[u8] = b"/System/Library/Frameworks/UIKit.framework/UIKit";
 pub const CORE_GRAPHICS: &[u8] =
     b"/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics";
 pub const COCOA: &[u8] = b"/System/Library/Frameworks/Cocoa.framework/Versions/A/Cocoa";
+pub const CARBON: &[u8] = b"/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon";
 pub const LIBSWIFT_CORE: &[u8] = b"/usr/lib/swift/libswiftCore.dylib";
 pub const LIBSWIFT_CORE_FOUNDATION: &[u8] = b"/usr/lib/swift/libswiftCoreFoundation.dylib";
 pub const LIBSWIFT_CORE_GRAPHICS: &[u8] = b"/usr/lib/swift/libswiftCoreGraphics.dylib";

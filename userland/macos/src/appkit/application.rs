@@ -86,6 +86,12 @@ pub fn window_shown(window: Id) {
         WINDOWS.with(|windows| windows.push(window));
     }
     menu::send_to(window);
+    super::carbon::window_shown(window::server_id(window));
+}
+
+/// A shown window's server id, for what the server ties to some window of the app.
+pub fn shown_server_window() -> Option<u32> {
+    any_shown().map(window::server_id)
 }
 
 /// The server took the keyboard from `window`.
@@ -118,6 +124,7 @@ fn any_shown() -> Option<Id> {
 /// ends unless its delegate's `applicationShouldTerminateAfterLastWindowClosed:` answers NO (an
 /// app without it ends too: with no window it would have no menu to quit from).
 pub fn window_closed(window: Id, closing: bool) {
+    super::carbon::window_closed(window::server_id(window));
     if key_window() == window {
         let next = any_shown().unwrap_or(core::ptr::null_mut());
         KEY_WINDOW.store(next as usize, Ordering::Release);
@@ -265,6 +272,9 @@ fn mouse(window: Id, event_kind: usize, x: i32, y: i32, button: isize, delta: f6
 
 /// Handles one of the window server's records outside a modal alert.
 pub fn dispatch(record: &[u8; RECORD_SIZE]) {
+    if super::carbon::hot_key_record(record) {
+        return;
+    }
     if let Some(query) = Query::from_record(record) {
         elements::answer(&query);
         return;

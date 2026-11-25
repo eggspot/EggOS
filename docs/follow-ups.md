@@ -249,7 +249,7 @@ and is not listed per item.
 - [x] macOS: storyboard segues (`performSegueWithIdentifier:sender:`, `prepareForSegue:`), split and tab view controllers, child view controllers (D406) — code written, unbuilt, D749, D751
 - [x] macOS: `NSDocument` with its window controllers (D406) — code written, unbuilt, D750
 - [x] macOS: utility-panel and floating-panel window levels (D407) — code written, unbuilt, D753
-- [ ] macOS: `RegisterEventHotKey` (Carbon hot keys through the window server's global hot keys) (D398)
+- [x] macOS: `RegisterEventHotKey` (Carbon hot keys through the window server's global hot keys) (D398) — code written, unbuilt, D754
 - [ ] macOS: ambiguous and non-public bases in `__dynamic_cast` (D408; `bad_cast`/`bad_typeid` thrown code written, unbuilt: D700)
 - [ ] macOS: `dlopen` of an app's own library at run time; thread-local variables in a carried library (D409)
 - [ ] Android: split APKs and app bundles; the manifest's label and icon as the app's name and icon (D470)

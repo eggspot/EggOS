@@ -203,6 +203,32 @@ pub fn characters_ignoring_modifiers(code: u16, character: u32, flags: u64) -> O
     (character != 0).then_some(character)
 }
 
+/// The Linux key code of the Mac virtual key code `mac`, if a key has it.
+pub fn linux_code(mac: u16) -> Option<u16> {
+    (1..LAST_LINUX_KEY).find(|&code| key_code(code) == Some(mac))
+}
+
+const LAST_LINUX_KEY: u16 = 256;
+
+/// Carbon's modifier bits (`cmdKey`, `shiftKey`, `optionKey`, `controlKey`) as the window
+/// server's: Command is Super, Option is Alt.
+pub fn server_modifiers_of_carbon(carbon: u32) -> u32 {
+    [
+        (CARBON_COMMAND, SERVER_SUPER),
+        (CARBON_SHIFT, SERVER_SHIFT),
+        (CARBON_OPTION, SERVER_ALT),
+        (CARBON_CONTROL, SERVER_CONTROL),
+    ]
+    .iter()
+    .filter(|(bit, _)| carbon & bit != 0)
+    .fold(0, |bits, (_, server)| bits | server)
+}
+
+const CARBON_COMMAND: u32 = 0x0100;
+const CARBON_SHIFT: u32 = 0x0200;
+const CARBON_OPTION: u32 = 0x0800;
+const CARBON_CONTROL: u32 = 0x1000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +281,14 @@ mod tests {
             characters_ignoring_modifiers(2, u32::from(b'1'), 0),
             Some(u32::from(b'1'))
         );
+    }
+
+    #[test]
+    fn carbon_hot_keys_map_back_to_server_keys() {
+        assert_eq!(linux_code(0), Some(30));
+        assert_eq!(key_code(linux_code(49).unwrap()), Some(49));
+        assert_eq!(linux_code(0x7f), None);
+        assert_eq!(server_modifiers_of_carbon(0x0100 | 0x0800), 8 | 4);
+        assert_eq!(server_modifiers_of_carbon(0x1000 | 0x0200), 2 | 1);
     }
 }

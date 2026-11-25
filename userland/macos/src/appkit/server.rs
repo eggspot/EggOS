@@ -30,6 +30,8 @@ const SET_CLIPBOARD: usize = 0x4010_7720;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const RAISE_WINDOW: usize = 0x4004_7736;
 const SET_LEVEL: usize = 0x4008_7745;
+const REGISTER_HOT_KEY: usize = 0x4010_7739;
+const HOT_KEY_REMOVE: u32 = 0x100;
 const TITLE_CAPACITY: usize = 64;
 const MENU_REQUEST_SIZE: usize = 256;
 const PIXEL_BYTES: usize = 4;
@@ -251,6 +253,21 @@ pub fn set_level(window: u32, level: u32) {
     put(&mut argument, 0, window);
     put(&mut argument, 4, level);
     let _ = request(SET_LEVEL, &mut argument);
+}
+
+/// Makes Linux key `code` with the server's `modifiers` hot key `id` of `window` for the
+/// whole desktop, or gives it up with `remove` (D398, D754).
+pub fn register_hot_key(window: u32, id: u32, code: u16, modifiers: u32, remove: bool) {
+    let mut argument = [0u8; 16];
+    put(&mut argument, 0, window);
+    put(&mut argument, 4, id);
+    put(&mut argument, 8, u32::from(code));
+    let flag = match remove {
+        true => HOT_KEY_REMOVE,
+        false => 0,
+    };
+    put(&mut argument, 12, modifiers | flag);
+    let _ = request(REGISTER_HOT_KEY, &mut argument);
 }
 
 /// A rectangle on the screen: x, y, width and height.
