@@ -16,6 +16,7 @@ pub mod enterprise;
 pub mod frames;
 pub mod handshake;
 pub mod kdf;
+pub mod management;
 pub mod mschapv2;
 pub mod peap;
 pub mod protection;

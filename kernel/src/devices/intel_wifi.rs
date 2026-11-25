@@ -37,6 +37,7 @@ use eggos_wifi::enterprise::{self, Credentials, Method};
 use eggos_wifi::tunnel::Exchange;
 use eggos_wifi::frames::{self as wifi_frames, Network, Security};
 use eggos_wifi::handshake::{self, Akm, Keys, Supplicant};
+use eggos_wifi::management;
 use eggos_wifi::sae::{self, Sae};
 
 const NETWORK_CONTROLLER: u8 = 0x02;
@@ -70,6 +71,42 @@ const ROAM_MARGIN_DBM: i8 = 10;
 const ROAM_WEAK_DBM: i8 = -70;
 
 static CONNECTED: SpinLock<Option<alloc::string::String>> = SpinLock::new(None);
+static PMKSA: SpinLock<Vec<CachedPmksa>> = SpinLock::new(Vec::new());
+const PMKSA_LIFETIME_MS: u64 = 12 * 60 * 60 * 1000;
+const MOST_CACHED: usize = 8;
+
+#[derive(Clone)]
+struct CachedPmksa {
+    bssid: [u8; 6],
+    akm: Akm,
+    pmk: [u8; handshake::PMK_BYTES],
+    pmkid: [u8; management::PMKID_BYTES],
+    until_ms: u64,
+}
+
+fn cached_pmksa(bssid: [u8; 6], akm: Akm, now_ms: u64) -> Option<CachedPmksa> {
+    let mut cache = PMKSA.lock();
+    cache.retain(|entry| entry.until_ms > now_ms);
+    cache
+        .iter()
+        .find(|entry| entry.bssid == bssid && entry.akm == akm)
+        .cloned()
+}
+
+fn cache_pmksa(entry: CachedPmksa) {
+    let mut cache = PMKSA.lock();
+    cache.retain(|old| !(old.bssid == entry.bssid && old.akm == entry.akm));
+    if cache.len() >= MOST_CACHED {
+        cache.remove(0);
+    }
+    cache.push(entry);
+}
+
+fn forget_pmksa(bssid: [u8; 6], akm: Akm) {
+    PMKSA
+        .lock()
+        .retain(|entry| !(entry.bssid == bssid && entry.akm == akm));
+}
 static JOINING: SpinLock<Option<alloc::string::String>> = SpinLock::new(None);
 static FAILURE: SpinLock<Option<Failure>> = SpinLock::new(None);
 static SIGNAL: AtomicI32 = AtomicI32::new(0);
@@ -194,6 +231,7 @@ struct Joined {
     last_group: u64,
     management_protected: bool,
     last_management: u64,
+    last_group_management: u64,
     supplicant: Option<Supplicant>,
 }
 
@@ -231,6 +269,19 @@ impl Joined {
         let Some(keys) = &self.keys else {
             return false;
         };
+        if frame.get(4..10) == Some(&[0xff; 6][..]) && client::ended_by(frame, own, bssid).is_some()
+        {
+            let Some((igtk, key_id)) = keys.igtk else {
+                return false;
+            };
+            return match management::bip_check(frame, &igtk, key_id, self.last_group_management) {
+                Some(ipn) => {
+                    self.last_group_management = ipn;
+                    true
+                }
+                None => false,
+            };
+        }
         if !client::is_protected_ending(frame)
             || frame.get(4..10) != Some(&own[..])
             || frame.get(10..16) != Some(&bssid[..])
@@ -247,6 +298,43 @@ impl Joined {
         }
         self.last_management = number;
         true
+    }
+
+    /// The protected SA Query response to `frame` when it is the access point's protected SA
+    /// Query request to this station (D785).
+    fn answer_sa_query(&mut self, frame: &[u8]) -> Option<Vec<u8>> {
+        let (own, bssid) = (self.link.address(), self.link.target().bssid);
+        if !self.management_protected
+            || !management::is_action(frame)
+            || frame.get(1).is_none_or(|flags| flags & 0x40 == 0)
+            || frame.get(4..10) != Some(&own[..])
+            || frame.get(10..16) != Some(&bssid[..])
+        {
+            return None;
+        }
+        let tk = self.keys.as_ref()?.tk;
+        let mut body = [0u8; 64];
+        let (length, number) = eggos_wifi::protection::decrypt(&tk, frame, &mut body).ok()?;
+        if number <= self.last_management && self.last_management != 0 {
+            return None;
+        }
+        self.last_management = number;
+        let id = management::sa_query_request(&body[..length])?;
+        let (header, payload) = management::sa_query_response(own, bssid, id);
+        self.packet_number += 1;
+        let room = header.len() + eggos_wifi::protection::CCMP_HEADER_BYTES + payload.len() + 8;
+        let mut out = alloc::vec![0u8; room];
+        let written = eggos_wifi::protection::encrypt(
+            &tk,
+            &header,
+            self.packet_number,
+            0,
+            &payload,
+            &mut out,
+        )
+        .ok()?;
+        out.truncate(written);
+        Some(out)
     }
 
     fn received(&mut self, frame: &[u8]) -> Option<Received> {
@@ -506,6 +594,7 @@ fn enterprise_failure(failure: enterprise::Failure) -> Failure {
 fn sign_in<P: Platform>(
     exchange: &mut LinkExchange<'_, P>,
     settings: &EnterpriseSettings,
+    first: Option<Vec<u8>>,
 ) -> Result<enterprise::Authenticated, Failure> {
     let ca = read_small(&settings.ca_path, LARGEST_PEM).ok_or(UNREADABLE_FILES)?;
     let (chain, mut key) = match settings.certificate_method {
@@ -544,19 +633,6 @@ fn sign_in<P: Platform>(
         outer_identity,
         server_domain: &settings.domain,
     };
-    let first = wait_frame::<P, _>(
-        exchange.transport,
-        Awaited {
-            own: exchange.own,
-            bssid: exchange.bssid,
-            ax210: exchange.ax210,
-            milliseconds: FIRST_EAP_TIMEOUT_MS,
-            timed_out: NO_ANSWER,
-            sent_away: REFUSED,
-        },
-        |frame| eapol_from(frame, exchange.bssid),
-    )
-    .ok();
     // SAFETY: `Buffers` is three byte arrays, so all-zero bytes are a valid value.
     let mut buffers = unsafe { alloc::boxed::Box::<Buffers>::new_zeroed().assume_init() };
     let mut random = |out: &mut [u8]| crate::random::fill::<P>(out);
@@ -719,9 +795,17 @@ fn connect<P: Platform>(
         &mut Pauses::<P>::within(INIT_TIMEOUT_MS),
     )
     .map_err(joining_failed)?;
+    let cached = akm
+        .filter(|akm| *akm != Akm::Psk)
+        .and_then(|akm| cached_pmksa(bssid, akm, crate::net::now_ms::<P>()));
+    let rsn_sent: Option<Vec<u8>> = match (&cached, rsn) {
+        (Some(entry), Some(rsn)) => management::rsn_with_pmkid(rsn, &entry.pmkid),
+        (_, rsn) => rsn.map(<[u8]>::to_vec),
+    };
     let mut attempt = || -> Result<(Option<Keys>, Option<Supplicant>), Failure> {
         let mut sae_pmk = None;
-        if akm == Some(Akm::Sae) {
+        let mut fresh_pmkid = None;
+        if akm == Some(Akm::Sae) && cached.is_none() {
             let mut random = |out: &mut [u8]| crate::random::fill::<P>(out);
             let mut exchange = Sae::new(passphrase, own, bssid, &mut random)
                 .map_err(|_| Failure::adapter("SAE could not start"))?;
@@ -768,10 +852,11 @@ fn connect<P: Platform>(
             if status != 0 {
                 return Err(WRONG_PASSPHRASE);
             }
-            let (pmk, _) = exchange
+            let (pmk, pmkid) = exchange
                 .receive_confirm(&body)
                 .map_err(|_| WRONG_PASSPHRASE)?;
             sae_pmk = Some(pmk);
+            fresh_pmkid = Some(pmkid);
         } else {
             link.send(transport, &client::authentication_request(own, bssid))
                 .map_err(joining_failed)?;
@@ -784,8 +869,13 @@ fn connect<P: Platform>(
                 return Err(REFUSED);
             }
         }
-        let request =
-            client::association_request_offering(own, bssid, network.ssid(), rsn, &offered);
+        let request = client::association_request_offering(
+            own,
+            bssid,
+            network.ssid(),
+            rsn_sent.as_deref(),
+            &offered,
+        );
         link.send(transport, &request).map_err(joining_failed)?;
         let (status, association) = wait_frame::<P, _>(
             transport,
@@ -793,6 +883,9 @@ fn connect<P: Platform>(
             |frame| client::association_answer(frame, bssid),
         )?;
         if status != 0 {
+            if let (Some(_), Some(akm)) = (&cached, akm) {
+                forget_pmksa(bssid, akm);
+            }
             return Err(REFUSED);
         }
         station::associated(
@@ -807,28 +900,52 @@ fn connect<P: Platform>(
             return Ok((None, None));
         };
         let mut pending_key_frame = None;
-        let pmk = match (sae_pmk, &wanted.enterprise) {
-            (Some(pmk), _) => pmk,
-            (None, Some(settings)) => {
+        let pmk = match (sae_pmk, &wanted.enterprise, &cached) {
+            (Some(pmk), _, _) => pmk,
+            (None, None, Some(entry)) => entry.pmk,
+            (None, Some(settings), _) => {
                 set_status("signing-in");
-                let mut exchange = LinkExchange::<P> {
-                    transport: &mut *transport,
-                    link: &mut link,
-                    own,
-                    bssid,
-                    ax210,
-                    platform: core::marker::PhantomData,
-                };
-                let authenticated = sign_in(&mut exchange, settings)?;
-                pending_key_frame = authenticated.key_frame;
-                authenticated.pmk
+                let first = wait_frame::<P, _>(
+                    transport,
+                    answer(NO_ANSWER, REFUSED, FIRST_EAP_TIMEOUT_MS),
+                    |frame| eapol_from(frame, bssid),
+                )
+                .ok();
+                let is_key = first
+                    .as_deref()
+                    .is_some_and(|frame| handshake::key_frame(frame).is_some());
+                match (&cached, is_key) {
+                    (Some(entry), true) => {
+                        pending_key_frame = first;
+                        entry.pmk
+                    }
+                    _ => {
+                        let mut exchange = LinkExchange::<P> {
+                            transport: &mut *transport,
+                            link: &mut link,
+                            own,
+                            bssid,
+                            ax210,
+                            platform: core::marker::PhantomData,
+                        };
+                        let authenticated = sign_in(&mut exchange, settings, first)?;
+                        pending_key_frame = authenticated.key_frame;
+                        fresh_pmkid = Some(management::pmkid(akm, &authenticated.pmk, bssid, own));
+                        authenticated.pmk
+                    }
+                }
             }
-            (None, None) => handshake::pmk_from_passphrase(passphrase, network.ssid())
+            (None, None, _) => handshake::pmk_from_passphrase(passphrase, network.ssid())
                 .ok_or(WRONG_PASSPHRASE)?,
         };
         let mut nonce = [0u8; handshake::NONCE_BYTES];
         crate::random::fill::<P>(&mut nonce);
         let mut supplicant = Supplicant::for_akm(akm, pmk, own, bssid, nonce);
+        if cached.is_some()
+            && let Some(sent) = rsn_sent.clone()
+        {
+            supplicant = supplicant.sending_rsn(sent);
+        }
         let mut answered = false;
         let mismatch = match wanted.enterprise {
             Some(_) => REFUSED,
@@ -846,7 +963,12 @@ fn connect<P: Platform>(
             };
             let reply = match supplicant.receive(&message) {
                 Ok(reply) => reply,
-                Err(handshake::HandshakeError::BadMic) => return Err(mismatch),
+                Err(handshake::HandshakeError::BadMic) => {
+                    if cached.is_some() {
+                        forget_pmksa(bssid, akm);
+                    }
+                    return Err(mismatch);
+                }
                 Err(_) if answered => return Err(mismatch),
                 Err(_) => continue,
             };
@@ -860,6 +982,15 @@ fn connect<P: Platform>(
             link.send(transport, &frame).map_err(joining_failed)?;
             answered = true;
             if let Some(keys) = reply.keys {
+                if let Some(pmkid) = fresh_pmkid {
+                    cache_pmksa(CachedPmksa {
+                        bssid,
+                        akm,
+                        pmk,
+                        pmkid,
+                        until_ms: crate::net::now_ms::<P>() + PMKSA_LIFETIME_MS,
+                    });
+                }
                 return Ok((Some(keys), Some(supplicant)));
             }
         }
@@ -1198,6 +1329,7 @@ impl Station {
             last_group: 0,
             management_protected: joined.management_protected,
             last_management: 0,
+            last_group_management: 0,
             supplicant: joined.supplicant,
         });
         if !self.attached {
@@ -1240,6 +1372,10 @@ impl Station {
             };
             if joined.ended(&heard.frame) {
                 return Err(DROPPED);
+            }
+            if let Some(answer) = joined.answer_sa_query(&heard.frame) {
+                let _ = joined.link.send(&self.transport, &answer);
+                continue;
             }
             match joined.received(&heard.frame) {
                 Some(Received::Ethernet(ethernet)) => {

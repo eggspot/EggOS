@@ -338,6 +338,7 @@ pub struct Supplicant {
     s_nonce: [u8; NONCE_BYTES],
     ptk: Option<Ptk>,
     replay_counter: Option<u64>,
+    rsn: Option<alloc::vec::Vec<u8>>,
 }
 
 /// What the supplicant answers a frame with.
@@ -376,7 +377,15 @@ impl Supplicant {
             s_nonce,
             ptk: None,
             replay_counter: None,
+            rsn: None,
         }
+    }
+
+    /// The same handshake sending `rsn` in message 2, the RSN element the association request
+    /// carried when it differs from the AKM's own (a PMKID listed, D785).
+    pub fn sending_rsn(mut self, rsn: alloc::vec::Vec<u8>) -> Self {
+        self.rsn = Some(rsn);
+        self
     }
 
     fn check_replay(&mut self, counter: u64) -> Result<(), HandshakeError> {
@@ -417,7 +426,7 @@ impl Supplicant {
                 info,
                 key.replay_counter,
                 &self.s_nonce,
-                self.akm.rsn(),
+                self.rsn.as_deref().unwrap_or(self.akm.rsn()),
                 Some(&ptk.kck),
             );
             self.ptk = Some(ptk);
