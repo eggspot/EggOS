@@ -29,6 +29,7 @@ const GET_PLACEMENT: usize = 0xc014_771c;
 const SET_CLIPBOARD: usize = 0x4010_7720;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const RAISE_WINDOW: usize = 0x4004_7736;
+const SET_LEVEL: usize = 0x4008_7745;
 const TITLE_CAPACITY: usize = 64;
 const MENU_REQUEST_SIZE: usize = 256;
 const PIXEL_BYTES: usize = 4;
@@ -241,6 +242,15 @@ pub fn raise(window: u32) -> bool {
     let mut argument = [0u8; 4];
     put(&mut argument, 0, window);
     request(RAISE_WINDOW, &mut argument).is_ok()
+}
+
+/// Keeps the caller's own `window` at stacking `level` (0 normal, 1 floating above the
+/// normal windows; D753).
+pub fn set_level(window: u32, level: u32) {
+    let mut argument = [0u8; 8];
+    put(&mut argument, 0, window);
+    put(&mut argument, 4, level);
+    let _ = request(SET_LEVEL, &mut argument);
 }
 
 /// A rectangle on the screen: x, y, width and height.

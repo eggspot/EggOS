@@ -1063,3 +1063,31 @@ fn a_key_typed_through_a_layout_carries_its_character_to_the_focused_window() {
         (window, 18, 1, modifier::ALT_GRAPH, 0x20ac)
     );
 }
+
+#[test]
+fn a_floating_window_stays_above_windows_raised_after_it() {
+    let mut desktop = Desktop::new(1280, 800).unwrap();
+    let floating = shown(&mut desktop, CLIENT, 200, 150);
+    let normal = shown(&mut desktop, CLIENT, 400, 300);
+    assert_eq!(desktop.stacking().last(), Some(normal));
+    desktop
+        .set_window_level(CLIENT, u32::from(floating), 1, &mut Damage::new())
+        .unwrap();
+    assert_eq!(desktop.stacking().last(), Some(floating));
+    desktop
+        .raise_window(
+            CLIENT,
+            u32::from(normal),
+            &mut Damage::new(),
+            &mut Recorded::default(),
+        )
+        .unwrap();
+    assert_eq!(desktop.stacking().last(), Some(floating));
+    let later = shown(&mut desktop, CLIENT, 300, 200);
+    assert_eq!(desktop.stacking().last(), Some(floating));
+    assert!(desktop.stacking().any(|id| id == later));
+    assert_eq!(
+        desktop.set_window_level(OTHER, u32::from(floating), 0, &mut Damage::new()),
+        Err(WindowError::NotAllowed)
+    );
+}

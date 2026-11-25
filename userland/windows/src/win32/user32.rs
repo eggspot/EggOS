@@ -352,6 +352,9 @@ pub(super) unsafe extern "efiapi" fn create_window_ex_w(
     };
     let mut title_bytes = [0u8; TITLE_BYTES];
     let _ = device.set_title(buffer.window, title(window_name, &mut title_bytes));
+    if ex_style & super::placement::WS_EX_TOPMOST != 0 {
+        let _ = device.set_level(buffer.window, 1);
+    }
     if x != CW_USE_DEFAULT {
         let _ = device.set_position(
             buffer.window,

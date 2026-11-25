@@ -103,6 +103,34 @@ impl Desktop {
 }
 
 impl Desktop {
+    /// `SET_LEVEL` (D753): client `client`'s own window `id` kept at stacking `level` (0
+    /// normal, 1 floating, higher values clamped to [`super::MOST_LEVEL`]).
+    pub fn set_window_level(
+        &mut self,
+        client: u16,
+        id: u32,
+        level: u32,
+        damage: &mut Damage,
+    ) -> Result<(), WindowError> {
+        let id = super::WindowId::try_from(id).map_err(|_| WindowError::NoSuchWindow)?;
+        let slot = self.find(id).ok_or(WindowError::NoSuchWindow)?;
+        if self.window_at(slot).client != client {
+            return Err(WindowError::NotAllowed);
+        }
+        let level = level.min(u32::from(super::MOST_LEVEL)) as u8;
+        if self.window_at(slot).level == level {
+            return Ok(());
+        }
+        self.window_mut(slot).level = level;
+        self.keep_levels();
+        if self.is_visible(slot) {
+            damage.add(self.window_at(slot).with_shadow());
+        }
+        Ok(())
+    }
+}
+
+impl Desktop {
     /// The time on the monotonic clock, in milliseconds, that the next events happen at:
     /// double-clicks and close requests are timed by it.
     pub fn set_time(&mut self, now_ms: u32) {

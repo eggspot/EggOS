@@ -279,6 +279,8 @@ pub mod colour {
     }
 }
 
+/// The highest stacking level a window can ask for (`SET_LEVEL`, D753): 1, floating.
+pub const MOST_LEVEL: u8 = 1;
 /// Height of the top bar, the 1 px edge line included.
 pub const BAR_HEIGHT: u32 = 28;
 /// Height of a window's title bar.
@@ -1604,6 +1606,7 @@ impl Desktop {
         }
         self.stack[self.stack_length] = slot as u8;
         self.stack_length += 1;
+        self.keep_levels();
         if self.window_at(slot).role == Role::Normal {
             self.damage_window_list(damage);
             self.app_window_shown(slot);
@@ -1753,12 +1756,35 @@ impl Desktop {
                 index += 1;
             }
         }
+        self.keep_levels();
         if (owner != slot || top != Some(slot)) && self.is_visible(slot) {
             damage.add(self.window_at(slot).with_shadow());
             for &dialog in &self.stack[self.stack_length - moved..self.stack_length] {
                 let dialog = usize::from(dialog);
                 if self.is_visible(dialog) {
                     damage.add(self.window_at(dialog).with_shadow());
+                }
+            }
+        }
+    }
+
+    fn level_of(&self, slot: usize) -> u8 {
+        self.window_at(self.owner_window(slot)).level
+    }
+
+    /// Moves the windows of each level above every window of a lower level, keeping their
+    /// order within a level (a dialog takes its owner's level).
+    pub(super) fn keep_levels(&mut self) {
+        for level in 1..=MOST_LEVEL {
+            let mut index = 0;
+            let mut moved = 0;
+            while index + moved < self.stack_length {
+                let candidate = usize::from(self.stack[index]);
+                if self.level_of(candidate) >= level {
+                    to_top(&mut self.stack, self.stack_length, candidate);
+                    moved += 1;
+                } else {
+                    index += 1;
                 }
             }
         }

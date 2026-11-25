@@ -18,6 +18,7 @@ use eggos_macos_gui::keys::modifier;
 use eggos_toolkit::geometry::Rect;
 use eggos_toolkit::input::key;
 
+const NORMAL_LEVEL: isize = 0;
 const NS_WINDOW_STYLE_MASK_TITLED: u64 = 1;
 const NS_WINDOW_STYLE_MASK_CLOSABLE: u64 = 1 << 1;
 const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: u64 = 1 << 2;
@@ -47,6 +48,7 @@ pub struct WindowFields {
     pub key: bool,
     pub dirty: bool,
     pub pointer_shape: u32,
+    pub level: isize,
 }
 
 /// The fields of `window`.
@@ -233,6 +235,9 @@ pub fn show(window: Id) {
         };
         set_content_frame(window);
         title_text(window, |title| server::set_title(buffer.window, title));
+        if fields(window).level != NORMAL_LEVEL {
+            server::set_level(buffer.window, server_level(fields(window).level));
+        }
         application::window_shown(window);
     }
     fields(window).shown = true;
@@ -686,6 +691,27 @@ extern "C" fn nothing(_: Id, _: Sel) {}
 
 extern "C" fn ignore_word(_: Id, _: Sel, _: usize) {}
 
+fn server_level(level: isize) -> u32 {
+    u32::from(level > NORMAL_LEVEL)
+}
+
+extern "C" fn level(this: Id, _: Sel) -> isize {
+    fields(this).level
+}
+
+/// Sets `window`'s `NSWindowLevel`; any level above normal floats over the normal windows.
+pub fn set_level(window: Id, chosen: isize) {
+    fields(window).level = chosen;
+    let server_window = fields(window).buffer.window;
+    if server_window != 0 {
+        server::set_level(server_window, server_level(chosen));
+    }
+}
+
+extern "C" fn set_level_method(this: Id, _: Sel, chosen: isize) {
+    set_level(this, chosen);
+}
+
 extern "C" fn nil_for(_: Id, _: Sel, _: usize) -> Id {
     core::ptr::null_mut()
 }
@@ -730,7 +756,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "update" => nothing,
         "setReleasedWhenClosed:" => ignore_word,
         "setAcceptsMouseMovedEvents:" => ignore_word,
-        "setLevel:" => ignore_word,
+        "setLevel:" => set_level_method,
+        "level" => level,
         "setOpaque:" => ignore_word,
         "setHasShadow:" => ignore_word,
         "setMovableByWindowBackground:" => ignore_word,

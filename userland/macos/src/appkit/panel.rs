@@ -12,6 +12,10 @@ use crate::objc::{Runtime, methods};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use eggos_macos_gui::geometry::Frame;
 
+const NORMAL_LEVEL: isize = 0;
+const FLOATING_LEVEL: isize = 3;
+const UTILITY_WINDOW: usize = 1 << 4;
+
 static STAND_IN: AtomicUsize = AtomicUsize::new(0);
 
 #[repr(C)]
@@ -34,6 +38,32 @@ extern "C" fn floating(this: Id, _: Sel) -> u8 {
 
 extern "C" fn set_floating(this: Id, _: Sel, value: u8) {
     fields(this).floating = value != 0;
+    let chosen = match value != 0 {
+        true => FLOATING_LEVEL,
+        false => NORMAL_LEVEL,
+    };
+    window::set_level(this, chosen);
+}
+
+extern "C" fn init_with_content_rect(
+    this: Id,
+    sel: Sel,
+    rect: Frame,
+    style: usize,
+    backing: usize,
+    defer: u8,
+) -> Id {
+    let Some(found) = crate::objc::class::lookup(class_pointer(&NSWINDOW), sel) else {
+        return this;
+    };
+    // SAFETY: NSWindow's own initializer, taking exactly these arguments.
+    let initialise: extern "C" fn(Id, Sel, Frame, usize, usize, u8) -> Id =
+        unsafe { core::mem::transmute(found) };
+    let made = initialise(this, sel, rect, style, backing, defer);
+    if !made.is_null() && style & UTILITY_WINDOW != 0 {
+        set_floating(made, sel, 1);
+    }
+    made
 }
 
 extern "C" fn key_only_if_needed(this: Id, _: Sel) -> u8 {
@@ -117,6 +147,7 @@ extern "C" fn nothing_view(_: Id, _: Sel) -> Id {
 
 pub fn define(runtime: &mut Runtime) -> bool {
     let panel = methods![
+        "initWithContentRect:styleMask:backing:defer:" => init_with_content_rect,
         "isFloatingPanel" => floating,
         "setFloatingPanel:" => set_floating,
         "becomesKeyOnlyIfNeeded" => key_only_if_needed,

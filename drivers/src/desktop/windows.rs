@@ -160,6 +160,8 @@ pub(super) struct Window {
     /// How many times [`flags::PERSON_VIEW_ONLY`] has turned on, so a capture that copied
     /// while it was off can tell it turned on meanwhile (D193).
     pub view_only_turns: u32,
+    /// Its stacking level: windows of a higher level stay above (0 normal, 1 floating; D753).
+    pub level: u8,
 }
 
 impl Window {
@@ -198,6 +200,7 @@ impl Window {
             hidden_by_show_desktop: false,
             desktop: 0,
             view_only_turns: 0,
+            level: 0,
         }
     }
 

@@ -108,6 +108,7 @@ pub mod size {
     pub const REPORT_ELEMENT: usize = 48;
     pub const READ_READER_LOG: usize = 24;
     pub const SAY: usize = 24;
+    pub const SET_LEVEL: usize = 8;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
@@ -212,6 +213,7 @@ pub mod request {
     pub const REPORT_ELEMENT: u32 = encode(WRITE, 66, size::REPORT_ELEMENT);
     pub const READ_READER_LOG: u32 = encode(READ | WRITE, 67, size::READ_READER_LOG);
     pub const SAY: u32 = encode(WRITE, 68, size::SAY);
+    pub const SET_LEVEL: u32 = encode(WRITE, 69, size::SET_LEVEL);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -864,6 +866,12 @@ pub enum Request {
     RaiseWindow {
         window: u32,
     },
+    /// The caller's own `window` kept at stacking `level`: windows of a higher level stay above
+    /// those of a lower one (0 normal, 1 floating; D753).
+    SetLevel {
+        window: u32,
+        level: u32,
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -1085,6 +1093,7 @@ impl Request {
             request::REPORT_ELEMENT => size::REPORT_ELEMENT,
             request::READ_READER_LOG => size::READ_READER_LOG,
             request::SAY => size::SAY,
+            request::SET_LEVEL => size::SET_LEVEL,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1229,6 +1238,10 @@ impl Request {
                 flags: at(12),
             },
             request::RAISE_WINDOW => Self::RaiseWindow { window: at(0) },
+            request::SET_LEVEL => Self::SetLevel {
+                window: at(0),
+                level: at(4),
+            },
             request::START_DRAG => {
                 let mut text = [0u8; CARRY_TEXT_BYTES];
                 text.copy_from_slice(

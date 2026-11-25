@@ -16,6 +16,10 @@ use eggos_windows_gui::surface::Rect;
 use eggos_windows_gui::text::{CELL_HEIGHT, CELL_WIDTH};
 
 const SWP_NOSIZE: u32 = 0x1;
+const SWP_NOZORDER: u32 = 0x4;
+const HWND_TOPMOST: usize = usize::MAX;
+const HWND_NOTOPMOST: usize = usize::MAX - 1;
+pub(super) const WS_EX_TOPMOST: u32 = 0x8;
 const SWP_NOMOVE: u32 = 0x2;
 const SWP_SHOWWINDOW: u32 = 0x40;
 const SWP_HIDEWINDOW: u32 = 0x80;
@@ -222,7 +226,7 @@ pub(super) fn place(
 #[allow(clippy::too_many_arguments)]
 pub(super) extern "efiapi" fn set_window_pos(
     window: usize,
-    _insert_after: usize,
+    insert_after: usize,
     x: i32,
     y: i32,
     width: i32,
@@ -234,6 +238,9 @@ pub(super) extern "efiapi" fn set_window_pos(
     if let Err(code) = place(window, position, size) {
         return fail(code, FALSE);
     }
+    if flags & SWP_NOZORDER == 0 && matches!(insert_after, HWND_TOPMOST | HWND_NOTOPMOST) {
+        set_topmost(window, insert_after == HWND_TOPMOST);
+    }
     if flags & SWP_SHOWWINDOW != 0 {
         show_window(window, SW_SHOW_NO_ACTIVATE);
     }
@@ -241,6 +248,20 @@ pub(super) extern "efiapi" fn set_window_pos(
         show_window(window, SW_HIDE);
     }
     TRUE
+}
+
+fn set_topmost(window: usize, topmost: bool) {
+    let found = try_with(|gui| {
+        let entry = gui.window_mut(window)?;
+        match topmost {
+            true => entry.ex_style |= WS_EX_TOPMOST,
+            false => entry.ex_style &= !WS_EX_TOPMOST,
+        }
+        Ok((entry.server, gui.device, entry.is_child()))
+    });
+    if let Ok((server, Some(device), false)) = found {
+        let _ = device.set_level(server, u32::from(topmost));
+    }
 }
 
 unsafe extern "efiapi" fn set_rect(

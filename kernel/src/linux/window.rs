@@ -694,6 +694,11 @@ pub fn ioctl<P: Platform>(
                 desktop.raise_window(client, window, damage, events)
             })?;
         }
+        Request::SetLevel { window, level } => {
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                desktop.set_window_level(client, window, level, damage)
+            })?;
+        }
         Request::ShowShellMenu {
             window,
             length,

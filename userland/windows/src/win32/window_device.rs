@@ -26,6 +26,7 @@ const SET_TRAY_ICON: usize = 0x4020_7733;
 const SET_LAYERED: usize = 0x4010_7734;
 const SHOW_SHELL_MENU: usize = 0x4010_7735;
 const REGISTER_HOT_KEY: usize = 0x4010_7739;
+const SET_LEVEL: usize = 0x4008_7745;
 const HOT_KEY_REMOVE: u32 = 0x100;
 const GET_CLIPBOARD: usize = 0xc020_7721;
 const TITLE_CAPACITY: usize = 64;
@@ -164,6 +165,15 @@ impl Device {
         put(&mut argument, 8, key);
         put(&mut argument, 12, flags);
         self.request(SET_LAYERED, &mut argument)
+    }
+
+    /// Keeps `window` above the normal windows (`level` 1, a topmost window) or among them
+    /// (0) (D753).
+    pub fn set_level(&self, window: u32, level: u32) -> Result<(), Errno> {
+        let mut argument = [0u8; 8];
+        put(&mut argument, 0, window);
+        put(&mut argument, 4, level);
+        self.request(SET_LEVEL, &mut argument)
     }
 
     /// Adds, changes or removes notification-area icon `icon` of `window` (D357): `flags` the
