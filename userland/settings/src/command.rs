@@ -50,6 +50,11 @@ type Message = Text<256>;
 pub trait Machine {
     /// The facts the settings report.
     fn facts(&mut self) -> Facts;
+    /// Sets the sound key `name` to `value` through the sound server (D775): `None` for a key
+    /// it does not hold, else whether the server took it, with the error's text.
+    fn set_sound(&mut self, _name: &str, _value: &str) -> Option<Result<(), &'static [u8]>> {
+        None
+    }
     /// Saves the desktop profile `index` to the settings file; the error's text on failure.
     fn save_profile(&mut self, index: usize) -> Result<(), &'static [u8]>;
     /// Saves `shell.form` as the setting `index` of [`crate::facts::FORM_SETTINGS`] (D303).
@@ -570,6 +575,22 @@ fn get(machine: &mut impl Machine, json: bool, name: &str) -> i32 {
 }
 
 fn set(machine: &mut impl Machine, name: &str, value: &str, dry_run: bool) -> i32 {
+    if name.starts_with("sound.") && !dry_run {
+        match machine.set_sound(name, value) {
+            Some(Ok(())) => return 0,
+            Some(Err(why)) => {
+                let mut message = Message::new();
+                let _ = write!(
+                    message,
+                    "{name}: {}",
+                    core::str::from_utf8(why).unwrap_or("refused")
+                );
+                report(machine, false, &errors::FAILED, message.as_str());
+                return FAILURE;
+            }
+            None => {}
+        }
+    }
     let policy = machine.policy();
     if policy.locked(name).is_some() {
         let mut message = Message::new();

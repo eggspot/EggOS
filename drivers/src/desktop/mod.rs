@@ -41,6 +41,7 @@ mod phone_sheets;
 mod pointer;
 mod popups;
 pub mod power;
+pub mod sound;
 pub mod protocol;
 mod responsiveness;
 pub mod screenshots;
@@ -374,6 +375,9 @@ pub enum Action {
     Type(AppId),
     /// Start the installer's window to uninstall the app ([`Catalogue::uninstall`]).
     Uninstall(AppId),
+    /// Start `sound volume <n>` or `sound mute on|off`: a volume key or the volume popup
+    /// (D775).
+    Sound(sound::SoundCommand),
     /// Save and apply a setting as `settings set <key> <value>` does: a tile of the phone's
     /// shade (D305).
     SetSetting {
@@ -544,6 +548,7 @@ pub struct Desktop {
     keyboard_layouts: keyboard_layout::KeyboardLayouts,
     network: network::NetworkIndicator,
     battery: power::BatteryIndicator,
+    sound: sound::SoundIndicator,
     tray: tray::Tray,
     shell_menu: Option<shell_menu::ShellMenu>,
     carried: Option<carry::Carry>,
@@ -646,6 +651,7 @@ impl Desktop {
             keyboard_layouts: keyboard_layout::KeyboardLayouts::default(),
             network: network::NetworkIndicator::default(),
             battery: power::BatteryIndicator::default(),
+            sound: sound::SoundIndicator::default(),
             tray: tray::Tray::default(),
             shell_menu: None,
             carried: None,
@@ -2274,6 +2280,9 @@ impl Desktop {
         if let Some(action) = self.battery_menu_press(code, x, y, damage, events) {
             return action;
         }
+        if let Some(action) = self.sound_popup_press(code, x, y, damage, events) {
+            return action;
+        }
         if let Some(action) = self.tray_overflow_press(code, x, y, damage, events) {
             return action;
         }
@@ -2601,6 +2610,12 @@ impl Desktop {
         if pressed && self.hot_key_pressed(code, modifiers, events) {
             return Action::None;
         }
+        if pressed
+            && let Some(action) =
+                self.volume_key(code, modifiers.contains(Modifiers::SHIFT), damage)
+        {
+            return action;
+        }
         if let Some(action) = self.end_app_key(code, pressed, damage, events) {
             return action;
         }
@@ -2657,6 +2672,10 @@ impl Desktop {
         }
         if self.battery_menu_open() {
             return self.battery_menu_key(code, pressed, damage, events);
+        }
+        if self.sound_popup_open() {
+            let shifted = modifiers.contains(Modifiers::SHIFT);
+            return self.sound_popup_key(code, pressed, shifted, damage, events);
         }
         if self.shell_menu_open() {
             return self.shell_menu_key(code, pressed, damage, events);
@@ -2850,7 +2869,9 @@ impl Desktop {
         }
         self.draw_keyboard_layout_menu(&mut canvas);
         self.draw_battery_menu(&mut canvas);
+        self.draw_sound_popup(&mut canvas);
         self.draw_countdown(&mut canvas);
+        self.draw_volume_bar(&mut canvas);
         self.draw_tray_overflow(&mut canvas);
         self.draw_shell_menu(&mut canvas);
         self.draw_popups(&mut canvas);
@@ -2896,6 +2917,8 @@ impl Desktop {
             || self.on_screen_keyboard_overlaps(clip)
             || self.keyboard_layout_menu_overlaps(clip)
             || self.battery_menu_overlaps(clip)
+            || self.sound_popup_overlaps(clip)
+            || self.volume_bar_overlaps(clip)
             || self.countdown_overlaps(clip)
             || self.tray_overflow_overlaps(clip)
             || self.shell_menu_overlaps(clip)

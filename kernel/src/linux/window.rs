@@ -699,6 +699,26 @@ pub fn ioctl<P: Platform>(
                 desktop.set_window_level(client, window, level, damage)
             })?;
         }
+        Request::SetSound {
+            present,
+            volume,
+            mute,
+            outputs,
+            name,
+        } => {
+            let name_length = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+            let shown = present.then_some(eggos_drivers::desktop::sound::SoundShown {
+                volume,
+                mute,
+                name,
+                name_length: name_length as u8,
+                outputs,
+            });
+            on_windows::<P, _>(|desktop, _, damage, _| {
+                desktop.set_sound(shown, damage);
+                Ok(())
+            })?;
+        }
         Request::ShowShellMenu {
             window,
             length,

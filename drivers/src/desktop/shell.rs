@@ -100,6 +100,8 @@ pub(super) enum PanelItem {
     Network,
     /// The battery indicator, while a battery is reported (D599).
     Battery,
+    /// The volume indicator, while the sound server says an output exists (D775).
+    Sound,
     /// A Windows program's notification-area icon, by its place in the tray (D357).
     Tray(u8),
     /// The tray's overflow button, past four icons (D357).
@@ -456,6 +458,9 @@ impl Desktop {
         if let Some(indicator) = self.network_indicator() {
             item(PanelItem::Network, indicator);
         }
+        if let Some(indicator) = self.sound_indicator() {
+            item(PanelItem::Sound, indicator);
+        }
         if let Some(indicator) = self.battery_indicator() {
             item(PanelItem::Battery, indicator);
         }
@@ -738,6 +743,10 @@ impl Desktop {
                 }
                 Action::None
             }
+            PanelItem::Sound => {
+                self.sound_indicator_press(damage);
+                Action::None
+            }
             PanelItem::Tray(at) => {
                 self.tray_press(at, super::tray::TrayButton::Left, events);
                 Action::None
@@ -916,6 +925,7 @@ impl Desktop {
             (PanelItem::KeyboardLayout, _) => self.keyboard_layout_tooltip(),
             (PanelItem::Network, _) => self.network_indicator_name(),
             (PanelItem::Battery, _) => self.battery_indicator_name(),
+            (PanelItem::Sound, _) => self.sound_indicator_name(),
             (PanelItem::Tray(at), _) if self.tray_has_rich_popup(at) => None,
             (PanelItem::Tray(_) | PanelItem::TrayOverflow, _) => self.tray_name(item),
             (PanelItem::Power, Profile::Windows) => Some(POWER_TOOLTIP),
@@ -1110,6 +1120,7 @@ impl Desktop {
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_network_item(canvas);
+        self.draw_sound_item(canvas);
         self.draw_battery_item(canvas);
         self.draw_tray(canvas);
         self.draw_power(canvas, bar);
@@ -1216,6 +1227,7 @@ impl Desktop {
         self.draw_sticky_chips(canvas);
         self.draw_keyboard_layout_item(canvas);
         self.draw_network_item(canvas);
+        self.draw_sound_item(canvas);
         self.draw_battery_item(canvas);
         self.draw_tray(canvas);
         self.draw_power(canvas, bar);

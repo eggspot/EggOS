@@ -1357,6 +1357,10 @@ impl command::Machine for Machine {
         apply_keyboard(choice, self.server.as_ref()).map_err(Errno::message)
     }
 
+    fn set_sound(&mut self, name: &str, value: &str) -> Option<Result<(), &'static [u8]>> {
+        set_sound_key(name, value)
+    }
+
     fn save_time_zone(&mut self, index: usize) -> Result<(), &'static [u8]> {
         save_time_zone(index).map_err(Errno::message)
     }
@@ -1948,6 +1952,11 @@ impl Application<CAPACITY> for Settings {
                 self.window.show_wifi(wifi_status(), wifi_chosen());
             }
             Some(Request::OpenComponents | Request::SetEdition(_)) => {}
+            Some(Request::ReadSound) => self.window.show_sound(read_sound()),
+            Some(Request::SetSound(change)) => {
+                send_sound(&change);
+                self.window.show_sound(read_sound());
+            }
             Some(Request::CopyToClipboard) => {
                 if let Some(server) = self.server.as_ref() {
                     let _ = server.set_clipboard(self.window.windows_pane().to_copy());
@@ -2462,6 +2471,130 @@ fn open_window(
             1
         }
     }
+}
+
+const SOUND_SOCKET: &str = "/run/soundd";
+const AF_UNIX: usize = 1;
+const SOCK_STREAM: usize = 1;
+const SOUND_REPLY_BYTES: usize = 4096;
+
+fn sound_connection() -> Option<usize> {
+    let socket = syscall(number::SOCKET, [AF_UNIX, SOCK_STREAM, 0, 0, 0, 0]).ok()?;
+    let mut address = [0u8; 110];
+    address[..2].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
+    address[2..2 + SOUND_SOCKET.len()].copy_from_slice(SOUND_SOCKET.as_bytes());
+    let length = 2 + SOUND_SOCKET.len() + 1;
+    match syscall(
+        number::CONNECT,
+        [socket, address.as_ptr() as usize, length, 0, 0, 0],
+    ) {
+        Ok(_) => Some(socket),
+        Err(_) => {
+            close(socket);
+            None
+        }
+    }
+}
+
+fn sound_exchange(socket: usize, request: &eggos_soundd::protocol::Request, end: &str) -> String {
+    let mut line = request.line();
+    line.push('\n');
+    if !write_all(socket, line.as_bytes()) {
+        return String::new();
+    }
+    let mut reply = alloc::vec![0u8; SOUND_REPLY_BYTES];
+    let mut length = 0;
+    while length < reply.len() {
+        let read = syscall(
+            number::READ,
+            [socket, reply[length..].as_mut_ptr() as usize, reply.len() - length, 0, 0, 0],
+        );
+        match read {
+            Ok(0) | Err(_) => break,
+            Ok(read) => length += read,
+        }
+        let text = core::str::from_utf8(&reply[..length]).unwrap_or("");
+        let finished = text.ends_with('\n')
+            && (end.is_empty() || text.lines().last().is_some_and(|last| last == end));
+        if finished {
+            break;
+        }
+    }
+    String::from(core::str::from_utf8(&reply[..length]).unwrap_or(""))
+}
+
+fn read_sound() -> Option<eggos_settings::sound_pane::SoundRead> {
+    use eggos_soundd::protocol::{Device, Request as SoundRequest, State};
+    let socket = sound_connection()?;
+    let devices: alloc::vec::Vec<Device> = sound_exchange(socket, &SoundRequest::Devices, "end")
+        .lines()
+        .filter_map(Device::parse)
+        .collect();
+    let state = State::parse(sound_exchange(socket, &SoundRequest::Get, "").trim());
+    close(socket);
+    let state = state?;
+    let named = |id: &Option<String>| {
+        id.as_ref().map(|id| {
+            let name = devices
+                .iter()
+                .find(|device| &device.id == id)
+                .map_or_else(|| id.clone(), |device| device.name.clone());
+            (id.clone(), name)
+        })
+    };
+    let mut file = [0u8; LARGEST + 1];
+    let length = saved_settings(&mut file);
+    let saved = settings_file::sound_settings(&file[..length]);
+    Some(eggos_settings::sound_pane::SoundRead {
+        output: named(&state.output),
+        input: named(&state.input),
+        volume: state.volume,
+        mute: state.mute,
+        input_volume: state.input_volume,
+        input_mute: state.input_mute,
+        automatic_output: saved.output == b"auto",
+    })
+}
+
+fn send_sound(change: &eggos_settings::sound_pane::SoundChange) {
+    use eggos_settings::sound_pane::SoundChange;
+    use eggos_soundd::protocol::{Change, Request as SoundRequest, TEST_TONE_MS};
+    let request = match change {
+        SoundChange::Volume(volume) => SoundRequest::Set(Change::Volume(*volume)),
+        SoundChange::Mute(mute) => SoundRequest::Set(Change::Mute(*mute)),
+        SoundChange::Output(id) => SoundRequest::Set(Change::Output(id.clone())),
+        SoundChange::Input(id) => SoundRequest::Set(Change::Input(id.clone())),
+        SoundChange::InputVolume(volume) => SoundRequest::Set(Change::InputVolume(*volume)),
+        SoundChange::InputMute(mute) => SoundRequest::Set(Change::InputMute(*mute)),
+        SoundChange::Test => SoundRequest::Test {
+            milliseconds: TEST_TONE_MS,
+        },
+    };
+    if let Some(socket) = sound_connection() {
+        let _ = sound_exchange(socket, &request, "");
+        close(socket);
+    }
+}
+
+/// `settings set sound.<key> <value>`: the sound server applies and saves it (D775); whether
+/// the key was a sound key, and with it whether the server took the value.
+fn set_sound_key(key: &str, value: &str) -> Option<Result<(), &'static [u8]>> {
+    let change = eggos_soundd::protocol::Change::of_setting(key, value);
+    if !key.starts_with("sound.") {
+        return None;
+    }
+    let Some(change) = change else {
+        return Some(Err(b"invalid value"));
+    };
+    let Some(socket) = sound_connection() else {
+        return Some(Err(b"no sound device"));
+    };
+    let answer = sound_exchange(socket, &eggos_soundd::protocol::Request::Set(change), "");
+    close(socket);
+    Some(match answer.trim() {
+        "ok" => Ok(()),
+        _ => Err(b"no such device"),
+    })
 }
 
 fn save_edition(index: usize) -> Result<(), Errno> {

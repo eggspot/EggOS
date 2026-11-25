@@ -63,7 +63,9 @@ pub const CAPACITY: usize = 283
     + components_pane::WIDGETS
     + crate::storage_pane::INSTALLER_WIDGETS
     + crate::wifi_section::WIDGETS
-    + crate::network_pane::LINK_WIDGETS;
+    + crate::network_pane::LINK_WIDGETS
+    + crate::sound_pane::WIDGETS
+    + 1;
 
 const SIDEBAR_WIDTH: i32 = 176;
 const BANNER_WIDGETS: usize = 5;
@@ -181,10 +183,11 @@ const NO_KEYBOARD: &str = "No keyboard attached.";
 const NO_DISK: &str = "No disk attached: this choice lasts until power-off.";
 
 /// The panes, in the sidebar's order.
-pub const PANES: [&str; 14] = [
+pub const PANES: [&str; 15] = [
     "Appearance",
     "Network",
     "Display",
+    "Sound",
     "Power",
     "Keyboard",
     "Mouse",
@@ -202,34 +205,36 @@ const APPEARANCE: usize = 0;
 /// The `Network` pane's place in [`PANES`] (D225, docs/ux/network-v0.3.md).
 pub const NETWORK: usize = 1;
 const DISPLAY: usize = 2;
+/// The `Sound` pane's place in [`PANES`] (D775, docs/ux/sound-v0.1.md section 4).
+pub const SOUND: usize = 3;
 /// The `Power` pane's place in [`PANES`] (D599, docs/ux/power-v0.1.md).
-pub const POWER: usize = 3;
+pub const POWER: usize = 4;
 /// The `Keyboard` pane's place in [`PANES`] (D185, docs/ux/keyboard-v0.3.md).
-pub const KEYBOARD: usize = 4;
-const MOUSE: usize = 5;
+pub const KEYBOARD: usize = 5;
+const MOUSE: usize = 6;
 /// The `Accessibility` pane's place in [`PANES`] (D205, docs/ux/first-run-accessibility-v0.3.md).
-pub const ACCESSIBILITY: usize = 6;
+pub const ACCESSIBILITY: usize = 7;
 /// The `Storage` pane's place in [`PANES`] (D192, docs/ux/storage-v0.3.md).
-pub const STORAGE: usize = 7;
+pub const STORAGE: usize = 8;
 /// The `Date & time` pane's place in [`PANES`] (D150, docs/ux/date-time-v0.3.md).
-pub const DATE_AND_TIME: usize = 8;
+pub const DATE_AND_TIME: usize = 9;
 /// The `Agents` pane's place in [`PANES`] (D193, docs/ux/agents-v0.3.md).
-pub const AGENTS: usize = 9;
+pub const AGENTS: usize = 10;
 /// The `Windows` pane's place in [`PANES`] (D231, docs/ux/windows-registry-v0.3.md): its row
 /// shows only while the Windows layer is installed.
-pub const WINDOWS: usize = 10;
+pub const WINDOWS: usize = 11;
 /// The `Components` pane's place in [`PANES`] (D235, docs/ux/components-v0.3.md).
-pub const COMPONENTS: usize = 11;
+pub const COMPONENTS: usize = 12;
 /// The `Management` pane's place in [`PANES`] (D664, docs/ux/editions-policy-v0.1.md
 /// section 5.3): its row shows only while the `management` component is installed.
-pub const MANAGEMENT: usize = 12;
+pub const MANAGEMENT: usize = 13;
 /// The `About` pane's place in [`PANES`].
-pub const ABOUT: usize = 13;
+pub const ABOUT: usize = 14;
 
 const EVERY_PANE_SYNONYMS: [&str; 4] =
     ["Control Panel", "System Settings", "Preferences", "options"];
 
-const PANE_WORDS: [&[&str]; 14] = [
+const PANE_WORDS: [&[&str]; 15] = [
     &[
         "theme",
         "dark",
@@ -306,6 +311,18 @@ const PANE_WORDS: [&[&str]; 14] = [
         "landscape",
         "upside down",
         "sideways",
+    ],
+    &[
+        "sound",
+        "audio",
+        "volume",
+        "mute",
+        "speaker",
+        "headphones",
+        "microphone",
+        "input",
+        "output",
+        "test tone",
     ],
     &[
         "battery",
@@ -613,6 +630,11 @@ pub enum Request {
     SetWakeOnLan(bool),
     /// Show the Components pane (D283: the Wi-Fi firmware is installed there).
     OpenComponents,
+    /// Send this change to the sound server, read its state again and show it
+    /// ([`SettingsWindow::show_sound`], D775).
+    SetSound(crate::sound_pane::SoundChange),
+    /// Read the sound server's state and show it (D775).
+    ReadSound,
     /// Make the profile at this index of the settings file's `PROFILES` the desktop's and
     /// save it.
     SetProfile(usize),
@@ -895,6 +917,7 @@ pub fn pane_summary(pane: usize, facts: &Facts) -> Text<48> {
             "{} \u{d7} {}, scale {}",
             facts.resolution.0, facts.resolution.1, facts.scale
         ),
+        SOUND => write!(text, "Volume, output and input"),
         POWER => match facts.power.mean_percent() {
             Some(percent) if facts.power.line_power == Some(true) => {
                 write!(text, "{percent}%, plugged in")
@@ -986,6 +1009,7 @@ pub struct SettingsWindow {
     accessibility: AccessibilityPane,
     mouse_devices: MouseDevices,
     power: PowerPane,
+    sound: crate::sound_pane::SoundPane,
     about: AboutPane,
     network: NetworkPane,
     wifi: WifiSection,
@@ -1328,6 +1352,7 @@ impl SettingsWindow {
             DATE_AND_TIME => build.pane(scroll, Length::Px(DATE_AND_TIME_PANE_HEIGHT)),
             DISPLAY => build.pane(scroll, Length::Px(DISPLAY_PANE_HEIGHT)),
             POWER => build.pane(scroll, Length::Px(POWER_PANE_HEIGHT)),
+            SOUND => build.pane(scroll, Length::Px(crate::sound_pane::SOUND_PANE_HEIGHT)),
             ACCESSIBILITY => build.pane(scroll, Length::Px(ACCESSIBILITY_PANE_HEIGHT)),
             _ => build.pane(scroll, Length::Px(PANE_HEIGHT)),
         });
@@ -1608,6 +1633,7 @@ impl SettingsWindow {
         let accessibility =
             AccessibilityPane::build(&mut tree, panes[ACCESSIBILITY], Shown::of(&facts));
         let power = PowerPane::build(&mut tree, panes[POWER], &facts);
+        let sound = crate::sound_pane::SoundPane::build(&mut tree, panes[SOUND]);
         let about_devices = AboutPane::build(&mut tree, panes[ABOUT]);
         let management_pane =
             crate::management_pane::ManagementPane::build(&mut tree, panes[MANAGEMENT]);
@@ -1695,6 +1721,7 @@ impl SettingsWindow {
             mouse_devices,
             accessibility,
             power,
+            sound,
             about: about_devices,
             network,
             wifi,
@@ -1964,6 +1991,9 @@ impl SettingsWindow {
         if pane == MANAGEMENT {
             return Some(Request::ReadPolicy);
         }
+        if pane == SOUND {
+            return Some(Request::ReadSound);
+        }
         None
     }
 
@@ -2197,6 +2227,17 @@ impl SettingsWindow {
             self.widgets.panes[pane],
             Place::at(0, 0, Length::Fill(0), Length::Px(height)),
         );
+    }
+
+    /// The Sound pane.
+    pub fn sound_pane(&self) -> &crate::sound_pane::SoundPane {
+        &self.sound
+    }
+
+    /// Shows what the sound server said, `None` without a sound device (D775).
+    pub fn show_sound(&mut self, read: Option<crate::sound_pane::SoundRead>) {
+        self.sound.remember_output(read.as_ref());
+        self.sound.show(&mut self.tree, read.as_ref());
     }
 
     /// The Power pane.
@@ -3333,6 +3374,9 @@ impl SettingsWindow {
     pub fn respond(&mut self, response: Response, now_ms: u32) -> Option<Request> {
         if self.about.respond(&mut self.tree, response) {
             return None;
+        }
+        if let Some(request) = self.sound.respond(response) {
+            return Some(request);
         }
         let adapter = self.facts.network_adapter;
         let set_button = self.widgets.set_button;

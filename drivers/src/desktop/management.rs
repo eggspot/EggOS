@@ -739,6 +739,7 @@ impl Desktop {
         self.tick_caret(damage);
         let balloon_timed_out = self.balloon_notice_due();
         self.tick_notice(damage);
+        self.tick_volume_bar(damage);
         self.tick_tooltip(damage);
         self.tick_tray(balloon_timed_out, damage, events);
         self.tick_agent(damage);

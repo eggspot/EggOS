@@ -41,6 +41,9 @@ const LINE_BYTES: usize = 256;
 const READ_BYTES: usize = 8192;
 const SETTINGS_BYTES: usize = 16 * 1024;
 const DEVICE_PATH: &CStr = c"/dev/sound";
+const WINDOW_DEVICE: &CStr = c"/dev/window";
+const SET_SOUND: usize = 0x4020_7746;
+const SHELL_NAME_BYTES: usize = 28;
 const DRIVER_PATH: &CStr = c"/proc/driver/sound";
 const SOCKET: &CStr = c"/run/soundd";
 const SIGPIPE: usize = eggos_runtime::signal::SIGPIPE as usize;
@@ -178,6 +181,7 @@ struct Client {
 
 struct Server {
     device: Fd,
+    shell: Option<Fd>,
     devices: Vec<Device>,
     wanted_output: String,
     wanted_input: String,
@@ -213,8 +217,15 @@ impl Server {
             input_volume: saved.input_volume,
             input_mute: saved.input_mute,
         };
+        let shell = call(
+            number::OPENAT,
+            [AT_FDCWD, WINDOW_DEVICE.as_ptr() as usize, 2 | O_CLOEXEC, 0, 0, 0],
+        )
+        .ok()
+        .map(|descriptor| descriptor as Fd);
         Ok(Self {
             device,
+            shell,
             devices,
             wanted_output,
             wanted_input,
@@ -249,6 +260,31 @@ impl Server {
         for client in self.clients.iter().flatten().filter(|client| client.watching) {
             self.reply(client.socket, &line);
         }
+        self.tell_shell();
+    }
+
+    fn tell_shell(&self) {
+        let Some(shell) = self.shell else {
+            return;
+        };
+        let mut record = [0u8; 4 + SHELL_NAME_BYTES];
+        let output = self.state.output.as_deref().and_then(|id| {
+            self.devices.iter().find(|device| device.id == id)
+        });
+        record[0] = u8::from(output.is_some());
+        record[1] = self.state.volume;
+        record[2] = u8::from(self.state.mute);
+        let outputs = self.devices.iter().filter(|device| device.kind == Kind::Output);
+        record[3] = outputs.count().min(255) as u8;
+        if let Some(output) = output {
+            let name = output.name.as_bytes();
+            let length = name.len().min(SHELL_NAME_BYTES);
+            record[4..4 + length].copy_from_slice(&name[..length]);
+        }
+        let _ = call(
+            number::IOCTL,
+            [shell as usize, SET_SOUND, record.as_ptr() as usize, 0, 0, 0],
+        );
     }
 
     fn apply(&mut self, change: Change) -> Result<(), &'static str> {
@@ -521,6 +557,7 @@ fn serve() -> i32 {
             return 1;
         }
     };
+    server.tell_shell();
     let mut entries = [PollEntry {
         descriptor: -1,
         events: 0,

@@ -23,6 +23,7 @@ eggos-mcp = { path = "../mcp" }
 eggos-net = { path = "../../net" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
+eggos-soundd = { path = "../soundd" }
 eggos-terminal-window = { path = "../terminal" }
 eggos-toolkit = { path = "../toolkit" }
 eggos-windows-registry = { path = "../windows-registry" }

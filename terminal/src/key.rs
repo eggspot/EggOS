@@ -72,6 +72,12 @@ pub const INSERT: u16 = 110;
 pub const DELETE: u16 = 111;
 pub const LEFT_SUPER: u16 = 125;
 pub const RIGHT_SUPER: u16 = 126;
+/// `KEY_MUTE`: the media keys' and a phone's mute (D775).
+pub const MUTE: u16 = 113;
+/// `KEY_VOLUMEDOWN`.
+pub const VOLUME_DOWN: u16 = 114;
+/// `KEY_VOLUMEUP`.
+pub const VOLUME_UP: u16 = 115;
 pub const COMPOSE: u16 = 127;
 /// `KEY_BACK`: the phone and TV forms' `Back` (D303, D305).
 pub const BACK: u16 = 158;

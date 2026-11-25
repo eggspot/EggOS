@@ -265,6 +265,9 @@ impl Desktop {
         if self.battery_menu_open() {
             self.close_battery_menu(damage);
         }
+        if self.sound_popup_open() {
+            self.close_sound_popup(damage);
+        }
     }
 
     /// Window `slot` is going away: the switcher stops listing it and its window menu closes.

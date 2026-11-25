@@ -430,6 +430,7 @@ dependencies = [
  "eggos-picker",
  "eggos-runtime",
  "eggos-settings-file",
+ "eggos-soundd",
  "eggos-terminal-window",
  "eggos-toolkit",
  "eggos-windows-registry",

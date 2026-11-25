@@ -109,6 +109,7 @@ pub mod size {
     pub const READ_READER_LOG: usize = 24;
     pub const SAY: usize = 24;
     pub const SET_LEVEL: usize = 8;
+    pub const SET_SOUND: usize = 32;
     pub const SET_CLIPBOARD: usize = 16;
     pub const GET_CLIPBOARD: usize = 32;
     pub const LIST_DESKTOPS: usize = 16;
@@ -214,6 +215,7 @@ pub mod request {
     pub const READ_READER_LOG: u32 = encode(READ | WRITE, 67, size::READ_READER_LOG);
     pub const SAY: u32 = encode(WRITE, 68, size::SAY);
     pub const SET_LEVEL: u32 = encode(WRITE, 69, size::SET_LEVEL);
+    pub const SET_SOUND: u32 = encode(WRITE, 70, size::SET_SOUND);
 }
 
 /// `ON_SCREEN_KEYBOARD`'s word, what `wm keyboard` asks (D314), and its reply: whether the
@@ -872,6 +874,16 @@ pub enum Request {
         window: u32,
         level: u32,
     },
+    /// The sound output's state, from the sound server (D775): `present` false hides the
+    /// volume indicator; otherwise its volume, mute, how many outputs there are and the name
+    /// of the one in use.
+    SetSound {
+        present: bool,
+        volume: u8,
+        mute: bool,
+        outputs: u8,
+        name: [u8; super::sound::SOUND_NAME_BYTES],
+    },
     AppsChanged,
     OpenApp {
         length: u32,
@@ -1094,6 +1106,7 @@ impl Request {
             request::READ_READER_LOG => size::READ_READER_LOG,
             request::SAY => size::SAY,
             request::SET_LEVEL => size::SET_LEVEL,
+            request::SET_SOUND => size::SET_SOUND,
             request::LIST_WINDOW => size::LIST_WINDOW,
             request::MANAGE_WINDOW => size::MANAGE_WINDOW,
             request::GET_PROFILE => size::GET_PROFILE,
@@ -1242,6 +1255,17 @@ impl Request {
                 window: at(0),
                 level: at(4),
             },
+            request::SET_SOUND => {
+                let mut name = [0u8; super::sound::SOUND_NAME_BYTES];
+                name.copy_from_slice(&bytes[4..4 + super::sound::SOUND_NAME_BYTES]);
+                Self::SetSound {
+                    present: bytes[0] != 0,
+                    volume: bytes[1].min(100),
+                    mute: bytes[2] != 0,
+                    outputs: bytes[3],
+                    name,
+                }
+            }
             request::START_DRAG => {
                 let mut text = [0u8; CARRY_TEXT_BYTES];
                 text.copy_from_slice(

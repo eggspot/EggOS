@@ -238,12 +238,12 @@ impl Desktop {
     /// taskbar's clock.
     pub fn network_indicator(&self) -> Option<Rect> {
         self.network.state?;
-        if let Some(battery) = self.battery_indicator() {
+        if let Some(neighbour) = self.sound_indicator().or_else(|| self.battery_indicator()) {
             return Some(Rect::new(
-                battery.x.checked_sub(battery.width)?,
-                battery.y,
-                battery.width,
-                battery.height,
+                neighbour.x.checked_sub(neighbour.width)?,
+                neighbour.y,
+                neighbour.width,
+                neighbour.height,
             ));
         }
         match (self.layout.taskbar, self.layout.top_bar) {

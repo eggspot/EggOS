@@ -1785,6 +1785,17 @@ pub fn show<P: Platform>() -> Result<usize, &'static str> {
             }
             crate::screen_reader::command::<P>(command);
         }
+        Some(Action::Sound(change)) => {
+            let command = SCREEN
+                .lock()
+                .as_ref()
+                .and_then(|screen| screen.desktop.as_ref()?.sound_command(change));
+            if let Some(command) = command
+                && crate::apps::start_program(command.as_bytes()).is_err()
+            {
+                launch_failed::<P>();
+            }
+        }
         Some(Action::SetSetting { key, value }) => {
             let command = SCREEN
                 .lock()

@@ -29,6 +29,7 @@ pub mod network_pane;
 pub mod network_view;
 pub mod power_pane;
 pub mod settings_window;
+pub mod sound_pane;
 pub mod storage_pane;
 pub mod task_manager;
 pub mod wifi_section;
