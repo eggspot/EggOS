@@ -300,6 +300,7 @@ pub struct Plan {
     leftover: bool,
     total_bytes: u64,
     android_set: bool,
+    android_bundle: bool,
 }
 
 /// A dynamically linked program's loader and library folders inside its `.zip` (D172).
@@ -686,6 +687,7 @@ pub fn plan_entry(
         leftover,
         total_bytes,
         android_set: false,
+        android_bundle: false,
     })
 }
 
@@ -939,6 +941,7 @@ struct Scanned {
     total: u64,
     title: Option<Name>,
     android_set: bool,
+    android_bundle: bool,
 }
 
 const MAX_LIBRARY_FOLDERS: usize = 4;
@@ -1078,6 +1081,35 @@ const SIGNATURE_FOLDER: &[u8] = b"META-INF/";
 const LARGEST_ANDROID_MANIFEST: u64 = 4 << 20;
 const LARGEST_ANDROID_TABLE: u64 = 32 << 20;
 const MOST_SPLITS: usize = 16;
+const BUNDLE_MANIFEST: &[u8] = b"base/manifest/AndroidManifest.xml";
+const BUNDLE_CODE: &[u8] = b"base/dex/classes.dex";
+const BUNDLE_RESOURCES: &[u8] = b"base/resources.pb";
+const BUNDLE_TABLE_NAME: &[u8] = b"resources.pb";
+const XML_SUFFIX: &[u8] = b".xml";
+const LARGEST_COMPILED_XML: u64 = 4 << 20;
+const BUNDLE_FOLDERS: [(&[u8], &[u8]); 5] = [
+    (b"base/dex/", b""),
+    (b"base/res/", b"res/"),
+    (b"base/assets/", b"assets/"),
+    (b"base/lib/", b"lib/"),
+    (b"base/root/", b""),
+];
+
+/// Where a file of an App Bundle's base module goes in the app's folder, and whether it is
+/// compiled XML to turn into binary XML (D758); `None` for what an installed app does not use.
+fn bundle_target(name: &[u8]) -> Option<(alloc::vec::Vec<u8>, bool)> {
+    if name == BUNDLE_MANIFEST {
+        return Some((ANDROID_MANIFEST.to_vec(), true));
+    }
+    if name == BUNDLE_RESOURCES {
+        return Some((BUNDLE_TABLE_NAME.to_vec(), false));
+    }
+    BUNDLE_FOLDERS.iter().find_map(|(from, to)| {
+        let rest = name.strip_prefix(*from)?;
+        let compiled = *from == b"base/res/" && rest.ends_with(XML_SUFFIX);
+        (!rest.is_empty()).then(|| ([*to, rest].concat(), compiled))
+    })
+}
 
 /// What an `.apk` inside a split set (`.apks`, `.xapk`) is (D757).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1228,6 +1260,9 @@ fn scan(
     let mut android_manifest_entry = None;
     let mut android_table = None;
     let mut apk_base = false;
+    let mut bundle_manifest = None;
+    let mut bundle_table = None;
+    let mut bundle_code = false;
     let mut ios_bundle = false;
     let mut ios_plist = None;
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
@@ -1242,6 +1277,13 @@ fn scan(
             android_table = Some(entry);
         }
         apk_base |= apk_part(entry.name()) == Some(ApkPart::Base);
+        if entry.name() == BUNDLE_MANIFEST {
+            bundle_manifest = Some(entry);
+        }
+        if entry.name() == BUNDLE_RESOURCES {
+            bundle_table = Some(entry);
+        }
+        bundle_code |= entry.name() == BUNDLE_CODE;
         if entry.name() == ANDROID_CODE {
             android_code = Some(entry);
         }
@@ -1286,6 +1328,7 @@ fn scan(
             total,
             title: None,
             android_set: false,
+            android_bundle: false,
         });
     }
     if android_manifest {
@@ -1305,6 +1348,26 @@ fn scan(
             total,
             title,
             android_set: false,
+            android_bundle: false,
+        });
+    }
+    if bundle_manifest.is_some() && bundle_code && !android_manifest {
+        let run = Path::from(ANDROID_CODE).ok_or(Problem::PathTooLong)?;
+        let title = android_title(zip, window, bundle_manifest, bundle_table);
+        return Ok(Scanned {
+            archive,
+            run,
+            named_after: run,
+            program: Program {
+                source: Source::Android,
+                architecture: machine,
+            },
+            loader: None,
+            console: false,
+            total,
+            title,
+            android_set: false,
+            android_bundle: true,
         });
     }
     if apk_base && found == 0 {
@@ -1322,6 +1385,7 @@ fn scan(
             total,
             title: None,
             android_set: true,
+            android_bundle: false,
         });
     }
     let (entry, role) = match (found, chosen) {
@@ -1378,6 +1442,7 @@ fn scan(
         total,
         title: None,
         android_set: false,
+        android_bundle: false,
     })
 }
 
@@ -1422,6 +1487,7 @@ fn plan_archive(
         leftover,
         total_bytes: scanned.total,
         android_set: scanned.android_set,
+        android_bundle: scanned.android_bundle,
     })
 }
 
@@ -2002,6 +2068,9 @@ impl Installation {
             };
             return Ok(Progress::Registering);
         };
+        if self.plan.android_bundle {
+            return self.extract_bundle_entry(files, archive, open.file, &entry);
+        }
         if is_reserved(entry.name()) {
             return Err(Problem::ReservedName);
         }
@@ -2052,6 +2121,60 @@ impl Installation {
         if self.plan.android_set && apk_part(entry.name()).is_some() {
             self.note_apk(entry.name())?;
         }
+        Ok(Progress::Copying(self.done_bytes))
+    }
+
+    fn extract_bundle_entry(
+        &mut self,
+        files: &mut impl Files,
+        archive: Archive,
+        zip: Handle,
+        entry: &Entry,
+    ) -> Result<Progress, Problem> {
+        if entry.is_metadata() || entry.is_directory() || entry.is_link() {
+            return Ok(Progress::Copying(self.done_bytes));
+        }
+        let Some((target_name, compiled)) = bundle_target(entry.name()) else {
+            return Ok(Progress::Copying(self.done_bytes));
+        };
+        if is_reserved(&target_name) {
+            return Err(Problem::ReservedName);
+        }
+        if self.done_bytes.saturating_add(entry.size()) > MAX_EXTRACTED_BYTES {
+            return Err(Problem::TooLarge);
+        }
+        let folder = self.folder()?;
+        make_parents(files, &folder, &target_name)?;
+        let to = folder.join(&target_name).ok_or(Problem::PathTooLong)?;
+        let permissions = match target_name.as_slice() == self.plan.run.as_bytes() {
+            true => PROGRAM_PERMISSIONS,
+            false => FILE_PERMISSIONS,
+        };
+        let converted = match compiled {
+            true => {
+                let mut window = Window::new();
+                let mut reader = FileReader::new(files, zip, archive.size());
+                let bytes = whole_entry(&mut reader, entry, &mut window, LARGEST_COMPILED_XML)
+                    .ok_or(Problem::TooLarge)?;
+                Some(
+                    eggos_android_package::proto::binary_xml(&bytes)
+                        .ok_or(Problem::NotRunnable(NotRunnable::AndroidPackage))?,
+                )
+            }
+            false => None,
+        };
+        let target = files
+            .create(to.as_bytes(), permissions)
+            .map_err(Problem::from_errno)?;
+        let written = match &converted {
+            Some(bytes) => files.write(target, bytes).map_err(Problem::from_errno),
+            None => extract_to(files, zip, archive.size(), entry, target),
+        };
+        let synced = files.sync_file(target);
+        files.close(target);
+        written?;
+        synced.map_err(Problem::from_errno)?;
+        self.done_bytes = self.done_bytes.saturating_add(entry.size());
         Ok(Progress::Copying(self.done_bytes))
     }
 
@@ -2177,9 +2300,11 @@ impl Installation {
         use eggos_android_package::resources::ResourceTable;
         let manifest_path = folder.join(ANDROID_MANIFEST)?;
         let table_path = folder.join(ANDROID_RESOURCES)?;
+        let bundle_table_path = folder.join(BUNDLE_TABLE_NAME)?;
         let manifest = read_whole(files, manifest_path.as_bytes(), LARGEST_ANDROID_MANIFEST)?;
         let icon = Manifest::parse(&manifest)?.icon?;
-        let table = read_whole(files, table_path.as_bytes(), LARGEST_ANDROID_TABLE)?;
+        let table = read_whole(files, table_path.as_bytes(), LARGEST_ANDROID_TABLE)
+            .or_else(|| read_whole(files, bundle_table_path.as_bytes(), LARGEST_ANDROID_TABLE))?;
         let table = ResourceTable::parse(&table)?;
         folder.join(table.icon_file(icon)?.as_bytes())
     }

@@ -43,10 +43,11 @@ const FIRST_COLOUR_TYPE: u8 = 0x1c;
 const LAST_COLOUR_TYPE: u8 = 0x1f;
 
 impl ResourceTable {
-    /// The table in `bytes`; `None` when it is not one.
+    /// The table in `bytes`, `resources.arsc` or an App Bundle's `resources.pb` (D758);
+    /// `None` when it is neither.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
         if half(bytes, 0)? != TABLE {
-            return None;
+            return Self::parse_bundle(bytes);
         }
         let mut table = Self::default();
         let mut pool = Vec::new();
@@ -135,6 +136,30 @@ impl ResourceTable {
             }
         }
         Some(())
+    }
+
+    fn parse_bundle(bytes: &[u8]) -> Option<Self> {
+        let values = crate::proto::table_values(bytes);
+        if values.is_empty() {
+            return None;
+        }
+        let mut table = Self::default();
+        for each in values {
+            let kind = each.value.kind;
+            if (FIRST_COLOUR_TYPE..=LAST_COLOUR_TYPE).contains(&kind) {
+                table.colours.entry(each.id).or_insert(each.value.data);
+                continue;
+            }
+            let Some(text) = each.value.text else {
+                continue;
+            };
+            let variants = table.variants.entry(each.id).or_default();
+            if variants.len() < MOST_VARIANTS && !variants.contains(&text) {
+                variants.push(text.clone());
+            }
+            table.strings.entry(each.id).or_insert(text);
+        }
+        Some(table)
     }
 
     /// Resource `id`'s string value: a string resource's text or a file resource's path.

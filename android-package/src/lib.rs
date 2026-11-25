@@ -2,7 +2,8 @@
 //! and its `classes*.dex` files ([`dex`]), from the formats the Android Open Source Project
 //! documents, and its methods' instructions decoded ([`dalvik`], D471). What the Android layer
 //! needs to install an app and compile its code ahead of time, and its compiled layouts
-//! ([`layout`]) and resource table ([`resources`], D500); nothing here runs it.
+//! ([`layout`]) and resource table ([`resources`], D500), and an App Bundle's protocol-buffer
+//! forms of them ([`proto`], D758); nothing here runs it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -12,5 +13,6 @@ pub mod dalvik;
 pub mod dex;
 pub mod layout;
 pub mod manifest;
+pub mod proto;
 pub mod resources;
 pub mod vector;

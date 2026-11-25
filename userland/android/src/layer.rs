@@ -50,6 +50,7 @@ const READ_CHUNK: usize = 64 << 10;
 const LARGEST_FILE: usize = 64 << 20;
 const MANIFEST_NAME: &[u8] = b"AndroidManifest.xml";
 const RESOURCES_NAME: &[u8] = b"resources.arsc";
+const BUNDLE_RESOURCES_NAME: &[u8] = b"resources.pb";
 const MOST_WIDGETS: usize = 64;
 const ROW: i32 = 44;
 const COLUMN: i32 = 160;
@@ -1401,8 +1402,10 @@ pub fn run(startup: &Startup) -> i32 {
     let Ok(dex) = Dex::parse(bytes) else {
         stop(&[b"android: ", code_path, b" is not a DEX file"]);
     };
-    let resources_path = [folder, b"/", RESOURCES_NAME].concat();
-    let resources = read_file(&resources_path).and_then(|bytes| ResourceTable::parse(&bytes));
+    let resources = [RESOURCES_NAME, BUNDLE_RESOURCES_NAME]
+        .iter()
+        .find_map(|name| read_file(&[folder, b"/", name].concat()))
+        .and_then(|bytes| ResourceTable::parse(&bytes));
     let (code, compiled) = compile_all(&dex);
     let Some(base) = executable(&code) else {
         stop(&[b"android: no executable memory for the app's code"]);

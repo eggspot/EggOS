@@ -107,10 +107,11 @@ struct Walk {
 }
 
 impl Manifest {
-    /// The manifest in binary XML `xml`; `None` when it is not binary XML.
+    /// The manifest in binary XML `xml`, or compiled to an App Bundle's protocol buffer
+    /// (D758); `None` when it is neither.
     pub fn parse(xml: &[u8]) -> Option<Self> {
         if half(xml, 0)? != XML_CHUNK {
-            return None;
+            return Self::parse(&crate::proto::binary_xml(xml)?);
         }
         let mut at = usize::from(half(xml, 2)?);
         let mut pool = Vec::new();
