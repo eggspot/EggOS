@@ -33,6 +33,7 @@ use eggos_runtime::syscall::{self, number};
 use eggos_toolkit::application::{self, Application};
 use eggos_toolkit::canvas::Canvas;
 use eggos_toolkit::geometry::Rect;
+use eggos_toolkit::input::key;
 use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
@@ -62,6 +63,7 @@ const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
 const STACK_ABOVE_RUN: usize = 4096;
 const MOST_FRAMES: usize = 64;
+const IME_ACTION_MASK: u32 = 0xff;
 const MOST_CAUSES: usize = 8;
 #[cfg(target_arch = "x86_64")]
 const MACHINE: compiler::Machine = compiler::Machine::X86_64;
@@ -298,7 +300,9 @@ fn references_of(address: u64, found: &mut Vec<u64>) {
     found.extend(held.elements.iter().flatten().copied());
     if let Some(view) = &held.view {
         found.extend(view.children.iter().copied());
+        found.extend(view.watchers.iter().copied());
         found.push(view.listener);
+        found.push(view.editor_listener);
     }
     found.push(held.reference);
 }
@@ -983,6 +987,9 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
             listener: 0,
             hint,
             image: node.image.and_then(load_image),
+            input_type: node.input_type.unwrap_or(0),
+            ime_action: node.ime_action.unwrap_or(0),
+            ..View::default()
         }),
         ..Object::default()
     })
@@ -1074,6 +1081,107 @@ extern "C" fn get_text(words: *const u64, _: *const usize) -> u64 {
 extern "C" fn get_string(words: *const u64, _: *const usize) -> u64 {
     let [_, id] = arguments::<2>(words);
     new_string(resource_string(u64::from(id as u32)).unwrap_or_default())
+}
+
+fn text_field(view: u64) -> Option<&'static mut View> {
+    object(view).and_then(|view| view.view.as_mut())
+}
+
+extern "C" fn add_text_changed_listener(words: *const u64, _: *const usize) -> u64 {
+    let [view, watcher] = arguments::<2>(words);
+    if let Some(field) = text_field(view)
+        && watcher != 0
+    {
+        field.watchers.push(watcher);
+    }
+    0
+}
+
+extern "C" fn remove_text_changed_listener(words: *const u64, _: *const usize) -> u64 {
+    let [view, watcher] = arguments::<2>(words);
+    if let Some(field) = text_field(view) {
+        field.watchers.retain(|&kept| kept != watcher);
+    }
+    0
+}
+
+extern "C" fn set_on_editor_action_listener(words: *const u64, _: *const usize) -> u64 {
+    let [view, listener] = arguments::<2>(words);
+    if let Some(field) = text_field(view) {
+        field.editor_listener = listener;
+    }
+    0
+}
+
+extern "C" fn set_input_type(words: *const u64, _: *const usize) -> u64 {
+    let [view, input_type] = arguments::<2>(words);
+    if let Some(field) = text_field(view) {
+        field.input_type = input_type as u32;
+    }
+    0
+}
+
+extern "C" fn get_input_type(words: *const u64, _: *const usize) -> u64 {
+    let [view] = arguments::<1>(words);
+    text_field(view).map_or(0, |field| u64::from(field.input_type))
+}
+
+extern "C" fn set_ime_options(words: *const u64, _: *const usize) -> u64 {
+    let [view, options] = arguments::<2>(words);
+    if let Some(field) = text_field(view) {
+        field.ime_action = options as u32 & IME_ACTION_MASK;
+    }
+    0
+}
+
+/// Calls each of `view`'s watchers' `name` with the text as `text` and the extra words.
+fn tell_watchers(view: u64, name: &str, text: &str, extra: &[u64]) {
+    let watchers = text_field(view).map(|field| field.watchers.clone()).unwrap_or_default();
+    for watcher in watchers {
+        let Some(class) = object(watcher).map(|watcher| watcher.class.clone()) else {
+            continue;
+        };
+        let Some(address) = compiled_method(&class, name) else {
+            continue;
+        };
+        let shown = new_string(String::from(text));
+        let mut words = alloc::vec![watcher, shown];
+        words.extend_from_slice(extra);
+        call_at(address, &words);
+    }
+}
+
+/// The person typed in `view`'s field, which now holds `typed` (D762): the text its input
+/// type accepts becomes its text, between the watchers' `beforeTextChanged` and
+/// `onTextChanged`, then `afterTextChanged`. The accepted text, when it differs from `typed`.
+fn text_typed(view: u64, typed: &str) -> Option<String> {
+    let input_type = text_field(view).map_or(0, |field| field.input_type);
+    let kept = framework::accepted(input_type, typed);
+    let before = object(view)?.text.clone().unwrap_or_default();
+    if kept == before {
+        return (kept != typed).then_some(kept);
+    }
+    let (start, removed, added) = framework::changed_span(&before, &kept);
+    let words = |a: usize, b: usize, c: usize| [a as u64, b as u64, c as u64];
+    tell_watchers(view, "beforeTextChanged", &before, &words(start, removed, added));
+    object(view)?.text = Some(kept.clone());
+    tell_watchers(view, "onTextChanged", &kept, &words(start, removed, added));
+    tell_watchers(view, "afterTextChanged", &kept, &[]);
+    (kept != typed).then_some(kept)
+}
+
+/// Enter in `view`'s field (D762): its `OnEditorActionListener` is told the field's action.
+fn editor_action(view: u64) {
+    let Some(field) = text_field(view) else {
+        return;
+    };
+    let (listener, action) = (field.editor_listener, field.ime_action);
+    let Some(class) = object(listener).map(|listener| listener.class.clone()) else {
+        return;
+    };
+    if let Some(address) = compiled_method(&class, "onEditorAction") {
+        call_at(address, &[listener, view, u64::from(action), 0]);
+    }
 }
 
 extern "C" fn set_hint(words: *const u64, _: *const usize) -> u64 {
@@ -1431,6 +1539,12 @@ fn native_entry(native: Native) -> Entry {
         Native::AddView => add_view,
         Native::SetOrientation => set_orientation,
         Native::SetHint => set_hint,
+        Native::AddTextChangedListener => add_text_changed_listener,
+        Native::RemoveTextChangedListener => remove_text_changed_listener,
+        Native::SetOnEditorActionListener => set_on_editor_action_listener,
+        Native::SetInputType => set_input_type,
+        Native::GetInputType => get_input_type,
+        Native::SetImeOptions => set_ime_options,
         Native::ListInit => list_init,
         Native::ListAdd => list_add,
         Native::ListGet => list_get,
@@ -1645,7 +1759,11 @@ impl ContentWindow {
             EDIT_TEXT => {
                 let hint = hint.unwrap_or_default().into_boxed_str();
                 let placeholder: &'static str = Box::leak(hint);
-                Kind::text_field(placeholder, Escape::Revert)
+                let input_type = view_state.as_ref().map_or(0, |state| state.input_type);
+                match framework::is_password(input_type) {
+                    true => Kind::masked_text_field(placeholder, Escape::Revert),
+                    false => Kind::text_field(placeholder, Escape::Revert),
+                }
             }
             _ => Kind::label(&text, Token::Text),
         };
@@ -1689,10 +1807,24 @@ impl ContentWindow {
         let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == widget) else {
             return;
         };
-        let text = self.tree.text_of(widget).map(String::from);
-        if let (Some(view), Some(text)) = (object(view), text) {
-            view.text = Some(text);
+        let Some(typed) = self.tree.text_of(widget).map(String::from) else {
+            return;
+        };
+        if let Some(accepted) = text_typed(view, &typed) {
+            self.tree.set_text(widget, &accepted);
         }
+        self.refresh();
+    }
+
+    fn entered(&mut self) {
+        let Some(focused) = self.tree.focus() else {
+            return;
+        };
+        let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == focused) else {
+            return;
+        };
+        editor_action(view);
+        self.refresh();
     }
 }
 
@@ -1709,7 +1841,8 @@ impl Application<MOST_WIDGETS> for ContentWindow {
                     self.refresh();
                 }
             }
-            Response::Edited(widget) => self.edited(widget),
+            Response::Edited(widget) | Response::Cut(widget) => self.edited(widget),
+            Response::Unused { code: key::ENTER, .. } => self.entered(),
             Response::Chosen(widget, position) | Response::Opened(widget, position) => {
                 if let Some(&(_, view)) = self.lists.iter().find(|(shown, _)| *shown == widget) {
                     item_clicked(view, position);

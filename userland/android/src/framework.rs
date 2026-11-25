@@ -138,6 +138,18 @@ pub enum Native {
     FrameMethodName,
     /// `StackTraceElement.toString()`.
     FrameText,
+    /// `TextView.addTextChangedListener(TextWatcher)` (D762).
+    AddTextChangedListener,
+    /// `TextView.removeTextChangedListener(TextWatcher)`.
+    RemoveTextChangedListener,
+    /// `TextView.setOnEditorActionListener(OnEditorActionListener)`.
+    SetOnEditorActionListener,
+    /// `TextView.setInputType(int)`.
+    SetInputType,
+    /// `TextView.getInputType()`.
+    GetInputType,
+    /// `TextView.setImeOptions(int)`.
+    SetImeOptions,
 }
 
 const THROWABLE: &str = "Ljava/lang/Throwable;";
@@ -249,6 +261,12 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "addView") if view => Native::AddView,
         (_, "setOrientation") if view => Native::SetOrientation,
         (EDIT_TEXT, "setHint") if !takes_int => Native::SetHint,
+        (_, "addTextChangedListener") if text => Native::AddTextChangedListener,
+        (_, "removeTextChangedListener") if text => Native::RemoveTextChangedListener,
+        (_, "setOnEditorActionListener") if text => Native::SetOnEditorActionListener,
+        (_, "setInputType") if text => Native::SetInputType,
+        (_, "getInputType") if text => Native::GetInputType,
+        (_, "setImeOptions") if text => Native::SetImeOptions,
         (IMAGE_VIEW, "setImageResource") if takes_int => Native::SetImageResource,
         (LAYOUT_INFLATER, "from") => Native::InflaterFrom,
         (_, "getLayoutInflater") if activity => Native::InflaterFrom,
@@ -471,6 +489,82 @@ pub struct View {
     pub hint: Option<String>,
     /// An image view's picture, its place among the layer's decoded images (D509).
     pub image: Option<u32>,
+    /// A text field's `TextWatcher`s, called around every edit (D762).
+    pub watchers: alloc::vec::Vec<u64>,
+    /// A text field's `OnEditorActionListener`, called for Enter.
+    pub editor_listener: u64,
+    /// A text field's input type flags: digits only, a masked password (D762).
+    pub input_type: u32,
+    /// The editor action Enter reports (`imeOptions`; 0, `IME_NULL`, when none).
+    pub ime_action: u32,
+}
+
+const INPUT_CLASS: u32 = 0xf;
+const CLASS_TEXT: u32 = 0x1;
+const CLASS_NUMBER: u32 = 0x2;
+const CLASS_PHONE: u32 = 0x3;
+const VARIATION: u32 = 0xff0;
+const TEXT_PASSWORD_VARIATIONS: [u32; 2] = [0x80, 0xe0];
+const NUMBER_PASSWORD: u32 = 0x10;
+const NUMBER_SIGNED: u32 = 0x1000;
+const NUMBER_DECIMAL: u32 = 0x2000;
+const PHONE_CHARACTERS: &str = "0123456789+-() #*.,;/N";
+
+/// Whether input type `input_type` hides what is typed (a password field, D762).
+pub fn is_password(input_type: u32) -> bool {
+    let variation = input_type & VARIATION;
+    match input_type & INPUT_CLASS {
+        CLASS_TEXT => TEXT_PASSWORD_VARIATIONS.contains(&variation),
+        CLASS_NUMBER => variation == NUMBER_PASSWORD,
+        _ => false,
+    }
+}
+
+/// What a field of input type `input_type` keeps of `typed`: a number field its digits (a
+/// leading minus when signed, one decimal point when decimal), a phone field its dialling
+/// characters, any other field everything (D762).
+pub fn accepted(input_type: u32, typed: &str) -> String {
+    match input_type & INPUT_CLASS {
+        CLASS_NUMBER => {
+            let mut kept = String::new();
+            let mut point = false;
+            for character in typed.chars() {
+                let keep = match character {
+                    '0'..='9' => true,
+                    '-' => input_type & NUMBER_SIGNED != 0 && kept.is_empty(),
+                    '.' => input_type & NUMBER_DECIMAL != 0 && !point,
+                    _ => false,
+                };
+                if keep {
+                    point |= character == '.';
+                    kept.push(character);
+                }
+            }
+            kept
+        }
+        CLASS_PHONE => typed
+            .chars()
+            .filter(|character| PHONE_CHARACTERS.contains(*character))
+            .collect(),
+        _ => String::from(typed),
+    }
+}
+
+/// Where `after` differs from `before` (D762): the first changed character, how many
+/// characters were replaced, and how many replaced them, as `TextWatcher` reports an edit.
+pub fn changed_span(before: &str, after: &str) -> (usize, usize, usize) {
+    let old: alloc::vec::Vec<char> = before.chars().collect();
+    let new: alloc::vec::Vec<char> = after.chars().collect();
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let room = old.len().min(new.len()) - prefix;
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
+    (prefix, old.len() - prefix - suffix, new.len() - prefix - suffix)
 }
 
 /// The framework class a layout element names: `TextView` and the other short names are in
@@ -550,5 +644,24 @@ mod tests {
             activity_descriptor("org.example.notes", "org.other.Start"),
             "Lorg/other/Start;"
         );
+    }
+
+    #[test]
+    fn input_types_filter_and_mask_what_is_typed() {
+        assert!(is_password(0x81));
+        assert!(is_password(0x12));
+        assert!(!is_password(0x1));
+        assert_eq!(accepted(0x2, "a1-2.3"), "123");
+        assert_eq!(accepted(0x3002, "-1.2.3x"), "-1.23");
+        assert_eq!(accepted(0x3, "+1 (555) abc"), "+1 (555) ");
+        assert_eq!(accepted(0x1, "any text"), "any text");
+    }
+
+    #[test]
+    fn an_edit_is_reported_as_its_changed_span() {
+        assert_eq!(changed_span("hello", "help"), (3, 2, 1));
+        assert_eq!(changed_span("", "abc"), (0, 0, 3));
+        assert_eq!(changed_span("aaa", "aaaa"), (3, 0, 1));
+        assert_eq!(changed_span("same", "same"), (4, 0, 0));
     }
 }

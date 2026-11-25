@@ -256,7 +256,7 @@ and is not listed per item.
 - [x] Android: a garbage collector for the layer's object heap (D472) — code written, unbuilt, D759
 - [x] Android: the DEX compiler's aarch64 and riscv64 back ends, with register allocation (D471, D472) — code written, unbuilt, D760
 - [x] Android: stack traces, `ExceptionInInitializerError`, exceptions crossing the framework's code (D504) — code written, unbuilt, D761
-- [ ] Android: `TextWatcher`, `onEditorAction`, input types (numbers, passwords) (D507)
+- [x] Android: `TextWatcher`, `onEditorAction`, input types (numbers, passwords) (D507) — code written, unbuilt, D762
 - [ ] Android: `RecyclerView` view types, recycling holders, item decorations, grids; row views shown as themselves (D511, D516)
 - [ ] Android: density buckets, `scaleType`, `setImageBitmap` (D509)
 - [ ] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500)

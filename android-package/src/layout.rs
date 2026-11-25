@@ -43,7 +43,42 @@ pub struct ViewNode {
     pub vertical: bool,
     /// `android:src` or `app:srcCompat`: an image view's drawable resource (D509).
     pub image: Option<u32>,
+    /// `android:inputType`'s flags (`TYPE_CLASS_NUMBER`, `TYPE_TEXT_VARIATION_PASSWORD`, ...),
+    /// D762.
+    pub input_type: Option<u32>,
+    /// `android:imeOptions`' action (`actionDone` is 6), D762.
+    pub ime_action: Option<u32>,
     pub children: Vec<ViewNode>,
+}
+
+const INPUT_TYPE_NAMES: [(&str, u32); 10] = [
+    ("text", 0x1),
+    ("textPassword", 0x81),
+    ("textVisiblePassword", 0x91),
+    ("textWebPassword", 0xe1),
+    ("textEmailAddress", 0x21),
+    ("textMultiLine", 0x2_0001),
+    ("number", 0x2),
+    ("numberSigned", 0x1002),
+    ("numberDecimal", 0x2002),
+    ("phone", 0x3),
+];
+
+const IME_ACTION_NAMES: [(&str, u32); 6] = [
+    ("actionGo", 2),
+    ("actionSearch", 3),
+    ("actionSend", 4),
+    ("actionNext", 5),
+    ("actionDone", 6),
+    ("actionPrevious", 7),
+];
+
+fn named_flags(text: Option<&str>, names: &[(&str, u32)]) -> Option<u32> {
+    let mut flags = 0;
+    for part in text?.split('|') {
+        flags |= names.iter().find(|(name, _)| *name == part)?.1;
+    }
+    Some(flags)
 }
 
 struct Attribute {
@@ -101,6 +136,18 @@ fn node(name: String, attributes: &[Attribute]) -> ViewNode {
             "onClick" => view.on_click = attribute.text.clone(),
             "src" | "srcCompat" if attribute.kind == TYPE_REFERENCE => {
                 view.image = Some(attribute.data)
+            }
+            "inputType" => {
+                view.input_type = match attribute.kind {
+                    TYPE_INT_DEC | TYPE_INT_HEX => Some(attribute.data),
+                    _ => named_flags(attribute.text.as_deref(), &INPUT_TYPE_NAMES),
+                }
+            }
+            "imeOptions" => {
+                view.ime_action = match attribute.kind {
+                    TYPE_INT_DEC | TYPE_INT_HEX => Some(attribute.data & 0xff),
+                    _ => named_flags(attribute.text.as_deref(), &IME_ACTION_NAMES),
+                }
             }
             "orientation" => {
                 view.vertical = match attribute.kind {
