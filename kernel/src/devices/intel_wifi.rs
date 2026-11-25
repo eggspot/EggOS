@@ -774,7 +774,7 @@ fn connect<P: Platform>(
         let pmk = match (sae_pmk, &wanted.enterprise) {
             (Some(pmk), _) => pmk,
             (None, Some(settings)) => {
-                set_status("signing in");
+                set_status("signing-in");
                 let mut exchange = LinkExchange::<P> {
                     transport: &mut *transport,
                     link: &mut link,

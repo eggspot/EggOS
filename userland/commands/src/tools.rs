@@ -1553,8 +1553,11 @@ pub const WIFI_CONNECT: ToolDefinition = ToolDefinition {
                   [<passphrase>]` does: the driver joins it after its next scan; wifi_list then \
                   says connected. A WPA2- or WPA3-Personal network needs its passphrase (8 to 63 \
                   characters); an open one none. hidden: true for a network that does not \
-                  announce its name, which the driver then asks for by name. Asks the user first, \
-                  or needs confirm: true when the client cannot ask. Needs the run grant.",
+                  announce its name, which the driver then asks for by name. An Enterprise \
+                  network (D780) takes eap (peap or tls) with identity, password (peap) or cert \
+                  and key (tls, PEM paths), and always ca and domain, which the server's \
+                  certificate must match. Asks the user first, or needs confirm: true when the \
+                  client cannot ask. Needs the run grant.",
     command: &["wifi", "connect"],
     fixed: &[],
     arguments: &[
@@ -1569,6 +1572,41 @@ pub const WIFI_CONNECT: ToolDefinition = ToolDefinition {
         described(
             optional("hidden", JsonType::Boolean, Mapping::Option("--hidden")),
             "The network hides its name: the driver asks for it by name (D298).",
+        ),
+        described(
+            Argument {
+                choices: &["peap", "tls"],
+                ..optional("eap", JsonType::String, Mapping::Option("--eap"))
+            },
+            "An Enterprise network's sign-in: peap (a password) or tls (a certificate).",
+        ),
+        described(
+            optional("identity", JsonType::String, Mapping::Option("--identity")),
+            "The user name, or the certificate's identity.",
+        ),
+        described(
+            optional("password", JsonType::String, Mapping::Option("--password")),
+            "PEAP's password.",
+        ),
+        described(
+            optional("anonymous", JsonType::String, Mapping::Option("--anonymous")),
+            "PEAP's outer identity; anonymous when left out.",
+        ),
+        described(
+            optional("cert", JsonType::String, Mapping::Option("--cert")),
+            "EAP-TLS's client certificate: a PEM file's path.",
+        ),
+        described(
+            optional("key", JsonType::String, Mapping::Option("--key")),
+            "EAP-TLS's P-256 private key: a PEM file's path, without a passphrase.",
+        ),
+        described(
+            optional("ca", JsonType::String, Mapping::Option("--ca")),
+            "The CA certificate the server's must chain to: a PEM file's path.",
+        ),
+        described(
+            optional("domain", JsonType::String, Mapping::Option("--domain")),
+            "The name the server's certificate must carry, like radius.example.com.",
         ),
         confirm(GUARD),
     ],

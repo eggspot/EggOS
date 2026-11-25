@@ -143,6 +143,46 @@ pub const NOT_A_WAV: ErrorDefinition = error(
     None,
 );
 
+/// `wifi connect`: a file given as a certificate holds no PEM certificate (D780).
+pub const NOT_A_CERTIFICATE: ErrorDefinition = error(
+    "not_a_certificate",
+    Category::Usage,
+    "Give a PEM file with a -----BEGIN CERTIFICATE----- block.",
+    None,
+);
+
+/// `wifi connect`: the key file holds no unencrypted PEM private key (D780).
+pub const NOT_A_KEY: ErrorDefinition = error(
+    "not_a_key",
+    Category::Usage,
+    "Give a PEM file with a PRIVATE KEY or EC PRIVATE KEY block.",
+    None,
+);
+
+/// `wifi connect`: the private key is not a P-256 key (D780).
+pub const KEY_UNSUPPORTED: ErrorDefinition = error(
+    "key_unsupported",
+    Category::Usage,
+    "Use a P-256 key; EggOS takes no other keys for now.",
+    None,
+);
+
+/// `wifi connect`: the private key is encrypted under a passphrase (D780).
+pub const KEY_ENCRYPTED: ErrorDefinition = error(
+    "key_encrypted",
+    Category::Usage,
+    "Give the key without a passphrase.",
+    None,
+);
+
+/// `wifi connect`: the server domain is not a host name (D780).
+pub const BAD_DOMAIN: ErrorDefinition = error(
+    "bad_domain",
+    Category::Usage,
+    "Type the server's domain name, like radius.example.com.",
+    None,
+);
+
 /// `ls`: a folder holds more entries than `ls` lists at once.
 pub const TOO_MANY_ENTRIES: ErrorDefinition = error(
     "too_many_entries",
@@ -806,4 +846,9 @@ pub const ALL: [&ErrorDefinition; 96] = [
     &NO_SOUND_DEVICE,
     &NO_SUCH_DEVICE,
     &NOT_A_WAV,
+    &NOT_A_CERTIFICATE,
+    &NOT_A_KEY,
+    &KEY_UNSUPPORTED,
+    &KEY_ENCRYPTED,
+    &BAD_DOMAIN,
 ];

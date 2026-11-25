@@ -7,6 +7,8 @@ use crate::der::{self, Reader};
 const EC_PUBLIC_KEY: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 const PRIME256V1: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 const SEC1_BEGIN: &[u8] = b"-----BEGIN EC PRIVATE KEY-----";
+const ENCRYPTED_PKCS8_BEGIN: &[u8] = b"-----BEGIN ENCRYPTED PRIVATE KEY-----";
+const ENCRYPTED_HEADER: &[u8] = b"Proc-Type: 4,ENCRYPTED";
 const PKCS8_BEGIN: &[u8] = b"-----BEGIN PRIVATE KEY-----";
 const SCALAR_BYTES: usize = 32;
 const LARGEST_DER: usize = 512;
@@ -20,6 +22,8 @@ pub enum KeyError {
     Malformed,
     /// The key is not on P-256, or not an elliptic-curve key.
     Unsupported,
+    /// The key is encrypted under a passphrase.
+    Encrypted,
 }
 
 impl KeyError {
@@ -29,6 +33,16 @@ impl KeyError {
             Self::NotFound => "the file holds no unencrypted private key",
             Self::Malformed => "the private key is malformed",
             Self::Unsupported => "the private key is not a P-256 key",
+            Self::Encrypted => "the private key is encrypted under a passphrase",
+        }
+    }
+
+    /// The code `wifi connect` and Settings report it with.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotFound | Self::Malformed => "not_a_key",
+            Self::Unsupported => "key_unsupported",
+            Self::Encrypted => "key_encrypted",
         }
     }
 }
@@ -133,6 +147,10 @@ pub fn from_pkcs8(der_bytes: &[u8]) -> Result<[u8; SCALAR_BYTES], KeyError> {
 
 /// The P-256 private key in PEM `text`.
 pub fn p256_from_pem(text: &[u8]) -> Result<[u8; SCALAR_BYTES], KeyError> {
+    let holds = |marker: &[u8]| text.windows(marker.len()).any(|window| window == marker);
+    if holds(ENCRYPTED_PKCS8_BEGIN) || holds(ENCRYPTED_HEADER) {
+        return Err(KeyError::Encrypted);
+    }
     let mut der_bytes = [0u8; LARGEST_DER];
     if let Some(length) = decode_block(text, SEC1_BEGIN, &mut der_bytes) {
         return from_sec1(&der_bytes[..length], false);
@@ -181,5 +199,9 @@ mod tests {
             AwEH\n-----END EC PRIVATE KEY-----\n";
         assert_eq!(p256_from_pem(text), from_sec1(SEC1, false));
         assert_eq!(p256_from_pem(b"nothing"), Err(KeyError::NotFound));
+        assert_eq!(
+            p256_from_pem(b"-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n"),
+            Err(KeyError::Encrypted)
+        );
     }
 }

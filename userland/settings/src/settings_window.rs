@@ -613,6 +613,31 @@ pub struct WifiJoin {
     pub passphrase: Text<{ wifi_section::MAX_PASSPHRASE_BYTES }>,
     /// Whether it hides its name.
     pub hidden: bool,
+    /// An Enterprise network's sign-in (D780).
+    pub enterprise: Option<WifiEnterprise>,
+}
+
+/// An Enterprise network's sign-in as the note names it (D780); the program checks and copies
+/// the PEM files and writes what `wifi connect --eap` writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiEnterprise {
+    /// EAP-TLS (a client certificate) rather than PEAP (a password).
+    pub certificate_method: bool,
+    pub identity: Text<{ wifi_section::MAX_IDENTITY_BYTES }>,
+    pub password: Text<{ wifi_section::MAX_PASSWORD_BYTES }>,
+    pub anonymous: Text<{ wifi_section::MAX_IDENTITY_BYTES }>,
+    pub certificate: Text<{ wifi_section::MAX_PEM_PATH_BYTES }>,
+    pub key: Text<{ wifi_section::MAX_PEM_PATH_BYTES }>,
+    pub ca: Text<{ wifi_section::MAX_PEM_PATH_BYTES }>,
+    pub domain: Text<{ wifi_section::MAX_IDENTITY_BYTES }>,
+}
+
+/// One of the PEM files an Enterprise sign-in names (D780).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WifiFile {
+    Ca,
+    Certificate,
+    Key,
 }
 
 /// What the program must do for the user.
@@ -623,6 +648,10 @@ pub enum Request {
     WifiJoin(alloc::boxed::Box<WifiJoin>),
     /// Remove `/var/lib/eggos/wifi.conf`, as `wifi forget` does (D283).
     WifiForget,
+    /// Run the file picker for this PEM file, starting from the path the field holds, then
+    /// give back the chosen path and what is wrong with the file
+    /// ([`SettingsWindow::wifi_file_chosen`]) (D780).
+    WifiChooseFile(WifiFile, Text<{ wifi_section::MAX_PEM_PATH_BYTES }>),
     /// Set the wired adapter's MTU with `SIOCSIFMTU`, as `ip link set` does (D734); a refusal
     /// goes to [`SettingsWindow::link_refused`].
     SetMtu(u32),
@@ -2822,6 +2851,22 @@ impl SettingsWindow {
         let adapter = self.facts.network_adapter;
         self.network
             .link_refused(&mut self.tree, errno, adapter.as_ref());
+    }
+
+    /// What the file picker answered for `file` (D780): the chosen path and what is wrong with
+    /// that file, or nothing when it was cancelled.
+    pub fn wifi_file_chosen(
+        &mut self,
+        file: WifiFile,
+        chosen: Option<(&str, Option<&str>)>,
+        now_ms: u32,
+    ) {
+        self.wifi.file_chosen(&mut self.tree, file, chosen, now_ms);
+    }
+
+    /// The program refused `file` when saving a join (D780).
+    pub fn wifi_file_refused(&mut self, file: WifiFile, words: &str, now_ms: u32) {
+        self.wifi.file_refused(&mut self.tree, file, words, now_ms);
     }
 
     /// The program could not remove `wifi.conf`.

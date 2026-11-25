@@ -435,6 +435,7 @@ dependencies = [
  "eggos-settings-file",
  "eggos-soundd",
  "eggos-terminal-window",
+ "eggos-tls",
  "eggos-toolkit",
  "eggos-windows-registry",
 ]

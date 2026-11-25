@@ -4420,6 +4420,17 @@ fn write_audit_arguments(
     if tool.kind == Kind::WifiConnect {
         let mut words = checked.words.each(scratch.words).peekable();
         let hidden = words.next_if_eq(&"--hidden").is_some();
+        let (mut eap, mut identity, mut domain, mut password) = ("", "", "", false);
+        while let Some(option) = words.next_if(|word| *word != "--") {
+            let value = words.next().unwrap_or("");
+            match option {
+                "--eap" => eap = value,
+                "--identity" => identity = value,
+                "--domain" => domain = value,
+                "--password" => password = true,
+                _ => {}
+            }
+        }
         words.next_if_eq(&"--");
         writer.key("ssid");
         shown_string(&mut writer, words.next().unwrap_or(""), cut);
@@ -4427,6 +4438,16 @@ fn write_audit_arguments(
         writer.bool(hidden);
         writer.key("passphrase");
         writer.bool(words.next().is_some());
+        if !eap.is_empty() {
+            writer.key("eap");
+            shown_string(&mut writer, eap, cut);
+            writer.key("identity");
+            shown_string(&mut writer, identity, cut);
+            writer.key("domain");
+            shown_string(&mut writer, domain, cut);
+            writer.key("password");
+            writer.bool(password);
+        }
     }
     if matches!(tool.kind, Kind::AppDo | Kind::AppDoConfirmed) {
         writer.key("command");

@@ -47,7 +47,7 @@ use eggos_settings::keys::{
 use eggos_settings::network_view::NetworkRead;
 use eggos_settings::settings_window::{
     ABOUT, CAPACITY, DATE_AND_TIME, DEFAULT_SIZE, KEYBOARD, MINIMUM_SIZE, NETWORK, POWER, Request,
-    SetOutcome, SettingsForm, SettingsWindow, TITLE,
+    SetOutcome, SettingsForm, SettingsWindow, TITLE, WifiEnterprise, WifiFile,
 };
 use eggos_settings::task_manager::{
     self, ProcessFact, Request as TaskRequest, Snapshot, TaskManager, WindowFact,
@@ -429,16 +429,172 @@ fn wifi_status() -> wifi_section::Status {
         Ok(length) => wifi_section::parse(core::str::from_utf8(&text[..length]).unwrap_or("")),
         Err(_) => wifi_section::Status::default(),
     };
-    let mut settings = [0u8; 512];
-    status.chosen_hidden = read_file(wifi_section::SETTINGS_PATH, &mut settings)
+    let mut settings = [0u8; WIFI_SETTINGS_BYTES];
+    let text = read_file(wifi_section::SETTINGS_PATH, &mut settings)
         .ok()
-        .and_then(|length| core::str::from_utf8(&settings[..length]).ok())
-        .is_some_and(wifi_section::chosen_hidden_in);
+        .and_then(|length| core::str::from_utf8(&settings[..length]).ok());
+    status.chosen_hidden = text.is_some_and(wifi_section::chosen_hidden_in);
+    status.chosen_enterprise = text.and_then(wifi_section::sign_in_in);
     status
 }
 
+const WIFI_SETTINGS_BYTES: usize = 4096;
+const WIFI_FILES_FOLDER: &str = "/var/lib/eggos/wifi";
+const WIFI_FILES_MODE: usize = 0o700;
+const WIFI_CA_COPY: &CStr = c"/var/lib/eggos/wifi/ca.pem";
+const WIFI_CERTIFICATE_COPY: &CStr = c"/var/lib/eggos/wifi/client.pem";
+const WIFI_KEY_COPY: &CStr = c"/var/lib/eggos/wifi/key.pem";
+const LARGEST_PEM_FILE: usize = 64 * 1024;
+const PEM_FILTER: &[u8] = b"PEM files|*.pem;*.crt;*.cer;*.key";
+
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn pem_problem(file: WifiFile, path: &str, bytes: &[u8]) -> Option<alloc::string::String> {
+    let name = file_name(path);
+    match file {
+        WifiFile::Ca | WifiFile::Certificate => (!eggos_tls::pem::holds_certificate(bytes))
+            .then(|| alloc::format!("{name} is not a PEM certificate.")),
+        WifiFile::Key => match eggos_tls::private_key::p256_from_pem(bytes) {
+            Ok(mut key) => {
+                key.fill(0);
+                None
+            }
+            Err(eggos_tls::private_key::KeyError::Unsupported) => Some(
+                alloc::string::String::from("EggOS takes P-256 private keys only for now."),
+            ),
+            Err(eggos_tls::private_key::KeyError::Encrypted) => Some(
+                alloc::string::String::from("The private key must not have a passphrase."),
+            ),
+            Err(_) => Some(alloc::format!("{name} is not a PEM private key.")),
+        },
+    }
+}
+
+fn read_pem_file(
+    file: WifiFile,
+    path: &str,
+) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
+    let mut bytes = alloc::vec![0u8; LARGEST_PEM_FILE];
+    match read_file(path, &mut bytes) {
+        Ok(length) => {
+            bytes.truncate(length);
+            match pem_problem(file, path, &bytes) {
+                Some(problem) => Err(problem),
+                None => Ok(bytes),
+            }
+        }
+        Err(error) => Err(alloc::format!(
+            "Cannot read {}: {}.",
+            file_name(path),
+            core::str::from_utf8(error.message()).unwrap_or("it could not be read")
+        )),
+    }
+}
+
+fn pick_pem(file: WifiFile, current: &str) -> Option<alloc::string::String> {
+    let title: &[u8] = match file {
+        WifiFile::Ca => b"Choose the CA certificate",
+        WifiFile::Certificate => b"Choose the client certificate",
+        WifiFile::Key => b"Choose the private key",
+    };
+    let folder = current
+        .rsplit_once('/')
+        .map(|(folder, _)| folder)
+        .filter(|folder| !folder.is_empty());
+    let mut arguments: alloc::vec::Vec<&[u8]> = alloc::vec![
+        b"pick",
+        b"open",
+        b"--title",
+        title,
+        b"--filter",
+        PEM_FILTER,
+    ];
+    if let Some(folder) = folder {
+        arguments.extend([&b"--folder"[..], folder.as_bytes()]);
+    }
+    let mut output = alloc::vec![0u8; wifi_section::MAX_PEM_PATH_BYTES + 1];
+    let (length, status) =
+        eggos_app::linux::run_with_output(b"/bin/pick", &arguments, &mut output).ok()?;
+    if status != 0 {
+        return None;
+    }
+    let line = output[..length].split(|&byte| byte == b'\n').next()?;
+    core::str::from_utf8(line)
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(alloc::string::String::from)
+}
+
+fn errno_words(error: Errno) -> alloc::string::String {
+    alloc::string::String::from(
+        core::str::from_utf8(error.message()).unwrap_or("the file could not be written"),
+    )
+}
+
+fn save_sign_in(
+    name: &str,
+    hidden: bool,
+    sign_in: &WifiEnterprise,
+) -> Result<(), (Option<WifiFile>, alloc::string::String)> {
+    let ca = read_pem_file(WifiFile::Ca, sign_in.ca.as_str())
+        .map_err(|words| (Some(WifiFile::Ca), words))?;
+    let files = match sign_in.certificate_method {
+        true => Some((
+            read_pem_file(WifiFile::Certificate, sign_in.certificate.as_str())
+                .map_err(|words| (Some(WifiFile::Certificate), words))?,
+            read_pem_file(WifiFile::Key, sign_in.key.as_str())
+                .map_err(|words| (Some(WifiFile::Key), words))?,
+        )),
+        false => None,
+    };
+    let folder = CPath::new(WIFI_FILES_FOLDER);
+    match syscall(
+        number::MKDIRAT,
+        [AT_FDCWD, folder.pointer(), WIFI_FILES_MODE, 0, 0, 0],
+    ) {
+        Ok(_) | Err(Errno::EEXIST) => {}
+        Err(error) => return Err((None, errno_words(error))),
+    }
+    let copy = |path: &CStr, bytes: &[u8]| {
+        write_file_with_mode(path, WIFI_SETTINGS_MODE, bytes)
+            .map_err(|error| (None::<WifiFile>, errno_words(error)))
+    };
+    copy(WIFI_CA_COPY, &ca)?;
+    let path_of = |path: &'static CStr| core::str::from_utf8(path.to_bytes()).unwrap_or("");
+    let method = match files {
+        Some((certificate, mut key)) => {
+            copy(WIFI_CERTIFICATE_COPY, &certificate)?;
+            let copied = copy(WIFI_KEY_COPY, &key);
+            key.fill(0);
+            copied?;
+            alloc::format!(
+                "eap=tls\nidentity={}\ncert={}\nkey={}\n",
+                sign_in.identity.as_str(),
+                path_of(WIFI_CERTIFICATE_COPY),
+                path_of(WIFI_KEY_COPY)
+            )
+        }
+        None => alloc::format!(
+            "eap=peap\nidentity={}\npassword={}\nanonymous={}\n",
+            sign_in.identity.as_str(),
+            sign_in.password.as_str(),
+            sign_in.anonymous.as_str()
+        ),
+    };
+    let marked = if hidden { "hidden=yes\n" } else { "" };
+    let text = alloc::format!(
+        "ssid={name}\nsecurity=enterprise\n{method}ca={}\ndomain={}\n{marked}",
+        path_of(WIFI_CA_COPY),
+        sign_in.domain.as_str()
+    );
+    write_file_with_mode(c"/var/lib/eggos/wifi.conf", WIFI_SETTINGS_MODE, text.as_bytes())
+        .map_err(|error| (None, errno_words(error)))
+}
+
 fn wifi_chosen() -> Option<alloc::string::String> {
-    let mut text = [0u8; 512];
+    let mut text = [0u8; WIFI_SETTINGS_BYTES];
     let length = read_file(wifi_section::SETTINGS_PATH, &mut text).ok()?;
     wifi_section::chosen_in(core::str::from_utf8(&text[..length]).ok()?)
 }
@@ -1896,11 +2052,36 @@ impl Application<CAPACITY> for Settings {
                     self.window.show_components(components_read());
                 }
             }
+            Some(Request::WifiJoin(join)) if join.enterprise.is_some() => {
+                let saved = match &join.enterprise {
+                    Some(sign_in) => save_sign_in(join.name.as_str(), join.hidden, sign_in),
+                    None => Ok(()),
+                };
+                match saved {
+                    Ok(()) => self.window.wifi_join_saved(Ok(()), now_ms),
+                    Err((Some(file), words)) => {
+                        self.window.wifi_file_refused(file, &words, now_ms);
+                    }
+                    Err((None, words)) => self.window.wifi_join_saved(Err(&words), now_ms),
+                }
+                self.window.show_wifi(wifi_status(), wifi_chosen());
+            }
+            Some(Request::WifiChooseFile(file, current)) => {
+                match pick_pem(file, current.as_str()) {
+                    Some(path) => {
+                        let problem = read_pem_file(file, &path).err();
+                        self.window
+                            .wifi_file_chosen(file, Some((&path, problem.as_deref())), now_ms);
+                    }
+                    None => self.window.wifi_file_chosen(file, None, now_ms),
+                }
+            }
             Some(Request::WifiJoin(join)) => {
                 let crate::settings_window::WifiJoin {
                     name,
                     passphrase,
                     hidden,
+                    ..
                 } = *join;
                 let marked = if hidden { "hidden=yes\n" } else { "" };
                 let text = alloc::format!(
@@ -1932,6 +2113,12 @@ impl Application<CAPACITY> for Settings {
                 self.window.show_network_adapter(network_adapter());
             }
             Some(Request::WifiForget) => {
+                for copy in [WIFI_CA_COPY, WIFI_CERTIFICATE_COPY, WIFI_KEY_COPY] {
+                    let _ = syscall(
+                        number::UNLINKAT,
+                        [AT_FDCWD, copy.as_ptr() as usize, 0, 0, 0, 0],
+                    );
+                }
                 let removed = syscall(
                     number::UNLINKAT,
                     [

@@ -789,13 +789,21 @@ pub fn check(
         let hidden = flag(get("hidden"), "hidden")?;
         let ssid = text_argument(get("ssid"), "ssid")?.ok_or(ArgumentProblem::Missing("ssid"))?;
         let passphrase = text_argument(get("passphrase"), "passphrase")?;
-        let parts = [
-            hidden.then_some(Part::Fixed("--hidden")),
-            Some(Part::Fixed("--")),
-            Some(Part::Given(ssid)),
-            passphrase.map(Part::Given),
-        ];
-        checked.words = given_words(&parts, decoded.words)?;
+        let mut parts: [Option<Part<'_>>; 4 + 2 * WIFI_ENTERPRISE_OPTIONS.len()] =
+            [const { None }; 4 + 2 * WIFI_ENTERPRISE_OPTIONS.len()];
+        parts[0] = hidden.then_some(Part::Fixed("--hidden"));
+        let mut at = 1;
+        for (name, option) in WIFI_ENTERPRISE_OPTIONS {
+            if let Some(value) = text_argument(get(name), name)? {
+                parts[at] = Some(Part::Fixed(option));
+                parts[at + 1] = Some(Part::Given(value));
+                at += 2;
+            }
+        }
+        parts[at] = Some(Part::Fixed("--"));
+        parts[at + 1] = Some(Part::Given(ssid));
+        parts[at + 2] = passphrase.map(Part::Given);
+        checked.words = given_words(&parts[..at + 3], decoded.words)?;
     }
     if matches!(tool.kind, Kind::AppDo | Kind::AppDoConfirmed) {
         let name = text_argument(get("name"), "name")?.ok_or(ArgumentProblem::Missing("name"))?;
@@ -1270,6 +1278,16 @@ fn screen_capture_arguments<'a>(
 }
 
 const REGION_BYTES: usize = 32;
+const WIFI_ENTERPRISE_OPTIONS: [(&str, &str); 8] = [
+    ("eap", "--eap"),
+    ("identity", "--identity"),
+    ("password", "--password"),
+    ("anonymous", "--anonymous"),
+    ("cert", "--cert"),
+    ("key", "--key"),
+    ("ca", "--ca"),
+    ("domain", "--domain"),
+];
 const MOST_DESKTOPS: u64 = 8;
 
 fn desktop_number(value: Option<Value<'_>>) -> Result<u32, ArgumentProblem> {

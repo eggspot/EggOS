@@ -189,11 +189,7 @@ fn time<const N: usize>(der: &mut Der<N>, seconds: i64) {
 }
 
 fn is_host_name(host: &[u8]) -> bool {
-    !host.is_empty()
-        && host.len() <= MAX_HOST_BYTES
-        && host
-            .iter()
-            .all(|&byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+    host.len() <= MAX_HOST_BYTES && crate::chain::is_host_name(host)
 }
 
 fn common_name(name: &Name<'_>, text: &mut [u8; 15]) -> usize {

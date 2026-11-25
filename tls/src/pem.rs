@@ -154,6 +154,11 @@ impl<'b> Certificates<'b> {
     }
 }
 
+/// Whether PEM `text` has a certificate block's begin line.
+pub fn holds_certificate(text: &[u8]) -> bool {
+    text.windows(BEGIN.len()).any(|window| window == BEGIN)
+}
+
 fn trim_end(mut line: &[u8]) -> &[u8] {
     while let [rest @ .., b' ' | b'\t' | b'\r'] = line {
         line = rest;

@@ -16,7 +16,10 @@ use crate::errors::{
     NEEDS_CONFIRMATION, NO_STORE, NO_SUCH_COMPONENT, NOT_IN_THIS_FORM, REMOVE_FAILED,
     STORE_DAMAGED, STORE_DETACHED, WRITE_FAILED,
 };
-use crate::errors::{NO_SOUND_DEVICE, NO_SUCH_DEVICE, NOT_A_WAV};
+use crate::errors::{
+    BAD_DOMAIN, KEY_ENCRYPTED, KEY_UNSUPPORTED, NO_SOUND_DEVICE, NO_SUCH_DEVICE, NOT_A_CERTIFICATE,
+    NOT_A_KEY, NOT_A_WAV,
+};
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
     Example, Field, FieldType, JSON_OPTION, OperandDefinition, OptionDefinition, OptionValue,
@@ -4137,23 +4140,94 @@ pub const WIFI_CONNECT: CommandDefinition = CommandDefinition {
                   passphrase (8 to 63 characters), in /var/lib/eggos/wifi.conf, which only root \
                   reads; the Wi-Fi driver joins it after its next scan, and wifi list then says \
                   connected. An open network takes no passphrase; --hidden joins a network that \
-                  hides its name, probing for it by name (D298).",
-    options: &[long_flag(
-        "hidden",
-        "The network hides its name: probe for it by name.",
-    )],
+                  hides its name, probing for it by name (D298). An Enterprise network takes \
+                  --eap peap with --identity and --password, or --eap tls with --identity, \
+                  --cert and --key, and always --ca and --domain, which the server's \
+                  certificate must match; the PEM files are copied to /var/lib/eggos/wifi/ \
+                  (D780).",
+    options: &[
+        long_flag("hidden", "The network hides its name: probe for it by name."),
+        valued(
+            None,
+            Some("eap"),
+            "method",
+            ValueType::Choice(&["peap", "tls"]),
+            "Sign in to an Enterprise network: peap (a password) or tls (a certificate).",
+        ),
+        valued(
+            None,
+            Some("identity"),
+            "user",
+            ValueType::Text,
+            "The user name, or the certificate's identity.",
+        ),
+        valued(
+            None,
+            Some("password"),
+            "password",
+            ValueType::Text,
+            "PEAP's password, 1 to 255 bytes.",
+        ),
+        valued(
+            None,
+            Some("anonymous"),
+            "identity",
+            ValueType::Text,
+            "PEAP's outer identity; anonymous when not given.",
+        ),
+        valued(
+            None,
+            Some("cert"),
+            "file",
+            ValueType::Path,
+            "EAP-TLS's client certificate, PEM.",
+        ),
+        valued(
+            None,
+            Some("key"),
+            "file",
+            ValueType::Path,
+            "EAP-TLS's private key, PEM, P-256, without a passphrase.",
+        ),
+        valued(
+            None,
+            Some("ca"),
+            "file",
+            ValueType::Path,
+            "The CA certificate the server's certificate must chain to, PEM.",
+        ),
+        valued(
+            None,
+            Some("domain"),
+            "domain",
+            ValueType::Text,
+            "The name the server's certificate must carry.",
+        ),
+    ],
     operands: &[WIFI_SSID, WIFI_PASSPHRASE],
     outputs: TEXT_ONLY,
     max_effect: Effect::Change,
     errors: &[
         exits(&USAGE, 1),
         exits(&PERMISSION_DENIED, 1),
+        exits(&NOT_A_CERTIFICATE, 1),
+        exits(&NOT_A_KEY, 1),
+        exits(&KEY_UNSUPPORTED, 1),
+        exits(&KEY_ENCRYPTED, 1),
+        exits(&BAD_DOMAIN, 1),
         exits(&FAILED, 1),
     ],
-    examples: &[example(
-        "wifi connect home correct-horse",
-        "Joining home after the next scan; wifi list shows when it is connected.\n",
-    )],
+    examples: &[
+        example(
+            "wifi connect home correct-horse",
+            "Joining home after the next scan; wifi list shows when it is connected.\n",
+        ),
+        example(
+            "wifi connect corp --eap peap --identity kim --password secret --ca ca.pem \
+             --domain radius.example.com",
+            "Joining corp after the next scan; wifi list shows when it is connected.\n",
+        ),
+    ],
     surface: NETWORK_PANE,
 };
 

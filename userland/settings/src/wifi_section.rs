@@ -2,9 +2,11 @@
 //! Wi-Fi driver's state from `/proc/driver/wifi`, the networks its last scan heard, six rows a
 //! page, and joining and forgetting one by writing and removing `/var/lib/eggos/wifi.conf` as
 //! `wifi connect` and `wifi forget` do. A WPA2 network's passphrase is typed in a masked field in
-//! a note under its row.
+//! a note under its row. An Enterprise network's sign-in note (D780,
+//! docs/ux/wifi-enterprise-v0.1.md) asks the method, the user name and password or the client
+//! certificate and key, and always the CA certificate and the server's domain.
 
-use crate::settings_window::{CAPACITY, Request, WifiJoin};
+use crate::settings_window::{CAPACITY, Request, WifiEnterprise, WifiFile, WifiJoin};
 use crate::storage_pane::shortened;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -14,8 +16,8 @@ use eggos_toolkit::theme::Token;
 use eggos_toolkit::tree::{Response, WidgetId, WidgetTree};
 use eggos_toolkit::widget::{Escape, Kind, Length, Place};
 
-/// The section's widgets: the design's 16 to 52.
-pub const WIDGETS: usize = 46;
+/// The section's widgets: the design's 16 to 52, and 62 to 73 for Enterprise networks.
+pub const WIDGETS: usize = 58;
 /// The Wi-Fi driver's state file.
 pub const STATUS_PATH: &str = "/proc/driver/wifi";
 /// The file naming the network to join, as `wifi connect` writes it.
@@ -24,6 +26,12 @@ pub const SETTINGS_PATH: &str = "/var/lib/eggos/wifi.conf";
 pub const MAX_NAME_BYTES: usize = 32;
 /// The longest passphrase, in bytes, the field and the request hold.
 pub const MAX_PASSPHRASE_BYTES: usize = 63 * 4;
+/// The longest user name or anonymous identity, in bytes.
+pub const MAX_IDENTITY_BYTES: usize = 253;
+/// The longest Enterprise password, in bytes.
+pub const MAX_PASSWORD_BYTES: usize = 255;
+/// The longest PEM file path, in bytes.
+pub const MAX_PEM_PATH_BYTES: usize = 1024;
 
 const PADDING: i32 = 16;
 const SECTION_TOP: i32 = 356;
@@ -55,13 +63,45 @@ const HIDDEN_LEAD: &str = "EggOS looks for it by sending its name, which others 
 const NAME_RULE: &str = "Use 1 to 32 bytes for the name.";
 const OPEN_RULE: &str = "An open network has no passphrase.";
 const SPACE_RULE: &str = "The name has a space at an end.";
-const SECURITY_LABELS: [&str; 2] = ["Open", "WPA2 or WPA3"];
+const SECURITY_LABELS: [&str; 3] = ["Open", "WPA2 or WPA3", "Enterprise"];
 const OPEN_CHOICE: usize = 0;
 const PROTECTED_CHOICE: usize = 1;
+const ENTERPRISE_CHOICE: usize = 2;
+const ENTERPRISE_NOTE_HEIGHT: i32 = 310;
+const HIDDEN_ENTERPRISE_NOTE_HEIGHT: i32 = 382;
+const HIDDEN_BLOCK_OFFSET: i32 = 72;
+const METHOD_LABELS: [&str; 2] = ["Password (PEAP)", "Certificate (EAP-TLS)"];
+const PEAP_CHOICE: usize = 0;
+const TLS_CHOICE: usize = 1;
+const ENTERPRISE_LEAD: &str = "This network signs you in with an account or a certificate.";
+const WHY_LINE: &str = "Both prove the server is yours, not a look-alike.";
+const READY_LINE: &str = "The server is checked before your sign-in is sent.";
+const USER_RULE: &str = "Use 1 to 253 characters for the user name.";
+const PASSWORD_RULE: &str = "Use up to 255 characters for the password.";
+const ANONYMOUS_RULE: &str = "Use up to 253 characters for the anonymous identity.";
+const DOMAIN_RULE: &str = "Type the server's domain name, like radius.example.com.";
+const SIGNING_IN: &str = "signing-in";
+const WRONG_PASSWORD: &str = "wrong-password";
+const SERVER_NOT_TRUSTED: &str = "server-not-trusted";
 const HIDDEN_WORD: &str = "Hidden";
 const NOT_IN_RANGE: &str = "not-in-range";
 const NOT_IN_RANGE_HIDDEN_SENTENCE: &str =
     "No network here answers to this name. Check its spelling.";
+const SIGN_IN_SENTENCES: [(&str, &str); 4] = [
+    (
+        WRONG_PASSWORD,
+        "The network did not accept the user name or password.",
+    ),
+    (
+        "certificate-refused",
+        "The network refused the client certificate.",
+    ),
+    (
+        "unsupported-method",
+        "The network asks for a sign-in method EggOS does not offer yet (not PEAP or EAP-TLS).",
+    ),
+    ("no-answer", "The network did not answer the sign-in."),
+];
 
 /// How a network protects its traffic, as the driver names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +109,8 @@ pub enum Security {
     Open,
     Wpa2,
     Wpa3,
+    Wpa2Enterprise,
+    Wpa3Enterprise,
     Legacy,
     Other,
 }
@@ -79,6 +121,8 @@ impl Security {
             "Open" => Security::Open,
             "Wpa2Personal" => Security::Wpa2,
             "Wpa3Personal" => Security::Wpa3,
+            "Wpa2Enterprise" => Security::Wpa2Enterprise,
+            "Wpa3Enterprise" => Security::Wpa3Enterprise,
             "Legacy" => Security::Legacy,
             _ => Security::Other,
         }
@@ -89,13 +133,19 @@ impl Security {
             Security::Open => "Open",
             Security::Wpa2 => "WPA2",
             Security::Wpa3 => "WPA3",
+            Security::Wpa2Enterprise => "WPA2 Enterprise",
+            Security::Wpa3Enterprise => "WPA3 Enterprise",
             Security::Legacy => "WEP or WPA",
             Security::Other => "Other security",
         }
     }
 
     fn joinable(self) -> bool {
-        matches!(self, Security::Open | Security::Wpa2 | Security::Wpa3)
+        !matches!(self, Security::Legacy | Security::Other)
+    }
+
+    fn is_enterprise(self) -> bool {
+        matches!(self, Security::Wpa2Enterprise | Security::Wpa3Enterprise)
     }
 }
 
@@ -125,6 +175,20 @@ pub struct Status {
     pub networks: Vec<Heard>,
     /// `wifi.conf` marks the chosen network `hidden=yes` (D298, D319); not the driver's.
     pub chosen_hidden: bool,
+    /// `wifi.conf`'s Enterprise sign-in, without its password (D780); not the driver's.
+    pub chosen_enterprise: Option<SavedSignIn>,
+}
+
+/// What `wifi.conf` keeps of an Enterprise sign-in, for the note to reopen with (D780).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SavedSignIn {
+    pub certificate_method: bool,
+    pub identity: String,
+    pub anonymous: String,
+    pub certificate: String,
+    pub key: String,
+    pub ca: String,
+    pub domain: String,
 }
 
 /// A failed try to join: the driver's code and its sentence (D284).
@@ -245,6 +309,30 @@ pub fn chosen_in(text: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// The Enterprise sign-in `wifi.conf`'s `text` names, if it names one (D780).
+pub fn sign_in_in(text: &str) -> Option<SavedSignIn> {
+    let mut saved = SavedSignIn::default();
+    let mut enterprise = false;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = String::from(value);
+        match key {
+            "security" => enterprise = value == "enterprise",
+            "eap" => saved.certificate_method = value == "tls",
+            "identity" => saved.identity = value,
+            "anonymous" => saved.anonymous = value,
+            "cert" => saved.certificate = value,
+            "key" => saved.key = value,
+            "ca" => saved.ca = value,
+            "domain" => saved.domain = value,
+            _ => {}
+        }
+    }
+    enterprise.then_some(saved)
+}
+
 /// Whether `wifi.conf`'s `text` marks its network `hidden=yes` (D298).
 pub fn chosen_hidden_in(text: &str) -> bool {
     text.lines().any(|line| line == "hidden=yes")
@@ -300,6 +388,7 @@ struct Row {
     detail_strong: bool,
     button: Button,
     needs_passphrase: bool,
+    enterprise: bool,
     nameless: bool,
 }
 
@@ -333,6 +422,23 @@ struct Widgets {
     count: WidgetId,
     security_label: WidgetId,
     security: WidgetId,
+    sign_in: SignInWidgets,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SignInWidgets {
+    method_label: WidgetId,
+    method: WidgetId,
+    user: WidgetId,
+    anonymous: WidgetId,
+    certificate: WidgetId,
+    certificate_choose: WidgetId,
+    key: WidgetId,
+    key_choose: WidgetId,
+    why: WidgetId,
+    ca: WidgetId,
+    ca_choose: WidgetId,
+    domain: WidgetId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,6 +466,7 @@ pub struct WifiSection {
     rows: Vec<Row>,
     note: Option<usize>,
     hidden_note: Option<HiddenNote>,
+    sign_in_note: Option<usize>,
     narrow: Option<i32>,
     shift: i32,
 }
@@ -514,6 +621,60 @@ impl WifiSection {
             Place::at(96, 0, Length::Content, Length::Px(BUTTON.1)),
             Kind::radios(&SECURITY_LABELS, PROTECTED_CHOICE, true),
         );
+        let path_field = |placeholder: &'static str| {
+            (
+                sized(40, 0, 288, BUTTON.1),
+                Kind::text_field(placeholder, Escape::Clear),
+            )
+        };
+        let choose = || (sized(344, 0, BUTTON.0, BUTTON.1), Kind::button("Choose...", false));
+        let sign_in = SignInWidgets {
+            method_label: add(at(40, 0), Kind::label("Method", Token::Text)),
+            method: add(
+                Place::at(104, 0, Length::Content, Length::Px(BUTTON.1)),
+                Kind::radios(&METHOD_LABELS, PEAP_CHOICE, true),
+            ),
+            user: add(
+                sized(40, 0, 288, BUTTON.1),
+                Kind::text_field("User name", Escape::Clear),
+            ),
+            anonymous: add(
+                sized(40, 0, 288, BUTTON.1),
+                Kind::text_field("Anonymous identity (optional)", Escape::Clear),
+            ),
+            certificate: {
+                let (place, kind) = path_field("Client certificate (PEM)");
+                add(place, kind)
+            },
+            certificate_choose: {
+                let (place, kind) = choose();
+                add(place, kind)
+            },
+            key: {
+                let (place, kind) = path_field("Private key (PEM, P-256)");
+                add(place, kind)
+            },
+            key_choose: {
+                let (place, kind) = choose();
+                add(place, kind)
+            },
+            why: add(
+                Place::at(40, 0, Length::Px(392), Length::Content),
+                Kind::label(WHY_LINE, Token::TextDim),
+            ),
+            ca: {
+                let (place, kind) = path_field("CA certificate (PEM)");
+                add(place, kind)
+            },
+            ca_choose: {
+                let (place, kind) = choose();
+                add(place, kind)
+            },
+            domain: add(
+                sized(40, 0, 288, BUTTON.1),
+                Kind::text_field("Server domain (radius.example.com)", Escape::Clear),
+            ),
+        };
         let widgets = Widgets {
             title,
             value,
@@ -535,6 +696,7 @@ impl WifiSection {
             count,
             security_label,
             security,
+            sign_in,
         };
         tree.set_person_only(field, true);
         let mut section = Self {
@@ -547,6 +709,7 @@ impl WifiSection {
             rows: Vec::new(),
             note: None,
             hidden_note: None,
+            sign_in_note: None,
             narrow: None,
             shift,
         };
@@ -623,9 +786,24 @@ impl WifiSection {
             self.failure = None;
         }
         if let Some(failed) = &status.failure {
-            self.failure = Some(match failed.code.as_str() {
-                WRONG_PASSPHRASE => String::from(WRONG_PASSPHRASE_SENTENCE),
-                NOT_IN_RANGE if status.chosen_hidden => String::from(NOT_IN_RANGE_HIDDEN_SENTENCE),
+            let domain = status
+                .chosen_enterprise
+                .as_ref()
+                .map(|saved| in_hint(&saved.domain))
+                .unwrap_or_default();
+            let sign_in = SIGN_IN_SENTENCES
+                .iter()
+                .find(|(code, _)| *code == failed.code.as_str());
+            self.failure = Some(match (failed.code.as_str(), sign_in) {
+                (_, Some((_, words))) => String::from(*words),
+                (SERVER_NOT_TRUSTED, _) => alloc::format!(
+                    "The server did not prove it is yours: its certificate is not from this CA, or \
+                     not for {domain}."
+                ),
+                (WRONG_PASSPHRASE, _) => String::from(WRONG_PASSPHRASE_SENTENCE),
+                (NOT_IN_RANGE, _) if status.chosen_hidden => {
+                    String::from(NOT_IN_RANGE_HIDDEN_SENTENCE)
+                }
                 _ => failed.words.clone(),
             });
         } else if !self.is_driver_progress(&status.state) {
@@ -634,7 +812,9 @@ impl WifiSection {
         let changed = status != self.status || chosen != self.chosen;
         self.status = status;
         self.chosen = chosen;
-        if changed && self.note.is_none() && self.hidden_note.is_none() {
+        let any_note =
+            self.note.is_some() || self.hidden_note.is_some() || self.sign_in_note.is_some();
+        if changed && !any_note {
             self.lay_out(tree);
         }
     }
@@ -668,6 +848,7 @@ impl WifiSection {
                 | "scanning"
                 | "ready"
                 | "connecting"
+                | SIGNING_IN
                 | "connected"
         )
     }
@@ -733,6 +914,11 @@ impl WifiSection {
                 alloc::format!("Joining {}.", chosen.unwrap_or_default()),
                 false,
             ),
+            SIGNING_IN => (
+                "Connecting...",
+                alloc::format!("Signing in to {}.", chosen.unwrap_or_default()),
+                false,
+            ),
             _ => match (&self.failure, chosen) {
                 (Some(failure), _) if failure.as_str() == state => {
                     ("Not connected", sentence(failure), true)
@@ -784,6 +970,7 @@ impl WifiSection {
                     Button::Forgotten
                 },
                 needs_passphrase: false,
+                enterprise: false,
                 nameless: false,
             });
         }
@@ -799,6 +986,7 @@ impl WifiSection {
                     .any(|heard| &heard.name == chosen),
             ) {
                 (true, _) => "Not joined",
+                _ if state == SIGNING_IN => "Signing in...",
                 (false, false) if state != "connecting" => "Not in range",
                 _ => "Joining...",
             };
@@ -808,6 +996,7 @@ impl WifiSection {
                 detail_strong: true,
                 button: Button::Forget,
                 needs_passphrase: false,
+                enterprise: false,
                 nameless: false,
             });
         }
@@ -832,6 +1021,7 @@ impl WifiSection {
                     false => Button::CannotJoin,
                 },
                 needs_passphrase: matches!(heard.security, Security::Wpa2 | Security::Wpa3),
+                enterprise: heard.security.is_enterprise(),
                 nameless: hidden,
             });
         }
@@ -896,7 +1086,7 @@ impl WifiSection {
             let under_hidden = self.hidden_note == Some(HiddenNote::UnderRow(index));
             tree.set_shown(
                 row_widgets.button,
-                self.note != Some(index) && !under_hidden,
+                self.note != Some(index) && self.sign_in_note != Some(index) && !under_hidden,
             );
             cannot |= row.button == Button::CannotJoin;
             bottom = top + row_height;
@@ -906,10 +1096,19 @@ impl WifiSection {
                 bottom += NOTE_HEIGHT;
                 top += NOTE_HEIGHT;
             }
+            if self.sign_in_note == Some(index) {
+                tree.set_place(
+                    widgets.lead,
+                    Place::at(40, bottom + 10, Length::Px(392), Length::Content),
+                );
+                self.place_sign_in(tree, bottom + 4);
+                bottom += ENTERPRISE_NOTE_HEIGHT;
+                top += ENTERPRISE_NOTE_HEIGHT;
+            }
             if under_hidden {
                 self.place_hidden_note(tree, bottom + 4);
-                bottom += HIDDEN_NOTE_HEIGHT;
-                top += HIDDEN_NOTE_HEIGHT;
+                bottom += self.hidden_note_height(tree);
+                top += self.hidden_note_height(tree);
             }
         }
         let listing = self.listing();
@@ -926,7 +1125,7 @@ impl WifiSection {
             bottom = top + row_height;
             if self.hidden_note == Some(HiddenNote::UnderOther) {
                 self.place_hidden_note(tree, bottom + 4);
-                bottom += HIDDEN_NOTE_HEIGHT;
+                bottom += self.hidden_note_height(tree);
             }
         }
         let connected = self.connected() && !self.rows.is_empty();
@@ -963,18 +1162,21 @@ impl WifiSection {
                 Place::at(PADDING, reason_top, Length::Px(ROW_WIDTH), Length::Content),
             );
         }
-        let any_note = self.note.is_some() || self.hidden_note.is_some();
-        for id in [
-            widgets.field,
-            widgets.show,
-            widgets.message,
-            widgets.cancel,
-            widgets.join,
-        ] {
+        let any_note =
+            self.note.is_some() || self.hidden_note.is_some() || self.sign_in_note.is_some();
+        let sign_in = self.sign_in_shown(tree);
+        let certificate = sign_in && self.certificate_method(tree);
+        for id in [widgets.message, widgets.cancel, widgets.join] {
             tree.set_shown(id, any_note);
         }
-        for id in [
+        for id in [widgets.field, widgets.show] {
+            tree.set_shown(id, any_note && !certificate);
+        }
+        tree.set_shown(
             widgets.lead,
+            self.hidden_note.is_some() || self.sign_in_note.is_some(),
+        );
+        for id in [
             widgets.name_field,
             widgets.count,
             widgets.security_label,
@@ -982,6 +1184,76 @@ impl WifiSection {
         ] {
             tree.set_shown(id, self.hidden_note.is_some());
         }
+        let block = widgets.sign_in;
+        for id in [
+            block.method_label,
+            block.method,
+            block.user,
+            block.why,
+            block.ca,
+            block.ca_choose,
+            block.domain,
+        ] {
+            tree.set_shown(id, sign_in);
+        }
+        tree.set_shown(block.anonymous, sign_in && !certificate);
+        for id in [
+            block.certificate,
+            block.certificate_choose,
+            block.key,
+            block.key_choose,
+        ] {
+            tree.set_shown(id, certificate);
+        }
+    }
+
+    fn sign_in_shown(&self, tree: &WidgetTree<CAPACITY>) -> bool {
+        self.sign_in_note.is_some()
+            || (self.hidden_note.is_some() && self.security_choice(tree) == ENTERPRISE_CHOICE)
+    }
+
+    fn certificate_method(&self, tree: &WidgetTree<CAPACITY>) -> bool {
+        tree.selected(self.widgets.sign_in.method) == Some(TLS_CHOICE)
+    }
+
+    fn hidden_note_height(&self, tree: &WidgetTree<CAPACITY>) -> i32 {
+        match self.security_choice(tree) == ENTERPRISE_CHOICE {
+            true => HIDDEN_ENTERPRISE_NOTE_HEIGHT,
+            false => HIDDEN_NOTE_HEIGHT,
+        }
+    }
+
+    fn place_sign_in(&self, tree: &mut WidgetTree<CAPACITY>, top: i32) {
+        let widgets = self.widgets;
+        let block = widgets.sign_in;
+        let field = |y: i32| sized(40, top + y, 288, BUTTON.1);
+        let button = |x: i32, y: i32| sized(x, top + y, BUTTON.0, BUTTON.1);
+        tree.set_place(block.method_label, at(40, top + 34));
+        tree.set_place(
+            block.method,
+            Place::at(104, top + 28, Length::Content, Length::Px(BUTTON.1)),
+        );
+        tree.set_place(block.user, field(64));
+        tree.set_place(widgets.field, field(100));
+        tree.set_place(widgets.show, at(344, top + 104));
+        tree.set_place(block.anonymous, field(136));
+        tree.set_place(block.certificate, field(100));
+        tree.set_place(block.certificate_choose, button(344, 100));
+        tree.set_place(block.key, field(136));
+        tree.set_place(block.key_choose, button(344, 136));
+        tree.set_place(
+            block.why,
+            Place::at(40, top + 176, Length::Px(392), Length::Content),
+        );
+        tree.set_place(block.ca, field(194));
+        tree.set_place(block.ca_choose, button(344, 194));
+        tree.set_place(block.domain, field(230));
+        tree.set_place(
+            widgets.message,
+            Place::at(40, top + 272, Length::Px(200), Length::Content),
+        );
+        tree.set_place(widgets.cancel, button(248, 266));
+        tree.set_place(widgets.join, button(352, 266));
     }
 
     fn place_hidden_note(&self, tree: &mut WidgetTree<CAPACITY>, top: i32) {
@@ -1005,6 +1277,9 @@ impl WifiSection {
         );
         tree.set_place(widgets.cancel, sized(248, top + 136, BUTTON.0, BUTTON.1));
         tree.set_place(widgets.join, sized(352, top + 136, BUTTON.0, BUTTON.1));
+        if self.security_choice(tree) == ENTERPRISE_CHOICE {
+            self.place_sign_in(tree, top + HIDDEN_BLOCK_OFFSET);
+        }
     }
 
     fn security_choice(&self, tree: &WidgetTree<CAPACITY>) -> usize {
@@ -1014,6 +1289,13 @@ impl WifiSection {
 
     fn hidden_resting_message(&self, tree: &mut WidgetTree<CAPACITY>) {
         let name = tree.text_of(self.widgets.name_field).unwrap_or("");
+        if self.security_choice(tree) == ENTERPRISE_CHOICE
+            && !(name.starts_with(' ') || name.ends_with(' '))
+        {
+            self.sign_in_resting(tree);
+            return;
+        }
+        tree.set_enabled(self.widgets.join, true);
         let words = if name.starts_with(' ') || name.ends_with(' ') {
             SPACE_RULE
         } else if self.security_choice(tree) == OPEN_CHOICE {
@@ -1033,6 +1315,228 @@ impl WifiSection {
             &words,
             if strong { Token::Text } else { Token::TextDim },
         );
+    }
+
+    fn missing(&self, tree: &WidgetTree<CAPACITY>) -> Vec<(&'static str, WidgetId)> {
+        let widgets = self.widgets;
+        let block = widgets.sign_in;
+        let mut required = alloc::vec![("user name", block.user)];
+        match self.certificate_method(tree) {
+            false => required.push(("password", widgets.field)),
+            true => required.extend([
+                ("client certificate", block.certificate),
+                ("private key", block.key),
+            ]),
+        }
+        required.extend([("CA certificate", block.ca), ("server domain", block.domain)]);
+        required.retain(|(_, id)| tree.text_of(*id).unwrap_or("").trim().is_empty());
+        required
+    }
+
+    fn sign_in_resting(&self, tree: &mut WidgetTree<CAPACITY>) {
+        let missing = self.missing(tree);
+        tree.set_enabled(self.widgets.join, missing.is_empty());
+        let words = match missing.is_empty() {
+            true => String::from(READY_LINE),
+            false => {
+                let names: Vec<&str> = missing.iter().map(|(name, _)| *name).collect();
+                alloc::format!("Still needed: {}.", names.join(", "))
+            }
+        };
+        ink(tree, self.widgets.message, &words, Token::TextDim);
+    }
+
+    fn fill_sign_in(&self, tree: &mut WidgetTree<CAPACITY>, saved: Option<&SavedSignIn>) {
+        let block = self.widgets.sign_in;
+        let empty = SavedSignIn::default();
+        let saved = saved.unwrap_or(&empty);
+        tree.set_selected(
+            block.method,
+            match saved.certificate_method {
+                true => TLS_CHOICE,
+                false => PEAP_CHOICE,
+            },
+        );
+        for (id, text) in [
+            (block.user, &saved.identity),
+            (block.anonymous, &saved.anonymous),
+            (block.certificate, &saved.certificate),
+            (block.key, &saved.key),
+            (block.ca, &saved.ca),
+            (block.domain, &saved.domain),
+        ] {
+            tree.set_text(id, text);
+        }
+        tree.set_text(self.widgets.field, "");
+        tree.change(self.widgets.show, |kind| {
+            if let Kind::Checkbox { checked, .. } = kind {
+                *checked = false;
+            }
+        });
+        set_masked(tree, self.widgets.field, true);
+    }
+
+    fn open_sign_in_note(&mut self, tree: &mut WidgetTree<CAPACITY>, row: usize, now_ms: u32) {
+        self.note = None;
+        self.hidden_note = None;
+        self.sign_in_note = Some(row);
+        let name = self.rows.get(row).map(|row| row.name.clone());
+        let saved = self
+            .status
+            .chosen_enterprise
+            .clone()
+            .filter(|_| name.is_some() && name == self.chosen);
+        self.fill_sign_in(tree, saved.as_ref());
+        tree.set_text(self.widgets.lead, ENTERPRISE_LEAD);
+        tree.set_default_button(self.widgets.join);
+        self.sign_in_resting(tree);
+        self.lay_out(tree);
+        let untrusted = self
+            .status
+            .failure
+            .as_ref()
+            .is_some_and(|failed| failed.code == SERVER_NOT_TRUSTED);
+        let focus = match (saved.is_some(), untrusted) {
+            (true, true) => self.widgets.sign_in.ca,
+            _ => self.widgets.sign_in.user,
+        };
+        tree.set_focus(Some(focus), now_ms);
+    }
+
+    fn close_sign_in_note(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
+        let row = self.sign_in_note.take();
+        self.fill_sign_in(tree, None);
+        tree.set_text(self.widgets.lead, HIDDEN_LEAD);
+        tree.set_enabled(self.widgets.join, true);
+        tree.set_default_button(self.default_button);
+        self.lay_out(tree);
+        if let Some(row) = row {
+            tree.set_focus(Some(self.widgets.rows[row].button), now_ms);
+        }
+    }
+
+    fn refuse(&self, tree: &mut WidgetTree<CAPACITY>, words: &str, field: WidgetId, now_ms: u32) {
+        ink(tree, self.widgets.message, words, Token::Text);
+        tree.set_focus(Some(field), now_ms);
+    }
+
+    fn sign_in_join(
+        &self,
+        tree: &mut WidgetTree<CAPACITY>,
+        name: &str,
+        hidden: bool,
+        now_ms: u32,
+    ) -> Option<Request> {
+        let widgets = self.widgets;
+        let block = widgets.sign_in;
+        if let Some((_, first)) = self.missing(tree).first() {
+            tree.set_focus(Some(*first), now_ms);
+            return None;
+        }
+        let text = |id: WidgetId| String::from(tree.text_of(id).unwrap_or(""));
+        let user = text(block.user);
+        let certificate_method = self.certificate_method(tree);
+        let password = text(widgets.field);
+        let anonymous = text(block.anonymous);
+        let domain = text(block.domain);
+        if user.trim().is_empty() || user.len() > MAX_IDENTITY_BYTES || user.contains('\n') {
+            self.refuse(tree, USER_RULE, block.user, now_ms);
+            return None;
+        }
+        if !certificate_method && (password.len() > MAX_PASSWORD_BYTES || password.contains('\n'))
+        {
+            self.refuse(tree, PASSWORD_RULE, widgets.field, now_ms);
+            return None;
+        }
+        if !certificate_method && (anonymous.len() > MAX_IDENTITY_BYTES || anonymous.contains('\n'))
+        {
+            self.refuse(tree, ANONYMOUS_RULE, block.anonymous, now_ms);
+            return None;
+        }
+        if !eggos_tls::chain::is_host_name(domain.as_bytes()) {
+            self.refuse(tree, DOMAIN_RULE, block.domain, now_ms);
+            return None;
+        }
+        let path = |id: WidgetId| Text::from(tree.text_of(id).unwrap_or("").trim());
+        Some(Request::WifiJoin(alloc::boxed::Box::new(WifiJoin {
+            name: Text::from(name),
+            passphrase: Text::new(),
+            hidden,
+            enterprise: Some(WifiEnterprise {
+                certificate_method,
+                identity: Text::from(user.as_str()),
+                password: match certificate_method {
+                    true => Text::new(),
+                    false => Text::from(password.as_str()),
+                },
+                anonymous: match certificate_method {
+                    true => Text::new(),
+                    false => Text::from(anonymous.as_str()),
+                },
+                certificate: match certificate_method {
+                    true => path(block.certificate),
+                    false => Text::new(),
+                },
+                key: match certificate_method {
+                    true => path(block.key),
+                    false => Text::new(),
+                },
+                ca: path(block.ca),
+                domain: Text::from(domain.as_str()),
+            }),
+        })))
+    }
+
+    fn file_field(&self, file: WifiFile) -> WidgetId {
+        let block = self.widgets.sign_in;
+        match file {
+            WifiFile::Ca => block.ca,
+            WifiFile::Certificate => block.certificate,
+            WifiFile::Key => block.key,
+        }
+    }
+
+    fn file_button(&self, file: WifiFile) -> WidgetId {
+        let block = self.widgets.sign_in;
+        match file {
+            WifiFile::Ca => block.ca_choose,
+            WifiFile::Certificate => block.certificate_choose,
+            WifiFile::Key => block.key_choose,
+        }
+    }
+
+    /// What the file picker answered for `file`: the chosen path, and what the program found
+    /// wrong with the file, if anything (D780).
+    pub fn file_chosen(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        file: WifiFile,
+        chosen: Option<(&str, Option<&str>)>,
+        now_ms: u32,
+    ) {
+        if let Some((path, problem)) = chosen {
+            tree.set_text(self.file_field(file), path);
+            match problem {
+                Some(words) => {
+                    self.sign_in_resting(tree);
+                    tree.set_enabled(self.widgets.join, false);
+                    ink(tree, self.widgets.message, words, Token::Text);
+                }
+                None => self.sign_in_resting(tree),
+            }
+        }
+        tree.set_focus(Some(self.file_button(file)), now_ms);
+    }
+
+    /// The program refused a file at `Join`: `words` say why (D780).
+    pub fn file_refused(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        file: WifiFile,
+        words: &str,
+        now_ms: u32,
+    ) {
+        self.refuse(tree, words, self.file_field(file), now_ms);
     }
 
     fn set_security(&self, tree: &mut WidgetTree<CAPACITY>, choice: usize) {
@@ -1079,6 +1583,9 @@ impl WifiSection {
 
     fn close_hidden_note(&mut self, tree: &mut WidgetTree<CAPACITY>, now_ms: u32) {
         let at = self.hidden_note.take();
+        self.fill_sign_in(tree, None);
+        tree.set_selected(self.widgets.security, PROTECTED_CHOICE);
+        tree.set_enabled(self.widgets.join, true);
         tree.set_text(self.widgets.field, "");
         tree.set_text(self.widgets.name_field, "");
         tree.set_enabled(self.widgets.field, true);
@@ -1104,6 +1611,14 @@ impl WifiSection {
             tree.set_focus(Some(self.widgets.name_field), now_ms);
             return None;
         }
+        let heard = self
+            .status
+            .networks
+            .iter()
+            .any(|network| network.name == name);
+        if self.security_choice(tree) == ENTERPRISE_CHOICE {
+            return self.sign_in_join(tree, &name, !heard, now_ms);
+        }
         let open = self.security_choice(tree) == OPEN_CHOICE;
         let passphrase = match open {
             true => String::new(),
@@ -1114,15 +1629,11 @@ impl WifiSection {
             tree.set_focus(Some(self.widgets.field), now_ms);
             return None;
         }
-        let heard = self
-            .status
-            .networks
-            .iter()
-            .any(|network| network.name == name);
         Some(Request::WifiJoin(alloc::boxed::Box::new(WifiJoin {
             name: Text::from(name.as_str()),
             passphrase: Text::from(passphrase.as_str()),
             hidden: !heard,
+            enterprise: None,
         })))
     }
 
@@ -1175,6 +1686,7 @@ impl WifiSection {
             name: Text::from(name.as_str()),
             passphrase: Text::from(passphrase.as_str()),
             hidden: false,
+            enterprise: None,
         })))
     }
 
@@ -1187,9 +1699,10 @@ impl WifiSection {
     ) {
         match saved {
             Ok(()) => {
-                match self.hidden_note.is_some() {
-                    true => self.close_hidden_note(tree, now_ms),
-                    false => self.close_note(tree, now_ms),
+                match (self.hidden_note.is_some(), self.sign_in_note.is_some()) {
+                    (true, _) => self.close_hidden_note(tree, now_ms),
+                    (false, true) => self.close_sign_in_note(tree, now_ms),
+                    (false, false) => self.close_note(tree, now_ms),
                 }
                 tree.set_focus(Some(self.widgets.rows[0].button), now_ms);
             }
@@ -1225,9 +1738,50 @@ impl WifiSection {
                 [widgets.field, widgets.show, widgets.cancel, widgets.join].contains(&id)
             })
         };
+        let block = widgets.sign_in;
+        let sign_in_ids = [
+            block.method,
+            block.user,
+            block.anonymous,
+            block.certificate,
+            block.certificate_choose,
+            block.key,
+            block.key_choose,
+            block.ca,
+            block.ca_choose,
+            block.domain,
+        ];
+        let in_sign_in = |id: Option<WidgetId>| id.is_some_and(|id| sign_in_ids.contains(&id));
         let in_hidden_note = |id: Option<WidgetId>| {
-            in_note(id) || id.is_some_and(|id| [widgets.name_field, widgets.security].contains(&id))
+            in_note(id)
+                || in_sign_in(id)
+                || id.is_some_and(|id| [widgets.name_field, widgets.security].contains(&id))
         };
+        if self.sign_in_shown(tree)
+            && let Some(request) = self.respond_sign_in(tree, response, now_ms)
+        {
+            return Reply::Done(request);
+        }
+        if let Some(row) = self.sign_in_note {
+            let request = match response {
+                Response::Activated(id) if id == widgets.cancel => {
+                    self.close_sign_in_note(tree, now_ms);
+                    None
+                }
+                Response::Activated(id) if id == widgets.join => {
+                    let name = self.rows.get(row).map(|row| row.name.clone());
+                    name.and_then(|name| self.sign_in_join(tree, &name, false, now_ms))
+                }
+                Response::Unused { code: key::ESC, .. }
+                    if in_note(tree.focus()) || in_sign_in(tree.focus()) =>
+                {
+                    self.close_sign_in_note(tree, now_ms);
+                    None
+                }
+                _ => return self.respond_outside_notes(tree, response, now_ms),
+            };
+            return Reply::Done(request);
+        }
         if self.hidden_note.is_some() {
             let request = match response {
                 Response::Activated(id) if id == widgets.cancel => {
@@ -1239,6 +1793,7 @@ impl WifiSection {
                 }
                 Response::Chosen(id, choice) if id == widgets.security => {
                     self.set_security(tree, choice);
+                    self.lay_out(tree);
                     None
                 }
                 Response::Edited(id) if id == widgets.name_field => {
@@ -1263,6 +1818,66 @@ impl WifiSection {
             return Reply::Done(request);
         }
         self.respond_outside_notes(tree, response, now_ms)
+    }
+
+    fn respond_sign_in(
+        &mut self,
+        tree: &mut WidgetTree<CAPACITY>,
+        response: Response,
+        now_ms: u32,
+    ) -> Option<Option<Request>> {
+        let widgets = self.widgets;
+        let block = widgets.sign_in;
+        let edited = [
+            widgets.field,
+            block.user,
+            block.anonymous,
+            block.certificate,
+            block.key,
+            block.ca,
+            block.domain,
+        ];
+        let choose = [
+            (block.ca_choose, WifiFile::Ca),
+            (block.certificate_choose, WifiFile::Certificate),
+            (block.key_choose, WifiFile::Key),
+        ];
+        match response {
+            Response::Chosen(id, choice) if id == block.method => {
+                tree.set_selected(block.method, choice);
+                self.lay_out(tree);
+                self.sign_in_resting(tree);
+                Some(None)
+            }
+            Response::Edited(id) if edited.contains(&id) => {
+                self.sign_in_resting(tree);
+                Some(None)
+            }
+            Response::Activated(id) if choose.iter().any(|(button, _)| *button == id) => {
+                let file = choose
+                    .iter()
+                    .find(|(button, _)| *button == id)
+                    .map_or(WifiFile::Ca, |(_, file)| *file);
+                let current = String::from(tree.text_of(self.file_field(file)).unwrap_or(""));
+                Some(Some(Request::WifiChooseFile(
+                    file,
+                    Text::from(current.as_str()),
+                )))
+            }
+            Response::Toggled(id, checked) if id == widgets.show => {
+                set_masked(tree, widgets.field, !checked);
+                Some(None)
+            }
+            Response::Unused {
+                code: key::ENTER, ..
+            } => {
+                let missing = self.missing(tree);
+                let (_, first) = missing.first()?;
+                tree.set_focus(Some(*first), now_ms);
+                Some(None)
+            }
+            _ => None,
+        }
     }
 
     fn respond_outside_notes(
@@ -1305,10 +1920,15 @@ impl WifiSection {
                         self.open_note(tree, row, now_ms);
                         None
                     }
+                    Button::Join if chosen.enterprise => {
+                        self.open_sign_in_note(tree, row, now_ms);
+                        None
+                    }
                     Button::Join => Some(Request::WifiJoin(alloc::boxed::Box::new(WifiJoin {
                         name: Text::from(chosen.name.as_str()),
                         passphrase: Text::new(),
                         hidden: false,
+                        enterprise: None,
                     }))),
                     _ => None,
                 }
@@ -1411,5 +2031,27 @@ mod tests {
             "The network did not answer."
         );
         assert_eq!(Security::Legacy.words(), "WEP or WPA");
+    }
+
+    #[test]
+    fn enterprise_networks_are_joinable_and_their_saved_sign_in_reads_back() {
+        let status = parse(
+            "signing-in; address x; 37 channels; joining corp\n\
+             02:00:00:00:00:09 6 -55 dBm Wpa2Enterprise corp\n",
+        );
+        assert_eq!(status.state, SIGNING_IN);
+        assert_eq!(status.networks[0].security, Security::Wpa2Enterprise);
+        assert_eq!(Security::Wpa2Enterprise.words(), "WPA2 Enterprise");
+        assert!(Security::Wpa3Enterprise.joinable());
+        let saved = sign_in_in(
+            "ssid=corp\nsecurity=enterprise\neap=peap\nidentity=kim\npassword=secret\n\
+             anonymous=\nca=/var/lib/eggos/wifi/ca.pem\ndomain=radius.example.com\n",
+        )
+        .unwrap();
+        assert!(!saved.certificate_method);
+        assert_eq!(saved.identity, "kim");
+        assert_eq!(saved.ca, "/var/lib/eggos/wifi/ca.pem");
+        assert_eq!(saved.domain, "radius.example.com");
+        assert_eq!(sign_in_in("ssid=home\npassphrase=x\n"), None);
     }
 }

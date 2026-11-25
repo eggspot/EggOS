@@ -15,6 +15,16 @@ pub trait TrustAnchors {
     fn each(&mut self, visit: &mut dyn FnMut(&[u8]) -> bool) -> Result<bool, NoRoots>;
 }
 
+/// Whether `name` can be a server's host name: 1 to 253 bytes of letters, digits, `-` and
+/// `.`, with no empty label.
+pub fn is_host_name(name: &[u8]) -> bool {
+    (1..=253).contains(&name.len())
+        && name
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+        && name.split(|&byte| byte == b'.').all(|label| !label.is_empty())
+}
+
 /// The roots cannot be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoRoots;
