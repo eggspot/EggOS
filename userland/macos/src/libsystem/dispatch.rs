@@ -189,6 +189,14 @@ extern "C" fn dispatch_after(when: u64, _: *const Queue, block: usize) {
     }
 }
 
+/// Calls `function` with `context` on the main thread's loop `milliseconds` from now.
+pub fn after_ms(milliseconds: u64, context: usize, function: extern "C" fn(usize)) {
+    delay(
+        now_ns().saturating_add(milliseconds.saturating_mul(1_000_000)),
+        Work::Function(context, function as usize),
+    );
+}
+
 extern "C" fn dispatch_after_f(when: u64, _: *const Queue, context: usize, function: usize) {
     if function != 0 {
         delay(when, Work::Function(context, function));

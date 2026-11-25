@@ -23,6 +23,7 @@ use eggos_macos_gui::keys::modifier;
 use eggos_macos_gui::menu::Chosen;
 use eggos_toolkit::input::{self, Input, MouseButton, RECORD_SIZE};
 
+const SECOND_FINGER: u32 = 1;
 const NS_TERMINATE_CANCEL: usize = 0;
 const RECORDS_PER_READ: usize = 16;
 const NO_WINDOW_SERVER: i32 = 1;
@@ -395,9 +396,22 @@ pub fn dispatch(record: &[u8; RECORD_SIZE]) {
         | Input::DragLeave
         | Input::Drop { .. }
         | Input::DragEnded { .. }
-        | Input::Touch { .. }
-        | Input::Pinch { .. }
         | Input::PressCancelled => {}
+        Input::Touch {
+            x,
+            y,
+            finger,
+            phase,
+        } => {
+            if finger == SECOND_FINGER {
+                let location = point_of_pixel(x, y, content_height(window));
+                crate::uikit::second_finger(window, location, phase, f64::from(time) / 1000.0);
+            }
+        }
+        Input::Pinch { x, y, scale } => {
+            let location = point_of_pixel(x, y, content_height(window));
+            crate::uikit::pinched(window, location, scale, f64::from(time) / 1000.0);
+        }
     }
 }
 

@@ -43,7 +43,7 @@ mod storyboard;
 mod tab_view;
 mod table_view;
 mod tracking;
-mod view;
+pub(crate) mod view;
 mod window;
 
 use crate::foundation::{self, Definition};
