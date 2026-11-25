@@ -1,0 +1,18 @@
+[package]
+name = "eggos-soundd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "soundd"
+path = "src/main.rs"
+
+[dependencies]
+eggos-math = { path = "../../math" }
+eggos-runtime = { path = "../runtime" }
+eggos-settings-file = { path = "../../settings-file" }
+
+[lints]
+workspace = true

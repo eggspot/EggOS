@@ -4,7 +4,9 @@ use crate::agent_server::{
 };
 use crate::backoff::Backoff;
 use crate::config::{self, Command, Config, LoginExit, MAX_WORDS};
-use crate::display_server::{DISPLAY_DEVICE, DISPLAY_SERVER, SESSION_BUS};
+use crate::display_server::{
+    DISPLAY_DEVICE, DISPLAY_SERVER, SESSION_BUS, SOUND_DEVICE, SOUND_SERVER,
+};
 use crate::first_run::{
     self, COMMAND_LINE, DISK_DEVICE, FIRST_RUN, Found, INSTALLED_MARK, SETTINGS_FILE,
 };
@@ -72,6 +74,7 @@ struct Services {
     bus: AgentServer,
     clock: AgentServer,
     updates: AgentServer,
+    sound: AgentServer,
 }
 
 const COMPONENT: &[u8] = b"/bin/component\0";
@@ -230,6 +233,9 @@ pub fn run(_startup: &Startup) -> i32 {
         if exists(SESSION_BUS) {
             start_session_bus(&mut services.bus);
         }
+    }
+    if exists(SOUND_SERVER) && exists(SOUND_DEVICE) {
+        start_sound_server(&mut services.sound);
     }
     if exists(DATE) {
         start_clock_keeper(&mut services.clock);
@@ -663,6 +669,12 @@ fn start_display_server(display: &mut AgentServer) {
     }
 }
 
+fn start_sound_server(sound: &mut AgentServer) {
+    if !start_service(SOUND_SERVER, sound) {
+        say(&[b"init: could not start the sound server\n"]);
+    }
+}
+
 fn start_session_bus(bus: &mut AgentServer) {
     if !start_service(SESSION_BUS, bus) {
         say(&[b"init: could not start the session bus\n"]);
@@ -966,6 +978,13 @@ fn notice_end(services: &mut Services, ended: isize) {
         Some(AfterEnd::Restart) => start_display_server(&mut services.display),
         Some(AfterEnd::GiveUp) => {
             say(&[b"init: eggway keeps ending; Wayland programs cannot open windows\n"])
+        }
+        None => {}
+    }
+    match services.sound.ended(ended as usize, now_ms()) {
+        Some(AfterEnd::Restart) => start_sound_server(&mut services.sound),
+        Some(AfterEnd::GiveUp) => {
+            say(&[b"init: the sound server keeps ending; nothing can be heard\n"])
         }
         None => {}
     }

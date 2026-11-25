@@ -12,13 +12,19 @@ pub const DISPLAY_SERVER: &[u8] = b"/usr/libexec/eggway\0";
 /// programs are its clients, so a headless machine runs neither.
 pub const SESSION_BUS: &[u8] = b"/usr/libexec/session-bus\0";
 
+/// The sound output's device, present only while a driver installed one (D773).
+pub const SOUND_DEVICE: &[u8] = b"/dev/sound\0";
+
+/// The sound server (D774), which init starts only with a sound output (D18).
+pub const SOUND_SERVER: &[u8] = b"/usr/libexec/soundd\0";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_paths_are_c_strings() {
-        for text in [DISPLAY_DEVICE, DISPLAY_SERVER, SESSION_BUS] {
+        for text in [DISPLAY_DEVICE, DISPLAY_SERVER, SESSION_BUS, SOUND_DEVICE, SOUND_SERVER] {
             assert_eq!(
                 text.iter().position(|&byte| byte == 0),
                 Some(text.len() - 1)

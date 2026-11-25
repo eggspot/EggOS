@@ -358,6 +358,58 @@ pub const SCREEN_READER_ECHO: &str = "accessibility.screen_reader_echo";
 /// [`SCREEN_READER_ECHO`]'s values.
 pub const SCREEN_READER_ECHOES: [&str; 2] = ["characters", "none"];
 
+/// The output volume, `0` to `100` (D774, docs/ux/sound-v0.1.md section 1).
+pub const SOUND_VOLUME: &str = "sound.volume";
+/// Whether the output is muted: `true` or `false` (the default).
+pub const SOUND_MUTE: &str = "sound.mute";
+/// The output device: `auto` (the default) or a device id such as `hda0-out`.
+pub const SOUND_OUTPUT: &str = "sound.output";
+/// The input device: `auto` (the default) or a device id such as `hda0-in`.
+pub const SOUND_INPUT: &str = "sound.input";
+/// The input volume, `0` to `100`.
+pub const SOUND_INPUT_VOLUME: &str = "sound.input_volume";
+/// Whether the input is muted.
+pub const SOUND_INPUT_MUTE: &str = "sound.input_mute";
+/// The device id `auto` stands for the server's choice.
+pub const SOUND_AUTOMATIC: &str = "auto";
+
+/// The sound settings (D774), as the settings file holds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoundSettings<'a> {
+    pub volume: u8,
+    pub mute: bool,
+    pub output: &'a [u8],
+    pub input: &'a [u8],
+    pub input_volume: u8,
+    pub input_mute: bool,
+}
+
+/// The sound settings `file` holds, each missing or invalid one at its default (volumes 50,
+/// not muted, devices `auto`).
+pub fn sound_settings(file: &[u8]) -> SoundSettings<'_> {
+    let percent = |key: &str| {
+        value(file, key)
+            .and_then(|text| core::str::from_utf8(text).ok())
+            .and_then(|text| text.parse::<u8>().ok())
+            .filter(|&volume| volume <= 100)
+            .unwrap_or(50)
+    };
+    let flag = |key: &str| value(file, key) == Some(b"true".as_slice());
+    let device = |key: &str| {
+        value(file, key)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(SOUND_AUTOMATIC.as_bytes())
+    };
+    SoundSettings {
+        volume: percent(SOUND_VOLUME),
+        mute: flag(SOUND_MUTE),
+        output: device(SOUND_OUTPUT),
+        input: device(SOUND_INPUT),
+        input_volume: percent(SOUND_INPUT_VOLUME),
+        input_mute: flag(SOUND_INPUT_MUTE),
+    }
+}
+
 /// The screen reader's settings (D603), as the settings file holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScreenReaderSettings {
@@ -1547,5 +1599,16 @@ accessibility.high_contrast=true
             assert_eq!(key.number(), index);
             assert_eq!(SwitchKey::named(key.name().as_bytes()), Some(*key));
         }
+    }
+
+    #[test]
+    fn sound_settings_fall_back_to_their_defaults() {
+        let defaults = sound_settings(b"eggos-settings 1\n");
+        assert_eq!((defaults.volume, defaults.mute, defaults.output), (50, false, &b"auto"[..]));
+        let file = b"eggos-settings 1\nsound.volume=35\nsound.mute=true\nsound.output=hda0-out\n\
+                     sound.input_volume=101\n";
+        let read = sound_settings(file);
+        assert_eq!((read.volume, read.mute, read.output), (35, true, &b"hda0-out"[..]));
+        assert_eq!(read.input_volume, 50);
     }
 }

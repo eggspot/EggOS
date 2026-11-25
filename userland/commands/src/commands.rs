@@ -16,6 +16,7 @@ use crate::errors::{
     NEEDS_CONFIRMATION, NO_STORE, NO_SUCH_COMPONENT, NOT_IN_THIS_FORM, REMOVE_FAILED,
     STORE_DAMAGED, STORE_DETACHED, WRITE_FAILED,
 };
+use crate::errors::{NO_SOUND_DEVICE, NO_SUCH_DEVICE};
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
     Example, Field, FieldType, JSON_OPTION, OperandDefinition, OptionDefinition, OptionValue,
@@ -3833,6 +3834,156 @@ pub const IP: CommandDefinition = CommandDefinition {
 const WIFI_SSID: OperandDefinition = operand("ssid", ValueType::Text, Count::One);
 const WIFI_PASSPHRASE: OperandDefinition = operand("passphrase", ValueType::Text, Count::ZeroOrOne);
 
+const SOUND_SURFACE: Surface = Surface::Gui("the bar's volume indicator and Settings > Sound");
+const SOUND_ERRORS: [CommandError; 3] = [
+    exits(&USAGE, 2),
+    exits(&INVALID_VALUE, 2),
+    exits(&NO_SOUND_DEVICE, 1),
+];
+const SOUND_DEVICE_ERRORS: [CommandError; 3] = [
+    exits(&USAGE, 2),
+    exits(&NO_SOUND_DEVICE, 1),
+    exits(&NO_SUCH_DEVICE, 1),
+];
+
+/// What `sound status --json` writes (D774): each side `null` when it has no device.
+pub const SOUND_STATUS_FIELDS: [Field; 2] = [
+    nullable("output", FieldType::Object),
+    nullable("input", FieldType::Object),
+];
+
+/// What `sound devices --json` writes, one record a device.
+pub const SOUND_DEVICE_FIELDS: [Field; 3] = [
+    field("id", FieldType::Text),
+    field("kind", FieldType::Text),
+    field("name", FieldType::Text),
+];
+
+/// `sound status` (D774).
+pub const SOUND_STATUS: CommandDefinition = CommandDefinition {
+    words: &["sound", "status"],
+    summary: "Shows the sound output and input in use, their volume and mute.",
+    description: "Prints the output and input devices the sound server uses, each with its id, \
+                  its volume in percent and whether it is muted; `No sound device.` when the \
+                  machine has none. `sound` alone is `sound status`.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&SOUND_STATUS_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2)],
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+/// `sound volume` (D774).
+pub const SOUND_VOLUME: CommandDefinition = CommandDefinition {
+    words: &["sound", "volume"],
+    summary: "Sets or steps the output volume.",
+    description: "Sets sound.volume to a percent from 0 to 100, or steps it by +n or -n, through \
+                  the sound server, which applies and saves it.",
+    options: &[],
+    operands: &[operand("percent", ValueType::Text, Count::One)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &SOUND_ERRORS,
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+/// `sound mute` (D774).
+pub const SOUND_MUTE: CommandDefinition = CommandDefinition {
+    words: &["sound", "mute"],
+    summary: "Mutes or unmutes the output.",
+    description: "Sets sound.mute: on mutes, off unmutes, toggle does the other.",
+    options: &[],
+    operands: &[operand(
+        "state",
+        ValueType::Choice(&["on", "off", "toggle"]),
+        Count::One,
+    )],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &SOUND_ERRORS,
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+/// `sound output` (D774).
+pub const SOUND_OUTPUT: CommandDefinition = CommandDefinition {
+    words: &["sound", "output"],
+    summary: "Chooses the sound output.",
+    description: "Sets sound.output to a device id sound devices lists, or auto for the server's \
+                  choice: headphones when plugged, else the first output.",
+    options: &[],
+    operands: &[operand("id", ValueType::Text, Count::One)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &SOUND_DEVICE_ERRORS,
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+/// `sound input` (D774).
+pub const SOUND_INPUT: CommandDefinition = CommandDefinition {
+    words: &["sound", "input"],
+    summary: "Chooses the sound input.",
+    description: "Sets sound.input to a device id sound devices lists, or auto.",
+    options: &[],
+    operands: &[operand("id", ValueType::Text, Count::One)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &SOUND_DEVICE_ERRORS,
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+/// `sound devices` (D774).
+pub const SOUND_DEVICES: CommandDefinition = CommandDefinition {
+    words: &["sound", "devices"],
+    summary: "Lists the sound devices.",
+    description: "Prints one line per sound device: its id, its kind (output or input) and its \
+                  name.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&SOUND_DEVICE_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&NO_SOUND_DEVICE, 1)],
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+const SOUND_SECONDS: ValueType = ValueType::Integer {
+    minimum: 1,
+    maximum: 10,
+};
+
+/// `sound test` (D774).
+pub const SOUND_TEST: CommandDefinition = CommandDefinition {
+    words: &["sound", "test"],
+    summary: "Plays a test tone on the output.",
+    description: "Plays a 440 Hz tone on the output in use at its volume, for one second or the \
+                  seconds given (1 to 10); a muted output is unmuted for the tone only.",
+    options: &[valued(
+        None,
+        Some("seconds"),
+        "seconds",
+        SOUND_SECONDS,
+        "How long the tone plays.",
+    )],
+    operands: &[],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Control,
+    errors: &SOUND_ERRORS,
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
 /// `wifi list` (D280).
 pub const WIFI_LIST: CommandDefinition = CommandDefinition {
     words: &["wifi", "list"],
@@ -4843,7 +4994,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 128] = [
+pub static COMMANDS: [CommandDefinition; 135] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -4925,6 +5076,13 @@ pub static COMMANDS: [CommandDefinition; 128] = [
     SETTINGS_SET,
     SHUTDOWN,
     SLEEP,
+    SOUND_DEVICES,
+    SOUND_INPUT,
+    SOUND_MUTE,
+    SOUND_OUTPUT,
+    SOUND_STATUS,
+    SOUND_TEST,
+    SOUND_VOLUME,
     STTY,
     SYNC,
     TAIL,

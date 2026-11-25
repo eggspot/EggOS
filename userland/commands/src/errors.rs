@@ -119,6 +119,22 @@ pub const SCREEN_READER_OFF: ErrorDefinition = error(
     Some("screen-reader on"),
 );
 
+/// `sound`: the machine has no sound output, or its sound server is not running (D774).
+pub const NO_SOUND_DEVICE: ErrorDefinition = error(
+    "no_sound_device",
+    Category::NotFound,
+    "This machine has no sound output EggOS drives.",
+    None,
+);
+
+/// `sound output` and `sound input`: no sound device has that id (D774).
+pub const NO_SUCH_DEVICE: ErrorDefinition = error(
+    "no_such_device",
+    Category::NotFound,
+    "Use an id sound devices lists, or auto.",
+    Some("sound devices"),
+);
+
 /// `ls`: a folder holds more entries than `ls` lists at once.
 pub const TOO_MANY_ENTRIES: ErrorDefinition = error(
     "too_many_entries",
@@ -685,7 +701,7 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 93] = [
+pub const ALL: [&ErrorDefinition; 95] = [
     &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
@@ -779,4 +795,6 @@ pub const ALL: [&ErrorDefinition; 93] = [
     &NO_ROOM_ALONGSIDE,
     &SIZE_OUT_OF_RANGE,
     &MANAGED,
+    &NO_SOUND_DEVICE,
+    &NO_SUCH_DEVICE,
 ];

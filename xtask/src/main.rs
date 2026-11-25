@@ -581,6 +581,7 @@ const USER_CRATES: &[&str] = &[
     "eggos-app",
     "eggos-mcp",
     "eggos-eggway",
+    "eggos-soundd",
     "eggos-dbus",
     "eggos-wayland",
     "eggos-files",
@@ -672,6 +673,10 @@ const MCP_SERVER_PATH: &str = "usr/libexec/eggmcpd";
 const WAYLAND_SERVER_PATH: &str = "usr/libexec/eggway";
 
 const SESSION_BUS_PATH: &str = "usr/libexec/session-bus";
+
+const SOUND_SERVER_PATH: &str = "usr/libexec/soundd";
+
+const SOUND_PATH: &str = "bin/sound";
 
 const VAR_PATH: &str = "var";
 
@@ -1954,6 +1959,7 @@ fn initramfs_with(
     let mcp_server = build_runtime_program(arch, "eggos-mcp")?;
     let wayland_server = build_runtime_program(arch, "eggos-eggway")?;
     let session_bus = build_runtime_program(arch, "eggos-dbus")?;
+    let sound_server = build_runtime_program(arch, "eggos-soundd")?;
     let mut embedded = Vec::new();
     if layers == Layers::Embedded {
         embedded.push((
@@ -2006,6 +2012,8 @@ fn initramfs_with(
             initramfs::Content::Program(&wayland_server),
         ),
         (SESSION_BUS_PATH, initramfs::Content::Program(&session_bus)),
+        (SOUND_SERVER_PATH, initramfs::Content::Program(&sound_server)),
+        (SOUND_PATH, initramfs::Content::HardLink(SOUND_SERVER_PATH)),
         (DEV_PATH, initramfs::Content::Directory),
         (PROC_PATH, initramfs::Content::Directory),
         (SYS_PATH, initramfs::Content::Directory),

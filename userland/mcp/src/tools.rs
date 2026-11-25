@@ -242,6 +242,12 @@ pub enum Kind {
     ScreenReaderSay,
     /// `net_link_set`: a wired adapter's MTU and Wake-on-LAN (D708).
     NetLinkSet,
+    /// `sound_status` (D774).
+    SoundStatus,
+    /// `sound_devices` (D774).
+    SoundDevices,
+    /// `sound_test` (D774).
+    SoundTest,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -483,7 +489,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 96] = [
+pub const TOOLS: [Tool; 99] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -996,6 +1002,21 @@ pub const TOOLS: [Tool; 96] = [
         &registry::NET_LINK_SET,
         Kind::NetLinkSet,
         twin("/bin/ip", &["link", "set"], Operand::None),
+    ),
+    tool(
+        &registry::SOUND_STATUS,
+        Kind::SoundStatus,
+        twin("/bin/sound", &["status", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::SOUND_DEVICES,
+        Kind::SoundDevices,
+        twin("/bin/sound", &["devices", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::SOUND_TEST,
+        Kind::SoundTest,
+        twin("/bin/sound", &["test"], Operand::None),
     ),
 ];
 

@@ -791,6 +791,53 @@ pub const POWER_STATUS: ToolDefinition = reading(
     ToolResult::Items(records_of(&crate::commands::POWER_STATUS)),
 );
 
+/// `sound_status` (D774).
+pub const SOUND_STATUS: ToolDefinition = reading(
+    "sound_status",
+    "Read the sound output and input",
+    "The output and input devices in use with their volume and mute, as `sound status --json` \
+         writes them; null for a side without a device. Volume, mute and the devices are set \
+         with settings_set on the sound.* keys.",
+    &["sound", "status"],
+    &["--json"],
+    &[],
+    ToolResult::Items(records_of(&crate::commands::SOUND_STATUS)),
+);
+
+/// `sound_devices` (D774).
+pub const SOUND_DEVICES: ToolDefinition = reading(
+    "sound_devices",
+    "List the sound devices",
+    "Every sound device, as `sound devices --json` writes it: its id, its kind (output or \
+         input) and its name.",
+    &["sound", "devices"],
+    &["--json"],
+    &[],
+    ToolResult::Items(records_of(&crate::commands::SOUND_DEVICES)),
+);
+
+/// `sound_test` (D774).
+pub const SOUND_TEST: ToolDefinition = operating(
+    "sound_test",
+    "Play a test tone",
+    "Plays a 440 Hz tone on the output in use for 1 to 10 seconds, as `sound test` does. Needs \
+         the run grant: it makes noise in the person's room, and it is logged.",
+    &["sound", "test"],
+    &[],
+    &[defaulting(
+        ranged(
+            described(
+                optional("seconds", JsonType::Integer, Mapping::Option("--seconds")),
+                "How long the tone plays, in seconds.",
+            ),
+            1,
+            10,
+        ),
+        DefaultValue::Integer(1),
+    )],
+    ToolResult::Text,
+);
+
 /// `screen_reader_log` (D603).
 pub const SCREEN_READER_LOG: ToolDefinition = reading(
     "screen_reader_log",
@@ -2922,7 +2969,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 96] = [
+pub const TOOLS: [ToolDefinition; 99] = [
     LS,
     CAT,
     PS,
@@ -3020,6 +3067,9 @@ pub const TOOLS: [ToolDefinition; 96] = [
     SCREEN_READER_READ,
     SCREEN_READER_SAY,
     NET_LINK_SET,
+    SOUND_STATUS,
+    SOUND_DEVICES,
+    SOUND_TEST,
 ];
 
 impl ToolDefinition {
