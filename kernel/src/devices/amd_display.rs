@@ -21,6 +21,11 @@
 //! name in the sinks text, its preferred timing used for a mode of that size) and its link
 //! status; a link that lost clock recovery, equalisation or alignment is trained again at the
 //! sink's highest rate and lanes.
+//!
+//! Scaled modes (D791): a size the output's timing cannot change to (no DisplayPort DTO, as on
+//! HDMI, or beyond what the link and the firmware's clocks carry) is shown through the scaler
+//! over the screen's own timing, so every lit output changes size; DMCUB is loaded on DCN 3
+//! only.
 
 use super::{Deadline, Probe, ProbeError};
 use crate::display::{Mode, Rect, Scanout};
@@ -350,15 +355,14 @@ impl Scanout for AmdDisplay {
     }
 
     fn can_change_mode(&self) -> bool {
-        self.engine.output().is_some()
+        true
     }
 
     fn change_mode(&mut self, mode: Mode, deadline: &mut Deadline) -> Result<(), &'static str> {
         let timing = self
             .preferred
             .filter(|timing| (timing.width, timing.height) == (mode.width, mode.height))
-            .or_else(|| Timing::reduced_blanking(mode.width, mode.height, REFRESH_HZ))
-            .ok_or(Refusal::UnfitTiming.description())?;
+            .or_else(|| Timing::reduced_blanking(mode.width, mode.height, REFRESH_HZ));
         let pitch = mode.width.next_multiple_of(amd_dcn::PITCH_ALIGNMENT_PIXELS);
         let stride = pitch as usize * 4;
         let bytes = stride
@@ -379,11 +383,22 @@ impl Scanout for AmdDisplay {
             unsafe { core::ptr::write_bytes(surface.pixels as *mut u8, 0, bytes) };
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        self.engine
-            .set_mode(&timing, self.surfaces[0].address, pitch, &mut || {
-                deadline.keep_waiting()
-            })
-            .map_err(Refusal::description)?;
+        let address = self.surfaces[0].address;
+        let direct = match timing {
+            Some(timing) if self.engine.output().is_some() => {
+                self.engine
+                    .set_mode(&timing, address, pitch, &mut || deadline.keep_waiting())
+            }
+            _ => Err(Refusal::NoDisplayPortOutput),
+        };
+        match direct {
+            Ok(()) => {}
+            Err(Refusal::BeyondLink | Refusal::NoDisplayPortOutput | Refusal::UnfitTiming) => self
+                .engine
+                .show_scaled(address, pitch, (mode.width, mode.height))
+                .map_err(Refusal::description)?,
+            Err(refusal) => return Err(refusal.description()),
+        }
         self.mode = mode;
         self.stride = stride;
         self.frame = frame;
@@ -536,8 +551,11 @@ pub fn take(
     };
     crate::display::install(scanout)
         .map_err(|_| ProbeError::Refused("a display is already in use"))?;
-    let packed = u32::from(version.0) << 16 | u32::from(version.1) << 8 | u32::from(version.2);
-    FIRMWARE_VERSION.store(packed, core::sync::atomic::Ordering::Release);
+    if amd_dcn::Generation::of(version) == Some(amd_dcn::Generation::Dcn3) {
+        let packed =
+            u32::from(version.0) << 16 | u32::from(version.1) << 8 | u32::from(version.2);
+        FIRMWARE_VERSION.store(packed, core::sync::atomic::Ordering::Release);
+    }
     Ok(sinks)
 }
 

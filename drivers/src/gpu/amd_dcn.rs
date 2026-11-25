@@ -19,6 +19,13 @@
 //! stream; training drives its DPHY's pattern ([`DisplayEngine::send_training_pattern`]) and
 //! its lane count, while DMCUB runs the PHY itself (`super::amd_dp`). A link trained again
 //! bounds new modes by what it carries as well as by the firmware's pixel clock.
+//!
+//! Scaling and DCN 2 (D791): [`DisplayEngine::show_scaled`] shows a surface smaller than the
+//! screen's timing through the DPP's scaler (RGB, two taps with the hardware's own bilinear
+//! coefficients, ratios and initial phases in 4.24 fixed point), on any lit output, HDMI
+//! included, without touching its timing. DCN 2.0 and 2.1 share these registers' places
+//! except the DPP's (the scaler 15 dwords lower, the cursor 17), the hub's request timing (2
+//! higher) and the DIG's front- and back-end controls ([`Generation`]).
 
 use crate::edid::Timing;
 use crate::io::RegisterIo;
@@ -63,6 +70,13 @@ const BLANK_OFFSET_1: u32 = 0x0645;
 const DST_DIMENSIONS: u32 = 0x0646;
 const REF_FREQ_TO_PIX_FREQ: u32 = 0x065d;
 const SCALER_MODE: u32 = 0x0cfb;
+const SCALER_TAPS: u32 = 0x0cfc;
+const SCALER_TWO_TAP: u32 = 0x0cfe;
+const SCALER_H_RATIO: u32 = 0x0d00;
+const SCALER_H_INIT: u32 = 0x0d01;
+const SCALER_V_RATIO: u32 = 0x0d04;
+const SCALER_V_INIT: u32 = 0x0d05;
+const LINE_BUFFER_FORMAT: u32 = 0x0d14;
 const SCALER_H_BLANK: u32 = 0x0d0f;
 const SCALER_V_BLANK: u32 = 0x0d10;
 const RECOUT_START: u32 = 0x0d11;
@@ -116,6 +130,13 @@ const STREAM_ENABLE: u32 = 1;
 const STREAM_RUNNING: u32 = 1 << 16;
 const DP_DTO_ENABLE: u32 = 1 << 4;
 const SCALER_MODE_MASK: u32 = 0x7;
+const SCALER_MODE_RGB: u32 = 1;
+const TWO_TAPS_BOTH_WAYS: u32 = 1 | 1 << 4;
+const TWO_TAP_HARDWARE_COEFFICIENTS: u32 = 1 | 1 << 16;
+const TAPS: u64 = 2;
+const SCALE_FRACTION_BITS: u32 = 24;
+const SCALE_RATIO_MASK: u32 = 0x07ff_ffff;
+const SCALE_INIT_MASK: u32 = 0x0fff_ffff;
 const MSA_H_SYNC_NEGATIVE: u32 = 1 << 31;
 const MSA_V_SYNC_NEGATIVE: u32 = 1 << 15;
 const H_BLANK_END_CYCLES_MASK: u32 = 0x1fff;
@@ -182,7 +203,47 @@ impl Refusal {
 
 /// Whether display block version `version` is one whose places this driver knows.
 pub fn knows(version: (u8, u8, u8)) -> bool {
-    version.0 == 3 && version.1 <= 5
+    Generation::of(version).is_some()
+}
+
+/// The register-place families this driver knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Generation {
+    /// DCN 2.0 and 2.1.
+    Dcn2,
+    /// DCN 3.0 to 3.5.
+    Dcn3,
+}
+
+impl Generation {
+    pub fn of(version: (u8, u8, u8)) -> Option<Self> {
+        match version {
+            (2, 0 | 1, _) => Some(Self::Dcn2),
+            (3, 0..=5, _) => Some(Self::Dcn3),
+            _ => None,
+        }
+    }
+
+    fn place(self, place: u32) -> u32 {
+        match (self, place) {
+            (Self::Dcn3, _) => place,
+            (Self::Dcn2, DPP_CURSOR_CONTROL) => place - 0x11,
+            (Self::Dcn2, SCALER_MODE..=LINE_BUFFER_FORMAT) => place - 0x0f,
+            (Self::Dcn2, BLANK_OFFSET_0..=DST_DIMENSIONS | REF_FREQ_TO_PIX_FREQ) => place + 2,
+            (Self::Dcn2, DIG_FRONT_END_CONTROL) => place - 0x23,
+            (Self::Dcn2, DIG_BE_CNTL | DIG_BE_EN_CNTL) => place - 1,
+            (Self::Dcn2, _) => place,
+        }
+    }
+}
+
+fn scale(source: u32, destination: u32) -> (u32, u32) {
+    let ratio = (u64::from(source) << SCALE_FRACTION_BITS) / u64::from(destination.max(1));
+    let init = (ratio + ((TAPS + 1) << SCALE_FRACTION_BITS)) / 2;
+    (
+        ratio as u32 & SCALE_RATIO_MASK,
+        init as u32 & SCALE_INIT_MASK,
+    )
 }
 
 /// The surface the firmware lit: its GPU address, its pitch in pixels and its size.
@@ -269,6 +330,8 @@ fn active(start_end: u32) -> u32 {
 #[derive(Debug)]
 pub struct DisplayEngine<R: RegisterIo> {
     regs: R,
+    generation: Generation,
+    screen: (u32, u32),
     segment_base: u32,
     clock_segment_base: u32,
     pipe: usize,
@@ -287,11 +350,11 @@ impl<R: RegisterIo> DisplayEngine<R> {
         (segment_base, clock_segment_base): (u32, u32),
         (width, height): (u32, u32),
     ) -> Result<(Self, LitSurface), Refusal> {
-        if !knows(version) {
-            return Err(Refusal::UnknownVersion);
-        }
+        let generation = Generation::of(version).ok_or(Refusal::UnknownVersion)?;
         let mut engine = Self {
             regs,
+            generation,
+            screen: (width, height),
             segment_base,
             clock_segment_base,
             pipe: 0,
@@ -497,7 +560,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
             .write32(self.clock_offset(DP_DTO_PHASE, generator), pixel_hz);
         self.program_generator(generator, &shape);
         self.program_hub(&shape, surface, pitch_pixels, pixel_hz);
-        self.program_scaler(&shape);
+        self.program_scaler((shape.width, shape.height), (shape.width, shape.height));
         self.program_stream_attributes(stream, &shape);
         self.write_at(OTG_CONTROL, OTG_STRIDE, generator, control | MASTER_ENABLE);
         self.wait_for(generator_status, MASTER_ENABLED, true, keep_waiting)?;
@@ -509,6 +572,39 @@ impl<R: RegisterIo> DisplayEngine<R> {
         );
         self.wait_for(stream_status, STREAM_RUNNING, true, keep_waiting)?;
         self.pixel_hz = pixel_hz;
+        self.screen = (shape.width, shape.height);
+        Ok(())
+    }
+
+    /// The timing's active size the lit pipe drives.
+    pub fn screen(&self) -> (u32, u32) {
+        self.screen
+    }
+
+    /// Shows the surface at GPU address `surface`, `pitch_pixels` wide and `width` by `height`
+    /// (at most the screen's size), stretched over the whole screen by the scaler, from the next
+    /// vertical update; the timing stays.
+    pub fn show_scaled(
+        &mut self,
+        surface: u64,
+        pitch_pixels: u32,
+        (width, height): (u32, u32),
+    ) -> Result<(), Refusal> {
+        let fits = width > 0
+            && height > 0
+            && width <= self.screen.0
+            && height <= self.screen.1
+            && pitch_pixels >= width
+            && pitch_pixels <= PITCH_MASK + 1;
+        if !fits {
+            return Err(Refusal::UnfitTiming);
+        }
+        self.write(VIEWPORT_START, HUBP_STRIDE, 0);
+        self.write(VIEWPORT_DIMENSION, HUBP_STRIDE, pair(width, height));
+        let pitch = self.read(SURFACE_PITCH, HUBP_STRIDE) & !PITCH_MASK;
+        self.write(SURFACE_PITCH, HUBP_STRIDE, pitch | (pitch_pixels - 1));
+        self.program_scaler(self.screen, (width, height));
+        self.flip(surface);
         Ok(())
     }
 
@@ -570,14 +666,27 @@ impl<R: RegisterIo> DisplayEngine<R> {
         self.flip(surface);
     }
 
-    fn program_scaler(&self, shape: &GeneratorTiming) {
+    fn program_scaler(&self, (width, height): (u32, u32), source: (u32, u32)) {
         let mode = self.read(SCALER_MODE, DPP_STRIDE) & !SCALER_MODE_MASK;
-        self.write(SCALER_MODE, DPP_STRIDE, mode);
+        match source == (width, height) {
+            true => self.write(SCALER_MODE, DPP_STRIDE, mode),
+            false => {
+                let (h_ratio, h_init) = scale(source.0, width);
+                let (v_ratio, v_init) = scale(source.1, height);
+                self.write(SCALER_TAPS, DPP_STRIDE, TWO_TAPS_BOTH_WAYS);
+                self.write(SCALER_TWO_TAP, DPP_STRIDE, TWO_TAP_HARDWARE_COEFFICIENTS);
+                self.write(SCALER_H_RATIO, DPP_STRIDE, h_ratio);
+                self.write(SCALER_H_INIT, DPP_STRIDE, h_init);
+                self.write(SCALER_V_RATIO, DPP_STRIDE, v_ratio);
+                self.write(SCALER_V_INIT, DPP_STRIDE, v_init);
+                self.write(SCALER_MODE, DPP_STRIDE, mode | SCALER_MODE_RGB);
+            }
+        }
         self.write(RECOUT_START, DPP_STRIDE, 0);
-        self.write(RECOUT_SIZE, DPP_STRIDE, pair(shape.width, shape.height));
-        self.write(MPC_SIZE, DPP_STRIDE, pair(shape.width, shape.height));
-        self.write(SCALER_H_BLANK, DPP_STRIDE, pair(shape.width, 0));
-        self.write(SCALER_V_BLANK, DPP_STRIDE, pair(shape.height, 0));
+        self.write(RECOUT_SIZE, DPP_STRIDE, pair(width, height));
+        self.write(MPC_SIZE, DPP_STRIDE, pair(width, height));
+        self.write(SCALER_H_BLANK, DPP_STRIDE, pair(width, 0));
+        self.write(SCALER_V_BLANK, DPP_STRIDE, pair(height, 0));
     }
 
     fn program_stream_attributes(&self, stream: usize, shape: &GeneratorTiming) {
@@ -602,6 +711,7 @@ impl<R: RegisterIo> DisplayEngine<R> {
     }
 
     fn offset(&self, place: u32, stride: u32, pipe: usize) -> usize {
+        let place = self.generation.place(place);
         (self.segment_base as usize + place as usize + pipe * stride as usize) * 4
     }
 
@@ -916,7 +1026,7 @@ mod tests {
         let regs = Registers::default();
         lit_on(&regs, 0);
         assert_eq!(
-            DisplayEngine::take(&regs, (2, 1, 0), (BASE, CLOCK_BASE), (1920, 1080)).err(),
+            DisplayEngine::take(&regs, (4, 0, 0), (BASE, CLOCK_BASE), (1920, 1080)).err(),
             Some(Refusal::UnknownVersion)
         );
         assert_eq!(
@@ -927,6 +1037,45 @@ mod tests {
         assert_eq!(
             DisplayEngine::take(&regs, (3, 0, 1), (BASE, CLOCK_BASE), (1920, 1080)).err(),
             Some(Refusal::UnknownFormat)
+        );
+    }
+
+    #[test]
+    fn dcn_2_moves_the_dpp_the_request_timing_and_the_dig_controls() {
+        assert_eq!(Generation::Dcn2.place(SCALER_MODE), 0x0cec);
+        assert_eq!(Generation::Dcn2.place(DPP_CURSOR_CONTROL), 0x0ce0);
+        assert_eq!(Generation::Dcn2.place(RECOUT_SIZE), 0x0d03);
+        assert_eq!(Generation::Dcn2.place(BLANK_OFFSET_0), 0x0646);
+        assert_eq!(Generation::Dcn2.place(REF_FREQ_TO_PIX_FREQ), 0x065f);
+        assert_eq!(Generation::Dcn2.place(DIG_FRONT_END_CONTROL), 0x2068);
+        assert_eq!(Generation::Dcn2.place(DIG_BE_EN_CNTL), 0x20b0);
+        assert_eq!(Generation::Dcn2.place(OTG_CONTROL), OTG_CONTROL);
+        assert_eq!(Generation::Dcn3.place(SCALER_MODE), SCALER_MODE);
+        assert!(knows((2, 1, 0)) && !knows((2, 2, 0)) && !knows((1, 0, 0)));
+    }
+
+    #[test]
+    fn a_smaller_surface_is_stretched_over_the_screen_by_the_scaler() {
+        let regs = Registers::default();
+        lit_on(&regs, 0);
+        let (mut engine, _) =
+            DisplayEngine::take(&regs, (3, 1, 4), (BASE, CLOCK_BASE), (1920, 1080)).unwrap();
+        engine
+            .show_scaled(0xf4_0080_0000, 1280, (1280, 720))
+            .unwrap();
+        assert_eq!(
+            regs.get(at(VIEWPORT_DIMENSION, HUBP_STRIDE, 0)),
+            pair(1280, 720)
+        );
+        assert_eq!(regs.get(at(RECOUT_SIZE, DPP_STRIDE, 0)), pair(1920, 1080));
+        assert_eq!(regs.get(at(SCALER_H_RATIO, DPP_STRIDE, 0)), (2 << 24) / 3);
+        assert_eq!(
+            regs.get(at(SCALER_MODE, DPP_STRIDE, 0)) & SCALER_MODE_MASK,
+            SCALER_MODE_RGB
+        );
+        assert_eq!(
+            engine.show_scaled(0, 2560, (2560, 1440)),
+            Err(Refusal::UnfitTiming)
         );
     }
 

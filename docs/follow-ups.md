@@ -184,7 +184,7 @@ and is not listed per item.
 - [x] Shared INTx lines: several functions on one input, each handler asked in turn (D413) — code written, unbuilt, D622
 - [x] GPIO controllers (Intel and AMD pin controllers) and GPIO interrupts for I2C-HID devices (D462) — code written, unbuilt, D789
 - [x] `simple-framebuffer`: 16-bit `r5g6b5` formats (D542) — code written, unbuilt, D620
-- [ ] AMD DCN: DMCUB commands through the inbox, the other DCN versions' register places, link training and higher rates, HDMI, the scaler, the second pipe, AUX and EDID, watermarks from the mode equations, vertical-blank interrupts, and DCE for older cards (D496, D514, D521)
+- [x] AMD DCN: DMCUB commands through the inbox, the other DCN versions' register places, link training and higher rates, HDMI, the scaler, the second pipe, AUX and EDID, watermarks from the mode equations, vertical-blank interrupts, and DCE for older cards (D496, D514, D521) — code written, unbuilt, D790, D791
 - [ ] NVIDIA: Turing's GSP boot (version 2 descriptors, the non-PKC booter path), flips into the kernel's own surfaces in video memory, mode changes after the first, more heads, the cursor channel, completion notifiers, GSP-RM's unload booter at shutdown (D512, D522, D530)
 - [ ] Intel Type-C: Thunderbolt alternate mode (fixed PLL, AUX I/O select), lane reversal, legacy Type-C connectors, giving the PHY back on unplug, UHBR rates on display 14 (D526, D528)
 - [ ] Apple DCP: keeping RTKit answered after boot, flips through swaps between two framebuffers, mode changes, the external `dcpext` instance (D547)
