@@ -30,5 +30,7 @@ pub mod rtf;
 pub mod scroll_view;
 pub mod shading;
 pub mod slider;
+pub mod split_view;
 pub mod sound;
+pub mod tab_view;
 pub mod table_view;

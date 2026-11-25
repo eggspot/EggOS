@@ -383,6 +383,14 @@ fn key_down(window: Id, event: Id) {
         tab(window, flags & modifier::SHIFT != 0);
         return;
     }
+    let control_only = flags & (modifier::COMMAND | modifier::OPTION) == 0
+        && flags & modifier::CONTROL != 0;
+    if code == key::TAB
+        && control_only
+        && super::tab_view::control_tab(window, flags & modifier::SHIFT != 0)
+    {
+        return;
+    }
     let responder = fields(window).first_responder;
     let typing = !responder.is_null() && view::is_editable_field(responder);
     if code == key::ENTER

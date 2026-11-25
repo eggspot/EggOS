@@ -15,9 +15,10 @@ use crate::objc::abi::{Id, Sel};
 use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::{Runtime, message, methods, sel, send, send_bool, send1, send2};
 
+/// A view controller's fields, which its subclasses' start with.
 #[repr(C)]
 #[derive(Debug)]
-struct ViewControllerFields {
+pub(super) struct ViewControllerFields {
     isa: usize,
     view: Id,
     represented_object: Id,

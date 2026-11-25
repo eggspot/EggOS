@@ -37,7 +37,9 @@ mod server;
 mod sound;
 mod document;
 mod segues;
+mod split_view;
 mod storyboard;
+mod tab_view;
 mod table_view;
 mod tracking;
 mod view;
@@ -103,6 +105,12 @@ class_pairs! {
     NSSTORYBOARDSEGUE, NSSTORYBOARDSEGUE_META;
     NSDOCUMENT, NSDOCUMENT_META;
     NSDOCUMENTCONTROLLER, NSDOCUMENTCONTROLLER_META;
+    NSTABVIEW, NSTABVIEW_META;
+    NSTABVIEWITEM, NSTABVIEWITEM_META;
+    NSTABVIEWCONTROLLER, NSTABVIEWCONTROLLER_META;
+    NSSPLITVIEW, NSSPLITVIEW_META;
+    NSSPLITVIEWITEM, NSSPLITVIEWITEM_META;
+    NSSPLITVIEWCONTROLLER, NSSPLITVIEWCONTROLLER_META;
     NSSTORYBOARDSEGUETEMPLATE, NSSTORYBOARDSEGUETEMPLATE_META;
     NSPANEL, NSPANEL_META;
     NSABOUTPANEL, NSABOUTPANEL_META;
@@ -235,6 +243,8 @@ pub fn set_up() -> bool {
             && storyboard::define(runtime)
             && segues::define(runtime)
             && document::define(runtime)
+            && tab_view::define(runtime)
+            && split_view::define(runtime)
             && panel::define(runtime)
             && layout::define(runtime)
             && layout::extend_views(runtime)
@@ -267,6 +277,18 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         b"_OBJC_METACLASS_$_NSDocument" => class(&NSDOCUMENT_META),
         b"_OBJC_CLASS_$_NSDocumentController" => class(&NSDOCUMENTCONTROLLER),
         b"_OBJC_METACLASS_$_NSDocumentController" => class(&NSDOCUMENTCONTROLLER_META),
+        b"_OBJC_CLASS_$_NSTabView" => class(&NSTABVIEW),
+        b"_OBJC_METACLASS_$_NSTabView" => class(&NSTABVIEW_META),
+        b"_OBJC_CLASS_$_NSTabViewItem" => class(&NSTABVIEWITEM),
+        b"_OBJC_METACLASS_$_NSTabViewItem" => class(&NSTABVIEWITEM_META),
+        b"_OBJC_CLASS_$_NSTabViewController" => class(&NSTABVIEWCONTROLLER),
+        b"_OBJC_METACLASS_$_NSTabViewController" => class(&NSTABVIEWCONTROLLER_META),
+        b"_OBJC_CLASS_$_NSSplitView" => class(&NSSPLITVIEW),
+        b"_OBJC_METACLASS_$_NSSplitView" => class(&NSSPLITVIEW_META),
+        b"_OBJC_CLASS_$_NSSplitViewItem" => class(&NSSPLITVIEWITEM),
+        b"_OBJC_METACLASS_$_NSSplitViewItem" => class(&NSSPLITVIEWITEM_META),
+        b"_OBJC_CLASS_$_NSSplitViewController" => class(&NSSPLITVIEWCONTROLLER),
+        b"_OBJC_METACLASS_$_NSSplitViewController" => class(&NSSPLITVIEWCONTROLLER_META),
         b"_OBJC_CLASS_$_NSResponder" => class(&NSRESPONDER),
         b"_OBJC_METACLASS_$_NSResponder" => class(&NSRESPONDER_META),
         b"_OBJC_CLASS_$_NSView" => class(&NSVIEW),
