@@ -129,6 +129,15 @@ impl Sae {
         random: &mut dyn FnMut(&mut [u8]),
     ) -> Result<Self, SaeError> {
         let password_element = password_element(password, own, peer).ok_or(SaeError::NoElement)?;
+        Self::with_element(password_element, random)
+    }
+
+    /// Starts SAE with a password element found another way: hash-to-element's
+    /// ([`crate::sae_h2e`], D786).
+    pub fn with_element(
+        password_element: AffinePoint,
+        random: &mut dyn FnMut(&mut [u8]),
+    ) -> Result<Self, SaeError> {
         for _ in 0..SCALAR_DRAWS {
             let secret = draw(random)?;
             let mask = draw(random)?;

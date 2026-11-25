@@ -17,6 +17,8 @@ const ELEMENT_HT_OPERATION: u8 = 61;
 const ELEMENT_VHT_CAPABILITIES: u8 = 191;
 const ELEMENT_VHT_OPERATION: u8 = 192;
 const ELEMENT_EXTENSION: u8 = 255;
+const ELEMENT_RSN_EXTENSION: u8 = 244;
+const RSNX_SAE_HASH_TO_ELEMENT: u8 = 1 << 5;
 const EXTENSION_HE_CAPABILITIES: u8 = 35;
 const SECONDARY_ABOVE: u8 = 1;
 const SECONDARY_BELOW: u8 = 3;
@@ -72,6 +74,8 @@ pub struct Network {
     pub security: Security,
     /// What its high-throughput elements offer (D784).
     pub phy: Phy,
+    /// Its RSN extension asks for SAE hash-to-element (D786).
+    pub sae_h2e: bool,
 }
 
 /// Where a 40 MHz network's secondary channel is.
@@ -206,6 +210,7 @@ pub fn network(frame: &[u8]) -> Option<Network> {
             Security::Open
         },
         phy: Phy::default(),
+        sae_h2e: false,
     };
     let mut elements = frame.get(HEADER_BYTES + BEACON_FIXED_BYTES..)?;
     while elements.len() >= 2 {
@@ -219,6 +224,9 @@ pub fn network(frame: &[u8]) -> Option<Network> {
             ELEMENT_DS_PARAMETERS if length == 1 => network.channel = Some(body[0]),
             ELEMENT_RSN => network.security = rsn_security(body),
             ELEMENT_HT_CAPABILITIES => network.phy.ht = true,
+            ELEMENT_RSN_EXTENSION if length >= 1 => {
+                network.sae_h2e = body[0] & RSNX_SAE_HASH_TO_ELEMENT != 0;
+            }
             ELEMENT_HT_OPERATION if length >= 2 => {
                 network.phy.ht = true;
                 network.phy.secondary = match body[1] & 0x3 {
@@ -303,6 +311,9 @@ pub const WPA3_PERSONAL_RSN: [u8; 28] = [
     0xac,
     6,
 ];
+
+/// The RSN extension element a station using SAE hash-to-element sends (D786).
+pub const RSN_EXTENSION_H2E: [u8; 3] = [ELEMENT_RSN_EXTENSION, 1, RSNX_SAE_HASH_TO_ELEMENT];
 
 /// The RSN element a WPA2-Enterprise station sends (D779): WPA2-Personal's with AKM 1, 802.1X.
 pub const WPA2_ENTERPRISE_RSN: [u8; 22] = {

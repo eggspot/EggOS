@@ -21,4 +21,5 @@ pub mod mschapv2;
 pub mod peap;
 pub mod protection;
 pub mod sae;
+pub mod sae_h2e;
 pub mod tunnel;

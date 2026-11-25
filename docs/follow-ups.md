@@ -174,7 +174,7 @@ and is not listed per item.
 - [x] x86_64: STIBP for SMT siblings where the CPU needs it (D260, D267) — code written, unbuilt, D619
 - [x] Wi-Fi: power saving (the firmware's power tables and PS-Poll/U-APSD off by default), and HT/VHT/HE rates and widths in the link setup (D277, D279) — code written, unbuilt, D784
 - [x] Wi-Fi: PMKSA caching, answering SA Query, and BIP on group management frames (D285) — code written, unbuilt, D785
-- [ ] Wi-Fi: 6 GHz channels and SAE hash-to-element (D275, D285)
+- [x] Wi-Fi: 6 GHz channels and SAE hash-to-element (D275, D285) — code written, unbuilt, D786
 - [ ] Intel HDMI: HDMI 2.0 scrambling above 340 MHz, AVI and audio infoframes, deep colour, HDMI on display 11 and later (D466)
 - [ ] Intel display 11 Type-C ports (MG PHY and PLLs) and the combo PHY's drive tables (D465)
 - [x] ACPI `_PRT` legacy PCI interrupt routing through the AML interpreter (D413) — code written, unbuilt, D621

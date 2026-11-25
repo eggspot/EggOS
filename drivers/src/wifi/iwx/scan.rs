@@ -57,6 +57,9 @@ const APS_GO_FRIENDLY: u8 = 10;
 const APS_SOCIAL: u8 = 2;
 const PHY_BAND_5: u8 = 0;
 const PHY_BAND_2_4: u8 = 1;
+const PHY_BAND_6: u8 = 2;
+const SIX_GHZ_PSC_STEP: u8 = 16;
+const SIX_GHZ_FIRST_PSC: u8 = 5;
 const MAX_SCAN_CHANNEL_ENTRIES: usize = 67;
 
 const SCAN_REQUEST_BYTES: usize = 1976;
@@ -90,6 +93,8 @@ const MANAGEMENT_HEADER_BYTES: usize = 24;
 pub struct Heard {
     pub frame: Vec<u8>,
     pub channel: u8,
+    /// The band it was heard on (D786).
+    pub band: Band,
     pub signal: i8,
 }
 
@@ -244,6 +249,12 @@ pub fn scan_request(
     let channels: Vec<_> = nvm
         .channels
         .iter()
+        .filter(|channel| {
+            channel.band != Band::Six
+                || (extended_channels
+                    && channel.number >= SIX_GHZ_FIRST_PSC
+                    && (channel.number - SIX_GHZ_FIRST_PSC).is_multiple_of(SIX_GHZ_PSC_STEP))
+        })
         .take(channel_limit.min(MAX_SCAN_CHANNEL_ENTRIES))
         .collect();
     request[CHANNELS + 1] = channels.len() as u8;
@@ -260,6 +271,7 @@ pub fn scan_request(
                 request[entry + 5] = match channel.band {
                     Band::TwoPointFour => PHY_BAND_2_4,
                     Band::Five => PHY_BAND_5,
+                    Band::Six => PHY_BAND_6,
                 };
                 request[entry + 6] = 1;
             }
@@ -300,6 +312,12 @@ pub fn received_frame(payload: &[u8], ax210: bool) -> Option<Heard> {
         true => (40, 42),
         false => (32, 34),
     };
+    let number = *payload.get(channel)?;
+    let band = match ax210 {
+        true => Band::of_descriptor(payload.get(channel + 1)? >> 6),
+        false if number <= 14 => Band::TwoPointFour,
+        false => Band::Five,
+    };
     let energies = [*payload.get(energy)?, *payload.get(energy + 1)?];
     let strongest = energies
         .iter()
@@ -313,7 +331,8 @@ pub fn received_frame(payload: &[u8], ax210: bool) -> Option<Heard> {
     }
     Some(Heard {
         frame,
-        channel: *payload.get(channel)?,
+        channel: number,
+        band,
         signal: -(strongest.min(127) as i8),
     })
 }

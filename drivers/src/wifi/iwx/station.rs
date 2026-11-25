@@ -62,6 +62,7 @@ const LMAC_2_4: u32 = 0;
 const LMAC_5: u32 = 1;
 const PHY_BAND_5: u8 = 0;
 const PHY_BAND_2_4: u8 = 1;
+const PHY_BAND_6: u8 = 2;
 const RX_CHAIN_VALID_SHIFT: u32 = 1;
 const RX_CHAIN_COUNT_SHIFT: u32 = 10;
 const RX_CHAIN_MIMO_COUNT_SHIFT: u32 = 12;
@@ -250,7 +251,7 @@ fn status_of(answer: &[u8]) -> u32 {
 }
 
 fn lmac(channel: &Channel, firmware: &Firmware) -> u32 {
-    match channel.band == Band::Five && firmware.has_capability(CAPABILITY_CDB) {
+    match channel.band != Band::TwoPointFour && firmware.has_capability(CAPABILITY_CDB) {
         true => LMAC_5,
         false => LMAC_2_4,
     }
@@ -271,6 +272,7 @@ pub fn phy_context(
     let band = match channel.band {
         Band::TwoPointFour => PHY_BAND_2_4,
         Band::Five => PHY_BAND_5,
+        Band::Six => PHY_BAND_6,
     };
     let rlc_separate = firmware.command_version(DATA_PATH_GROUP, RLC_CONFIG) == Some(2);
     let wide = firmware.has_capability(CAPABILITY_ULTRA_HIGH_BAND);
@@ -378,7 +380,7 @@ fn rate_control(target: &Target, version: Option<u8>) -> alloc::vec::Vec<u8> {
     };
     let legacy = match target.channel.band {
         Band::TwoPointFour => LEGACY_RATES_2_4,
-        Band::Five => LEGACY_RATES_5,
+        Band::Five | Band::Six => LEGACY_RATES_5,
     };
     let chains = match rates.streams >= 2 {
         true => TLC_CHAINS_A_B,

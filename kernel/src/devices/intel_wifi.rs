@@ -714,7 +714,7 @@ fn connect<P: Platform>(
     let channel = nvm
         .channels
         .iter()
-        .find(|channel| Some(channel.number) == network.channel)
+        .find(|channel| Some(channel.number) == network.channel && channel.band == seen.band)
         .copied()
         .ok_or(Failure::of(
             "channel",
@@ -776,7 +776,13 @@ fn connect<P: Platform>(
         streams,
         forty: width.mode >= 1,
     };
-    let offered = eggos_wifi::capabilities::offered(&ours, &phy);
+    let h2e = network.sae_h2e || seen.band == eggos_drivers::wifi::iwx::nvm::Band::Six;
+    let mut offered = eggos_wifi::capabilities::offered(&ours, &phy);
+    if h2e && akm == Some(Akm::Sae) {
+        let mut with_extension = wifi_frames::RSN_EXTENSION_H2E.to_vec();
+        with_extension.extend_from_slice(&offered);
+        offered = with_extension;
+    }
     let target = Target {
         bssid,
         channel,
@@ -807,14 +813,30 @@ fn connect<P: Platform>(
         let mut fresh_pmkid = None;
         if akm == Some(Akm::Sae) && cached.is_none() {
             let mut random = |out: &mut [u8]| crate::random::fill::<P>(out);
-            let mut exchange = Sae::new(passphrase, own, bssid, &mut random)
-                .map_err(|_| Failure::adapter("SAE could not start"))?;
+            let started = match h2e {
+                true => eggos_wifi::sae_h2e::password_token(network.ssid(), passphrase, b"")
+                    .and_then(|token| eggos_wifi::sae_h2e::password_element(&token, own, bssid))
+                    .ok_or(sae::SaeError::NoElement)
+                    .and_then(|element| Sae::with_element(element, &mut random)),
+                false => Sae::new(passphrase, own, bssid, &mut random),
+            };
+            let mut exchange = started.map_err(|_| Failure::adapter("SAE could not start"))?;
+            let commit_status = match h2e {
+                true => eggos_wifi::sae_h2e::STATUS_HASH_TO_ELEMENT,
+                false => 0,
+            };
             let mut token: Vec<u8> = Vec::new();
             let mut committed = false;
             for _ in 0..SAE_COMMIT_TRIES {
                 link.send(
                     transport,
-                    &client::sae_authentication(own, bssid, 1, 0, &exchange.commit_body(&token)),
+                    &client::sae_authentication(
+                        own,
+                        bssid,
+                        1,
+                        commit_status,
+                        &exchange.commit_body(&token),
+                    ),
                 )
                 .map_err(joining_failed)?;
                 let (_, status, body) = wait_frame::<P, _>(
@@ -828,7 +850,7 @@ fn connect<P: Platform>(
                     token = body.get(2..).unwrap_or_default().to_vec();
                     continue;
                 }
-                if status != 0 {
+                if status != 0 && status != commit_status {
                     return Err(REFUSED);
                 }
                 exchange.receive_commit(&body).map_err(|_| REFUSED)?;
@@ -1057,6 +1079,8 @@ pub struct Seen {
     pub signal: i8,
     /// Its beacon interval, in time units.
     pub beacon_interval: u16,
+    /// The band it was heard on (D786).
+    pub band: eggos_drivers::wifi::iwx::nvm::Band,
 }
 
 /// The networks the last scan heard, strongest first.
@@ -1582,6 +1606,7 @@ fn publish(heard: &[scan::Heard]) {
                 network,
                 signal: frame.signal,
                 beacon_interval: client::beacon_interval(&frame.frame).unwrap_or(100),
+                band: frame.band,
             }),
         }
     }

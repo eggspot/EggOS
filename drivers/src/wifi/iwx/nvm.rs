@@ -35,6 +35,7 @@ const CHANNELS_V3: usize = 51;
 const CHANNELS_V4: usize = 110;
 const TWO_GHZ_CHANNELS: usize = 14;
 const FIVE_GHZ_CHANNELS: usize = 37;
+const SIX_GHZ_CHANNELS: usize = 59;
 
 const NVM_CHANNELS: [u8; TWO_GHZ_CHANNELS + FIVE_GHZ_CHANNELS] = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80,
@@ -42,11 +43,30 @@ const NVM_CHANNELS: [u8; TWO_GHZ_CHANNELS + FIVE_GHZ_CHANNELS] = [
     165, 169, 173, 177, 181,
 ];
 
+const NVM_SIX_GHZ_CHANNELS: [u8; SIX_GHZ_CHANNELS] = [
+    1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77, 81, 85, 89, 93, 97,
+    101, 105, 109, 113, 117, 121, 125, 129, 133, 137, 141, 145, 149, 153, 157, 161, 165, 169, 173,
+    177, 181, 185, 189, 193, 197, 201, 205, 209, 213, 217, 221, 225, 229, 233,
+];
+
 /// A band of the adapter's radio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Band {
     TwoPointFour,
     Five,
+    /// 6 GHz (D786), on adapters whose NVM lists it (AX210 and later).
+    Six,
+}
+
+impl Band {
+    /// The band number the firmware's received-frame descriptors use: 0, 1 or 2.
+    pub const fn of_descriptor(value: u8) -> Self {
+        match value {
+            1 => Band::Five,
+            2 => Band::Six,
+            _ => Band::TwoPointFour,
+        }
+    }
 }
 
 /// One channel the adapter may use.
@@ -71,6 +91,7 @@ impl Channel {
             (Band::TwoPointFour, 14) => 2484,
             (Band::TwoPointFour, number) => 2407 + 5 * u32::from(number),
             (Band::Five, number) => 5000 + 5 * u32::from(number),
+            (Band::Six, number) => 5950 + 5 * u32::from(number),
         }
     }
 }
@@ -121,18 +142,24 @@ pub fn parse(
     };
     let five_allowed = mac_sku & MAC_SKU_5_GHZ != 0;
     let two_allowed = mac_sku & MAC_SKU_2_4_GHZ != 0;
+    let six = match wide_profiles {
+        true => &NVM_SIX_GHZ_CHANNELS[..],
+        false => &[][..],
+    };
     let channels = NVM_CHANNELS
         .iter()
+        .chain(six)
         .enumerate()
         .filter_map(|(index, &number)| {
             let flags = profile(index)?;
-            let band = match index < TWO_GHZ_CHANNELS {
-                true => Band::TwoPointFour,
-                false => Band::Five,
+            let band = match index {
+                index if index < TWO_GHZ_CHANNELS => Band::TwoPointFour,
+                index if index < TWO_GHZ_CHANNELS + FIVE_GHZ_CHANNELS => Band::Five,
+                _ => Band::Six,
             };
             let allowed = match band {
                 Band::TwoPointFour => two_allowed,
-                Band::Five => five_allowed,
+                Band::Five | Band::Six => five_allowed,
             };
             (allowed && flags & CHANNEL_VALID != 0).then_some(Channel {
                 number,
