@@ -248,6 +248,10 @@ pub enum Kind {
     SoundDevices,
     /// `sound_test` (D774).
     SoundTest,
+    /// `sound_apps` (D777).
+    SoundApps,
+    /// `sound_play` (D777).
+    SoundPlay,
 }
 
 /// MCP's tool annotations: hints a client shows its user, not guarantees.
@@ -489,7 +493,7 @@ const fn window_twin(words: &'static [&'static str]) -> Twin {
 }
 
 /// Every tool, in `tools/list`'s order (the registry's).
-pub const TOOLS: [Tool; 99] = [
+pub const TOOLS: [Tool; 101] = [
     tool(
         &registry::LS,
         Kind::Ls,
@@ -1017,6 +1021,16 @@ pub const TOOLS: [Tool; 99] = [
         &registry::SOUND_TEST,
         Kind::SoundTest,
         twin("/bin/sound", &["test"], Operand::None),
+    ),
+    tool(
+        &registry::SOUND_APPS,
+        Kind::SoundApps,
+        twin("/bin/sound", &["apps", "--json"], Operand::None),
+    ),
+    tool(
+        &registry::SOUND_PLAY,
+        Kind::SoundPlay,
+        twin("/bin/sound", &["play"], Operand::Path(READ_PATH)),
     ),
 ];
 

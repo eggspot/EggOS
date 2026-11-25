@@ -28,6 +28,19 @@ pub fn reachable() -> bool {
     })
 }
 
+/// Asks the sound server to play the alert sound (D777), when one runs.
+pub fn alert() {
+    let Some(socket) = Player::connect() else {
+        return;
+    };
+    let line = b"alert\n";
+    let _ = call(
+        number::SENDTO,
+        [socket, line.as_ptr() as usize, line.len(), MSG_NOSIGNAL, 0, 0],
+    );
+    let _ = call(number::CLOSE, [socket, 0, 0, 0, 0, 0]);
+}
+
 /// One stream being played.
 #[derive(Debug)]
 pub struct Player {

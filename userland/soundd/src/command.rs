@@ -23,7 +23,24 @@ pub enum Command {
     Output(String),
     Input(String),
     Test { seconds: u32 },
+    Apps { json: bool },
+    AppVolume(String, Step),
+    AppMute(String, Toggle),
+    Alert { name: Option<String>, volume: Option<u8> },
+    Play(PlayOptions),
 }
+
+/// What `sound play` was asked (D777).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayOptions {
+    pub path: String,
+    pub volume: Option<u8>,
+    pub seconds: Option<u32>,
+    pub wait: bool,
+}
+
+/// The longest `sound play --seconds`, which the MCP tool passes.
+pub const MOST_PLAY_SECONDS: u32 = 60;
 
 /// A volume to set, or a step from the one in force.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,17 +77,19 @@ pub fn parse(arguments: &[&str]) -> Result<Command, Refusal> {
         ("status", []) => Ok(Command::Status { json }),
         ("devices", []) => Ok(Command::Devices { json }),
         ("volume", [value]) if !json => parse_step(value).map(Command::Volume),
-        ("mute", [state]) if !json => match *state {
-            "on" => Ok(Command::Mute(Toggle::On)),
-            "off" => Ok(Command::Mute(Toggle::Off)),
-            "toggle" => Ok(Command::Mute(Toggle::Flip)),
-            other => Err(Refusal::InvalidValue(format!(
-                "invalid value '{other}' (on, off or toggle)"
-            ))),
-        },
+        ("mute", [state]) if !json => parse_toggle(state).map(Command::Mute),
         ("output", [id]) if !json => Ok(Command::Output(String::from(*id))),
         ("input", [id]) if !json => Ok(Command::Input(String::from(*id))),
         ("test", []) if !json => Ok(Command::Test { seconds: 1 }),
+        ("apps", []) => Ok(Command::Apps { json }),
+        ("app", [id, "volume", value]) if !json => {
+            parse_step(value).map(|step| Command::AppVolume(String::from(*id), step))
+        }
+        ("app", [id, "mute", state]) if !json => {
+            parse_toggle(state).map(|toggle| Command::AppMute(String::from(*id), toggle))
+        }
+        ("alert", rest) if !json => parse_alert(rest),
+        ("play", rest) if !json => parse_play(rest),
         ("test", ["--seconds", seconds]) if !json => match seconds.parse::<u32>() {
             Ok(seconds @ 1..=10) => Ok(Command::Test { seconds }),
             _ => Err(Refusal::InvalidValue(format!(
@@ -80,8 +99,130 @@ pub fn parse(arguments: &[&str]) -> Result<Command, Refusal> {
         _ => usage(concat!(
             "usage: sound [status|devices] [--json] | volume <0-100|+n|-n> | ",
             "mute on|off|toggle | output <id|auto> | input <id|auto> | ",
-            "test [--seconds <1-10>]"
+            "test [--seconds <1-10>] | apps [--json] | app <id> volume|mute <value> | ",
+            "alert [<name>] [--volume <0-100>] | play <file> [--volume <0-100>] [--no-wait]"
         )),
+    }
+}
+
+fn parse_toggle(state: &str) -> Result<Toggle, Refusal> {
+    match state {
+        "on" => Ok(Toggle::On),
+        "off" => Ok(Toggle::Off),
+        "toggle" => Ok(Toggle::Flip),
+        other => Err(Refusal::InvalidValue(format!(
+            "invalid value '{other}' (on, off or toggle)"
+        ))),
+    }
+}
+
+fn parse_percent(value: &str) -> Result<u8, Refusal> {
+    value
+        .parse::<u8>()
+        .ok()
+        .filter(|&volume| volume <= 100)
+        .ok_or_else(|| Refusal::InvalidValue(format!("invalid value '{value}' (0 to 100)")))
+}
+
+fn parse_alert(words: &[&str]) -> Result<Command, Refusal> {
+    let mut name = None;
+    let mut volume = None;
+    let mut words = words.iter();
+    while let Some(&word) = words.next() {
+        match word {
+            "--volume" => {
+                let value = words.next().ok_or(Refusal::Usage(String::from("--volume <0-100>")))?;
+                volume = Some(parse_percent(value)?);
+            }
+            _ if name.is_none() && crate::protocol::ALERTS.contains(&word) => {
+                name = Some(String::from(word));
+            }
+            other => {
+                return Err(Refusal::InvalidValue(format!(
+                    "invalid value '{other}' (chime, pop, glass or none)"
+                )));
+            }
+        }
+    }
+    Ok(Command::Alert { name, volume })
+}
+
+fn parse_play(words: &[&str]) -> Result<Command, Refusal> {
+    let mut options = PlayOptions {
+        path: String::new(),
+        volume: None,
+        seconds: None,
+        wait: true,
+    };
+    let mut words = words.iter();
+    while let Some(&word) = words.next() {
+        match word {
+            "--volume" => {
+                let value = words.next().ok_or(Refusal::Usage(String::from("--volume <0-100>")))?;
+                options.volume = Some(parse_percent(value)?);
+            }
+            "--seconds" => {
+                let value = words.next().ok_or(Refusal::Usage(String::from("--seconds <n>")))?;
+                let seconds = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|seconds| (1..=MOST_PLAY_SECONDS).contains(seconds))
+                    .ok_or_else(|| {
+                        Refusal::InvalidValue(format!("invalid value '{value}' (1 to 60 seconds)"))
+                    })?;
+                options.seconds = Some(seconds);
+            }
+            "--no-wait" => options.wait = false,
+            "--" => {
+                let path = words.next().ok_or(Refusal::Usage(String::from("sound play <file>")))?;
+                options.path = String::from(*path);
+            }
+            path if options.path.is_empty() && !path.starts_with('-') => {
+                options.path = String::from(path);
+            }
+            _ => return Err(Refusal::Usage(String::from("usage: sound play <file>"))),
+        }
+    }
+    match options.path.is_empty() {
+        true => Err(Refusal::Usage(String::from("usage: sound play <file>"))),
+        false => Ok(Command::Play(options)),
+    }
+}
+
+/// `sound apps`'s text, or its JSON records, one a line.
+pub fn apps_text(apps: &[crate::protocol::App], json: bool) -> String {
+    if apps.is_empty() && !json {
+        return String::from("No app is playing.\n");
+    }
+    let mut text = String::new();
+    for app in apps {
+        text.push_str(&match json {
+            true => format!(
+                "{{\"id\":{},\"name\":{},\"volume\":{},\"mute\":{},\"playing\":{}}}\n",
+                json_text(&app.id),
+                json_text(&app.name),
+                app.volume,
+                app.mute,
+                app.playing
+            ),
+            false => format!(
+                "{}  {}%  {}  {}  {}\n",
+                app.id,
+                app.volume,
+                if app.mute { "yes" } else { "no" },
+                if app.playing { "yes" } else { "no" },
+                app.name
+            ),
+        });
+    }
+    text
+}
+
+/// The title an alert's name shows as: `Chime`, or `none`.
+pub fn alert_title(name: &str) -> String {
+    match name {
+        "none" => String::from("none"),
+        _ => crate::protocol::App::name_of(name),
     }
 }
 
@@ -122,7 +263,13 @@ pub fn request_of(command: &Command, state: &State) -> Option<Request> {
         Command::Test { seconds } => Request::Test {
             milliseconds: seconds * TEST_TONE_MS,
         },
-        Command::Status { .. } | Command::Devices { .. } => return None,
+        Command::Status { .. }
+        | Command::AppVolume(..)
+        | Command::AppMute(..)
+        | Command::Devices { .. }
+        | Command::Apps { .. }
+        | Command::Alert { .. }
+        | Command::Play(_) => return None,
     })
 }
 
@@ -228,7 +375,13 @@ pub fn done_text(command: &Command, state: &State, devices: &[Device]) -> String
                 name_of(devices, output)
             )
         }
-        Command::Status { .. } | Command::Devices { .. } => String::new(),
+        Command::Status { .. }
+        | Command::Devices { .. }
+        | Command::Apps { .. }
+        | Command::AppVolume(..)
+        | Command::AppMute(..)
+        | Command::Alert { .. }
+        | Command::Play(_) => String::new(),
     }
 }
 
@@ -263,6 +416,29 @@ mod tests {
         assert!(matches!(parse(&["test", "--seconds", "11"]), Err(Refusal::InvalidValue(_))));
         assert!(matches!(parse(&["louder"]), Err(Refusal::Usage(_))));
         assert_eq!(stepped(98, Step::By(5)), 100);
+        assert_eq!(
+            parse(&["app", "files", "volume", "40"]),
+            Ok(Command::AppVolume(String::from("files"), Step::To(40)))
+        );
+        assert_eq!(
+            parse(&["alert", "glass", "--volume", "30"]),
+            Ok(Command::Alert {
+                name: Some(String::from("glass")),
+                volume: Some(30)
+            })
+        );
+        assert!(matches!(parse(&["alert", "bell"]), Err(Refusal::InvalidValue(_))));
+        assert_eq!(
+            parse(&["play", "notes.wav", "--no-wait"]),
+            Ok(Command::Play(PlayOptions {
+                path: String::from("notes.wav"),
+                volume: None,
+                seconds: None,
+                wait: false
+            }))
+        );
+        let too_long = parse(&["play", "a.wav", "--seconds", "61"]);
+        assert!(matches!(too_long, Err(Refusal::InvalidValue(_))));
         assert_eq!(stepped(3, Step::By(-5)), 0);
     }
 

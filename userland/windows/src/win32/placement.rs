@@ -472,6 +472,7 @@ extern "efiapi" fn get_foreground_window() -> usize {
 }
 
 extern "efiapi" fn message_beep(_kind: u32) -> Bool {
+    eggos_soundd::client::alert();
     TRUE
 }
 

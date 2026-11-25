@@ -664,7 +664,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
     Some(address as u64)
 }
 
-extern "C" fn beep() {}
+extern "C" fn beep() {
+    eggos_soundd::client::alert();
+}
 
 pub fn define(runtime: &mut Runtime) -> bool {
     let instance = methods![

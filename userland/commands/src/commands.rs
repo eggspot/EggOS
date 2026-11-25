@@ -16,7 +16,7 @@ use crate::errors::{
     NEEDS_CONFIRMATION, NO_STORE, NO_SUCH_COMPONENT, NOT_IN_THIS_FORM, REMOVE_FAILED,
     STORE_DAMAGED, STORE_DETACHED, WRITE_FAILED,
 };
-use crate::errors::{NO_SOUND_DEVICE, NO_SUCH_DEVICE};
+use crate::errors::{NO_SOUND_DEVICE, NO_SUCH_DEVICE, NOT_A_WAV};
 use crate::{
     AFTER_OPTION, CommandDefinition, CommandError, Count, DRY_RUN_OPTION, Effect, ErrorDefinition,
     Example, Field, FieldType, JSON_OPTION, OperandDefinition, OptionDefinition, OptionValue,
@@ -3984,6 +3984,126 @@ pub const SOUND_TEST: CommandDefinition = CommandDefinition {
     surface: SOUND_SURFACE,
 };
 
+/// What `sound apps --json` writes, one record an app (D777).
+pub const SOUND_APP_FIELDS: [Field; 5] = [
+    field("id", FieldType::Text),
+    field("name", FieldType::Text),
+    field("volume", FieldType::Integer),
+    field("mute", FieldType::Boolean),
+    field("playing", FieldType::Boolean),
+];
+
+/// `sound apps` (D777).
+pub const SOUND_APPS: CommandDefinition = CommandDefinition {
+    words: &["sound", "apps"],
+    summary: "Lists the apps playing sound.",
+    description: "Prints one line per app with an open stream: its id, its own volume, whether \
+                  it is muted, whether it plays and its name; `No app is playing.` with none.",
+    options: &[JSON_OPTION],
+    operands: &[],
+    outputs: Outputs {
+        text: Output::Text,
+        json: Output::Records(&SOUND_APP_FIELDS),
+    },
+    max_effect: Effect::Read,
+    errors: &[exits(&USAGE, 2), exits(&NO_SOUND_DEVICE, 1)],
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+/// `sound app` (D777).
+pub const SOUND_APP: CommandDefinition = CommandDefinition {
+    words: &["sound", "app"],
+    summary: "Sets an app's own volume or mute.",
+    description: "Sets sound.app.<id>.volume (0 to 100, +n or -n) or sound.app.<id>.mute (on, \
+                  off or toggle): the app's level under the output volume, remembered across \
+                  runs.",
+    options: &[],
+    operands: &[
+        operand("id", ValueType::Text, Count::One),
+        operand("setting", ValueType::Choice(&["volume", "mute"]), Count::One),
+        operand("value", ValueType::Text, Count::One),
+    ],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&INVALID_VALUE, 2),
+        exits(&NO_SOUND_DEVICE, 1),
+        exits(&NO_SUCH_APP, 1),
+    ],
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+const SOUND_ALERTS: ValueType = ValueType::Choice(&["chime", "pop", "glass", "none"]);
+const SOUND_PERCENT: ValueType = ValueType::Integer {
+    minimum: 0,
+    maximum: 100,
+};
+
+/// `sound alert` (D777).
+pub const SOUND_ALERT: CommandDefinition = CommandDefinition {
+    words: &["sound", "alert"],
+    summary: "Plays the alert sound, or chooses it.",
+    description: "With no name plays the alert sound; with one (chime, pop, glass or none) sets \
+                  sound.alert and plays it; --volume sets sound.alert_volume.",
+    options: &[valued(
+        None,
+        Some("volume"),
+        "percent",
+        SOUND_PERCENT,
+        "The alert's volume.",
+    )],
+    operands: &[operand("name", SOUND_ALERTS, Count::ZeroOrOne)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Change,
+    errors: &SOUND_ERRORS,
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
+const SOUND_PLAY_SECONDS: ValueType = ValueType::Integer {
+    minimum: 1,
+    maximum: 60,
+};
+
+/// `sound play` (D777).
+pub const SOUND_PLAY: CommandDefinition = CommandDefinition {
+    words: &["sound", "play"],
+    summary: "Plays a WAV file on the output.",
+    description: "Plays a PCM WAV file at the output volume, or at --volume for this play, and \
+                  waits until it ends (--no-wait returns at once); --seconds cuts it.",
+    options: &[
+        valued(
+            None,
+            Some("volume"),
+            "percent",
+            SOUND_PERCENT,
+            "The volume for this play.",
+        ),
+        valued(
+            None,
+            Some("seconds"),
+            "seconds",
+            SOUND_PLAY_SECONDS,
+            "Plays at most this long.",
+        ),
+        long_flag("no-wait", "Returns once the sound starts."),
+    ],
+    operands: &[operand("file", ValueType::Path, Count::One)],
+    outputs: TEXT_ONLY,
+    max_effect: Effect::Control,
+    errors: &[
+        exits(&USAGE, 2),
+        exits(&NO_SUCH_FILE, 1),
+        exits(&NOT_A_WAV, 1),
+        exits(&NO_SOUND_DEVICE, 1),
+    ],
+    examples: &[],
+    surface: SOUND_SURFACE,
+};
+
 /// `wifi list` (D280).
 pub const WIFI_LIST: CommandDefinition = CommandDefinition {
     words: &["wifi", "list"],
@@ -4994,7 +5114,7 @@ pub const WINDOWS_REGISTRY_RESET: CommandDefinition = CommandDefinition {
 };
 
 /// Every command in the registry, in `help`'s order: every command EggOS ships (D163).
-pub static COMMANDS: [CommandDefinition; 135] = [
+pub static COMMANDS: [CommandDefinition; 139] = [
     AGENT_FORGET,
     AGENT_GRANT,
     AGENT_LIST,
@@ -5076,10 +5196,14 @@ pub static COMMANDS: [CommandDefinition; 135] = [
     SETTINGS_SET,
     SHUTDOWN,
     SLEEP,
+    SOUND_ALERT,
+    SOUND_APP,
+    SOUND_APPS,
     SOUND_DEVICES,
     SOUND_INPUT,
     SOUND_MUTE,
     SOUND_OUTPUT,
+    SOUND_PLAY,
     SOUND_STATUS,
     SOUND_TEST,
     SOUND_VOLUME,

@@ -2237,7 +2237,8 @@ impl SettingsWindow {
     /// Shows what the sound server said, `None` without a sound device (D775).
     pub fn show_sound(&mut self, read: Option<crate::sound_pane::SoundRead>) {
         self.sound.remember_output(read.as_ref());
-        self.sound.show(&mut self.tree, read.as_ref());
+        let height = self.sound.show(&mut self.tree, read.as_ref());
+        self.set_pane_height(SOUND, height);
     }
 
     /// The Power pane.

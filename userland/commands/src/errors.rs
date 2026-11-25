@@ -135,6 +135,14 @@ pub const NO_SUCH_DEVICE: ErrorDefinition = error(
     Some("sound devices"),
 );
 
+/// `sound play`: the file is not a PCM WAV file (D777).
+pub const NOT_A_WAV: ErrorDefinition = error(
+    "not_a_wav",
+    Category::Usage,
+    "Give a PCM WAV file.",
+    None,
+);
+
 /// `ls`: a folder holds more entries than `ls` lists at once.
 pub const TOO_MANY_ENTRIES: ErrorDefinition = error(
     "too_many_entries",
@@ -701,7 +709,7 @@ pub const REMOVE_FAILED: ErrorDefinition = error(
     None,
 );
 /// Every error code EggOS defines, for the registry test and `help --json`.
-pub const ALL: [&ErrorDefinition; 95] = [
+pub const ALL: [&ErrorDefinition; 96] = [
     &NO_SUCH_ACTION,
     &USAGE,
     &NO_SUCH_FILE,
@@ -797,4 +805,5 @@ pub const ALL: [&ErrorDefinition; 95] = [
     &MANAGED,
     &NO_SOUND_DEVICE,
     &NO_SUCH_DEVICE,
+    &NOT_A_WAV,
 ];

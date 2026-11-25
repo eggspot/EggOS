@@ -2542,10 +2542,30 @@ fn read_sound() -> Option<eggos_settings::sound_pane::SoundRead> {
             (id.clone(), name)
         })
     };
+    let apps: alloc::vec::Vec<eggos_settings::sound_pane::AppRead> = match sound_connection() {
+        Some(socket) => {
+            let lines = sound_exchange(socket, &SoundRequest::Apps, "end");
+            close(socket);
+            lines
+                .lines()
+                .filter_map(eggos_soundd::protocol::App::parse)
+                .map(|app| eggos_settings::sound_pane::AppRead {
+                    id: app.id,
+                    name: app.name,
+                    volume: app.volume,
+                    mute: app.mute,
+                })
+                .collect()
+        }
+        None => alloc::vec::Vec::new(),
+    };
     let mut file = [0u8; LARGEST + 1];
     let length = saved_settings(&mut file);
     let saved = settings_file::sound_settings(&file[..length]);
     Some(eggos_settings::sound_pane::SoundRead {
+        alert: String::from(core::str::from_utf8(saved.alert).unwrap_or("chime")),
+        alert_volume: saved.alert_volume,
+        apps,
         output: named(&state.output),
         input: named(&state.input),
         volume: state.volume,
@@ -2569,9 +2589,18 @@ fn send_sound(change: &eggos_settings::sound_pane::SoundChange) {
         SoundChange::Test => SoundRequest::Test {
             milliseconds: TEST_TONE_MS,
         },
+        SoundChange::Alert(name) => SoundRequest::Set(Change::Alert(name.clone())),
+        SoundChange::AlertVolume(volume) => SoundRequest::Set(Change::AlertVolume(*volume)),
+        SoundChange::AppVolume(app, volume) => {
+            SoundRequest::Set(Change::AppVolume(app.clone(), *volume))
+        }
+        SoundChange::AppMute(app, mute) => SoundRequest::Set(Change::AppMute(app.clone(), *mute)),
     };
     if let Some(socket) = sound_connection() {
         let _ = sound_exchange(socket, &request, "");
+        if matches!(change, SoundChange::Alert(_) | SoundChange::AlertVolume(_)) {
+            let _ = sound_exchange(socket, &SoundRequest::Alert, "");
+        }
         close(socket);
     }
 }

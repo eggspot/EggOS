@@ -5,7 +5,7 @@
 
 use crate::command::{self, Command, FAILURE_STATUS, NO_DEVICE, Refusal, USAGE_STATUS};
 use crate::mixer::{self, Stream};
-use crate::protocol::{self, Change, Device, Kind, Request, State, TEST_TONE_HZ};
+use crate::protocol::{self, App, Change, Device, Kind, Request, State, TEST_TONE_HZ};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::CStr;
@@ -29,6 +29,9 @@ const O_RDWR: usize = 2;
 const DSP_RECORD_BYTES: usize = 16 + 8192;
 const DSP_HEADER: usize = 16;
 const DSP_ENDED: u32 = 1;
+const APPS_PATH: &CStr = c"/var/lib/eggos/sound-apps";
+const MOST_APPS: usize = 64;
+const DSP_APP: &str = "oss";
 const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_CLOEXEC: usize = 0o2_000_000;
@@ -197,6 +200,48 @@ struct Server {
     tone: Option<usize>,
     dsp: Option<(u32, usize)>,
     pending: Vec<u8>,
+    apps: Vec<(String, u8, bool)>,
+    stream_apps: Vec<(usize, String)>,
+    alert: String,
+    alert_volume: u8,
+}
+
+fn read_apps() -> Vec<(String, u8, bool)> {
+    let text = read_whole(APPS_PATH, 8192).unwrap_or_default();
+    core::str::from_utf8(&text)
+        .unwrap_or("")
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split(' ');
+            let id = String::from(words.next()?);
+            let volume = words.next()?.parse().ok().filter(|&volume: &u8| volume <= 100)?;
+            let mute = words.next()? == "true";
+            Some((id, volume, mute))
+        })
+        .take(MOST_APPS)
+        .collect()
+}
+
+fn write_apps(apps: &[(String, u8, bool)]) {
+    let mut text = String::new();
+    for (id, volume, mute) in apps {
+        text.push_str(&alloc::format!("{id} {volume} {mute}\n"));
+    }
+    let Ok(descriptor) = call(
+        number::OPENAT,
+        [
+            AT_FDCWD,
+            APPS_PATH.as_ptr() as usize,
+            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+            0o644,
+            0,
+            0,
+        ],
+    ) else {
+        return;
+    };
+    syscall::write_all(descriptor, text.as_bytes());
+    close(descriptor as Fd);
 }
 
 impl Server {
@@ -222,6 +267,8 @@ impl Server {
             input_volume: saved.input_volume,
             input_mute: saved.input_mute,
         };
+        let alert = String::from(core::str::from_utf8(saved.alert).unwrap_or("chime"));
+        let alert_volume = saved.alert_volume;
         let shell = call(
             number::OPENAT,
             [AT_FDCWD, WINDOW_DEVICE.as_ptr() as usize, 2 | O_CLOEXEC, 0, 0, 0],
@@ -242,6 +289,10 @@ impl Server {
             tone: None,
             dsp: None,
             pending: Vec::new(),
+            apps: read_apps(),
+            stream_apps: Vec::new(),
+            alert,
+            alert_volume,
         })
     }
 
@@ -313,11 +364,106 @@ impl Server {
             Change::Mute(mute) => self.state.mute = *mute,
             Change::InputVolume(volume) => self.state.input_volume = *volume,
             Change::InputMute(mute) => self.state.input_mute = *mute,
+            Change::Alert(name) => self.alert = name.clone(),
+            Change::AlertVolume(volume) => self.alert_volume = *volume,
+            Change::AppVolume(app, _) | Change::AppMute(app, _) => {
+                let open = self.stream_apps.iter().any(|(_, each)| each == app);
+                let known = self.apps.iter().any(|(each, ..)| each == app);
+                if !open && !known {
+                    return Err("no_such_app");
+                }
+                let record = self.app_record(app);
+                match &change {
+                    Change::AppVolume(_, volume) => record.1 = *volume,
+                    Change::AppMute(_, mute) => record.2 = *mute,
+                    _ => {}
+                }
+                let gain = app_gain(record);
+                write_apps(&self.apps);
+                let ids: Vec<usize> = self
+                    .stream_apps
+                    .iter()
+                    .filter(|(_, each)| each == app)
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in ids {
+                    if let Some(stream) = self.stream_mut(id) {
+                        stream.set_volume(gain);
+                    }
+                }
+            }
         }
-        let (key, value) = change.setting();
-        let _ = save_setting(key, &value);
+        if change.is_saved_in_settings() {
+            let (key, value) = change.setting();
+            let _ = save_setting(&key, &value);
+        }
         self.tell_watchers();
         Ok(())
+    }
+
+    fn app_record(&mut self, app: &str) -> &mut (String, u8, bool) {
+        let at = match self.apps.iter().position(|(each, ..)| each == app) {
+            Some(at) => at,
+            None => {
+                if self.apps.len() >= MOST_APPS {
+                    self.apps.remove(0);
+                }
+                self.apps.push((String::from(app), 100, false));
+                self.apps.len() - 1
+            }
+        };
+        &mut self.apps[at]
+    }
+
+    fn start_stream(&mut self, stream: Stream, app: &str) -> usize {
+        let gain = app_gain(self.app_record(app));
+        let id = self.next_stream;
+        self.next_stream += 1;
+        let mut stream = stream;
+        stream.set_volume(gain);
+        self.streams.push((id, stream));
+        self.stream_apps.push((id, String::from(app)));
+        id
+    }
+
+    fn play_alert(&mut self) {
+        if self.state.mute || self.state.output.is_none() {
+            return;
+        }
+        let samples = mixer::alert(&self.alert, self.rate);
+        if samples.is_empty() {
+            return;
+        }
+        let mut stream = Stream::new(self.rate, 2);
+        stream.push(&samples);
+        stream.end();
+        stream.set_volume(self.alert_volume);
+        let id = self.next_stream;
+        self.next_stream += 1;
+        self.streams.push((id, stream));
+    }
+
+    fn open_apps(&self) -> Vec<App> {
+        let mut listed: Vec<App> = Vec::new();
+        for (_, app) in &self.stream_apps {
+            if listed.iter().any(|each| &each.id == app) {
+                continue;
+            }
+            let (volume, mute) = self
+                .apps
+                .iter()
+                .find(|(each, ..)| each == app)
+                .map_or((100, false), |(_, volume, mute)| (*volume, *mute));
+            listed.push(App {
+                id: app.clone(),
+                volume,
+                mute,
+                playing: true,
+                name: App::name_of(app),
+            });
+        }
+        listed.sort_by(|a, b| a.name.cmp(&b.name));
+        listed
     }
 
     fn start_tone(&mut self, milliseconds: u32) {
@@ -362,14 +508,30 @@ impl Server {
                 self.start_tone(milliseconds);
                 self.reply(socket, "ok");
             }
-            Request::Play { rate, channels, .. } => {
-                let id = self.next_stream;
-                self.next_stream += 1;
-                self.streams.push((id, Stream::new(rate, channels)));
+            Request::Play {
+                rate,
+                channels,
+                app,
+            } => {
+                let id = self.start_stream(Stream::new(rate, channels), &app);
                 if let Some(client) = self.clients[index].as_mut() {
                     client.stream = Some(id);
                 }
                 self.reply(socket, "ok");
+            }
+            Request::Apps => {
+                for app in self.open_apps() {
+                    self.reply(socket, &app.line());
+                }
+                self.reply(socket, "end");
+            }
+            Request::Alert => {
+                self.play_alert();
+                self.reply(socket, "ok");
+            }
+            Request::AlertState => {
+                let line = alloc::format!("alert {} {}", self.alert, self.alert_volume);
+                self.reply(socket, &line);
             }
         }
     }
@@ -491,6 +653,9 @@ impl Server {
                 let streams = self.streams.iter_mut().map(|(_, stream)| stream);
                 mixer::mix(streams, &mut samples, self.rate, gain);
                 self.streams.retain(|(_, stream)| !stream.is_over());
+                let streams = &self.streams;
+                self.stream_apps
+                    .retain(|(id, _)| streams.iter().any(|(each, _)| each == id));
                 mixer::to_bytes(&samples, &mut self.pending);
             }
             let written = call(
@@ -539,9 +704,7 @@ impl Server {
                     {
                         stream.end();
                     }
-                    let id = self.next_stream;
-                    self.next_stream += 1;
-                    self.streams.push((id, Stream::new(rate, channels)));
+                    let id = self.start_stream(Stream::new(rate, channels), DSP_APP);
                     self.dsp = Some((number, id));
                     id
                 }
@@ -570,6 +733,10 @@ impl Server {
                 .is_none_or(|(_, stream)| stream.room() > 0)
         })
     }
+}
+
+fn app_gain(record: &(String, u8, bool)) -> u8 {
+    if record.2 { 0 } else { record.1 }
 }
 
 fn listen() -> Result<Fd, Errno> {
@@ -732,6 +899,16 @@ impl Connection {
         State::parse(&self.ask(&Request::Get)?)
     }
 
+    fn apps(&self) -> Vec<App> {
+        if !self.send(&Request::Apps) {
+            return Vec::new();
+        }
+        self.lines_until(|line| line == "end")
+            .iter()
+            .filter_map(|line| App::parse(line))
+            .collect()
+    }
+
     fn devices(&self) -> Vec<Device> {
         if !self.send(&Request::Devices) {
             return Vec::new();
@@ -785,6 +962,33 @@ fn sound(arguments: &[&str]) -> i32 {
             }
             say(STANDARD_OUTPUT, &command::devices_text(&devices, *json));
         }
+        Command::Apps { json } => {
+            say(STANDARD_OUTPUT, &command::apps_text(&connection.apps(), *json));
+        }
+        Command::AppVolume(id, _) | Command::AppMute(id, _) => {
+            return set_app(&connection, &command, id);
+        }
+        Command::Alert { name, volume } => {
+            for change in [
+                name.clone().map(Change::Alert),
+                volume.map(Change::AlertVolume),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let _ = connection.ask(&Request::Set(change));
+            }
+            let _ = connection.ask(&Request::Alert);
+            let current = connection.ask(&Request::AlertState).unwrap_or_default();
+            let alert = current.split(' ').nth(1).unwrap_or("chime");
+            let title = command::alert_title(alert);
+            let line = match name {
+                Some(_) => alloc::format!("Alert sound: {title}.\n"),
+                None => alloc::format!("Played the alert ({title}).\n"),
+            };
+            say(STANDARD_OUTPUT, &line);
+        }
+        Command::Play(options) => return play_file(options),
         _ => {
             let kind = match &command {
                 Command::Input(_) => Some(Kind::Input),
@@ -823,6 +1027,93 @@ fn sound(arguments: &[&str]) -> i32 {
         }
     }
     0
+}
+
+fn set_app(connection: &Connection, command: &Command, id: &str) -> i32 {
+    let Some(app) = connection.apps().into_iter().find(|app| app.id == id) else {
+        let message = alloc::format!("no app '{id}' is playing (sound apps lists them)");
+        return refuse("no_such_app", &message, FAILURE_STATUS);
+    };
+    let (change, done) = match command {
+        Command::AppVolume(_, step) => {
+            let volume = command::stepped(app.volume, *step);
+            let done = alloc::format!("{}: volume {volume}%.\n", app.name);
+            (Change::AppVolume(app.id.clone(), volume), done)
+        }
+        Command::AppMute(_, toggle) => {
+            let mute = match toggle {
+                command::Toggle::On => true,
+                command::Toggle::Off => false,
+                command::Toggle::Flip => !app.mute,
+            };
+            let word = if mute { "muted" } else { "unmuted" };
+            (Change::AppMute(app.id.clone(), mute), alloc::format!("{}: {word}.\n", app.name))
+        }
+        _ => return 0,
+    };
+    match connection.ask(&Request::Set(change)).as_deref() {
+        Some("ok") => {
+            say(STANDARD_OUTPUT, &done);
+            0
+        }
+        _ => refuse("no_such_app", "the app stopped playing", FAILURE_STATUS),
+    }
+}
+
+fn play_file(options: &command::PlayOptions) -> i32 {
+    let Ok(path) = alloc::ffi::CString::new(options.path.as_str()) else {
+        return refuse("no_such_file", &options.path, FAILURE_STATUS);
+    };
+    let Some(bytes) = read_whole(&path, 64 << 20) else {
+        let message = alloc::format!("{}: no such file", options.path);
+        return refuse("no_such_file", &message, FAILURE_STATUS);
+    };
+    let Some(wave) = crate::wave::read_wave(&bytes) else {
+        let message = alloc::format!("{}: not a PCM WAV file", options.path);
+        return refuse("not_a_wav", &message, FAILURE_STATUS);
+    };
+    let data = bytes
+        .get(wave.data_offset..wave.data_offset + wave.data_length)
+        .unwrap_or(&[]);
+    let frame_bytes = usize::from(wave.frame_bytes).max(1);
+    let most = options.seconds.map_or(data.len(), |seconds| {
+        (wave.sample_rate as usize * seconds as usize * frame_bytes).min(data.len())
+    });
+    let data = &data[..most - most % frame_bytes];
+    let volume = f32::from(options.volume.unwrap_or(100)) / 100.0;
+    let float = wave.format == crate::wave::SampleFormat::Float;
+    let samples = mixer::to_sixteen_bits(data, wave.bits, float, volume);
+    let channels = u8::try_from(wave.channels).unwrap_or(2);
+    let Some(mut player) = crate::client::Player::open(wave.sample_rate, channels, "sound") else {
+        return refuse("no_sound_device", NO_DEVICE, FAILURE_STATUS);
+    };
+    let name = options.path.rsplit('/').next().unwrap_or(&options.path);
+    let length_ms = (data.len() / frame_bytes) as u64 * 1000 / u64::from(wave.sample_rate.max(1));
+    let tenths = length_ms / 100;
+    let seconds = alloc::format!("{}.{} s", tenths / 10, tenths % 10);
+    player.push(&samples);
+    if !options.wait {
+        while !player.pump() {
+            sleep_ms(10);
+        }
+        say(STANDARD_OUTPUT, &alloc::format!("Playing {name} ({seconds}).\n"));
+        return 0;
+    }
+    say(STANDARD_OUTPUT, &alloc::format!("Playing {name} ({seconds})...\n"));
+    let ends = now_ms() + length_ms;
+    while !player.pump() || now_ms() < ends {
+        sleep_ms(20);
+    }
+    say(STANDARD_OUTPUT, &alloc::format!("Played {name}.\n"));
+    0
+}
+
+fn sleep_ms(milliseconds: i64) {
+    let pause = [0i64, milliseconds * 1_000_000];
+    let _ = call(
+        number::CLOCK_NANOSLEEP,
+        [CLOCK_MONOTONIC, 0, pause.as_ptr() as usize, 0, 0, 0],
+    );
 }
 
 /// The program's main function: `soundd` serves, `sound` is the command.

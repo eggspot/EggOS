@@ -34,20 +34,44 @@ pub enum Change {
     Input(String),
     InputVolume(u8),
     InputMute(bool),
+    Alert(String),
+    AlertVolume(u8),
+    AppVolume(String, u8),
+    AppMute(String, bool),
+}
+
+/// The alert sounds' names (D777), the default first.
+pub const ALERTS: [&str; 4] = ["chime", "pop", "glass", "none"];
+
+fn is_id(text: &str) -> bool {
+    !text.is_empty() && !text.contains(char::is_whitespace)
 }
 
 impl Change {
-    /// Its settings key and value, as the settings file holds them.
-    pub fn setting(&self) -> (&'static str, String) {
+    /// Its settings key and value, as the settings file holds them: the key with its `sound.`
+    /// prefix.
+    pub fn setting(&self) -> (String, String) {
         use eggos_settings_file as keys;
+        let key = |key: &str| String::from(key);
         match self {
-            Change::Volume(volume) => (keys::SOUND_VOLUME, format!("{volume}")),
-            Change::Mute(mute) => (keys::SOUND_MUTE, format!("{mute}")),
-            Change::Output(id) => (keys::SOUND_OUTPUT, id.clone()),
-            Change::Input(id) => (keys::SOUND_INPUT, id.clone()),
-            Change::InputVolume(volume) => (keys::SOUND_INPUT_VOLUME, format!("{volume}")),
-            Change::InputMute(mute) => (keys::SOUND_INPUT_MUTE, format!("{mute}")),
+            Change::Volume(volume) => (key(keys::SOUND_VOLUME), format!("{volume}")),
+            Change::Mute(mute) => (key(keys::SOUND_MUTE), format!("{mute}")),
+            Change::Output(id) => (key(keys::SOUND_OUTPUT), id.clone()),
+            Change::Input(id) => (key(keys::SOUND_INPUT), id.clone()),
+            Change::InputVolume(volume) => (key(keys::SOUND_INPUT_VOLUME), format!("{volume}")),
+            Change::InputMute(mute) => (key(keys::SOUND_INPUT_MUTE), format!("{mute}")),
+            Change::Alert(name) => (key(keys::SOUND_ALERT), name.clone()),
+            Change::AlertVolume(volume) => (key(keys::SOUND_ALERT_VOLUME), format!("{volume}")),
+            Change::AppVolume(app, volume) => {
+                (format!("sound.app.{app}.volume"), format!("{volume}"))
+            }
+            Change::AppMute(app, mute) => (format!("sound.app.{app}.mute"), format!("{mute}")),
         }
+    }
+
+    /// Whether the settings file keeps it (the apps' volumes live with the server).
+    pub fn is_saved_in_settings(&self) -> bool {
+        !matches!(self, Change::AppVolume(..) | Change::AppMute(..))
     }
 
     /// The change a `settings set <key> <value>` asks for, if the key is a sound key and the
@@ -60,9 +84,16 @@ impl Change {
             "false" => Some(false),
             _ => None,
         };
-        let device = || {
-            (!value.is_empty() && !value.contains(char::is_whitespace)).then(|| String::from(value))
-        };
+        let device = || is_id(value).then(|| String::from(value));
+        if let Some(rest) = key.strip_prefix("sound.app.") {
+            if let Some(app) = rest.strip_suffix(".volume").filter(|app| is_id(app)) {
+                return Some(Change::AppVolume(String::from(app), percent()?));
+            }
+            if let Some(app) = rest.strip_suffix(".mute").filter(|app| is_id(app)) {
+                return Some(Change::AppMute(String::from(app), flag()?));
+            }
+            return None;
+        }
         Some(match key {
             keys::SOUND_VOLUME => Change::Volume(percent()?),
             keys::SOUND_MUTE => Change::Mute(flag()?),
@@ -70,8 +101,62 @@ impl Change {
             keys::SOUND_INPUT => Change::Input(device()?),
             keys::SOUND_INPUT_VOLUME => Change::InputVolume(percent()?),
             keys::SOUND_INPUT_MUTE => Change::InputMute(flag()?),
+            keys::SOUND_ALERT if ALERTS.contains(&value) => Change::Alert(String::from(value)),
+            keys::SOUND_ALERT_VOLUME => Change::AlertVolume(percent()?),
             _ => return None,
         })
+    }
+}
+
+/// An app with a stream, as the server lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct App {
+    pub id: String,
+    pub volume: u8,
+    pub mute: bool,
+    pub playing: bool,
+    pub name: String,
+}
+
+impl App {
+    /// Its `app` line, without the newline.
+    pub fn line(&self) -> String {
+        format!(
+            "app {} {} {} {} {}",
+            self.id, self.volume, self.mute, self.playing, self.name
+        )
+    }
+
+    /// The app an `app` line describes.
+    pub fn parse(line: &str) -> Option<Self> {
+        let mut words = line.splitn(6, ' ');
+        if words.next()? != "app" {
+            return None;
+        }
+        let id = String::from(words.next()?);
+        let volume = words.next()?.parse().ok().filter(|&volume: &u8| volume <= 100)?;
+        let mute = words.next()? == "true";
+        let playing = words.next()? == "true";
+        let name = String::from(words.next()?);
+        Some(Self {
+            id,
+            volume,
+            mute,
+            playing,
+            name,
+        })
+    }
+
+    /// What people call the app `id`: its last part after a `:` or `.`, as given.
+    pub fn name_of(id: &str) -> String {
+        let last = id.rsplit([':', '.']).next().unwrap_or(id);
+        let mut name = String::new();
+        let mut letters = last.chars();
+        if let Some(first) = letters.next() {
+            name.extend(first.to_uppercase());
+            name.push_str(letters.as_str());
+        }
+        name
     }
 }
 
@@ -85,6 +170,9 @@ pub enum Request {
     Level,
     Watch,
     Play { rate: u32, channels: u8, app: String },
+    Apps,
+    Alert,
+    AlertState,
 }
 
 impl Request {
@@ -103,9 +191,12 @@ impl Request {
             } => format!("play {rate} {channels} {app}"),
             Request::Set(change) => {
                 let (key, value) = change.setting();
-                let name = key.strip_prefix("sound.").unwrap_or(key);
+                let name = key.strip_prefix("sound.").unwrap_or(&key);
                 format!("set {name} {value}")
             }
+            Request::Apps => String::from("apps"),
+            Request::Alert => String::from("alert"),
+            Request::AlertState => String::from("alert-state"),
         }
     }
 
@@ -118,6 +209,9 @@ impl Request {
             "devices" => Request::Devices,
             "level" => Request::Level,
             "watch" => Request::Watch,
+            "apps" => Request::Apps,
+            "alert" => Request::Alert,
+            "alert-state" => Request::AlertState,
             "test" => {
                 let milliseconds = words.next()?.parse::<u32>().ok()?;
                 Request::Test {
@@ -316,6 +410,26 @@ mod tests {
         ] {
             assert_eq!(Request::parse(&request.line()), Some(request));
         }
+        for change in [
+            Change::Alert(String::from("pop")),
+            Change::AlertVolume(40),
+            Change::AppVolume(String::from("windows-apps:notepad"), 60),
+            Change::AppMute(String::from("files"), true),
+        ] {
+            let request = Request::Set(change);
+            assert_eq!(Request::parse(&request.line()), Some(request));
+        }
+        assert_eq!(Request::parse("set alert bell"), None);
+        let app = App {
+            id: String::from("windows-apps:notepad"),
+            volume: 60,
+            mute: true,
+            playing: false,
+            name: String::from("Notepad"),
+        };
+        assert_eq!(App::parse(&app.line()), Some(app));
+        assert_eq!(App::name_of("mac-apps:com.example.Player"), "Player");
+        assert_eq!(App::name_of("files"), "Files");
         assert_eq!(Request::parse("set volume 101"), None);
         assert_eq!(Request::parse("set loudness 3"), None);
         assert_eq!(

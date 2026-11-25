@@ -838,6 +838,53 @@ pub const SOUND_TEST: ToolDefinition = operating(
     ToolResult::Text,
 );
 
+/// `sound_apps` (D777).
+pub const SOUND_APPS: ToolDefinition = reading(
+    "sound_apps",
+    "List the apps playing sound",
+    "Every app playing sound, as `sound apps --json` writes it: its id, name, own volume, mute \
+         and whether it plays. Set an app's volume or mute with settings_set on \
+         sound.app.<id>.volume and sound.app.<id>.mute.",
+    &["sound", "apps"],
+    &["--json"],
+    &[],
+    ToolResult::Items(records_of(&crate::commands::SOUND_APPS)),
+);
+
+/// `sound_play` (D777).
+pub const SOUND_PLAY: ToolDefinition = operating(
+    "sound_play",
+    "Play a WAV file",
+    "Plays a PCM WAV file on the output, as `sound play` does, at most 60 seconds (longer files \
+         are cut), at the output volume or the volume given. Needs the run grant: it makes noise \
+         in the person's room, and it is logged.",
+    &["sound", "play"],
+    &[],
+    &[
+        path("The WAV file to play."),
+        ranged(
+            described(
+                optional("volume", JsonType::Integer, Mapping::Option("--volume")),
+                "The volume for this play, in percent.",
+            ),
+            0,
+            100,
+        ),
+        defaulting(
+            ranged(
+                described(
+                    optional("seconds", JsonType::Integer, Mapping::Option("--seconds")),
+                    "Plays at most this long, in seconds.",
+                ),
+                1,
+                60,
+            ),
+            DefaultValue::Integer(60),
+        ),
+    ],
+    ToolResult::Text,
+);
+
 /// `screen_reader_log` (D603).
 pub const SCREEN_READER_LOG: ToolDefinition = reading(
     "screen_reader_log",
@@ -2969,7 +3016,7 @@ pub const WINDOWS_REGISTRY_RESET: ToolDefinition = ToolDefinition {
 /// Every tool, in `tools/list`'s order: the shipped ones as they shipped, then D160's, D161's,
 /// D162's, D163's, D170's, D184's, D188's, D191's, D192's, D193's, D196's, D197's, D200's,
 /// D204's, D226's, D225's, D235's and D231's.
-pub const TOOLS: [ToolDefinition; 99] = [
+pub const TOOLS: [ToolDefinition; 101] = [
     LS,
     CAT,
     PS,
@@ -3070,6 +3117,8 @@ pub const TOOLS: [ToolDefinition; 99] = [
     SOUND_STATUS,
     SOUND_DEVICES,
     SOUND_TEST,
+    SOUND_APPS,
+    SOUND_PLAY,
 ];
 
 impl ToolDefinition {

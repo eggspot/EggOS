@@ -370,6 +370,10 @@ pub const SOUND_INPUT: &str = "sound.input";
 pub const SOUND_INPUT_VOLUME: &str = "sound.input_volume";
 /// Whether the input is muted.
 pub const SOUND_INPUT_MUTE: &str = "sound.input_mute";
+/// The alert sound: `chime` (the default), `pop`, `glass` or `none` (D777).
+pub const SOUND_ALERT: &str = "sound.alert";
+/// The alert's volume, `0` to `100`, 70 the default.
+pub const SOUND_ALERT_VOLUME: &str = "sound.alert_volume";
 /// The device id `auto` stands for the server's choice.
 pub const SOUND_AUTOMATIC: &str = "auto";
 
@@ -382,6 +386,8 @@ pub struct SoundSettings<'a> {
     pub input: &'a [u8],
     pub input_volume: u8,
     pub input_mute: bool,
+    pub alert: &'a [u8],
+    pub alert_volume: u8,
 }
 
 /// The sound settings `file` holds, each missing or invalid one at its default (volumes 50,
@@ -407,6 +413,14 @@ pub fn sound_settings(file: &[u8]) -> SoundSettings<'_> {
         input: device(SOUND_INPUT),
         input_volume: percent(SOUND_INPUT_VOLUME),
         input_mute: flag(SOUND_INPUT_MUTE),
+        alert: value(file, SOUND_ALERT)
+            .filter(|name| [&b"chime"[..], b"pop", b"glass", b"none"].contains(name))
+            .unwrap_or(b"chime"),
+        alert_volume: value(file, SOUND_ALERT_VOLUME)
+            .and_then(|text| core::str::from_utf8(text).ok())
+            .and_then(|text| text.parse::<u8>().ok())
+            .filter(|&volume| volume <= 100)
+            .unwrap_or(70),
     }
 }
 

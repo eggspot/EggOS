@@ -152,6 +152,55 @@ pub fn tone(hz: u32, rate: u32, frames: usize) -> Vec<i16> {
     samples
 }
 
+/// The alert sound `name` (D777) at `rate` as stereo samples: `chime` two notes, 880 Hz then
+/// 1320 Hz, 120 ms each with 20 ms fades; `pop` a 60 ms sweep from 200 to 80 Hz; `glass`
+/// 1760 Hz for 200 ms decaying to silence; nothing for `none` or another name.
+pub fn alert(name: &str, rate: u32) -> Vec<i16> {
+    let rate = rate.max(1);
+    let frames = |ms: u32| (u64::from(rate) * u64::from(ms) / 1000) as usize;
+    let mut samples = Vec::new();
+    let mut push = |value: f64| {
+        let sample = (value * 16_000.0) as i16;
+        samples.push(sample);
+        samples.push(sample);
+    };
+    let tau = 2.0 * core::f64::consts::PI;
+    match name {
+        "chime" => {
+            let note = frames(120);
+            let fade = frames(20).max(1);
+            for hz in [880.0, 1320.0] {
+                for frame in 0..note {
+                    let edge = frame.min(note - 1 - frame);
+                    let level = (edge as f64 / fade as f64).min(1.0);
+                    let phase = tau * hz * frame as f64 / f64::from(rate);
+                    push(eggos_math::sin(phase) * level);
+                }
+            }
+        }
+        "pop" => {
+            let length = frames(60).max(1);
+            let mut phase = 0.0;
+            for frame in 0..length {
+                let along = frame as f64 / length as f64;
+                let hz = 200.0 - 120.0 * along;
+                phase += tau * hz / f64::from(rate);
+                push(eggos_math::sin(phase) * (1.0 - along));
+            }
+        }
+        "glass" => {
+            let length = frames(200).max(1);
+            for frame in 0..length {
+                let level = 1.0 - frame as f64 / length as f64;
+                let phase = tau * 1760.0 * frame as f64 / f64::from(rate);
+                push(eggos_math::sin(phase) * level * level);
+            }
+        }
+        _ => {}
+    }
+    samples
+}
+
 /// Samples as little-endian bytes, for the output device.
 pub fn to_bytes(samples: &[i16], out: &mut Vec<u8>) {
     out.clear();
@@ -236,6 +285,15 @@ mod tests {
         let samples = tone(440, 48_000, 4);
         assert_eq!(samples.len(), 8);
         assert_eq!(samples[0], 0);
+    }
+
+    #[test]
+    fn each_alert_lasts_its_length_and_none_is_silent() {
+        assert_eq!(alert("chime", 48_000).len(), 2 * 2 * 5760);
+        assert_eq!(alert("pop", 48_000).len(), 2 * 2880);
+        assert_eq!(alert("glass", 48_000).len(), 2 * 9600);
+        assert!(alert("none", 48_000).is_empty());
+        assert_eq!(alert("chime", 48_000)[0], 0);
     }
 
     #[test]

@@ -1178,12 +1178,15 @@ fn take_events<P: Platform>(screen: &mut Screen, damage: &mut Damage) -> Asked {
                 modifiers,
                 character,
             } => desktop.key_typing(code, pressed, modifiers, character, damage, &mut queues),
-            InputEvent::Wheel { delta } => {
-                if !desktop.home_scroll(delta, damage) {
-                    desktop.wheel(delta, &mut queues);
+            InputEvent::Wheel { delta } => match desktop.sound_wheel(delta, damage) {
+                Some(action) => action,
+                None => {
+                    if !desktop.home_scroll(delta, damage) {
+                        desktop.wheel(delta, &mut queues);
+                    }
+                    Action::None
                 }
-                Action::None
-            }
+            },
             InputEvent::SidewaysWheel { delta } => {
                 desktop.sideways_wheel(delta, &mut queues);
                 Action::None

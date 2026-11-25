@@ -272,5 +272,5 @@ and is not listed per item.
 
 ## Leftovers (no milestone yet)
 
-- [ ] Sound: an audio stack of our own (virtio-sound and Intel HD Audio drivers, a mixer in a sound server, `sound` CLI, MCP tools and a Settings > Sound pane), with NSSound, `PlaySound`/`waveOut` and SDL audio on it (D383)
+- [x] Sound: an audio stack of our own (virtio-sound and Intel HD Audio drivers, a mixer in a sound server, `sound` CLI, MCP tools and a Settings > Sound pane), with NSSound, `PlaySound`/`waveOut` and SDL audio on it (D383) — code written, unbuilt, D773, D774, D775, D776, D777
 - [x] `F_SETOWN`/`F_GETOWN`, `O_ASYNC` with `SIGIO`, and `SIGURG` and `SIOCATMARK` for TCP urgent data (D564) — code written, unbuilt, D701

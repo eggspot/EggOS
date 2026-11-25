@@ -417,6 +417,25 @@ impl Desktop {
         Some(action)
     }
 
+    /// The wheel turned by `notches` (up when positive): over the volume indicator or the
+    /// popup's slider row, 5 % a notch (D777); `None` elsewhere, for the windows.
+    pub fn sound_wheel(&mut self, notches: i32, damage: &mut Damage) -> Option<Action> {
+        let shown = self.sound.shown?;
+        let (x, y) = self.pointer;
+        let on_indicator = self
+            .sound_indicator()
+            .is_some_and(|indicator| contains(indicator, x, y));
+        let on_slider = self.sound_popup().is_some_and(|popup| {
+            contains(Rect::new(popup.x, popup.y, popup.width, SEPARATOR_ROW), x, y)
+        });
+        if !(on_indicator || on_slider) || notches == 0 {
+            return None;
+        }
+        let step = i32::from(VOLUME_STEP) * notches;
+        let volume = (i32::from(shown.volume) + step).clamp(0, 100) as u8;
+        Some(self.change_sound(SoundCommand::Volume(volume), damage))
+    }
+
     /// The clock reached the on-screen bar's end: it closes.
     pub(super) fn tick_volume_bar(&mut self, damage: &mut Damage) {
         if let Some(until) = self.sound.bar_until

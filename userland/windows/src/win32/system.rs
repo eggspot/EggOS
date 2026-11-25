@@ -201,7 +201,8 @@ unsafe extern "efiapi" fn get_system_directory_a(buffer: *mut u8, size: u32) -> 
 extern "efiapi" fn output_debug_string_w(_text: *const u16) {}
 
 extern "efiapi" fn beep(_frequency: u32, _duration: u32) -> Bool {
-    fail(error::NOT_SUPPORTED, FALSE)
+    eggos_soundd::client::alert();
+    TRUE
 }
 
 static ERROR_MODE: AtomicU32 = AtomicU32::new(0);
