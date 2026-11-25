@@ -262,7 +262,7 @@ and is not listed per item.
 - [x] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500; resource types and configurations code written, unbuilt: D764; activities, intents and fragments: D765) — code written, unbuilt, D764, D765, D766
 - [x] iOS: multi-touch, pinches and rotations, velocities, recognizers that wait for each other to fail, safe areas, `UIScreen` and size classes (D501, D505, D515) — code written, unbuilt, D768
 - [x] Auto Layout: priorities and inequalities, right-to-left leading/trailing, stack view distributions and alignments, baselines (D506, D510) — code written, unbuilt, D769
-- [ ] WebP: animated WebP (`ANIM`/`ANMF`) and fancy chroma upsampling (D520)
+- [x] WebP: animated WebP (`ANIM`/`ANMF`) and fancy chroma upsampling (D520) — code written, unbuilt, D770
 
 ## M16 Editions
 

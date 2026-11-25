@@ -6,7 +6,8 @@
 //! from its token partition. The inverse Walsh-Hadamard transform gives the luma blocks' DC,
 //! the inverse DCT the residues added to the prediction from unfiltered neighbours (127 above
 //! the frame, 129 left of it); the normal or simple loop filter then runs over the frame, and
-//! BT.601 turns it into RGB, each chroma sample covering two by two pixels.
+//! BT.601 turns it into RGB, each pixel's chroma weighted 9:3:3:1 from the four nearest chroma
+//! samples (D770).
 
 use crate::vp8_tables::{
     AC_STEPS, COEFFICIENT_UPDATE_PROBABILITIES, DC_STEPS, DEFAULT_COEFFICIENT_PROBABILITIES,
@@ -972,6 +973,28 @@ fn filter_plane(
     }
 }
 
+fn neighbour(position: usize, count: usize) -> usize {
+    let nearest = position / 2;
+    match position % 2 {
+        0 => nearest.saturating_sub(1),
+        _ => (nearest + 1).min(count - 1),
+    }
+}
+
+fn upsampled(plane: &Plane, x: usize, y: usize) -> i32 {
+    let column = (x / 2).min(plane.width - 1);
+    let row = (y / 2).min(plane.height - 1);
+    let other_column = neighbour(x, plane.width).min(plane.width - 1);
+    let other_row = neighbour(y, plane.height).min(plane.height - 1);
+    let sample = |column: usize, row: usize| i32::from(plane.pixels[row * plane.width + column]);
+    (9 * sample(column, row)
+        + 3 * sample(other_column, row)
+        + 3 * sample(column, other_row)
+        + sample(other_column, other_row)
+        + 8)
+        >> 4
+}
+
 fn to_argb(
     luma: &Plane,
     chroma: &[Plane; 2],
@@ -987,11 +1010,7 @@ fn to_argb(
     for y in 0..height {
         for x in 0..width {
             let scaled = high(i32::from(luma.pixels[y * luma.width + x]), 19077);
-            let at = (y / 2) * chroma[0].width + x / 2;
-            let (u, v) = (
-                i32::from(chroma[0].pixels[at]),
-                i32::from(chroma[1].pixels[at]),
-            );
+            let (u, v) = (upsampled(&chroma[0], x, y), upsampled(&chroma[1], x, y));
             let red = scaled + high(v, 26149) - 14234;
             let green = scaled - high(u, 6419) - high(v, 13320) + 8708;
             let blue = scaled + high(u, 33050) - 17685;
@@ -1315,5 +1334,17 @@ mod tests {
             decode(&frame, &Limits::DEFAULT).unwrap_err(),
             Error::Corrupt
         );
+    }
+
+    #[test]
+    fn chroma_is_weighted_from_the_nearest_samples() {
+        let plane = Plane {
+            pixels: vec![0, 160],
+            width: 2,
+            height: 1,
+        };
+        let row: Vec<i32> = (0..4).map(|x| upsampled(&plane, x, 0)).collect();
+        assert_eq!(row, vec![0, 40, 120, 160]);
+        assert_eq!(upsampled(&plane, 3, 1), 160);
     }
 }

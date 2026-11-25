@@ -5,8 +5,12 @@
 //! length code), and LZ77 backward references with the 120 short distances. Lossy `VP8 ` images
 //! go to the VP8 decoder (D520), their `ALPH` chunk's alpha (raw, or a header-less lossless
 //! image's green, then unfiltered horizontally, vertically or by gradient) laid over them.
+//! Animated files (D770: `VP8X` with the animation flag, `ANIM`, then `ANMF` frames) are drawn
+//! frame by frame on a transparent canvas, each frame alpha-blended or copied over its
+//! rectangle and that rectangle cleared afterwards when the frame asks.
 
-use crate::{Error, Image, Limits};
+use crate::bytes::le16;
+use crate::{Animation, Error, Frame, Image, Limits};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -150,17 +154,30 @@ fn chunk_size(bytes: &[u8], at: usize) -> Option<usize> {
     Some(u32::from_le_bytes(bytes.get(at + 4..at + 8)?.try_into().ok()?) as usize)
 }
 
-/// Decodes the WebP file `bytes`.
-pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
-    if !is_webp(bytes) {
-        return Err(Error::UnknownFormat);
+const ANIMATION_FLAG: u8 = 0x02;
+const NO_BLEND_FLAG: u8 = 0x02;
+const DISPOSE_FLAG: u8 = 0x01;
+const FRAME_HEADER: usize = 16;
+
+fn le24(bytes: &[u8], at: usize) -> Result<u32, Error> {
+    let part = bytes.get(at..at + 3).ok_or(Error::Truncated)?;
+    Ok(u32::from(part[0]) | u32::from(part[1]) << 8 | u32::from(part[2]) << 16)
+}
+
+fn next_chunk(bytes: &[u8], at: usize) -> Result<Option<([u8; 4], &[u8], usize)>, Error> {
+    if at + 8 > bytes.len() {
+        return Ok(None);
     }
+    let size = chunk_size(bytes, at).ok_or(Error::Truncated)?;
+    let body = bytes.get(at + 8..at + 8 + size).ok_or(Error::Truncated)?;
+    let tag = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+    Ok(Some((tag, body, at + 8 + size + (size & 1))))
+}
+
+fn decode_chunks(bytes: &[u8], mut at: usize, limits: &Limits) -> Result<Image, Error> {
     let mut alpha = None;
-    let mut at = 12;
-    while at + 8 <= bytes.len() {
-        let size = chunk_size(bytes, at).ok_or(Error::Truncated)?;
-        let body = bytes.get(at + 8..at + 8 + size).ok_or(Error::Truncated)?;
-        match &bytes[at..at + 4] {
+    while let Some((tag, body, next)) = next_chunk(bytes, at)? {
+        match &tag {
             b"VP8L" => return decode_lossless(body, limits),
             b"ALPH" => alpha = Some(body),
             b"VP8 " => {
@@ -172,9 +189,175 @@ pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
             }
             _ => {}
         }
-        at += 8 + size + (size & 1);
+        at = next;
     }
     Err(Error::Corrupt)
+}
+
+fn animated_canvas(bytes: &[u8]) -> Result<Option<(u32, u32)>, Error> {
+    let Some((tag, body, _)) = next_chunk(bytes, 12)? else {
+        return Ok(None);
+    };
+    if &tag != b"VP8X" || body.first().is_none_or(|flags| flags & ANIMATION_FLAG == 0) {
+        return Ok(None);
+    }
+    Ok(Some((le24(body, 4)? + 1, le24(body, 7)? + 1)))
+}
+
+/// Decodes the WebP file `bytes`: an animation's first frame.
+pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
+    if !is_webp(bytes) {
+        return Err(Error::UnknownFormat);
+    }
+    if animated_canvas(bytes)?.is_none() {
+        return decode_chunks(bytes, 12, limits);
+    }
+    let first = Limits {
+        max_frames: 1,
+        ..*limits
+    };
+    decode_animation(bytes, &first)?
+        .frames
+        .into_iter()
+        .next()
+        .map(|frame| frame.image)
+        .ok_or(Error::Corrupt)
+}
+
+struct Placement {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+fn blend(source: u32, destination: u32) -> u32 {
+    let source_alpha = source >> 24;
+    match source_alpha {
+        255 => return source,
+        0 => return destination,
+        _ => {}
+    }
+    let kept = (destination >> 24) * (255 - source_alpha) / 255;
+    let alpha = source_alpha + kept;
+    let channel = |shift: u32| {
+        ((source >> shift & 0xff) * source_alpha + (destination >> shift & 0xff) * kept) / alpha
+    };
+    alpha << 24 | channel(16) << 16 | channel(8) << 8 | channel(0)
+}
+
+fn draw_frame(canvas: &mut Image, frame: &Image, place: &Placement, blended: bool) {
+    let canvas_width = canvas.width as usize;
+    for row in 0..place.height {
+        let source = &frame.pixels[row * place.width..(row + 1) * place.width];
+        let start = (place.y + row) * canvas_width + place.x;
+        let target = &mut canvas.pixels[start..start + place.width];
+        for (destination, &pixel) in target.iter_mut().zip(source) {
+            *destination = match blended {
+                true => blend(pixel, *destination),
+                false => pixel,
+            };
+        }
+    }
+}
+
+fn clear(canvas: &mut Image, place: &Placement) {
+    let canvas_width = canvas.width as usize;
+    for row in 0..place.height {
+        let start = (place.y + row) * canvas_width + place.x;
+        canvas.pixels[start..start + place.width].fill(0);
+    }
+}
+
+fn frame_placement(body: &[u8], canvas: &Image) -> Result<Placement, Error> {
+    let place = Placement {
+        x: le24(body, 0)? as usize * 2,
+        y: le24(body, 3)? as usize * 2,
+        width: le24(body, 6)? as usize + 1,
+        height: le24(body, 9)? as usize + 1,
+    };
+    let fits = place.x + place.width <= canvas.width as usize
+        && place.y + place.height <= canvas.height as usize;
+    match fits {
+        true => Ok(place),
+        false => Err(Error::Corrupt),
+    }
+}
+
+fn snapshot(canvas: &Image) -> Result<Image, Error> {
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(canvas.pixels.len())
+        .map_err(|_| Error::OutOfMemory)?;
+    pixels.extend_from_slice(&canvas.pixels);
+    Ok(Image {
+        width: canvas.width,
+        height: canvas.height,
+        pixels,
+    })
+}
+
+/// Decodes every frame of the WebP file `bytes`, each the whole canvas as it shows, at most
+/// [`Limits::max_frames`] and [`Limits::max_pixels`] in all; a still file is one frame.
+pub fn decode_animation(bytes: &[u8], limits: &Limits) -> Result<Animation, Error> {
+    if !is_webp(bytes) {
+        return Err(Error::UnknownFormat);
+    }
+    let mut frames: Vec<Frame> = Vec::new();
+    let Some((width, height)) = animated_canvas(bytes)? else {
+        let image = decode_chunks(bytes, 12, limits)?;
+        frames.try_reserve_exact(1).map_err(|_| Error::OutOfMemory)?;
+        frames.push(Frame { image, delay_ms: 0 });
+        return Ok(Animation {
+            frames,
+            loop_count: None,
+        });
+    };
+    let mut canvas = crate::canvas(width, height, limits)?;
+    let per_frame = u64::from(width) * u64::from(height);
+    let mut loop_count = None;
+    let mut at = 12;
+    while let Some((tag, body, next)) = next_chunk(bytes, at)? {
+        at = next;
+        match &tag {
+            b"ANIM" => {
+                loop_count = match le16(body, 4)? {
+                    0 => Some(0),
+                    1 => None,
+                    plays => Some(plays - 1),
+                };
+            }
+            b"ANMF" => {
+                let kept = (frames.len() as u64).saturating_mul(per_frame);
+                let full = frames.len() >= limits.max_frames
+                    || kept.saturating_add(per_frame) > limits.max_pixels;
+                if full {
+                    break;
+                }
+                let place = frame_placement(body, &canvas)?;
+                let delay_ms = le24(body, 12)?;
+                let flags = *body.get(15).ok_or(Error::Truncated)?;
+                let image = decode_chunks(body, FRAME_HEADER, limits)?;
+                if (image.width as usize, image.height as usize) != (place.width, place.height) {
+                    return Err(Error::Corrupt);
+                }
+                draw_frame(&mut canvas, &image, &place, flags & NO_BLEND_FLAG == 0);
+                frames.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+                frames.push(Frame {
+                    image: snapshot(&canvas)?,
+                    delay_ms,
+                });
+                if flags & DISPOSE_FLAG != 0 {
+                    clear(&mut canvas, &place);
+                }
+            }
+            _ => {}
+        }
+    }
+    match frames.is_empty() {
+        true => Err(Error::Corrupt),
+        false => Ok(Animation { frames, loop_count }),
+    }
 }
 
 struct Bits<'a> {
@@ -770,30 +953,63 @@ mod tests {
         writer.put(symbol, 8);
     }
 
-    #[test]
-    fn a_lossless_image_of_one_colour_decodes_to_that_colour() {
+    fn one_colour(width: u32, height: u32, colour: u32) -> Vec<u8> {
         let mut writer = Writer {
             bytes: vec![LOSSLESS_SIGNATURE],
             bit: 8,
         };
-        writer.put(2 - 1, 14);
-        writer.put(2 - 1, 14);
+        writer.put(width - 1, 14);
+        writer.put(height - 1, 14);
         writer.put(1, 1);
         writer.put(0, 3);
         writer.put(0, 1);
         writer.put(0, 1);
         writer.put(0, 1);
-        for symbol in [0x40, 0x20, 0x10, 0xff] {
-            simple_code(&mut writer, symbol);
+        for shift in [8, 16, 0, 24] {
+            simple_code(&mut writer, colour >> shift & 0xff);
         }
         simple_code(&mut writer, 0);
+        writer.bytes
+    }
+
+    fn chunk(file: &mut Vec<u8>, tag: &[u8; 4], body: &[u8]) {
+        file.extend_from_slice(tag);
+        file.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        file.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            file.push(0);
+        }
+    }
+
+    fn riff(chunks: &[u8]) -> Vec<u8> {
         let mut file = Vec::new();
         file.extend_from_slice(b"RIFF");
-        file.extend_from_slice(&((writer.bytes.len() + 12) as u32).to_le_bytes());
-        file.extend_from_slice(b"WEBPVP8L");
-        file.extend_from_slice(&(writer.bytes.len() as u32).to_le_bytes());
-        file.extend_from_slice(&writer.bytes);
-        let image = decode(&file, &Limits::DEFAULT).unwrap();
+        file.extend_from_slice(&((chunks.len() + 4) as u32).to_le_bytes());
+        file.extend_from_slice(b"WEBP");
+        file.extend_from_slice(chunks);
+        file
+    }
+
+    fn u24(value: u32) -> [u8; 3] {
+        [value as u8, (value >> 8) as u8, (value >> 16) as u8]
+    }
+
+    fn frame(place: [u32; 4], duration: u32, flags: u8, colour: u32) -> Vec<u8> {
+        let [x, y, width, height] = place;
+        let mut body = Vec::new();
+        for value in [x / 2, y / 2, width - 1, height - 1, duration] {
+            body.extend_from_slice(&u24(value));
+        }
+        body.push(flags);
+        chunk(&mut body, b"VP8L", &one_colour(width, height, colour));
+        body
+    }
+
+    #[test]
+    fn a_lossless_image_of_one_colour_decodes_to_that_colour() {
+        let mut chunks = Vec::new();
+        chunk(&mut chunks, b"VP8L", &one_colour(2, 2, 0xff20_4010));
+        let image = decode(&riff(&chunks), &Limits::DEFAULT).unwrap();
         assert_eq!((image.width, image.height), (2, 2));
         assert!(image.pixels.iter().all(|&pixel| pixel == 0xff20_4010));
     }
@@ -807,5 +1023,41 @@ mod tests {
         };
         assert_eq!(code.read(&mut bits).unwrap(), 1);
         assert_eq!(code.read(&mut bits).unwrap(), 2);
+    }
+
+    #[test]
+    fn an_animation_blends_disposes_and_keeps_its_loop_count() {
+        let mut chunks = Vec::new();
+        let mut header = vec![ANIMATION_FLAG | 0x10, 0, 0, 0];
+        header.extend_from_slice(&u24(3));
+        header.extend_from_slice(&u24(1));
+        chunk(&mut chunks, b"VP8X", &header);
+        chunk(&mut chunks, b"ANIM", &[0, 0, 0, 0, 3, 0]);
+        chunk(&mut chunks, b"ANMF", &frame([0, 0, 2, 2], 100, DISPOSE_FLAG, 0xff00_00ff));
+        chunk(&mut chunks, b"ANMF", &frame([2, 0, 2, 2], 50, 0, 0x80ff_0000));
+        chunk(&mut chunks, b"ANMF", &frame([0, 0, 2, 2], 70, NO_BLEND_FLAG, 0x0000_ff00));
+        let file = riff(&chunks);
+        let animation = decode_animation(&file, &Limits::DEFAULT).unwrap();
+        assert_eq!(animation.loop_count, Some(2));
+        let delays: Vec<u32> = animation.frames.iter().map(|frame| frame.delay_ms).collect();
+        assert_eq!(delays, vec![100, 50, 70]);
+        let first = &animation.frames[0].image;
+        assert_eq!((first.width, first.height), (4, 2));
+        assert_eq!(first.pixel(0, 0), Some(0xff00_00ff));
+        assert_eq!(first.pixel(3, 1), Some(0));
+        let second = &animation.frames[1].image;
+        assert_eq!(second.pixel(0, 0), Some(0));
+        assert_eq!(second.pixel(2, 0), Some(0x80ff_0000));
+        let third = &animation.frames[2].image;
+        assert_eq!(third.pixel(1, 1), Some(0x0000_ff00));
+        assert_eq!(third.pixel(3, 0), Some(0x80ff_0000));
+        assert_eq!(decode(&file, &Limits::DEFAULT).unwrap(), animation.frames[0].image);
+    }
+
+    #[test]
+    fn blending_mixes_straight_alpha() {
+        assert_eq!(blend(0x8000_00ff, 0xffff_0000), 0xff7f_0080);
+        assert_eq!(blend(0x0012_3456, 0xff00_ff00), 0xff00_ff00);
+        assert_eq!(blend(0x8012_3456, 0), 0x8012_3456);
     }
 }

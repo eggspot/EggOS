@@ -4,10 +4,10 @@
 //! with every frame composited, TIFF 6.0 strips (uncompressed, PackBits, LZW and Deflate, with
 //! the horizontal predictor), BMP and DIBs (every bit depth, bit fields, RLE4 and RLE8), icons
 //! and cursors (`.ico`, `.cur`, their DIB or PNG images), Apple icons (`.icns`, their largest
-//! PNG image, D727), lossless and lossy WebP (D519, D520, with alpha) and PNG through
-//! `eggos-png`; [`encode_tiff`] writes an uncompressed TIFF (D727). One entry
-//! point, [`decode`], sniffs the format ([`sniff`]); [`decode_animation`] keeps every frame of
-//! an animated GIF; [`icon_entries`] and [`decode_icon_entry`] pick one image of an icon.
+//! PNG image, D727), lossless, lossy and animated WebP (D519, D520, D770, with alpha) and PNG
+//! through `eggos-png`; [`encode_tiff`] writes an uncompressed TIFF (D727). One entry point,
+//! [`decode`], sniffs the format ([`sniff`]); [`decode_animation`] keeps every frame of an
+//! animated GIF or WebP; [`icon_entries`] and [`decode_icon_entry`] pick one image of an icon.
 //!
 //! Every file is untrusted: each side, the pixel count, the frame count (and every GIF frame's
 //! declared area) and the working buffers' bytes are capped by a [`Limits`], a JPEG's scans
@@ -58,7 +58,7 @@ pub enum Format {
     Icon,
     /// A Windows cursor (`.cur`).
     Cursor,
-    /// WebP, lossless (D519).
+    /// WebP, lossless, lossy or animated (D519, D520, D770).
     Webp,
     /// An Apple icon (`.icns`, D727).
     AppleIcon,
@@ -187,8 +187,8 @@ pub fn sniff(bytes: &[u8]) -> Option<Format> {
     ico::kind(bytes)
 }
 
-/// Decodes `bytes`, whatever its format: the first frame of a GIF, the first image of a TIFF,
-/// the largest and deepest image of an icon or cursor.
+/// Decodes `bytes`, whatever its format: the first frame of a GIF or an animated WebP, the
+/// first image of a TIFF, the largest and deepest image of an icon or cursor.
 pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
     match sniff(bytes).ok_or(Error::UnknownFormat)? {
         Format::Png => png::decode(bytes, limits),
@@ -203,11 +203,14 @@ pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, Error> {
 }
 
 /// Decodes every frame of `bytes`: each frame of a GIF composited as GIF89a's disposal
-/// methods say, at most [`Limits::max_frames`] and [`Limits::max_pixels`] in all; one frame
-/// for every other format.
+/// methods say, and each of an animated WebP blended and disposed as its frames say (D770), at
+/// most [`Limits::max_frames`] and [`Limits::max_pixels`] in all; one frame for every other
+/// format.
 pub fn decode_animation(bytes: &[u8], limits: &Limits) -> Result<Animation, Error> {
-    if sniff(bytes) == Some(Format::Gif) {
-        return gif::decode(bytes, limits, true);
+    match sniff(bytes) {
+        Some(Format::Gif) => return gif::decode(bytes, limits, true),
+        Some(Format::Webp) => return webp::decode_animation(bytes, limits),
+        _ => {}
     }
     let image = decode(bytes, limits)?;
     let mut frames = Vec::new();
