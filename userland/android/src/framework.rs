@@ -122,6 +122,22 @@ pub enum Native {
     ExceptionInit,
     /// `Throwable.getMessage()`: its message, or null.
     GetMessage,
+    /// An exception's constructor without a message (D761): its stack trace recorded.
+    ExceptionInitEmpty,
+    /// `Throwable.printStackTrace()` (D761): the trace written to the standard error.
+    PrintStackTrace,
+    /// `Throwable.getStackTrace()`: an array of `StackTraceElement`s, innermost first.
+    GetStackTrace,
+    /// `Throwable.getCause()`: what an `ExceptionInInitializerError` wraps, or null.
+    GetCause,
+    /// `Throwable.fillInStackTrace()`: the trace recorded again, the exception returned.
+    FillInStackTrace,
+    /// `StackTraceElement.getClassName()`.
+    FrameClassName,
+    /// `StackTraceElement.getMethodName()`.
+    FrameMethodName,
+    /// `StackTraceElement.toString()`.
+    FrameText,
 }
 
 const THROWABLE: &str = "Ljava/lang/Throwable;";
@@ -142,8 +158,15 @@ pub const NEGATIVE_ARRAY_SIZE: &str = "Ljava/lang/NegativeArraySizeException;";
 pub const CLASS_CAST: &str = "Ljava/lang/ClassCastException;";
 /// `OutOfMemoryError`.
 pub const OUT_OF_MEMORY: &str = "Ljava/lang/OutOfMemoryError;";
+/// `ExceptionInInitializerError` (D761), around an exception a static initializer threw.
+pub const EXCEPTION_IN_INITIALIZER: &str = "Ljava/lang/ExceptionInInitializerError;";
+/// `NoClassDefFoundError`, for a class whose static initializer failed before.
+pub const NO_CLASS_DEFINITION: &str = "Ljava/lang/NoClassDefFoundError;";
+/// `StackTraceElement`, one frame of a stack trace.
+pub const STACK_TRACE_ELEMENT: &str = "Ljava/lang/StackTraceElement;";
+const LINKAGE_ERROR: &str = "Ljava/lang/LinkageError;";
 
-const EXCEPTION_PARENTS: [(&str, &str); 16] = [
+const EXCEPTION_PARENTS: [(&str, &str); 19] = [
     (THROWABLE, OBJECT),
     (EXCEPTION, THROWABLE),
     (ERROR, THROWABLE),
@@ -163,7 +186,26 @@ const EXCEPTION_PARENTS: [(&str, &str); 16] = [
         RUNTIME_EXCEPTION,
     ),
     (OUT_OF_MEMORY, ERROR),
+    (LINKAGE_ERROR, ERROR),
+    (EXCEPTION_IN_INITIALIZER, LINKAGE_ERROR),
+    (NO_CLASS_DEFINITION, LINKAGE_ERROR),
 ];
+
+/// Whether class `class` is an `Error`, which a static initializer's failure passes on
+/// unwrapped (D761).
+pub fn is_error(dex: &Dex<'_>, class: &str) -> bool {
+    is_instance(dex, class, ERROR) == Some(true)
+}
+
+/// A class descriptor as Java writes the class's name: `Lcom/example/Main;` is
+/// `com.example.Main`.
+pub fn class_name(descriptor: &str) -> String {
+    descriptor
+        .strip_prefix('L')
+        .and_then(|inner| inner.strip_suffix(';'))
+        .unwrap_or(descriptor)
+        .replace('/', ".")
+}
 
 /// The superclass of framework class `class`, when the layer knows it (D504).
 pub fn framework_superclass(class: &str) -> Option<&'static str> {
@@ -224,8 +266,15 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "setAdapter") if adapter_view => Native::SetAdapter,
         (_, "setOnItemClickListener") if adapter_view => Native::SetOnItemClickListener,
         (_, "<init>") if is_exception(class) && shorty.starts_with("VL") => Native::ExceptionInit,
-        (_, "<init>") if is_exception(class) => Native::Nothing,
+        (_, "<init>") if is_exception(class) => Native::ExceptionInitEmpty,
         (_, "getMessage" | "getLocalizedMessage") if is_exception(class) => Native::GetMessage,
+        (_, "printStackTrace") if is_exception(class) && shorty == "V" => Native::PrintStackTrace,
+        (_, "getStackTrace") if is_exception(class) => Native::GetStackTrace,
+        (_, "getCause") if is_exception(class) => Native::GetCause,
+        (_, "fillInStackTrace") if is_exception(class) => Native::FillInStackTrace,
+        (STACK_TRACE_ELEMENT, "getClassName") => Native::FrameClassName,
+        (STACK_TRACE_ELEMENT, "getMethodName") => Native::FrameMethodName,
+        (STACK_TRACE_ELEMENT, "toString") => Native::FrameText,
         _ => return None,
     })
 }
@@ -401,8 +450,11 @@ pub struct Object {
     pub text: Option<String>,
     pub elements: Option<alloc::vec::Vec<u64>>,
     pub view: Option<View>,
-    /// Another object this one stands on: an adapter's items, a list view's adapter (D508).
+    /// Another object this one stands on: an adapter's items, a list view's adapter (D508),
+    /// an exception's cause (D761).
     pub reference: u64,
+    /// An exception's stack trace: the methods it was made in, innermost first (D761).
+    pub trace: alloc::vec::Vec<u32>,
 }
 
 /// What a view holds (D500): its id, the views inside it (a layout's), whether a linear

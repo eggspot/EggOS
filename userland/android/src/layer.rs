@@ -18,6 +18,7 @@ use crate::framework::{
 };
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -60,6 +61,8 @@ const DEEPEST_VIEW: usize = 32;
 const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
 const STACK_ABOVE_RUN: usize = 4096;
+const MOST_FRAMES: usize = 64;
+const MOST_CAUSES: usize = 8;
 #[cfg(target_arch = "x86_64")]
 const MACHINE: compiler::Machine = compiler::Machine::X86_64;
 #[cfg(target_arch = "aarch64")]
@@ -82,6 +85,9 @@ struct State {
     table: usize,
     heap: collector::Heap,
     stack_top: usize,
+    code_length: usize,
+    failed_classes: BTreeSet<String>,
+    depth: usize,
 }
 
 static STATE: AtomicPtr<State> = AtomicPtr::new(core::ptr::null_mut());
@@ -386,12 +392,101 @@ fn set_pending(table: *const usize, exception: u64) {
 }
 
 fn raise(table: *const usize, class: &str) -> u64 {
+    raise_with(table, class, None)
+}
+
+fn raise_with(table: *const usize, class: &str, message: Option<String>) -> u64 {
     let exception = new_object(Object {
         class: String::from(class),
+        text: message,
+        trace: capture_trace(),
         ..Object::default()
     });
     set_pending(table, exception);
     0
+}
+
+/// The methods whose compiled code the stack holds return addresses into, innermost first
+/// (D761): each word between here and where `run` started that points inside the compiled
+/// code names the method around it.
+fn capture_trace() -> Vec<u32> {
+    let current = state();
+    let mut starts: Vec<(usize, u32)> = current
+        .compiled
+        .iter()
+        .map(|(&method, &offset)| (offset, method))
+        .collect();
+    starts.sort_unstable();
+    let (base, end) = (current.base, current.base + current.code_length);
+    let low = stack_pointer() & !7;
+    let mut trace = Vec::new();
+    for word in (low..current.stack_top).step_by(8) {
+        // SAFETY: every word up to the top recorded in `run` lies in this thread's stack.
+        let value = unsafe { core::ptr::read_volatile(word as *const u64) } as usize;
+        if value <= base || value >= end {
+            continue;
+        }
+        let at = starts.partition_point(|&(start, _)| start < value - base);
+        let Some(&(_, method)) = at.checked_sub(1).and_then(|index| starts.get(index)) else {
+            continue;
+        };
+        if trace.last() != Some(&method) {
+            trace.push(method);
+        }
+        if trace.len() == MOST_FRAMES {
+            break;
+        }
+    }
+    trace
+}
+
+fn frame_names(method: u32) -> (String, String) {
+    let dex = &state().dex;
+    let class = dex.method_class(method).unwrap_or_default();
+    let name = dex.method_name(method).unwrap_or_default();
+    (framework::class_name(&class), name)
+}
+
+/// What `printStackTrace` writes for `exception`: its class and message, a line per frame,
+/// and its causes after `Caused by: `.
+fn trace_text(exception: u64) -> Vec<u8> {
+    let mut text = Vec::new();
+    let mut current = exception;
+    for depth in 0..MOST_CAUSES {
+        let Some(thrown) = object(current) else {
+            break;
+        };
+        if depth > 0 {
+            text.extend_from_slice(b"Caused by: ");
+        }
+        text.extend_from_slice(framework::class_name(&thrown.class).as_bytes());
+        if let Some(message) = &thrown.text {
+            text.extend_from_slice(b": ");
+            text.extend_from_slice(message.as_bytes());
+        }
+        text.push(b'\n');
+        for &method in &thrown.trace {
+            let (class, name) = frame_names(method);
+            text.extend_from_slice(format!("\tat {class}.{name}(Unknown Source)\n").as_bytes());
+        }
+        current = thrown.reference;
+    }
+    text
+}
+
+fn report_if_uncaught() {
+    let thrown = pending(table());
+    if object(thrown).is_none() {
+        return;
+    }
+    let mut text = Vec::from(&b"android: FATAL EXCEPTION: main\n"[..]);
+    text.extend(trace_text(thrown));
+    syscall::write_all(2, &text);
+    syscall::exit(1)
+}
+
+fn failed() -> bool {
+    pending(table()) != 0
 }
 
 extern "C" fn field_get(words: *const u64, table: *const usize) -> u64 {
@@ -460,6 +555,12 @@ fn initialize(class: &str, table: *const usize) {
     if framework::is_replaced(class) {
         return;
     }
+    if state().failed_classes.contains(class) {
+        let name = framework::class_name(class);
+        let message = format!("Could not initialize class {name}");
+        raise_with(table, framework::NO_CLASS_DEFINITION, Some(message));
+        return;
+    }
     let address = {
         let state = state();
         if !state.initialized.insert(String::from(class)) {
@@ -476,6 +577,22 @@ fn initialize(class: &str, table: *const usize) {
     };
     let no_arguments = [0u64; 1];
     entry_at(address)(no_arguments.as_ptr(), table);
+    let thrown = pending(table);
+    if thrown == 0 {
+        return;
+    }
+    state().failed_classes.insert(String::from(class));
+    let is_error = object(thrown)
+        .is_some_and(|exception| framework::is_error(&state().dex, &exception.class));
+    if !is_error {
+        let wrapper = new_object(Object {
+            class: String::from(framework::EXCEPTION_IN_INITIALIZER),
+            reference: thrown,
+            trace: capture_trace(),
+            ..Object::default()
+        });
+        set_pending(table, wrapper);
+    }
 }
 
 extern "C" fn invoke_virtual(words: *const u64, table: *const usize) -> u64 {
@@ -629,12 +746,85 @@ extern "C" fn take_exception(_: *const u64, table: *const usize) -> u64 {
 extern "C" fn exception_init(words: *const u64, _: *const usize) -> u64 {
     let [this, message] = arguments::<2>(words);
     let text = object(message).and_then(|message| message.text.clone());
-    if let Some(this) = object(this)
-        && this.text.is_none()
-    {
-        this.text = text;
+    let trace = capture_trace();
+    if let Some(this) = object(this) {
+        if this.text.is_none() {
+            this.text = text;
+        }
+        this.trace = trace;
     }
     0
+}
+
+extern "C" fn exception_init_empty(words: *const u64, _: *const usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    let trace = capture_trace();
+    if let Some(this) = object(this) {
+        this.trace = trace;
+    }
+    0
+}
+
+extern "C" fn fill_in_stack_trace(words: *const u64, table: *const usize) -> u64 {
+    exception_init_empty(words, table);
+    let [this] = arguments::<1>(words);
+    this
+}
+
+extern "C" fn print_stack_trace(words: *const u64, _: *const usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    syscall::write_all(2, &trace_text(this));
+    0
+}
+
+extern "C" fn get_cause(words: *const u64, _: *const usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    object(this).map_or(0, |this| this.reference)
+}
+
+extern "C" fn get_stack_trace(words: *const u64, _: *const usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    let trace = object(this).map(|this| this.trace.clone()).unwrap_or_default();
+    let mut frames = Vec::with_capacity(trace.len());
+    for method in trace {
+        let (class, name) = frame_names(method);
+        frames.push(new_object(Object {
+            class: String::from(framework::STACK_TRACE_ELEMENT),
+            text: Some(format!("{class}\n{name}")),
+            ..Object::default()
+        }));
+    }
+    new_object(Object {
+        class: format!("[{}", framework::STACK_TRACE_ELEMENT),
+        elements: Some(frames),
+        ..Object::default()
+    })
+}
+
+fn frame_part(words: *const u64, part: usize) -> u64 {
+    let [this] = arguments::<1>(words);
+    let text = object(this).and_then(|this| this.text.clone()).unwrap_or_default();
+    let mut parts = text.split('\n');
+    let class = parts.next().unwrap_or_default();
+    let method = parts.next().unwrap_or_default();
+    let chosen = match part {
+        0 => String::from(class),
+        1 => String::from(method),
+        _ => format!("{class}.{method}(Unknown Source)"),
+    };
+    new_string(chosen)
+}
+
+extern "C" fn frame_class_name(words: *const u64, _: *const usize) -> u64 {
+    frame_part(words, 0)
+}
+
+extern "C" fn frame_method_name(words: *const u64, _: *const usize) -> u64 {
+    frame_part(words, 1)
+}
+
+extern "C" fn frame_text(words: *const u64, _: *const usize) -> u64 {
+    frame_part(words, 2)
 }
 
 extern "C" fn get_message(words: *const u64, _: *const usize) -> u64 {
@@ -1007,7 +1197,13 @@ fn recycler_row(list: u64, adapter: u64, position: usize) -> Option<u64> {
     let create = compiled_method(&class, "onCreateViewHolder")?;
     let bind = compiled_method(&class, "onBindViewHolder")?;
     let holder = call_at(create, &[adapter, list, 0]);
+    if failed() {
+        return None;
+    }
     call_at(bind, &[adapter, holder, position as u64]);
+    if failed() {
+        return None;
+    }
     let field = state().dex.field_named(VIEW_HOLDER, "itemView")?;
     object(holder)?.fields.get(&field).copied()
 }
@@ -1186,9 +1382,9 @@ fn adapter_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
         }
     };
     let rows = (0..count.min(eggos_toolkit::widget::MAX_ROWS))
-        .map(|position| {
+        .map_while(|position| {
             let row = call_at(get_view, &[adapter, position as u64, 0, list]);
-            first_text(row, 0).unwrap_or_default()
+            (!failed()).then(|| first_text(row, 0).unwrap_or_default())
         })
         .collect();
     Some(rows)
@@ -1250,6 +1446,14 @@ fn native_entry(native: Native) -> Entry {
         Native::Inflate => inflate_layout,
         Native::ExceptionInit => exception_init,
         Native::GetMessage => get_message,
+        Native::ExceptionInitEmpty => exception_init_empty,
+        Native::PrintStackTrace => print_stack_trace,
+        Native::GetStackTrace => get_stack_trace,
+        Native::GetCause => get_cause,
+        Native::FillInStackTrace => fill_in_stack_trace,
+        Native::FrameClassName => frame_class_name,
+        Native::FrameMethodName => frame_method_name,
+        Native::FrameText => frame_text,
     }
 }
 
@@ -1320,17 +1524,18 @@ fn table() -> *const usize {
     state().table as *const usize
 }
 
+/// Calls compiled code from the layer. An exception it leaves pending passes back to the
+/// app's code when the layer was itself called from it (a framework method calling back into
+/// the app, D761); at the outermost call it is uncaught and ends the app with its trace.
 fn call_at(address: usize, words: &[u64]) -> u64 {
+    if state().depth > 0 && failed() {
+        return 0;
+    }
+    state().depth += 1;
     let result = entry_at(address)(words.as_ptr(), table());
-    if let Some(exception) = object(pending(table())) {
-        let class = exception.class.clone();
-        let message = exception.text.clone().unwrap_or_default();
-        stop(&[
-            b"android: uncaught ",
-            class.as_bytes(),
-            b": ",
-            message.as_bytes(),
-        ]);
+    state().depth -= 1;
+    if state().depth == 0 {
+        report_if_uncaught();
     }
     result
 }
@@ -1588,6 +1793,9 @@ pub fn run(startup: &Startup) -> i32 {
         activity: 0,
         table: 0,
         heap: collector::Heap::default(),
+        code_length: code.len(),
+        failed_classes: BTreeSet::new(),
+        depth: 0,
         stack_top: stack_pointer().saturating_add(STACK_ABOVE_RUN),
     };
     STATE.store(Box::leak(Box::new(initial)), Ordering::Release);
@@ -1610,6 +1818,7 @@ pub fn run(startup: &Startup) -> i32 {
         stop(&[b"android: ", activity.as_bytes(), b" is not an activity"]);
     }
     initialize(&activity, table());
+    report_if_uncaught();
     let this = new_object(Object {
         class: activity.clone(),
         ..Object::default()
