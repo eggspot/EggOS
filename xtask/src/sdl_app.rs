@@ -68,6 +68,7 @@ const SDL_OPTIONS: &[&str] = &[
     "-DSDL_PIPEWIRE=OFF",
     "-DSDL_JACK=OFF",
     "-DSDL_SNDIO=OFF",
+    "-DSDL_OSS=ON",
     "-DSDL_TESTS=OFF",
     "-DSDL_EXAMPLES=OFF",
 ];

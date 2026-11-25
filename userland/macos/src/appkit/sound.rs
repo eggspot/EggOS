@@ -1,17 +1,24 @@
-//! NSSound (D383): a sound made from WAV data in memory, a WAV file or a name in the bundle's
-//! resources, which keeps its bytes and knows its length. EggOS has no audio device yet, so
-//! `play` answers NO and nothing is heard; everything else behaves as on macOS.
+//! NSSound (D383, D776): a sound made from WAV data in memory, a WAV file or a name in the
+//! bundle's resources, which keeps its bytes and knows its length. `play` streams its samples,
+//! as 16-bit samples at its volume, to the sound server from the main queue's timer, never
+//! blocking the app; `stop` ends it; the delegate hears `sound:didFinishPlaying:`. Without a
+//! sound server `play` answers NO and nothing is heard.
 
 use super::{NSSOUND, NSSOUND_META, store, store_copy, with_text};
 use crate::foundation::{NSBUNDLE, NSDATA, class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
-use crate::objc::reference_count::{dispose, objc_release};
+use crate::objc::reference_count::{dispose, objc_release, objc_retain};
 use crate::objc::root::NSOBJECT;
-use crate::objc::{Runtime, methods, sel, send, send1};
+use crate::objc::{Runtime, methods, sel, send, send_bool, send1, send2};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use eggos_soundd::client::Player;
 use eggos_macos_gui::sound::{Wave, read_wave};
 
 const EXTENSIONS: [&str; 3] = ["", ".wav", ".wave"];
 const LONGEST_PATH: usize = 1024;
+const PUMP_MS: u64 = 20;
+const APP: &str = "mac-apps";
 
 #[repr(C)]
 #[derive(Debug)]
@@ -23,6 +30,17 @@ struct SoundFields {
     loops: bool,
     name: Id,
     delegate: Id,
+    playing: usize,
+}
+
+struct Playing {
+    player: Player,
+    samples: Vec<u8>,
+    ends_ms: u64,
+}
+
+fn now_ms() -> u64 {
+    crate::linux::clock_time(1).map_or(0, |time| time[0] as u64 * 1000 + time[1] as u64 / 1_000_000)
 }
 
 fn sound(object: Id) -> &'static mut SoundFields {
@@ -121,14 +139,97 @@ extern "C" fn sound_named(_: Id, _: Sel, name: Id) -> Id {
 }
 
 extern "C" fn dealloc(this: Id, _: Sel) {
+    end(this, false);
     let fields = sound(this);
     store(&mut fields.data, core::ptr::null_mut());
     store(&mut fields.name, core::ptr::null_mut());
     dispose(this);
 }
 
-extern "C" fn play(_: Id, _: Sel) -> u8 {
-    0
+fn playing(this: Id) -> Option<&'static mut Playing> {
+    let address = sound(this).playing;
+    // SAFETY: a non-zero `playing` is the `Box<Playing>` `play` leaked, freed only by `end`.
+    (address != 0).then(|| unsafe { &mut *(address as *mut Playing) })
+}
+
+fn end(this: Id, finished: bool) {
+    let address = core::mem::replace(&mut sound(this).playing, 0);
+    if address == 0 {
+        return;
+    }
+    // SAFETY: `play` made `address` with `Box::into_raw`, and it is cleared before this drop.
+    drop(unsafe { Box::from_raw(address as *mut Playing) });
+    let delegate = sound(this).delegate;
+    let selector = sel!("sound:didFinishPlaying:");
+    if !delegate.is_null() && send_bool(delegate, sel!("respondsToSelector:"), selector as usize) {
+        send2(delegate, selector, this as usize, usize::from(finished));
+    }
+}
+
+extern "C" fn pump(context: usize) {
+    let this = context as Id;
+    let Some(playing) = playing(this) else {
+        objc_release(this);
+        return;
+    };
+    let handed = playing.player.pump();
+    let now = now_ms();
+    if handed && now >= playing.ends_ms {
+        match sound(this).loops {
+            true => {
+                let length = sound(this).wave.duration();
+                playing.ends_ms = now + (length * 1000.0) as u64;
+                let samples = core::mem::take(&mut playing.samples);
+                playing.player.push(&samples);
+                playing.samples = samples;
+            }
+            false => {
+                end(this, true);
+                objc_release(this);
+                return;
+            }
+        }
+    }
+    crate::libsystem::dispatch::after_ms(PUMP_MS, context, pump);
+}
+
+extern "C" fn play(this: Id, _: Sel) -> u8 {
+    if sound(this).playing != 0 {
+        return 0;
+    }
+    let fields = sound(this);
+    let wave = fields.wave;
+    let bytes = crate::foundation::data_bytes(fields.data);
+    let Some(data) = bytes.get(wave.data_offset..wave.data_offset + wave.data_length) else {
+        return 0;
+    };
+    let float = wave.format == eggos_macos_gui::sound::SampleFormat::Float;
+    let samples = eggos_soundd::mixer::to_sixteen_bits(data, wave.bits, float, fields.volume);
+    let channels = u8::try_from(wave.channels).unwrap_or(2);
+    let Some(mut player) = Player::open(wave.sample_rate, channels, APP) else {
+        return 0;
+    };
+    player.push(&samples);
+    let ends_ms = now_ms() + (wave.duration() * 1000.0) as u64;
+    let playing = Box::new(Playing {
+        player,
+        samples,
+        ends_ms,
+    });
+    sound(this).playing = Box::into_raw(playing) as usize;
+    objc_retain(this);
+    crate::libsystem::dispatch::after_ms(PUMP_MS, this as usize, pump);
+    1
+}
+
+extern "C" fn stop(this: Id, _: Sel) -> u8 {
+    let was_playing = sound(this).playing != 0;
+    end(this, false);
+    u8::from(was_playing)
+}
+
+extern "C" fn is_playing(this: Id, _: Sel) -> u8 {
+    u8::from(sound(this).playing != 0)
 }
 
 extern "C" fn no(_: Id, _: Sel) -> u8 {
@@ -185,10 +286,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "initWithContentsOfURL:byReference:" => init_with_contents_of_url,
         "dealloc" => dealloc,
         "play" => play,
-        "stop" => no,
+        "stop" => stop,
         "pause" => no,
         "resume" => no,
-        "isPlaying" => no,
+        "isPlaying" => is_playing,
         "duration" => duration,
         "currentTime" => current_time,
         "setCurrentTime:" => ignore_time,

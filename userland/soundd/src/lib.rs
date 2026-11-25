@@ -8,8 +8,11 @@
 
 extern crate alloc;
 
+#[cfg(eggos_user)]
+pub mod client;
 pub mod command;
 #[cfg(eggos_user)]
 pub mod linux;
 pub mod mixer;
 pub mod protocol;
+pub mod wave;

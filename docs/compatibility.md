@@ -47,9 +47,9 @@ works.
   saving), and wants the saved game in `/tmp`, no Brogue window in `wm list`, and the
   manifest's loader, library folder and arguments on the disk after the power-off.
 - **Known limits.** It saves into the folder it was started from: from the launcher that is
-  the terminal's current folder, so start it from a writable one (`/tmp`, `/home`); no sound
-  (EggOS has no audio device yet; Brogue starts only SDL's video, and SDL is built without
-  audio back ends); the pointer shows the system's
+  the terminal's current folder, so start it from a writable one (`/tmp`, `/home`); SDL is
+  built with its OSS (`dsp`) audio driver, which plays through `/dev/dsp` and the sound server
+  (D776), though Brogue starts only SDL's video; the pointer shows the system's
   arrow where SDL asks for a shape EggOS does not draw (a hand, a busy pointer); the window is
   shown opaque at scale 1. What EggOS still lacks for it is in D172's "Not yet".
 

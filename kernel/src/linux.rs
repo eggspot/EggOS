@@ -1710,6 +1710,9 @@ fn ioctl<P: Platform>(
             render_node::ioctl(process, thread, context, request, argument)
         }
         FileKind::GpuFence(fence) => sync_file::ioctl(process, thread, *fence, request, argument),
+        FileKind::MemoryDevice(memory_devices::MemoryDevice::Sound, _) => {
+            memory_devices::sound_ioctl(process, request, argument)
+        }
         FileKind::Socket(socket) => socket::link::ioctl(process, request, argument)
             .or_else(|| socket::ioctl(process, socket, request, argument))
             .unwrap_or(Err(Errno::ENOTTY)),

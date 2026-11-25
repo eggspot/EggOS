@@ -493,6 +493,10 @@ fn open_device<P: Platform>(
                 None => Err(Errno::ENXIO),
             }
         }
+        devfs::DSP_DEVICE => match crate::sound::dsp_open() {
+            true => Ok(FileKind::MemoryDevice(MemoryDevice::Sound, node)),
+            false => Err(Errno::EBUSY),
+        },
         device => match MemoryDevice::of(device) {
             Some(memory_device) => Ok(FileKind::MemoryDevice(memory_device, node)),
             None => Err(Errno::ENXIO),

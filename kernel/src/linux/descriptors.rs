@@ -389,6 +389,9 @@ impl OpenFile {
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
+        if let FileKind::MemoryDevice(super::memory_devices::MemoryDevice::Sound, _) = self.kind {
+            crate::sound::dsp_close();
+        }
         let watched =
             super::inotify::WATCHES.load(Ordering::Relaxed) != 0 || super::fanotify::active();
         if self.held || watched || super::file_locks::any_held() {

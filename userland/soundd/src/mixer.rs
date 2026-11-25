@@ -160,6 +160,39 @@ pub fn to_bytes(samples: &[i16], out: &mut Vec<u8>) {
     }
 }
 
+/// `samples` in `bits`-bit form as 16-bit little-endian samples (D776): unsigned
+/// 8-bit, signed 16, 24 and 32-bit integers, and 32 or 64-bit floats; each scaled by `volume`
+/// (0 to 1).
+pub fn to_sixteen_bits(samples: &[u8], bits: u16, float: bool, volume: f32) -> Vec<u8> {
+    let width = usize::from(bits / 8).max(1);
+    let mut out = Vec::with_capacity(samples.len() / width * 2);
+    let scale = |value: f32| (value * volume).clamp(-32768.0, 32767.0) as i16;
+    for chunk in samples.chunks_exact(width) {
+        let value: f32 = match (bits, float) {
+            (8, _) => (f32::from(chunk[0]) - 128.0) * 256.0,
+            (16, _) => f32::from(i16::from_le_bytes([chunk[0], chunk[1]])),
+            (24, _) => {
+                let raw = i32::from_le_bytes([0, chunk[0], chunk[1], chunk[2]]) >> 8;
+                raw as f32 / 256.0
+            }
+            (32, true) => {
+                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * 32767.0
+            }
+            (32, false) => {
+                i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32 / 65536.0
+            }
+            (64, true) => {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&chunk[..8]);
+                f64::from_le_bytes(bytes) as f32 * 32767.0
+            }
+            _ => 0.0,
+        };
+        out.extend_from_slice(&scale(value).to_le_bytes());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +236,16 @@ mod tests {
         let samples = tone(440, 48_000, 4);
         assert_eq!(samples.len(), 8);
         assert_eq!(samples[0], 0);
+    }
+
+    #[test]
+    fn every_sample_width_becomes_sixteen_bits() {
+        assert_eq!(to_sixteen_bits(&[128, 255], 8, false, 1.0), [0, 0, 0, 0x7f]);
+        assert_eq!(to_sixteen_bits(&[0x34, 0x12], 16, false, 0.5), 0x091au16.to_le_bytes());
+        assert_eq!(to_sixteen_bits(&[0, 0, 0x40], 24, false, 1.0), 0x4000u16.to_le_bytes());
+        assert_eq!(
+            to_sixteen_bits(&(-1.0f32).to_le_bytes(), 32, true, 1.0),
+            (-32767i16).to_le_bytes()
+        );
     }
 }

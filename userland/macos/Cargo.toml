@@ -19,6 +19,7 @@ eggos-plist = { path = "../../plist" }
 eggos-image = { path = "../../image" }
 eggos-runtime = { path = "../runtime" }
 eggos-settings-file = { path = "../../settings-file" }
+eggos-soundd = { path = "../soundd" }
 eggos-toolkit = { path = "../toolkit" }
 
 [target.'cfg(any(target_arch = "aarch64", not(eggos_user)))'.dependencies]

@@ -40,6 +40,8 @@ pub enum MemoryDevice {
     Urandom,
     /// `/dev/kmsg`: writes go to the serial console only (D224).
     Kmsg,
+    /// `/dev/dsp`: OSS's sound device, whose samples go to the sound server (D776).
+    Sound,
 }
 
 impl MemoryDevice {
@@ -72,7 +74,7 @@ pub fn read<P: Platform>(
     buffers: impl Iterator<Item = (u64, u64)>,
 ) -> Result<u64, Errno> {
     match device {
-        MemoryDevice::Null | MemoryDevice::Kmsg => Ok(0),
+        MemoryDevice::Null | MemoryDevice::Kmsg | MemoryDevice::Sound => Ok(0),
         MemoryDevice::Zero | MemoryDevice::Full => fill(process, buffers, |_| {}),
         MemoryDevice::Random | MemoryDevice::Urandom => {
             if device == MemoryDevice::Random && !random::is_seeded() {
@@ -143,6 +145,21 @@ pub fn write<P: Platform>(
             .min(MAX_RW_COUNT)),
         MemoryDevice::Random | MemoryDevice::Urandom => {
             take(process, buffers, random::add_user_input)
+        }
+        MemoryDevice::Sound => {
+            let mut full = false;
+            let taken = take(process, buffers, |bytes| {
+                if full {
+                    return;
+                }
+                let pushed = crate::sound::with_dsp(|dsp| dsp.push(bytes));
+                full = pushed < bytes.len();
+            })?;
+            let waiting = crate::sound::with_dsp(|dsp| dsp.waiting());
+            match (taken, full && waiting >= crate::sound::DSP_QUEUE_BYTES) {
+                (0, true) => Err(Errno::EAGAIN),
+                _ => Ok(taken),
+            }
         }
         MemoryDevice::Kmsg => {
             may_write_kernel_log(&process.credentials_and_limits().lock().credentials)?;
@@ -322,5 +339,122 @@ mod tests {
         );
         assert_eq!(text.printable(&[0xc2], &mut shown), b"");
         assert_eq!(text.printable(&[0x9b, b'x'], &mut shown), b"x");
+    }
+}
+
+mod oss {
+    pub const RESET: u32 = 0x5000;
+    pub const SYNC: u32 = 0x5001;
+    pub const SPEED: u32 = 0xc004_5002;
+    pub const STEREO: u32 = 0xc004_5003;
+    pub const GET_BLOCK_SIZE: u32 = 0xc004_5004;
+    pub const SET_FORMAT: u32 = 0xc004_5005;
+    pub const CHANNELS: u32 = 0xc004_5006;
+    pub const SET_FRAGMENT: u32 = 0xc004_500a;
+    pub const GET_FORMATS: u32 = 0x8004_500b;
+    pub const GET_OUTPUT_SPACE: u32 = 0x8010_500c;
+    pub const GET_CAPABILITIES: u32 = 0x8004_500f;
+    pub const GET_OUTPUT_DELAY: u32 = 0x8004_5017;
+    pub const FORMAT_U8: i32 = 0x08;
+    pub const FORMAT_S16_LE: i32 = 0x10;
+}
+
+fn read_int<P: Platform>(process: &Process<P>, address: u64) -> Result<i32, Errno> {
+    let mut bytes = [0u8; 4];
+    process
+        .read_user_memory(address, &mut bytes)
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(i32::from_ne_bytes(bytes))
+}
+
+fn write_ints<P: Platform>(
+    process: &Process<P>,
+    address: u64,
+    values: &[i32],
+) -> Result<u64, Errno> {
+    let mut bytes = [0u8; 16];
+    for (slot, value) in bytes.chunks_exact_mut(4).zip(values) {
+        slot.copy_from_slice(&value.to_ne_bytes());
+    }
+    process
+        .write_user_memory(address, &bytes[..values.len() * 4])
+        .map(|()| 0)
+        .map_err(|_| Errno::EFAULT)
+}
+
+/// `/dev/dsp`'s `ioctl`s (D776): the OSS requests SDL's and other OSS programs' players make:
+/// reset, sync, rate (8 to 48 kHz), mono or stereo, unsigned 8-bit or signed 16-bit samples,
+/// fragments, and the room left in the queue.
+pub fn sound_ioctl<P: Platform>(
+    process: &Process<P>,
+    request: u64,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::sound::{DSP_QUEUE_BYTES, with_dsp};
+    match request as u32 {
+        oss::RESET => {
+            with_dsp(|dsp| dsp.clear());
+            Ok(0)
+        }
+        oss::SYNC => Ok(0),
+        oss::SPEED => {
+            let rate = read_int(process, argument)?.clamp(8000, 48_000);
+            with_dsp(|dsp| dsp.rate = rate as u32);
+            write_ints(process, argument, &[rate])
+        }
+        oss::STEREO | oss::CHANNELS => {
+            let asked = read_int(process, argument)?;
+            let channels = match request as u32 {
+                oss::STEREO => 1 + asked.clamp(0, 1),
+                _ => asked.clamp(1, 2),
+            };
+            with_dsp(|dsp| dsp.channels = channels as u16);
+            let answer = if request as u32 == oss::STEREO { channels - 1 } else { channels };
+            write_ints(process, argument, &[answer])
+        }
+        oss::SET_FORMAT => {
+            let asked = read_int(process, argument)?;
+            let chosen = with_dsp(|dsp| {
+                match asked {
+                    oss::FORMAT_U8 => dsp.bits = 8,
+                    0 => {}
+                    _ => dsp.bits = 16,
+                }
+                match dsp.bits {
+                    8 => oss::FORMAT_U8,
+                    _ => oss::FORMAT_S16_LE,
+                }
+            });
+            write_ints(process, argument, &[chosen])
+        }
+        oss::GET_FORMATS => write_ints(process, argument, &[oss::FORMAT_U8 | oss::FORMAT_S16_LE]),
+        oss::GET_BLOCK_SIZE => {
+            let fragment = with_dsp(|dsp| dsp.fragment);
+            write_ints(process, argument, &[fragment as i32])
+        }
+        oss::SET_FRAGMENT => {
+            let asked = read_int(process, argument)?;
+            let shift = (asked & 0xffff).clamp(8, 14) as u32;
+            with_dsp(|dsp| dsp.fragment = 1 << shift);
+            Ok(0)
+        }
+        oss::GET_OUTPUT_SPACE => {
+            let (fragment, free) = with_dsp(|dsp| {
+                (dsp.fragment as usize, DSP_QUEUE_BYTES - dsp.waiting())
+            });
+            let values = [
+                (free / fragment) as i32,
+                (DSP_QUEUE_BYTES / fragment) as i32,
+                fragment as i32,
+                free as i32,
+            ];
+            write_ints(process, argument, &values)
+        }
+        oss::GET_OUTPUT_DELAY => {
+            let waiting = with_dsp(|dsp| dsp.waiting());
+            write_ints(process, argument, &[waiting as i32])
+        }
+        oss::GET_CAPABILITIES => write_ints(process, argument, &[0]),
+        _ => Err(Errno::ENOTTY),
     }
 }

@@ -25,6 +25,10 @@ const SOCK_NONBLOCK: usize = 0o4000;
 const SOCK_CLOEXEC: usize = 0o2_000_000;
 const O_RDONLY: usize = 0;
 const O_WRONLY: usize = 1;
+const O_RDWR: usize = 2;
+const DSP_RECORD_BYTES: usize = 16 + 8192;
+const DSP_HEADER: usize = 16;
+const DSP_ENDED: u32 = 1;
 const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 const O_CLOEXEC: usize = 0o2_000_000;
@@ -191,6 +195,7 @@ struct Server {
     streams: Vec<(usize, Stream)>,
     next_stream: usize,
     tone: Option<usize>,
+    dsp: Option<(u32, usize)>,
     pending: Vec<u8>,
 }
 
@@ -198,7 +203,7 @@ impl Server {
     fn open() -> Result<Self, Errno> {
         let device = call(
             number::OPENAT,
-            [AT_FDCWD, DEVICE_PATH.as_ptr() as usize, O_WRONLY | O_CLOEXEC, 0, 0, 0],
+            [AT_FDCWD, DEVICE_PATH.as_ptr() as usize, O_RDWR | O_CLOEXEC, 0, 0, 0],
         )? as Fd;
         let devices = devices();
         let file = read_whole(&settings_path(), SETTINGS_BYTES).unwrap_or_default();
@@ -235,6 +240,7 @@ impl Server {
             streams: Vec::new(),
             next_stream: 0,
             tone: None,
+            dsp: None,
             pending: Vec::new(),
         })
     }
@@ -405,22 +411,38 @@ impl Server {
             }
             return;
         }
-        let mut lines: Vec<Request> = Vec::new();
         if let Some(client) = self.clients[index].as_mut() {
             client.line.extend_from_slice(&bytes[..read]);
-            while let Some(end) = client.line.iter().position(|&byte| byte == b'\n') {
-                let line: Vec<u8> = client.line.drain(..=end).collect();
-                let text = core::str::from_utf8(&line).unwrap_or("").trim();
-                if let Some(request) = Request::parse(text) {
-                    lines.push(request);
-                }
-            }
-            if client.line.len() > LINE_BYTES {
-                client.line.clear();
-            }
         }
-        for request in lines {
+        loop {
+            let Some(client) = self.clients[index].as_mut() else {
+                return;
+            };
+            let Some(end) = client.line.iter().position(|&byte| byte == b'\n') else {
+                if client.line.len() > LINE_BYTES {
+                    client.line.clear();
+                }
+                return;
+            };
+            let line: Vec<u8> = client.line.drain(..=end).collect();
+            let text = core::str::from_utf8(&line).unwrap_or("").trim();
+            let Some(request) = Request::parse(text) else {
+                continue;
+            };
+            let playing = matches!(request, Request::Play { .. });
             self.handle(index, request);
+            if playing {
+                let Some(client) = self.clients[index].as_mut() else {
+                    return;
+                };
+                let rest = core::mem::take(&mut client.line);
+                if let Some(id) = client.stream
+                    && let Some(stream) = self.stream_mut(id)
+                {
+                    stream.push_bytes(&rest);
+                }
+                return;
+            }
         }
     }
 
@@ -486,6 +508,53 @@ impl Server {
             self.pending.drain(..written.min(self.pending.len()));
             if !self.pending.is_empty() {
                 return;
+            }
+        }
+    }
+
+    fn read_dsp(&mut self) {
+        let mut record = [0u8; DSP_RECORD_BYTES];
+        for _ in 0..4 {
+            let read = call(
+                number::READ,
+                [self.device as usize, record.as_mut_ptr() as usize, record.len(), 0, 0, 0],
+            )
+            .unwrap_or(0);
+            if read < DSP_HEADER {
+                return;
+            }
+            let word = |at: usize| {
+                u32::from_le_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]])
+            };
+            let number = word(0);
+            let rate = word(4);
+            let channels = u16::from_le_bytes([record[8], record[9]]).clamp(1, 8) as u8;
+            let bits = u16::from_le_bytes([record[10], record[11]]);
+            let ended = word(12) & DSP_ENDED != 0;
+            let id = match self.dsp {
+                Some((known, id)) if known == number => id,
+                _ => {
+                    if let Some((_, old)) = self.dsp
+                        && let Some(stream) = self.stream_mut(old)
+                    {
+                        stream.end();
+                    }
+                    let id = self.next_stream;
+                    self.next_stream += 1;
+                    self.streams.push((id, Stream::new(rate, channels)));
+                    self.dsp = Some((number, id));
+                    id
+                }
+            };
+            let samples = mixer::to_sixteen_bits(&record[DSP_HEADER..read], bits, false, 1.0);
+            if let Some(stream) = self.stream_mut(id) {
+                stream.push_bytes(&samples);
+                if ended {
+                    stream.end();
+                }
+            }
+            if ended {
+                self.dsp = None;
             }
         }
     }
@@ -597,6 +666,7 @@ fn serve() -> i32 {
                 server.readable(owners[at]);
             }
         }
+        server.read_dsp();
         server.feed_device();
     }
 }

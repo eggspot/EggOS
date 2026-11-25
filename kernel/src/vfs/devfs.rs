@@ -22,7 +22,8 @@
 //! ([`crate::linux::rtc_device`], D194). The directory `dri` holds `renderD128`, the GPU's render node
 //! ([`crate::linux::render_node`], D415), on a machine whose GPU takes 3D commands. `sound` is
 //! the sound output, a regular file of root's that takes interleaved 16-bit stereo frames at
-//! the device's rate, as much as the device has room for (D773).
+//! the device's rate, as much as the device has room for, and gives the sound server
+//! `/dev/dsp`'s samples when read (D773, D776); `dsp` is OSS's sound device (D776).
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, Refused, StorageError, Usage,
@@ -183,12 +184,19 @@ const RENDER_NODE_NAME: &[u8] = b"renderD128";
 /// `/dev/sound`'s node: the sound output, which the sound server writes frames to (D773).
 pub const SOUND: u64 = 34;
 
-const FILES: [(&[u8], u64); 23] = [
+/// `/dev/dsp`'s node: OSS's sound device, for programs that play through it (D776).
+pub const DSP: u64 = 35;
+
+/// `/dev/dsp`'s device number, Linux's OSS major and its first `dsp` minor.
+pub const DSP_DEVICE: (u32, u32) = (14, 3);
+
+const FILES: [(&[u8], u64); 24] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
     (b"console", CONSOLE),
     (b"dri", DRI),
+    (b"dsp", DSP),
     (b"fd", FD),
     (b"full", FULL),
     (b"kmsg", KMSG),
@@ -249,7 +257,7 @@ fn is_listed(node: u64) -> bool {
         Some(index) => block::facts(index).present,
         None if node == RTC => crate::wall_clock::has_clock(),
         None if node == DRI => crate::rendering::is_present(),
-        None if node == SOUND => crate::sound::is_present(),
+        None if node == SOUND || node == DSP => crate::sound::is_present(),
         None => node != AGENT || crate::agent_channel::is_present(),
     }
 }
@@ -350,6 +358,7 @@ impl FileSystem for DeviceFiles {
             size: match (node, disk_of(node)) {
                 (PROPERTIES, _) => properties::size(),
                 (ANDROID_LOG, _) => android_log::size(),
+                (SOUND, _) => 1 << 40,
                 (_, Some(index)) => block::facts(index)
                     .sectors
                     .saturating_mul(SECTOR_SIZE as u64),
@@ -416,6 +425,7 @@ impl FileSystem for DeviceFiles {
             return block::read_at(index, offset, buffer).map_err(|_| StorageError);
         }
         Ok(match node {
+            SOUND => crate::sound::take_dsp(buffer),
             PROPERTIES => properties::read_into(offset, buffer),
             ANDROID_LOG => android_log::read_into(offset, buffer),
             _ => 0,
@@ -465,6 +475,7 @@ impl FileSystem for DeviceFiles {
             URANDOM => Some(URANDOM_DEVICE),
             KMSG => Some(KMSG_DEVICE),
             RENDER_NODE => Some(RENDER_NODE_DEVICE),
+            DSP => Some(DSP_DEVICE),
             TTY => Some(TTY_DEVICE),
             CONSOLE => Some(CONSOLE_DEVICE),
             PTMX => Some(PTMX_DEVICE),
