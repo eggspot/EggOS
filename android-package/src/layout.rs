@@ -63,6 +63,8 @@ pub enum Extent {
     WrapContent,
     /// A dimension, as binary XML encodes it (see [`dimension_pixels`]).
     Dimension(u32),
+    /// A dimension resource (`@dimen/side`, D764).
+    Resource(u32),
 }
 
 const TYPE_DIMENSION: u8 = 0x05;
@@ -105,6 +107,7 @@ pub fn dimension_pixels(data: u32, dpi: u32) -> i32 {
 fn extent(attribute: &Attribute) -> Option<Extent> {
     match (attribute.kind, attribute.data, attribute.text.as_deref()) {
         (TYPE_DIMENSION, data, _) => Some(Extent::Dimension(data)),
+        (TYPE_REFERENCE, id, _) => Some(Extent::Resource(id)),
         (TYPE_INT_DEC | TYPE_INT_HEX, MATCH_PARENT, _) => Some(Extent::MatchParent),
         (TYPE_INT_DEC | TYPE_INT_HEX, WRAP_CONTENT, _) => Some(Extent::WrapContent),
         (_, _, Some("match_parent" | "fill_parent")) => Some(Extent::MatchParent),

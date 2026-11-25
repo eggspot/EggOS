@@ -162,6 +162,18 @@ pub enum Native {
     SetImageBitmap,
     /// `ImageView.setScaleType(ImageView.ScaleType)`.
     SetScaleType,
+    /// `Context.getResources()` (D764): the app's resources.
+    GetResources,
+    /// `Resources.getDimension(int)`: a dimension in pixels, as a float.
+    GetDimension,
+    /// `Resources.getDimensionPixelSize(int)` and `getDimensionPixelOffset(int)`.
+    GetDimensionPixels,
+    /// `Resources.getColor(int)` and `Context.getColor(int)`: `0xAARRGGBB`.
+    GetColour,
+    /// `Resources.getInteger(int)`.
+    GetInteger,
+    /// `Resources.getBoolean(int)`.
+    GetBoolean,
 }
 
 const THROWABLE: &str = "Ljava/lang/Throwable;";
@@ -190,7 +202,7 @@ pub const NO_CLASS_DEFINITION: &str = "Ljava/lang/NoClassDefFoundError;";
 pub const STACK_TRACE_ELEMENT: &str = "Ljava/lang/StackTraceElement;";
 const LINKAGE_ERROR: &str = "Ljava/lang/LinkageError;";
 
-const EXCEPTION_PARENTS: [(&str, &str); 19] = [
+const EXCEPTION_PARENTS: [(&str, &str); 20] = [
     (THROWABLE, OBJECT),
     (EXCEPTION, THROWABLE),
     (ERROR, THROWABLE),
@@ -213,6 +225,7 @@ const EXCEPTION_PARENTS: [(&str, &str); 19] = [
     (LINKAGE_ERROR, ERROR),
     (EXCEPTION_IN_INITIALIZER, LINKAGE_ERROR),
     (NO_CLASS_DEFINITION, LINKAGE_ERROR),
+    (RESOURCE_NOT_FOUND, RUNTIME_EXCEPTION),
 ];
 
 /// Whether class `class` is an `Error`, which a static initializer's failure passes on
@@ -264,6 +277,16 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "setContentView") if activity => Native::SetContentView,
         (_, "findViewById") if activity || view => Native::FindViewById,
         (_, "getString") if context => Native::GetString,
+        (_, "getResources") if context => Native::GetResources,
+        (_, "getColor") if context => Native::GetColour,
+        (RESOURCES, "getString") => Native::GetString,
+        (RESOURCES, "getDimension") => Native::GetDimension,
+        (RESOURCES, "getDimensionPixelSize" | "getDimensionPixelOffset") => {
+            Native::GetDimensionPixels
+        }
+        (RESOURCES, "getColor") => Native::GetColour,
+        (RESOURCES, "getInteger") => Native::GetInteger,
+        (RESOURCES, "getBoolean") => Native::GetBoolean,
         (TEXT_VIEW, "<init>") => Native::TextViewInit,
         (_, "<init>") if view => Native::ViewInit,
         (_, "setText") if text && takes_int => Native::SetTextResource,
@@ -521,6 +544,12 @@ pub struct View {
     /// An image view's `ScaleType` ordinal; `fitCenter` when unset.
     pub scale_type: Option<u32>,
 }
+
+/// `Resources.NotFoundException`, for a resource id the table lacks (D764).
+pub const RESOURCE_NOT_FOUND: &str = "Landroid/content/res/Resources$NotFoundException;";
+
+/// `android.content.res.Resources` (D764).
+pub const RESOURCES: &str = "Landroid/content/res/Resources;";
 
 /// `android.graphics.Bitmap` (D763): a picture the layer decoded.
 pub const BITMAP: &str = "Landroid/graphics/Bitmap;";

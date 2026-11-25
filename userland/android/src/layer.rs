@@ -65,6 +65,7 @@ const STACK_ABOVE_RUN: usize = 4096;
 const MOST_FRAMES: usize = 64;
 const IME_ACTION_MASK: u32 = 0xff;
 const BITMAP_IMAGE: u32 = u32::MAX;
+const PLATFORM_VERSION: u16 = 34;
 const MOST_CAUSES: usize = 8;
 #[cfg(target_arch = "x86_64")]
 const MACHINE: compiler::Machine = compiler::Machine::X86_64;
@@ -1102,9 +1103,94 @@ extern "C" fn get_string(words: *const u64, _: *const usize) -> u64 {
     new_string(resource_string(u64::from(id as u32)).unwrap_or_default())
 }
 
+extern "C" fn get_resources(_: *const u64, _: *const usize) -> u64 {
+    new_object(Object {
+        class: String::from(framework::RESOURCES),
+        ..Object::default()
+    })
+}
+
+fn table_value<T>(id: u64, read: impl FnOnce(&ResourceTable, u32) -> Option<T>) -> Option<T> {
+    read(state().resources.as_ref()?, id as u32)
+}
+
+extern "C" fn get_dimension(words: *const u64, table: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    match table_value(id, ResourceTable::dimension) {
+        Some(data) => u64::from((layout::dimension_pixels(data, SCREEN_DPI) as f32).to_bits()),
+        None => raise(table, framework::RESOURCE_NOT_FOUND),
+    }
+}
+
+extern "C" fn get_dimension_pixels(words: *const u64, table: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    match table_value(id, ResourceTable::dimension) {
+        Some(data) => layout::dimension_pixels(data, SCREEN_DPI) as u32 as u64,
+        None => raise(table, framework::RESOURCE_NOT_FOUND),
+    }
+}
+
+extern "C" fn get_colour(words: *const u64, table: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    match table_value(id, ResourceTable::colour) {
+        Some(colour) => u64::from(colour),
+        None => raise(table, framework::RESOURCE_NOT_FOUND),
+    }
+}
+
+extern "C" fn get_integer(words: *const u64, table: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    match table_value(id, ResourceTable::integer) {
+        Some(value) => value as u32 as u64,
+        None => raise(table, framework::RESOURCE_NOT_FOUND),
+    }
+}
+
+extern "C" fn get_boolean(words: *const u64, table: *const usize) -> u64 {
+    let [_, id] = arguments::<2>(words);
+    match table_value(id, ResourceTable::boolean) {
+        Some(value) => u64::from(value),
+        None => raise(table, framework::RESOURCE_NOT_FOUND),
+    }
+}
+
+/// The device configuration the app's resources are chosen for (D764): the locale from
+/// `LC_ALL` or `LANG` (`vi_VN.UTF-8`), the window's orientation, EggOS's dark palette as night
+/// mode, the screen's density and the platform version the layer stands for.
+fn device_configuration(startup: &Startup) -> eggos_android_package::resources::Configuration {
+    let locale = ["LC_ALL=", "LANG="].iter().find_map(|name| {
+        startup.environment().find_map(|entry| {
+            let entry = entry.to_bytes();
+            entry.strip_prefix(name.as_bytes()).map(<[u8]>::to_vec)
+        })
+    });
+    let locale = locale.unwrap_or_default();
+    let pair = |at: usize| match locale.get(at..at + 2) {
+        Some(&[first, second]) if first.is_ascii_alphabetic() => [first, second],
+        _ => [0, 0],
+    };
+    let language = pair(0);
+    let country = match locale.get(2) {
+        Some(b'_' | b'-') => pair(3),
+        _ => [0, 0],
+    };
+    eggos_android_package::resources::Configuration {
+        language: [language[0].to_ascii_lowercase(), language[1].to_ascii_lowercase()],
+        country: [country[0].to_ascii_uppercase(), country[1].to_ascii_uppercase()],
+        orientation: if WINDOW_SIZE.0 > WINDOW_SIZE.1 { 2 } else { 1 },
+        night: 2,
+        density: SCREEN_DPI as u16,
+        sdk: PLATFORM_VERSION,
+    }
+}
+
 fn pixels_of(extent: Option<layout::Extent>) -> Option<i32> {
     match extent? {
         layout::Extent::Dimension(data) => Some(layout::dimension_pixels(data, SCREEN_DPI)),
+        layout::Extent::Resource(id) => {
+            let data = table_value(u64::from(id), ResourceTable::dimension)?;
+            Some(layout::dimension_pixels(data, SCREEN_DPI))
+        }
         _ => None,
     }
 }
@@ -1687,6 +1773,12 @@ fn native_entry(native: Native) -> Entry {
         Native::SetTextResource => set_text_resource,
         Native::GetText => get_text,
         Native::GetString => get_string,
+        Native::GetResources => get_resources,
+        Native::GetDimension => get_dimension,
+        Native::GetDimensionPixels => get_dimension_pixels,
+        Native::GetColour => get_colour,
+        Native::GetInteger => get_integer,
+        Native::GetBoolean => get_boolean,
         Native::AddView => add_view,
         Native::SetOrientation => set_orientation,
         Native::SetHint => set_hint,
@@ -2074,7 +2166,11 @@ pub fn run(startup: &Startup) -> i32 {
     let resources = [RESOURCES_NAME, BUNDLE_RESOURCES_NAME]
         .iter()
         .find_map(|name| read_file(&[folder, b"/", name].concat()))
-        .and_then(|bytes| ResourceTable::parse(&bytes));
+        .and_then(|bytes| ResourceTable::parse(&bytes))
+        .map(|mut table| {
+            table.set_device(device_configuration(startup));
+            table
+        });
     let (code, compiled) = compile_all(&dex);
     let Some(base) = executable(&code) else {
         stop(&[b"android: no executable memory for the app's code"]);

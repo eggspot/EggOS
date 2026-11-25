@@ -2,8 +2,11 @@
 //! resource id (`0xPPTTEEEE`: package, type, entry) with a value per configuration. The
 //! Android layer reads the simple string values, which hold both string resources
 //! (`R.string.hello`) and the paths of layouts and other files (`R.layout.main` is
-//! `res/layout/main.xml`); the first configuration that gives an entry a value wins, which is
-//! the default one in the files the build tools write.
+//! `res/layout/main.xml`). Every value is kept with the configuration it is for (D764):
+//! the value for the device's configuration (its locale, orientation, night mode, density and
+//! platform version) is chosen as Android chooses it, with the default configuration's when
+//! nothing more specific fits; dimensions, colours, integers and booleans are read as typed
+//! values (references followed), and styles as their attribute values over their parents'.
 
 use crate::manifest::{half, strings, word};
 use alloc::collections::BTreeMap;
@@ -33,7 +36,86 @@ pub struct ResourceTable {
     strings: BTreeMap<u32, String>,
     colours: BTreeMap<u32, u32>,
     variants: BTreeMap<u32, Vec<String>>,
+    values: BTreeMap<u32, Vec<(Configuration, Value)>>,
+    styles: BTreeMap<u32, Style>,
+    device: Configuration,
 }
+
+/// What a resource value is for (D764): the parts of `ResTable_config` the layer matches on.
+/// A zero part means "any".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Configuration {
+    pub language: [u8; 2],
+    pub country: [u8; 2],
+    /// 1 portrait, 2 landscape.
+    pub orientation: u8,
+    /// 1 not night, 2 night (`uiMode`'s night bits, shifted down).
+    pub night: u8,
+    pub density: u16,
+    pub sdk: u16,
+}
+
+impl Configuration {
+    fn read(chunk: &[u8], at: usize) -> Self {
+        let byte = |offset: usize| chunk.get(at + offset).copied().unwrap_or(0);
+        let short = |offset: usize| half(chunk, at + offset).unwrap_or(0);
+        Self {
+            language: [byte(8), byte(9)],
+            country: [byte(10), byte(11)],
+            orientation: byte(12),
+            night: (byte(29) & 0x30) >> 4,
+            density: short(14),
+            sdk: short(24),
+        }
+    }
+
+    /// Whether a value for `self` may serve a device of configuration `device`.
+    pub fn fits(&self, device: &Self) -> bool {
+        let matches = |wanted: u8, has: u8| wanted == 0 || wanted == has;
+        (self.language == [0, 0] || self.language == device.language)
+            && (self.country == [0, 0] || self.country == device.country)
+            && matches(self.orientation, device.orientation)
+            && matches(self.night, device.night)
+            && (self.sdk == 0 || self.sdk <= device.sdk.max(1))
+    }
+
+    fn specificity(&self) -> (bool, bool, bool, bool, u16) {
+        (
+            self.language != [0, 0],
+            self.country != [0, 0],
+            self.orientation != 0,
+            self.night != 0,
+            self.sdk,
+        )
+    }
+}
+
+/// A simple value: its binary type (`Res_value.dataType`), its data, and its text when it
+/// is a string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Value {
+    pub kind: u8,
+    pub data: u32,
+    pub text: Option<String>,
+}
+
+/// A style (a bag entry, D764): its parent style and its attributes' values.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Style {
+    pub parent: u32,
+    pub items: Vec<(u32, Value)>,
+}
+
+const TYPE_REFERENCE: u8 = 0x01;
+const TYPE_DIMENSION: u8 = 0x05;
+const TYPE_INT_DECIMAL: u8 = 0x10;
+const TYPE_INT_HEXADECIMAL: u8 = 0x11;
+const TYPE_INT_BOOLEAN: u8 = 0x12;
+const MOST_REFERENCES: usize = 8;
+const MOST_STYLE_DEPTH: usize = 16;
+const MAP_ITEM_BYTES: usize = 12;
+const MOST_STYLE_ITEMS: usize = 512;
+const CONFIGURATION_AT: usize = 20;
 
 const MOST_VARIANTS: usize = 32;
 const DENSITY_QUALIFIERS: [(&str, u32); 8] = [
@@ -134,10 +216,28 @@ impl ResourceTable {
             };
             let at = entries_start + offset;
             let entry_size = usize::from(half(chunk, at)?);
+            let id = package << 24 | type_id << 16 | entry;
             if half(chunk, at + 2)? & FLAG_COMPLEX != 0 {
+                self.style(id, chunk, at, entry_size, pool);
                 continue;
             }
             let value = at + entry_size;
+            let typed = Value {
+                kind: *chunk.get(value + 3)?,
+                data: word(chunk, value + 4)?,
+                text: None,
+            };
+            let typed = Value {
+                text: (typed.kind == TYPE_STRING)
+                    .then(|| pool.get(typed.data as usize).cloned())
+                    .flatten(),
+                ..typed
+            };
+            let configuration = Configuration::read(chunk, CONFIGURATION_AT);
+            self.values
+                .entry(id)
+                .or_default()
+                .push((configuration, typed));
             let id_of = |entry: u32| package << 24 | type_id << 16 | entry;
             let kind = *chunk.get(value + 3)?;
             if (FIRST_COLOUR_TYPE..=LAST_COLOUR_TYPE).contains(&kind) {
@@ -159,6 +259,100 @@ impl ResourceTable {
             }
         }
         Some(())
+    }
+
+    fn style(&mut self, id: u32, chunk: &[u8], at: usize, entry_size: usize, pool: &[String]) {
+        let parent = word(chunk, at + 8).unwrap_or(0);
+        let count = (word(chunk, at + 12).unwrap_or(0) as usize).min(MOST_STYLE_ITEMS);
+        let mut style = Style {
+            parent,
+            items: Vec::with_capacity(count),
+        };
+        for index in 0..count {
+            let item = at + entry_size + index * MAP_ITEM_BYTES;
+            let (Some(name), Some(&kind), Some(data)) =
+                (word(chunk, item), chunk.get(item + 7), word(chunk, item + 8))
+            else {
+                break;
+            };
+            let text = (kind == TYPE_STRING)
+                .then(|| pool.get(data as usize).cloned())
+                .flatten();
+            style.items.push((name, Value { kind, data, text }));
+        }
+        self.styles.entry(id).or_insert(style);
+    }
+
+    /// Chooses values for a device of configuration `device` from now on.
+    pub fn set_device(&mut self, device: Configuration) {
+        self.device = device;
+    }
+
+    /// Resource `id`'s value for the device: the most specific configuration that fits it.
+    pub fn value(&self, id: u32) -> Option<&Value> {
+        let device = self.device;
+        self.values
+            .get(&id)?
+            .iter()
+            .filter(|(configuration, _)| configuration.fits(&device))
+            .fold(None::<&(Configuration, Value)>, |best, candidate| match best {
+                Some(chosen) if chosen.0.specificity() >= candidate.0.specificity() => Some(chosen),
+                _ => Some(candidate),
+            })
+            .map(|(_, value)| value)
+    }
+
+    /// Resource `id`'s value with references to other resources followed.
+    pub fn resolved(&self, id: u32) -> Option<&Value> {
+        let mut current = self.value(id)?;
+        for _ in 0..MOST_REFERENCES {
+            if current.kind != TYPE_REFERENCE || current.data == 0 {
+                return Some(current);
+            }
+            current = self.value(current.data)?;
+        }
+        None
+    }
+
+    /// Dimension resource `id` (`R.dimen.margin`), as binary XML encodes a dimension.
+    pub fn dimension(&self, id: u32) -> Option<u32> {
+        self.resolved(id)
+            .filter(|value| value.kind == TYPE_DIMENSION)
+            .map(|value| value.data)
+    }
+
+    /// Integer resource `id` (`R.integer.columns`).
+    pub fn integer(&self, id: u32) -> Option<i32> {
+        self.resolved(id)
+            .filter(|value| matches!(value.kind, TYPE_INT_DECIMAL | TYPE_INT_HEXADECIMAL))
+            .map(|value| value.data as i32)
+    }
+
+    /// Boolean resource `id` (`R.bool.tablet`).
+    pub fn boolean(&self, id: u32) -> Option<bool> {
+        self.resolved(id)
+            .filter(|value| value.kind == TYPE_INT_BOOLEAN)
+            .map(|value| value.data != 0)
+    }
+
+    /// Style `id`'s attribute values, its own over its parents', by attribute id.
+    pub fn style_items(&self, id: u32) -> BTreeMap<u32, Value> {
+        let mut chain = Vec::new();
+        let mut current = id;
+        for _ in 0..MOST_STYLE_DEPTH {
+            let Some(style) = self.styles.get(&current) else {
+                break;
+            };
+            chain.push(style);
+            current = style.parent;
+        }
+        let mut items = BTreeMap::new();
+        for style in chain.into_iter().rev() {
+            for (name, value) in &style.items {
+                items.insert(*name, value.clone());
+            }
+        }
+        items
     }
 
     fn parse_bundle(bytes: &[u8]) -> Option<Self> {
@@ -185,9 +379,12 @@ impl ResourceTable {
         Some(table)
     }
 
-    /// Resource `id`'s string value: a string resource's text or a file resource's path.
+    /// Resource `id`'s string value for the device: a string resource's text or a file
+    /// resource's path.
     pub fn string(&self, id: u32) -> Option<&str> {
-        self.strings.get(&id).map(String::as_str)
+        self.resolved(id)
+            .and_then(|value| value.text.as_deref())
+            .or_else(|| self.strings.get(&id).map(String::as_str))
     }
 
     /// Every configuration's string value of resource `id`, in the table's order: a file
@@ -241,9 +438,12 @@ impl ResourceTable {
         best
     }
 
-    /// Colour resource `id`'s value, `0xAARRGGBB`.
+    /// Colour resource `id`'s value for the device, `0xAARRGGBB`.
     pub fn colour(&self, id: u32) -> Option<u32> {
-        self.colours.get(&id).copied()
+        self.resolved(id)
+            .filter(|value| (FIRST_COLOUR_TYPE..=LAST_COLOUR_TYPE).contains(&value.kind))
+            .map(|value| value.data)
+            .or_else(|| self.colours.get(&id).copied())
     }
 }
 
@@ -379,5 +579,64 @@ mod tests {
         assert_eq!(chosen(640), Some(("res/drawable-xxhdpi-v4/a.png", 480)));
         assert_eq!(density_of("res/drawable-anydpi-v24/a.xml"), None);
         assert_eq!(density_of("res/drawable/a.png"), None);
+    }
+
+    #[test]
+    fn the_most_specific_fitting_configuration_wins() {
+        let text = |words: &str| Value {
+            kind: TYPE_STRING,
+            data: 0,
+            text: Some(String::from(words)),
+        };
+        let mut table = ResourceTable::default();
+        let vietnamese = Configuration {
+            language: *b"vi",
+            ..Configuration::default()
+        };
+        let night = Configuration {
+            night: 2,
+            ..Configuration::default()
+        };
+        table.values.insert(
+            0x7f0f_0001,
+            vec![
+                (Configuration::default(), text("Hello")),
+                (vietnamese, text("Xin chào")),
+            ],
+        );
+        table.values.insert(
+            0x7f05_0001,
+            vec![
+                (Configuration::default(), Value { kind: 0x1c, data: 0xffff_ffff, text: None }),
+                (night, Value { kind: 0x1c, data: 0xff00_0000, text: None }),
+            ],
+        );
+        assert_eq!(table.string(0x7f0f_0001), Some("Hello"));
+        assert_eq!(table.colour(0x7f05_0001), Some(0xffff_ffff));
+        table.set_device(Configuration {
+            language: *b"vi",
+            country: *b"VN",
+            night: 2,
+            sdk: 34,
+            ..Configuration::default()
+        });
+        assert_eq!(table.string(0x7f0f_0001), Some("Xin chào"));
+        assert_eq!(table.colour(0x7f05_0001), Some(0xff00_0000));
+        let newer = Configuration {
+            sdk: 35,
+            ..Configuration::default()
+        };
+        assert!(!newer.fits(&table.device));
+    }
+
+    #[test]
+    fn a_style_s_own_values_override_its_parent_s() {
+        let mut table = ResourceTable::default();
+        let value = |data: u32| Value { kind: TYPE_INT_DECIMAL, data, text: None };
+        table.styles.insert(1, Style { parent: 0, items: vec![(10, value(1)), (11, value(2))] });
+        table.styles.insert(2, Style { parent: 1, items: vec![(11, value(3))] });
+        let items = table.style_items(2);
+        assert_eq!(items.get(&10).map(|value| value.data), Some(1));
+        assert_eq!(items.get(&11).map(|value| value.data), Some(3));
     }
 }
