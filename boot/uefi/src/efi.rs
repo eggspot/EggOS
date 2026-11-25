@@ -146,7 +146,8 @@ pub struct RuntimeServices {
     pub set_time: Unused,
     pub get_wakeup_time: Unused,
     pub set_wakeup_time: Unused,
-    pub set_virtual_address_map: Unused,
+    pub set_virtual_address_map:
+        unsafe extern "efiapi" fn(usize, usize, u32, *mut MemoryDescriptor) -> Status,
     pub convert_pointer: Unused,
     pub get_variable:
         unsafe extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut c_void) -> Status,

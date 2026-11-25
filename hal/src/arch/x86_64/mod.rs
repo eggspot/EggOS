@@ -390,6 +390,7 @@ const PVH_MEMMAP_TYPE_RAM: u32 = 1;
 const PVH_MAX_MEMMAP_ENTRIES: usize = 1024;
 
 const DIRECT_MAP_OFFSET: usize = 0xffff_8000_0000_0000;
+const _: () = assert!(DIRECT_MAP_OFFSET as u64 == crate::handoff::KERNEL_DIRECT_MAP_OFFSET);
 
 const RESET_CONTROL_PORT: u16 = 0xcf9;
 const RESET_CONTROL_SYSTEM_RESET: u8 = 0x02;

@@ -49,6 +49,7 @@ pub mod suspend;
 pub mod sync;
 pub mod terminal;
 pub mod thread;
+pub mod uefi_runtime;
 pub mod user_view;
 pub mod vfs;
 pub mod wall_clock;
@@ -112,7 +113,13 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                         Err(reason) => writeln!(console, "paging: no user view: {reason}")?,
                     }
                 }
+                if uefi_runtime::start::<P>() {
+                    writeln!(console, "uefi: runtime services at the direct map")?;
+                }
                 report_devices(console, devices::discover_and_probe::<P>(&mut memory))?;
+                if uefi_runtime::register_clock() {
+                    writeln!(console, "rtc: the firmware's clock")?;
+                }
                 #[cfg(feature = "virtio-rng")]
                 report_device_seed(console, devices::virtio::seed_random::<P>())?;
                 #[cfg(feature = "virtio-rng")]
@@ -212,6 +219,12 @@ fn mount_system_file_systems<P: Platform>() {
     }
     if exists(b"/sys") {
         let _ = vfs::mount_without_programs(b"/sys", &vfs::sysfs::SystemFiles);
+        if uefi_runtime::is_present() {
+            let _ = vfs::mount_without_programs(
+                b"/sys/firmware/efi/efivars",
+                &vfs::efivarfs::FirmwareVariables,
+            );
+        }
     }
     if !MEMORY_FILE_SYSTEMS
         .iter()

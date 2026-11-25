@@ -929,7 +929,52 @@ pub fn kernel_page_tables<P: Platform>(
             result = tables.map(virt, page, FRAME_SIZE, Attributes::DEVICE, frames);
         }
     });
-    result.map(|()| tables)
+    result?;
+    map_firmware_runtime::<P>(&mut tables, offset, window.start, frames)?;
+    Ok(tables)
+}
+
+const FIRMWARE_CODE: Attributes = Attributes {
+    writable: true,
+    executable: true,
+    memory_type: eggos_hal::paging::MemoryType::Normal,
+    user: false,
+};
+
+/// Maps the UEFI firmware's runtime ranges where the loader moved them, at their direct-map
+/// addresses (D781): code read, write and execute (firmware images keep their data in their
+/// code ranges), data read and write, device ranges as device memory. Pages the direct map
+/// already holds stay as they are. Nothing when the loader did not move them.
+fn map_firmware_runtime<P: Platform>(
+    tables: &mut PageTables<P::PageTableFormat>,
+    offset: u64,
+    below: u64,
+    frames: &mut FrameAllocator,
+) -> Result<(), MapError> {
+    use eggos_hal::handoff::{self, memory_kind};
+    let Some(loaded) = handoff::handoff::<P>() else {
+        return Ok(());
+    };
+    if loaded.uefi_runtime_mapped != 1 {
+        return Ok(());
+    }
+    for range in handoff::memory_ranges::<P>(&loaded) {
+        let attributes = match range.kind {
+            memory_kind::FIRMWARE_RUNTIME_CODE => FIRMWARE_CODE,
+            memory_kind::FIRMWARE_RUNTIME => Attributes::READ_WRITE,
+            memory_kind::FIRMWARE_RUNTIME_DEVICE => Attributes::DEVICE,
+            _ => continue,
+        };
+        let pages = PhysicalRange::from_start_length(range.start, range.length).covering_frames();
+        for page in (pages.start..pages.end).step_by(FRAME_SIZE as usize) {
+            let virt = page.wrapping_add(offset);
+            if virt >= below || tables.translate(virt).is_some() {
+                continue;
+            }
+            tables.map(virt, page, FRAME_SIZE, attributes, frames)?;
+        }
+    }
+    Ok(())
 }
 
 fn device_ranges<P: Platform>(each: &mut dyn FnMut(PhysicalRange)) {

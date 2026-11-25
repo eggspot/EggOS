@@ -276,6 +276,7 @@ const RAM_BASE: usize = 0x4000_0000;
 const UART0_BASE: usize = 0x0900_0000;
 
 const DIRECT_MAP_OFFSET: usize = 0xffff_0000_0000_0000;
+const _: () = assert!(DIRECT_MAP_OFFSET as u64 == crate::handoff::KERNEL_DIRECT_MAP_OFFSET);
 
 const TCR: u64 = {
     let t0sz = 64 - 48;
@@ -1287,6 +1288,9 @@ fn handoff_memory_map(handoff: &crate::handoff::Handoff, whole: bool) -> MemoryM
     let mut map = MemoryMap::new();
     for range in crate::handoff::memory_ranges::<Aarch64>(handoff) {
         let physical = PhysicalRange::from_start_length(range.start, range.length);
+        if whole && crate::handoff::memory_kind::is_firmware_runtime(range.kind) {
+            continue;
+        }
         if whole {
             map.add_ram(physical.covering_frames());
         } else if range.kind == crate::handoff::memory_kind::RAM {

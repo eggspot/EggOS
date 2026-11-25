@@ -11,8 +11,8 @@ pub const ID_BYTES: usize = 16;
 pub const WAIT_STEPS: [u8; 5] = [0, 3, 5, 10, 30];
 pub const DEFAULT_WAIT_S: u8 = 5;
 pub const MOST_WAIT_S: u8 = 60;
-pub const LOAD_OPTION_ACTIVE: u32 = 1;
-pub const OUR_DESCRIPTION: &str = "EggOS";
+pub use eggos_boot_entry::LOAD_OPTION_ACTIVE;
+pub use eggos_boot_entry::OUR_DESCRIPTION;
 pub const SETTINGS_BYTES: usize = 256;
 
 const MEDIA: u8 = 4;

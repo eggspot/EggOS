@@ -8,7 +8,9 @@
 //! function's (or platform device's) identity. Read-only; each file's text is made when it is
 //! opened. `devices/system/cpu/cpu<n>/online` takes CPU `n` out of service with `0` and puts it
 //! back with `1` (D596). `power/state` lists `mem` when the machine can suspend to RAM and
-//! takes it to suspend (D597).
+//! takes it to suspend (D597). `firmware/efi/efivars`, where the firmware's variables are
+//! mounted ([`super::efivarfs`]), shows only on a machine whose UEFI runtime services the kernel
+//! can call (D781), as programs take `firmware/efi` to mean a UEFI boot.
 
 use super::{Attributes, DirectoryEntry, FileSystem, Name, NodeKind, Usage};
 use crate::sync::LeafSpinLock;
@@ -28,9 +30,12 @@ const ENABLED: u64 = 11;
 const DEFRAG: u64 = 12;
 const POWER: u64 = 13;
 const POWER_STATE: u64 = 14;
+const FIRMWARE: u64 = 15;
+const EFI: u64 = 16;
+const EFIVARS: u64 = 17;
 
 /// Each node with its name and its parent.
-const NODES: [(u64, &[u8], u64); 13] = [
+const NODES: [(u64, &[u8], u64); 16] = [
     (DEVICES, b"devices", ROOT),
     (SYSTEM, b"system", DEVICES),
     (CPU, b"cpu", SYSTEM),
@@ -44,7 +49,14 @@ const NODES: [(u64, &[u8], u64); 13] = [
     (DEFRAG, b"defrag", TRANSPARENT_HUGEPAGE),
     (POWER, b"power", ROOT),
     (POWER_STATE, b"state", POWER),
+    (FIRMWARE, b"firmware", ROOT),
+    (EFI, b"efi", FIRMWARE),
+    (EFIVARS, b"efivars", EFI),
 ];
+
+fn shown(node: u64) -> bool {
+    !matches!(node, EFI | EFIVARS) || crate::uefi_runtime::is_present()
+}
 
 /// Suspend to RAM, and whether the machine offers it, for `power/state` (D597).
 static SUSPEND: LeafSpinLock<Option<(fn() -> Result<(), &'static str>, fn() -> bool)>> =
@@ -253,8 +265,19 @@ const DEVICE: (u32, u32) = (0, 21);
 pub struct SystemFiles;
 
 fn is_directory(node: u64) -> bool {
-    matches!(node, ROOT | DEVICES | SYSTEM | CPU | KERNEL | MM | TRANSPARENT_HUGEPAGE | POWER)
-        || cpu_node(node).is_some_and(|(_, file)| !file)
+    matches!(
+        node,
+        ROOT | DEVICES
+            | SYSTEM
+            | CPU
+            | KERNEL
+            | MM
+            | TRANSPARENT_HUGEPAGE
+            | POWER
+            | FIRMWARE
+            | EFI
+            | EFIVARS
+    ) || cpu_node(node).is_some_and(|(_, file)| !file)
 }
 
 /// The first per-CPU node: `cpu<n>` is `PER_CPU + 2n`, its `online` file the next (D596).
@@ -376,7 +399,9 @@ impl FileSystem for SystemFiles {
         }
         NODES
             .iter()
-            .find(|&&(_, file, parent)| parent == directory && file == name)
+            .find(|&&(node, file, parent)| {
+                parent == directory && file == name && shown(node)
+            })
             .map(|&(node, _, _)| node)
             .or_else(|| {
                 DRM_NODES.iter().map(|&(node, ..)| node).find(|&node| {
@@ -509,7 +534,9 @@ impl FileSystem for SystemFiles {
                 });
             }
         }
-        let fixed = NODES.iter().filter(|&&(_, _, parent)| parent == directory);
+        let fixed = NODES
+            .iter()
+            .filter(|&&(node, _, parent)| parent == directory && shown(node));
         let fixed_count = fixed.clone().count();
         if let Some(&(node, name, _)) = fixed.clone().nth(position) {
             return Some(DirectoryEntry {

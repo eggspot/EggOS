@@ -7,7 +7,8 @@ use crate::atomic::AtomicU64;
 use crate::memory::PhysicalRange;
 use core::sync::atomic::Ordering;
 pub use eggos_boot_handoff::{
-    Framebuffer, HANDOFF_BYTES, Handoff, MEMORY_RANGE_BYTES, MemoryRange, memory_kind, pixel_format,
+    Framebuffer, HANDOFF_BYTES, Handoff, KERNEL_DIRECT_MAP_OFFSET, MEMORY_RANGE_BYTES, MemoryRange,
+    memory_kind, pixel_format,
 };
 
 /// Physical address of the handoff, 0 for none; written by the architecture's UEFI entry code.

@@ -365,6 +365,7 @@ struct RawMemoryMap {
     size: usize,
     key: usize,
     descriptor_size: usize,
+    version: u32,
 }
 
 impl RawMemoryMap {
@@ -393,6 +394,7 @@ impl RawMemoryMap {
             size: 0,
             key: 0,
             descriptor_size,
+            version,
         })
     }
 
@@ -415,7 +417,38 @@ impl RawMemoryMap {
             return Err("the firmware could not give its memory map");
         }
         self.size = size;
+        self.version = version;
         Ok(())
+    }
+
+    /// Gives every runtime range the virtual address the kernel's direct map gives it, then
+    /// hands the map to the firmware's `SetVirtualAddressMap` (D781): whether it took it. Only
+    /// after `ExitBootServices`, and nothing may call runtime services at their old addresses
+    /// afterwards.
+    fn move_runtime_services(&mut self, runtime: &efi::RuntimeServices) -> bool {
+        let descriptor_size = self.descriptor_size;
+        for bytes in self.buffer[..self.size].chunks_exact_mut(descriptor_size) {
+            let pointer = bytes.as_mut_ptr().cast::<efi::MemoryDescriptor>();
+            // SAFETY: each chunk holds a whole descriptor (`refresh` checked); unaligned access.
+            let mut descriptor = unsafe { pointer.read_unaligned() };
+            if descriptor.attribute & handoff::UEFI_MEMORY_RUNTIME != 0 {
+                descriptor.virtual_start = descriptor
+                    .physical_start
+                    .wrapping_add(handoff::KERNEL_DIRECT_MAP_OFFSET);
+                // SAFETY: as for the read above.
+                unsafe { pointer.write_unaligned(descriptor) };
+            }
+        }
+        // SAFETY: after ExitBootServices, firmware tables still active, the map it was given.
+        let status = unsafe {
+            (runtime.set_virtual_address_map)(
+                self.size,
+                descriptor_size,
+                self.version,
+                self.buffer.as_mut_ptr().cast(),
+            )
+        };
+        !efi::is_error(status)
     }
 
     fn descriptors(&self) -> impl Iterator<Item = efi::MemoryDescriptor> + '_ {
@@ -692,7 +725,8 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
 
     let mut writer = MemoryMapWriter::new(&mut *data.ranges);
     for descriptor in map.descriptors() {
-        if let Some(kind) = handoff::kind_of_uefi_type(descriptor.kind) {
+        if let Some(kind) = handoff::kind_of_uefi_descriptor(descriptor.kind, descriptor.attribute)
+        {
             writer.add(MemoryRange {
                 start: descriptor.physical_start,
                 length: descriptor.pages.saturating_mul(PAGE),
@@ -711,6 +745,12 @@ fn start(firmware: &Firmware) -> Result<core::convert::Infallible, &'static str>
         }
     }
     data.handoff.memory_map_entries = writer.len() as u32;
+    // SAFETY: the firmware's system table, valid after ExitBootServices with its runtime table.
+    let runtime = unsafe { (*firmware.system).runtime_services };
+    // SAFETY: as above; a non-null runtime services table is the firmware's.
+    if !runtime.is_null() && map.move_runtime_services(unsafe { &*runtime }) {
+        data.handoff.uefi_runtime_mapped = 1;
+    }
     *data.pvh = PvhStartInfo::for_handoff(data.handoff, data.handoff.command_line);
 
     let handoff_address = core::ptr::from_ref(data.handoff) as u64;

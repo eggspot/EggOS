@@ -30,9 +30,36 @@ pub mod memory_kind {
     pub const PERSISTENT: u32 = 7;
     /// The loader's handoff data: the handoff, the start info, the command line and this map.
     pub const BOOT_DATA: u32 = 0x4547_0001;
-    /// UEFI runtime services' code and data, which stay in use after boot.
+    /// UEFI runtime services' data, which stays in use after boot.
     pub const FIRMWARE_RUNTIME: u32 = 0x4547_0002;
+    /// UEFI runtime services' code (D781).
+    pub const FIRMWARE_RUNTIME_CODE: u32 = 0x4547_0003;
+    /// Device registers UEFI runtime services use, such as the flash the variables live in
+    /// (D781): memory-mapped I/O the firmware marked for runtime use.
+    pub const FIRMWARE_RUNTIME_DEVICE: u32 = 0x4547_0004;
+
+    /// Whether `kind` is one of the firmware's runtime ranges.
+    pub const fn is_firmware_runtime(kind: u32) -> bool {
+        matches!(
+            kind,
+            FIRMWARE_RUNTIME | FIRMWARE_RUNTIME_CODE | FIRMWARE_RUNTIME_DEVICE
+        )
+    }
 }
+
+/// UEFI's memory attribute of a range runtime services use after boot.
+pub const UEFI_MEMORY_RUNTIME: u64 = 1 << 63;
+
+/// Where the kernel's direct map puts physical address 0 (D29): the loader moves the firmware's
+/// runtime services there with `SetVirtualAddressMap` (D781), and the HAL checks its own value
+/// against this one.
+#[cfg(target_arch = "x86_64")]
+pub const KERNEL_DIRECT_MAP_OFFSET: u64 = 0xffff_8000_0000_0000;
+/// Where the kernel's direct map puts physical address 0 (D29): the loader moves the firmware's
+/// runtime services there with `SetVirtualAddressMap` (D781), and the HAL checks its own value
+/// against this one.
+#[cfg(not(target_arch = "x86_64"))]
+pub const KERNEL_DIRECT_MAP_OFFSET: u64 = 0xffff_0000_0000_0000;
 
 /// How a framebuffer's pixel is laid out in memory.
 pub mod pixel_format {
@@ -143,6 +170,10 @@ pub struct Handoff {
     pub kernel_file_bytes: u64,
     pub loader_file: u64,
     pub loader_file_bytes: u64,
+    /// 1 when the loader moved the firmware's runtime services to the kernel's direct map
+    /// ([`KERNEL_DIRECT_MAP_OFFSET`]) with `SetVirtualAddressMap`, so the kernel may call them
+    /// (D781); 0 otherwise.
+    pub uefi_runtime_mapped: u64,
 }
 
 /// Bytes of a [`Handoff`].
@@ -179,6 +210,7 @@ impl Handoff {
             kernel_file_bytes: 0,
             loader_file: 0,
             loader_file_bytes: 0,
+            uefi_runtime_mapped: 0,
         }
     }
 
@@ -252,6 +284,21 @@ pub mod uefi_memory_type {
     pub const UNACCEPTED: u32 = 15;
 }
 
+/// The [`memory_kind`] of a UEFI memory descriptor of type `kind` with `attribute`: as
+/// [`kind_of_uefi_type`], but device memory runtime services use is kept, as
+/// [`memory_kind::FIRMWARE_RUNTIME_DEVICE`] (D781).
+pub fn kind_of_uefi_descriptor(kind: u32, attribute: u64) -> Option<u32> {
+    use uefi_memory_type as uefi;
+    match kind {
+        uefi::MEMORY_MAPPED_IO | uefi::MEMORY_MAPPED_IO_PORT_SPACE
+            if attribute & UEFI_MEMORY_RUNTIME != 0 =>
+        {
+            Some(memory_kind::FIRMWARE_RUNTIME_DEVICE)
+        }
+        _ => kind_of_uefi_type(kind),
+    }
+}
+
 /// The [`memory_kind`] of UEFI memory type `kind` after `ExitBootServices`; `None` for device
 /// memory, which is no part of the memory map the kernel maps as RAM.
 pub fn kind_of_uefi_type(kind: u32) -> Option<u32> {
@@ -262,9 +309,8 @@ pub fn kind_of_uefi_type(kind: u32) -> Option<u32> {
         | uefi::BOOT_SERVICES_CODE
         | uefi::BOOT_SERVICES_DATA
         | uefi::CONVENTIONAL => Some(memory_kind::RAM),
-        uefi::RUNTIME_SERVICES_CODE | uefi::RUNTIME_SERVICES_DATA => {
-            Some(memory_kind::FIRMWARE_RUNTIME)
-        }
+        uefi::RUNTIME_SERVICES_CODE => Some(memory_kind::FIRMWARE_RUNTIME_CODE),
+        uefi::RUNTIME_SERVICES_DATA => Some(memory_kind::FIRMWARE_RUNTIME),
         uefi::ACPI_RECLAIM => Some(memory_kind::ACPI_RECLAIMABLE),
         uefi::ACPI_NVS => Some(memory_kind::ACPI_NVS),
         uefi::UNUSABLE | uefi::UNACCEPTED => Some(memory_kind::UNUSABLE),
@@ -505,9 +551,21 @@ mod tests {
         );
         assert_eq!(
             kind_of_uefi_type(uefi_memory_type::RUNTIME_SERVICES_CODE),
+            Some(memory_kind::FIRMWARE_RUNTIME_CODE)
+        );
+        assert_eq!(
+            kind_of_uefi_type(uefi_memory_type::RUNTIME_SERVICES_DATA),
             Some(memory_kind::FIRMWARE_RUNTIME)
         );
         assert_eq!(kind_of_uefi_type(uefi_memory_type::MEMORY_MAPPED_IO), None);
+        assert_eq!(
+            kind_of_uefi_descriptor(uefi_memory_type::MEMORY_MAPPED_IO, UEFI_MEMORY_RUNTIME),
+            Some(memory_kind::FIRMWARE_RUNTIME_DEVICE)
+        );
+        assert_eq!(
+            kind_of_uefi_descriptor(uefi_memory_type::MEMORY_MAPPED_IO, 0),
+            None
+        );
         assert_eq!(kind_of_uefi_type(99), Some(memory_kind::RESERVED));
     }
 

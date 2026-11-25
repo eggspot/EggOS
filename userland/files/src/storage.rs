@@ -72,6 +72,11 @@ pub trait WholeDisks {
     fn read_system_file(&mut self, _path: &str, _buffer: &mut [u8]) -> Result<usize, Fault> {
         Err(Fault::Failed)
     }
+    /// Writes `bytes` to the system file at `path` in one write, creating it: a firmware
+    /// variable under `/sys/firmware/efi/efivars` (D781). None by default.
+    fn write_system_file(&mut self, _path: &str, _bytes: &[u8]) -> Result<(), Fault> {
+        Err(Fault::Failed)
+    }
     /// Fills `bytes` with bytes unlikely to repeat, for new partition GUIDs.
     fn unique_bytes(&mut self, bytes: &mut [u8]) {
         let mut state = self.now() ^ 0x9e37_79b9_7f4a_7c15;
@@ -1296,6 +1301,76 @@ pub struct Installation {
     pub device: &'static str,
     pub system_partition_bytes: u64,
     pub data_partition_bytes: u64,
+    /// Whether the firmware's boot entry for the installation was written (D781): false when
+    /// the machine's UEFI variables cannot be reached (another boot, no runtime services).
+    pub boot_entry: bool,
+}
+
+const EFIVARS: &str = "/sys/firmware/efi/efivars";
+const GLOBAL_SUFFIX: &str = "-8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
+fn variable_path(name: &[u8]) -> String {
+    format!(
+        "{EFIVARS}/{}{GLOBAL_SUFFIX}",
+        core::str::from_utf8(name).unwrap_or("")
+    )
+}
+
+/// Writes EggOS's firmware boot entry for the loader `loader_name` in `\EFI\BOOT\` on GPT
+/// partition `number` (`sectors` sectors from `first`, unique GUID `unique`), first in
+/// `BootOrder`, through `/sys/firmware/efi/efivars` (D781); whether it did.
+pub fn write_boot_entry(
+    disks: &mut (impl WholeDisks + ?Sized),
+    number: u32,
+    first: u64,
+    sectors: u64,
+    unique: &[u8; 16],
+    loader_name: &str,
+) -> bool {
+    let mut file = [0u8; 128];
+    let path = format!("\\EFI\\BOOT\\{loader_name}");
+    let Some(file_length) = eggos_boot_entry::file_path_node(&path, &mut file) else {
+        return false;
+    };
+    let mut device_path =
+        eggos_boot_entry::hard_drive_node(number, first, sectors, unique).to_vec();
+    device_path.extend_from_slice(&file[..file_length]);
+    device_path.extend_from_slice(&eggos_boot_entry::END_NODE);
+    let attributes = eggos_boot_entry::BOOT_VARIABLE_ATTRIBUTES.to_le_bytes();
+    let mut option = [0u8; 4 + 512];
+    option[..4].copy_from_slice(&attributes);
+    let Some(option_length) = eggos_boot_entry::load_option(&device_path, &mut option[4..]) else {
+        return false;
+    };
+    let mut order = [0u8; 4 + 1024];
+    let order_length = disks
+        .read_system_file(&variable_path(b"BootOrder"), &mut order)
+        .unwrap_or(0);
+    let current = order.get(4..order_length).unwrap_or_default().to_vec();
+    let Some(number) = eggos_boot_entry::first_free(|candidate| {
+        let name = eggos_boot_entry::boot_variable_name(candidate);
+        disks
+            .read_system_file(&variable_path(&name), &mut [0u8; 4])
+            .is_ok()
+    }) else {
+        return false;
+    };
+    let name = eggos_boot_entry::boot_variable_name(number);
+    if disks
+        .write_system_file(&variable_path(&name), &option[..4 + option_length])
+        .is_err()
+    {
+        return false;
+    }
+    let mut new_order = [0u8; 4 + 1026];
+    new_order[..4].copy_from_slice(&attributes);
+    let Some(new_length) = eggos_boot_entry::order_with_first(&current, number, &mut new_order[4..])
+    else {
+        return false;
+    };
+    disks
+        .write_system_file(&variable_path(b"BootOrder"), &new_order[..4 + new_length])
+        .is_ok()
 }
 
 /// Where an installation's partitions go on a disk of `sectors` 512-byte sectors: the EFI system
@@ -1369,10 +1444,19 @@ pub fn install(
     disks.close(handle);
     result?;
     flushed?;
+    let boot_entry = write_boot_entry(
+        disks,
+        1,
+        system_first,
+        system_last - system_first + 1,
+        &partitions[0].unique,
+        files.loader_name,
+    );
     Ok(Installation {
         device: line.device,
         system_partition_bytes: (system_last - system_first + 1) * 512,
         data_partition_bytes: (data_last - data_first + 1) * 512,
+        boot_entry,
     })
 }
 

@@ -1681,6 +1681,31 @@ pub(crate) fn with_running_fp<P: Platform, R>(f: impl FnOnce(&mut FpState) -> R)
     Some(result)
 }
 
+/// Runs `f`, which may change this CPU's FP/SIMD registers (UEFI runtime services, D781),
+/// with the registers on and, afterwards, holding what they held before and on or off as they
+/// were. The scheduler's lock is held throughout, so nothing switches threads meanwhile.
+pub(crate) fn with_fp_lent<P: Platform, R>(f: impl FnOnce() -> R) -> R {
+    let here = cpu::current::<P>();
+    let local = here.scheduler.lock();
+    let was_on = local.fp.user_on;
+    let mut saved = FpState::new();
+    if !was_on {
+        // SAFETY: interrupts are masked; the registers are saved and restored around `f`.
+        unsafe { P::set_user_fp(true) };
+    }
+    // SAFETY: interrupts are masked, the registers are on, and `saved` is valid for a write.
+    unsafe { P::save_fp(&mut saved) };
+    let result = f();
+    // SAFETY: as above; `saved` holds what the save wrote.
+    unsafe { P::restore_fp(&saved) };
+    if !was_on {
+        // SAFETY: interrupts are masked; the registers hold again what they held before.
+        unsafe { P::set_user_fp(false) };
+    }
+    drop(local);
+    result
+}
+
 /// The CPUs the running thread may run on, a bit per CPU index (D198).
 pub fn running_affinity<P: Platform>() -> u64 {
     cpu::current::<P>()

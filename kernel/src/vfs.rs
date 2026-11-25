@@ -31,6 +31,7 @@
 pub mod cpio;
 pub mod devfs;
 pub mod sysfs;
+pub mod efivarfs;
 pub mod eggfs;
 pub mod fat;
 pub mod initramfs;
@@ -206,6 +207,8 @@ pub mod magic {
     pub const PROC: u64 = 0x9fa0;
     /// `/sys` (D558).
     pub const SYSFS: u64 = 0x6265_6572;
+    /// `/sys/firmware/efi/efivars` (D781).
+    pub const EFIVARFS: u64 = 0xde5e_81e4;
     /// FAT (the host share).
     pub const MSDOS: u64 = 0x4d44;
     /// EggFS (D131): `EggF` in ASCII.

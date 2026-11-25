@@ -11,6 +11,8 @@ use eggos_settings::disk::{self, Console, USAGE, USAGE_STATUS};
 const AT_FDCWD: usize = -100isize as usize;
 const O_RDONLY_CLOEXEC: usize = 0o2_000_000;
 const O_RDWR_CLOEXEC: usize = 0o2 | 0o2_000_000;
+const O_WRONLY_CREAT_CLOEXEC: usize = 0o1 | 0o100 | 0o2_000_000;
+const VARIABLE_MODE: usize = 0o644;
 const PATH_CAPACITY: usize = 64;
 const STATFS_SIZE: usize = 120;
 const TCGETS: usize = eggos_runtime::syscall::tty::TCGETS;
@@ -82,6 +84,32 @@ impl WholeDisks for LinuxDisks {
         }
         self.close(descriptor);
         Ok(length)
+    }
+
+    fn write_system_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Fault> {
+        let path = c_path(path);
+        let descriptor = syscall(
+            number::OPENAT,
+            [
+                AT_FDCWD,
+                path.as_ptr() as usize,
+                O_WRONLY_CREAT_CLOEXEC,
+                VARIABLE_MODE,
+                0,
+                0,
+            ],
+        )
+        .map_err(fault)?;
+        let written = syscall(
+            number::WRITE,
+            [descriptor, bytes.as_ptr() as usize, bytes.len(), 0, 0, 0],
+        );
+        self.close(descriptor);
+        match written {
+            Ok(count) if count == bytes.len() => Ok(()),
+            Ok(_) => Err(Fault::Failed),
+            Err(errno) => Err(fault(errno)),
+        }
     }
 
     fn open(&mut self, device: &str, writable: bool) -> Result<usize, Fault> {

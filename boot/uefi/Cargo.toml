@@ -10,6 +10,7 @@ name = "eggos-uefi-boot"
 path = "src/main.rs"
 
 [dependencies]
+eggos-boot-entry = { path = "../entry" }
 eggos-boot-handoff = { path = "../handoff" }
 eggos-font = { path = "../../font" }
 
