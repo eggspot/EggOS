@@ -72,6 +72,9 @@ const BANNER_HEIGHT_PAGES: i32 = 48;
 const BANNER_LOCK: (i32, i32) = (16, 6);
 const BANNER_NAME: (i32, i32) = (40, 6);
 const BANNER_CONTACT_END: i32 = 16;
+const BANNER_LOCK_PAGES: (i32, i32) = (16, 16);
+const BANNER_CONTACT_GAP: i32 = 16;
+const BANNER_NAME_PAGES: (i32, i32) = (48, 16);
 const SEARCH: (i32, i32, i32, i32) = (8, 8, 160, 28);
 /// Below this window width the sidebar gives way to pages (docs/ux/settings-forms-v0.5.md 1):
 /// the sidebar and the narrowest pane the desktop layouts were drawn for.
@@ -863,6 +866,7 @@ struct Frame {
     pane_area: WidgetId,
     scroll: WidgetId,
     banner: WidgetId,
+    banner_lock: WidgetId,
     banner_name: WidgetId,
     banner_contact: WidgetId,
     bar: WidgetId,
@@ -1225,7 +1229,7 @@ impl SettingsWindow {
                 border_right: None,
             },
         );
-        build.add(
+        let banner_lock = build.add(
             Some(banner),
             Place::at(
                 BANNER_LOCK.0,
@@ -1312,6 +1316,7 @@ impl SettingsWindow {
             pane_area,
             scroll,
             banner,
+            banner_lock,
             banner_name,
             banner_contact,
             bar,
@@ -1987,6 +1992,8 @@ impl SettingsWindow {
         let frame = self.frame;
         let name = alloc::format!("Managed by {}", file.manager());
         self.tree.set_text(frame.banner_name, &name);
+        let owner = if file.text().is_some() { name.as_str() } else { "" };
+        self.tree.set_lock_owner(owner);
         let contact = file
             .text()
             .and_then(eggos_settings_file::policy::contact)
@@ -2147,6 +2154,9 @@ impl SettingsWindow {
                 }),
             ),
         );
+        let management = self.management_pane.reflow(&mut self.tree, content);
+        let management = if content.is_some() { management } else { PANE_HEIGHT };
+        self.set_pane_height(MANAGEMENT, management);
         let storage = self.storage.reflow(&mut self.tree, content);
         self.tree.set_place(
             self.widgets.panes[STORAGE],
@@ -2375,6 +2385,7 @@ impl SettingsWindow {
                 );
             }
         }
+        self.lay_out_banner();
         self.tree.set_shown(frame.banner, self.banner_height() > 0);
         let facts_page = self.shape == Shape::Pages && self.page == Page::Pane && wearable;
         self.tree.set_shown(frame.wearable_facts, facts_page);
@@ -2385,6 +2396,46 @@ impl SettingsWindow {
             self.tree.set_text(frame.wearable_facts, facts.as_str());
         }
         self.mark_rows();
+    }
+
+    fn lay_out_banner(&mut self) {
+        let frame = self.frame;
+        let pages = self.shape == Shape::Pages;
+        let (lock, name) = match pages {
+            true => (BANNER_LOCK_PAGES, BANNER_NAME_PAGES),
+            false => (BANNER_LOCK, BANNER_NAME),
+        };
+        let lock_size = Length::Px(eggos_toolkit::canvas::LOCK_SIZE);
+        self.tree.set_place(
+            frame.banner_lock,
+            Place::at(lock.0, lock.1, lock_size, lock_size),
+        );
+        self.tree.set_place(
+            frame.banner_name,
+            Place::at(name.0, name.1, Length::Content, Length::Content),
+        );
+        let has_contact = self
+            .tree
+            .text_of(frame.banner_contact)
+            .is_some_and(|contact| !contact.is_empty());
+        let fits = self.banner_contact_fits(name.0);
+        self.tree
+            .set_shown(frame.banner_contact, !pages && has_contact && fits);
+    }
+
+    fn banner_contact_fits(&self, name_x: i32) -> bool {
+        let frame = self.frame;
+        let Some(banner) = self.tree.rect(frame.banner) else {
+            return true;
+        };
+        let width = |id| {
+            self.tree
+                .text_of(id)
+                .map_or(0, eggos_toolkit::text::width)
+        };
+        let name_end = name_x + width(frame.banner_name);
+        let contact_start = banner.width - BANNER_CONTACT_END - width(frame.banner_contact);
+        contact_start - name_end >= BANNER_CONTACT_GAP
     }
 
     fn reflow_keyboard(&mut self, content: Option<i32>) {
@@ -3385,6 +3436,11 @@ impl SettingsWindow {
             Response::Chosen(id, pane) | Response::Opened(id, pane) if id == widgets.list => {
                 self.open_page(pane)
             }
+            Response::Opened(id, row) if id == self.management_pane.table() => {
+                let name = self.management_pane.pane_of_row(row)?;
+                let pane = PANES.iter().position(|each| *each == name)?;
+                self.open_pane(pane)
+            }
             Response::Activated(id) if id == self.frame.back => {
                 self.go_back();
                 None
@@ -3554,6 +3610,22 @@ mod tests {
         assert!(!window.banner_shown());
         let scroll = window.tree.rect(window.frame.scroll).unwrap();
         assert_eq!(scroll.y, area.y);
+    }
+
+    #[test]
+    fn enter_on_a_management_row_opens_the_pane_that_shows_its_setting() {
+        let mut window = SettingsWindow::new(Facts::example());
+        let file = crate::managed::PolicyFile::Trusted(String::from(
+            "policy.manager=Contoso IT\nappearance.theme=dark\ntime.zone=Europe/Paris\n",
+        ));
+        let _ = window.show_policy(file);
+        let table = window.management_pane().table();
+        assert_eq!(window.management_pane().pane_of_row(1), Some("Date & time"));
+        let _ = window.respond(Response::Opened(table, 1), 0);
+        assert_eq!(window.pane(), DATE_AND_TIME);
+        let _ = window.respond(Response::Opened(table, 0), 0);
+        assert_eq!(window.pane(), APPEARANCE);
+        assert_eq!(window.management_pane().pane_of_row(5), None);
     }
 
     #[test]
@@ -4299,6 +4371,27 @@ mod form_tests {
 mod reflow_tests {
     use super::*;
     use eggos_toolkit::geometry::Rect;
+
+    #[test]
+    fn on_a_phone_the_banner_drops_the_contact_and_management_fills_the_page() {
+        let mut window = SettingsWindow::new(Facts::example());
+        window.tree().resize(390, 752);
+        window.set_form_factor(SettingsForm::Phone, 390);
+        let file = crate::managed::PolicyFile::Trusted(String::from(
+            "policy.manager=Contoso IT\npolicy.contact=helpdesk@contoso.example\nshell.profile=linux\n",
+        ));
+        let _ = window.show_policy(file);
+        let _ = window.open_pane(APPEARANCE);
+        let frame = window.frame;
+        let banner = window.widgets().rect(frame.banner).unwrap();
+        let name = window.widgets().rect(frame.banner_name).unwrap();
+        assert_eq!((name.x - banner.x, name.y - banner.y), (48, 16));
+        assert!(!window.widgets().is_shown(frame.banner_contact));
+        let _ = window.open_pane(MANAGEMENT);
+        let pane = window.widgets().rect(window.widgets.panes[MANAGEMENT]).unwrap();
+        let table = window.widgets().rect(window.management_pane().table()).unwrap();
+        assert_eq!(table.width, pane.width - 32);
+    }
 
     #[test]
     fn the_keyboard_pane_folds_into_one_column_on_a_phone() {

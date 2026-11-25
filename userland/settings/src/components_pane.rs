@@ -121,6 +121,8 @@ pub struct ComponentsRead {
     pub failure: Option<(String, Failure)>,
     /// How updates are installed and who locked it, while `management` is installed (D662).
     pub update_policy: Option<eggos_components::state::UpdatePolicyRecord>,
+    /// How the last automatic update went, if one ran (D772).
+    pub automatic: Option<eggos_components::state::AutomaticOutcome>,
 }
 
 /// A job the pane asks the program to start as `component ...` outside its window (D300).
@@ -789,7 +791,47 @@ impl ComponentsPane {
     pub fn show_components(&mut self, tree: &mut WidgetTree<CAPACITY>, read: ComponentsRead) {
         self.read = read;
         self.follow_job();
+        self.note_automatic_failure();
         self.refresh(tree);
+    }
+
+    fn automatic_policy(&self) -> bool {
+        use eggos_components::state::UpdatePolicy;
+        self.read
+            .update_policy
+            .as_ref()
+            .is_some_and(|record| record.policy == UpdatePolicy::Automatic)
+    }
+
+    fn note_automatic_failure(&mut self) {
+        let failed = self.read.automatic.is_some_and(|outcome| outcome.failed);
+        if !self.automatic_policy() || !failed || !matches!(self.note, Note::Closed) {
+            return;
+        }
+        let reason = self.read.failure.as_ref().map(|(name, failure)| {
+            messages::update_failure(failure, &self.title_of(name)).0
+        });
+        self.note = Note::Band {
+            first: messages::automatic_update_failed(reason.as_deref()),
+            second: String::from(messages::AUTOMATIC_TRIES_AGAIN),
+        };
+    }
+
+    fn automatic_line(&self) -> Option<String> {
+        let outcome = self.read.automatic?;
+        let quiet = matches!(self.work, Work::Idle) && self.read.job.is_none();
+        let shown = self.automatic_policy()
+            && quiet
+            && !outcome.failed
+            && outcome.updated > 0
+            && self.rows_with_updates().is_empty();
+        shown.then(|| {
+            let when = messages::checked_when(
+                self.local(outcome.at),
+                self.read.now_s.map(|now| self.local(now)),
+            );
+            messages::updated_automatically(outcome.updated, &when)
+        })
     }
 
     fn follow_job(&mut self) {
@@ -1460,6 +1502,9 @@ impl ComponentsPane {
             UpdatePolicy::Automatic => {
                 tree.set_selected(widgets.daily, 1);
                 tree.set_enabled(widgets.daily, false);
+                if let Some(line) = self.automatic_line() {
+                    show_line(tree, widgets.updates_line, &line, Token::Text);
+                }
             }
             UpdatePolicy::Managed => {
                 tree.set_selected(widgets.daily, 0);

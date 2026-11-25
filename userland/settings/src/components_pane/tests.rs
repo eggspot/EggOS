@@ -751,3 +751,54 @@ fn install_updates_shows_with_management_and_a_lock_disables_it() {
     assert_eq!(window.widgets().text_of(ids.updates_line), Some("Managed by Contoso IT"));
     assert_eq!(window.widgets().selected(ids.policy), Some(2));
 }
+
+#[test]
+fn automatic_updates_say_what_they_updated_or_why_they_stopped() {
+    use eggos_components::state::{AutomaticOutcome, Checked, UpdatePolicy, UpdatePolicyRecord};
+    let at = 9 * 3600 + 16 * 60;
+    let mut updated = read(&["desktop", "builtin-apps"]);
+    updated.update_policy = Some(UpdatePolicyRecord {
+        policy: UpdatePolicy::Automatic,
+        locked_by: None,
+    });
+    updated.checked = Some(Checked {
+        at,
+        source: String::from("release"),
+        items: Vec::new(),
+    });
+    updated.now_s = Some(at + 60);
+    updated.automatic = Some(AutomaticOutcome {
+        at,
+        updated: 2,
+        failed: false,
+    });
+    let failed_read = {
+        let mut failed = updated.clone();
+        failed.automatic = Some(AutomaticOutcome {
+            at,
+            updated: 0,
+            failed: true,
+        });
+        failed.failure = Some((
+            String::from("desktop"),
+            Failure::NoSpace { needed: 0, free: 0 },
+        ));
+        failed
+    };
+    let window = opened(updated);
+    let ids = widgets(&window);
+    assert_eq!(
+        window.widgets().text_of(ids.updates_line),
+        Some("Updated 2 components \u{b7} today at 09:16")
+    );
+    let window = opened(failed_read);
+    let ids = widgets(&window);
+    assert_eq!(
+        window.widgets().text_of(ids.first),
+        Some("Could not update automatically: not enough space.")
+    );
+    assert_eq!(
+        window.widgets().text_of(ids.second),
+        Some("It tries again with the next check.")
+    );
+}

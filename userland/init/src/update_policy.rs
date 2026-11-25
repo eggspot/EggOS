@@ -7,8 +7,9 @@
 /// The record's path, with its terminating NUL.
 pub const PATH: &[u8] = b"/var/lib/eggos/update-policy\0";
 
-/// The component manager's arguments that install every update the store has.
-pub const INSTALL_ARGUMENTS: [&[u8]; 1] = [b"update\0"];
+/// The component manager's arguments that install every update the store has, recording how
+/// it went for the Components pane (D772).
+pub const INSTALL_ARGUMENTS: [&[u8]; 2] = [b"update\0", b"--automatic\0"];
 
 /// What one turn of the daily loop does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

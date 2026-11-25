@@ -18,7 +18,7 @@ use eggos_mcp::json::JsonWriter;
 pub const USAGE: &str = "usage: component list [--json] [--download]\n       component cancel\n       component install [--dry-run] \
                          [--json] <name>\n       component remove [--yes] [--dry-run] [--json] \
                          <name>\n       component edition [--dry-run] [--exact [--yes]] [<name>]\n       \
-                         component update [--dry-run] [--json] [--as-manager] [<name>]\n       \
+                         component update [--dry-run] [--json] [--as-manager] [--automatic] [<name>]\n       \
                          component update --daily on|off\n";
 /// The exit status of a command line written wrongly.
 pub const USAGE_STATUS: i32 = 2;
@@ -90,6 +90,7 @@ pub enum Command<'a> {
         json: bool,
         daily: Option<bool>,
         as_manager: bool,
+        automatic: bool,
     },
     /// `component remove`.
     Remove {
@@ -105,6 +106,7 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
     let (&verb, rest) = arguments.split_first()?;
     let (mut json, mut dry_run, mut yes, mut name) = (false, false, false, None);
     let (mut download, mut daily, mut as_manager, mut exact) = (false, None, false, false);
+    let mut automatic = false;
     let mut operands_only = false;
     let mut words = rest.iter();
     while let Some(&word) = words.next() {
@@ -118,6 +120,7 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
                 });
             }
             "--as-manager" if !operands_only && verb == "update" => as_manager = true,
+            "--automatic" if !operands_only && verb == "update" => automatic = true,
             "--exact" if !operands_only && verb == "edition" => exact = true,
             "--json" if !operands_only => json = true,
             "--dry-run" if !operands_only && verb != "list" => dry_run = true,
@@ -138,6 +141,7 @@ pub fn parse<'a>(arguments: &[&'a str]) -> Option<Command<'a>> {
             json,
             daily,
             as_manager,
+            automatic,
         }),
         "edition" if !json && (name.is_some() || !exact) => Some(Command::Edition {
             name,
@@ -279,16 +283,24 @@ pub fn run<F: Files, C: Console>(
             name,
             dry_run,
             json,
+            automatic,
             ..
-        } => update(
-            files,
-            &mut out,
-            store.as_ref(),
-            context,
-            name,
-            dry_run,
-            json,
-        ),
+        } => {
+            let now_s = context.now_s;
+            let status = update(
+                files,
+                &mut out,
+                store.as_ref(),
+                context,
+                name,
+                dry_run,
+                json,
+            );
+            if automatic && !dry_run {
+                record_automatic_outcome(files, now_s, status);
+            }
+            status
+        }
         Command::Install {
             name,
             dry_run,
@@ -692,6 +704,22 @@ fn update<F: Files, C: Console>(
         )),
     }
     0
+}
+
+fn record_automatic_outcome<F: Files>(files: &mut F, now_s: u64, status: i32) {
+    let failed = status != 0;
+    let updated = match crate::state::last_check(files) {
+        Some(checked) if !failed => checked.items.len(),
+        _ => 0,
+    };
+    let _ = crate::state::record_automatic(
+        files,
+        &crate::state::AutomaticOutcome {
+            at: now_s,
+            updated,
+            failed,
+        },
+    );
 }
 
 fn upstream_store<F: Files>(

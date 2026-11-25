@@ -22,6 +22,9 @@ pub const JOB_PATH: &str = "/run/eggos/component-job";
 pub const CANCEL_PATH: &str = "/run/eggos/component-cancel";
 /// Why the last update job failed, for the front-ends that see only its exit status (D421).
 pub const FAILURE_PATH: &str = "/run/eggos/component-failure";
+/// How the last automatic update went (D772): `at=<seconds>`, `updated=<count>`,
+/// `failed=yes|no`.
+pub const AUTOMATIC_PATH: &str = "/var/lib/eggos/updates-automatic";
 const LARGEST: usize = 8192;
 
 /// One component the check found an update for.
@@ -246,6 +249,51 @@ pub fn update_policy<F: Files>(files: &mut F) -> UpdatePolicyRecord {
 /// Records the update policy.
 pub fn set_update_policy<F: Files>(files: &mut F, record: &UpdatePolicyRecord) -> bool {
     write_text(files, UPDATE_POLICY_PATH, &record.text())
+}
+
+/// How the last automatic update went: when it ended, how many components it updated, and
+/// whether it stopped at a failure (whose reason is the failure record).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AutomaticOutcome {
+    pub at: u64,
+    pub updated: usize,
+    pub failed: bool,
+}
+
+impl AutomaticOutcome {
+    /// The file's text.
+    pub fn text(&self) -> String {
+        let failed = if self.failed { "yes" } else { "no" };
+        format!("at={}\nupdated={}\nfailed={failed}\n", self.at, self.updated)
+    }
+
+    /// The outcome `text` holds, if it names when it ended.
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut outcome = Self::default();
+        let mut dated = false;
+        for line in text.lines() {
+            match line.split_once('=') {
+                Some(("at", at)) => {
+                    outcome.at = at.trim().parse().ok()?;
+                    dated = true;
+                }
+                Some(("updated", count)) => outcome.updated = count.trim().parse().ok()?,
+                Some(("failed", failed)) => outcome.failed = failed.trim() == "yes",
+                _ => {}
+            }
+        }
+        dated.then_some(outcome)
+    }
+}
+
+/// Records how an automatic update went.
+pub fn record_automatic<F: Files>(files: &mut F, outcome: &AutomaticOutcome) -> bool {
+    write_text(files, AUTOMATIC_PATH, &outcome.text())
+}
+
+/// How the last automatic update went, if one ran.
+pub fn last_automatic<F: Files>(files: &mut F) -> Option<AutomaticOutcome> {
+    AutomaticOutcome::parse(&read_text(files, AUTOMATIC_PATH)?)
 }
 
 /// Records `job`'s progress.

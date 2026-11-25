@@ -9,6 +9,7 @@ use crate::managed::PolicyFile;
 use crate::settings_window::CAPACITY;
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use eggos_settings_file::policy;
 use eggos_toolkit::cell_store::{CellSlot, CellStore, data_of};
 use eggos_toolkit::text::Text;
@@ -36,6 +37,7 @@ const FILE_TOP: i32 = 104;
 const TABLE: (i32, i32, i32, i32) = (16, 132, 432, 148);
 const AGENTS_TOP: i32 = 288;
 const STATUS_TOP: i32 = 308;
+const LINE_HEIGHT: i32 = 20;
 const CELL_COLUMNS: usize = 3;
 const SLOTS: usize = if cfg!(test) { 64 } else { 2 };
 
@@ -102,6 +104,7 @@ pub struct ManagementPane {
     agents: WidgetId,
     status: WidgetId,
     slot: Option<PolicySlot>,
+    row_panes: Vec<&'static str>,
 }
 
 impl ManagementPane {
@@ -132,7 +135,31 @@ impl ManagementPane {
             agents,
             status,
             slot: None,
+            row_panes: Vec::new(),
         }
+    }
+
+    /// Places the pane for a page `content` wide (editions-policy v0.1 section 10: the three
+    /// lines, the table the page's width, then the two lines), or the desktop's places; the
+    /// pane's height.
+    pub fn reflow(&self, tree: &mut WidgetTree<CAPACITY>, content: Option<i32>) -> i32 {
+        let width = content.map_or(Length::Px(TABLE.2), Length::Px);
+        tree.set_place(
+            self.table,
+            Place::at(TABLE.0, TABLE.1, width, Length::Px(TABLE.3)),
+        );
+        let line = |top: i32| Place::at(PADDING, top, Length::Content, Length::Content);
+        tree.set_place(self.agents, line(AGENTS_TOP));
+        tree.set_place(self.status, line(STATUS_TOP));
+        STATUS_TOP + LINE_HEIGHT + PADDING
+    }
+
+    /// The pane that shows the setting on row `row` of the table, if one does.
+    pub fn pane_of_row(&self, row: usize) -> Option<&'static str> {
+        self.row_panes
+            .get(row)
+            .copied()
+            .filter(|pane| !pane.is_empty())
     }
 
     /// The table of locked settings.
@@ -177,7 +204,9 @@ impl ManagementPane {
         tree.set_shown(self.agents, agents.is_some());
         let mut rows = 0;
         let mut pending = false;
+        self.row_panes.clear();
         for (key, value) in file.locks().into_iter().take(MAX_ROWS) {
+            self.row_panes.push(pane_of(key));
             let running = Key::named(key).map(|own| own.value(facts));
             let differs = running.is_some_and(|running| running.as_str() != value);
             pending |= differs;

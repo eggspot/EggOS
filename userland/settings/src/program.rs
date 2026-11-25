@@ -521,6 +521,7 @@ fn components_read() -> ComponentsRead {
         network_up: network_adapter()
             .is_some_and(|adapter| adapter.link_up && adapter.subnet.is_some())
             || wifi_status().joined.is_some(),
+        automatic: component_state::last_automatic(&mut LinuxFiles::new()),
         update_policy,
     }
 }

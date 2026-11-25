@@ -3,6 +3,8 @@
 use super::{Kind, WidgetId, WidgetTree};
 use crate::canvas::Canvas;
 use crate::geometry::Rect;
+use crate::text::Text;
+use crate::tooltip::{Tooltip, tooltip_rect};
 use crate::widget::{
     FormFactor, LONG_PRESS_MS, TOOLTIP_DELAY_MS, TOOLTIP_HOP_MS, TOOLTIP_TOUCH_MS,
 };
@@ -48,6 +50,33 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         })
     }
 
+    fn lock_tip(&self, owner: WidgetId) -> Option<Rect> {
+        if self.lock_owner.is_empty() || !self.is_locked(owner) {
+            return None;
+        }
+        let tooltip = Tooltip {
+            text: self.lock_owner,
+            shortcut: Text::new(),
+        };
+        Some(tooltip_rect(&tooltip, self.rect(owner)?, self.size))
+    }
+
+    fn has_tip(&self, owner: WidgetId) -> bool {
+        self.lock_tip(owner).is_some() || self.tooltip_of(owner).is_some()
+    }
+
+    fn locked_at(&self, x: i32, y: i32) -> Option<WidgetId> {
+        if self.lock_owner.is_empty() {
+            return None;
+        }
+        self.ids().rev().find(|&id| {
+            self.is_locked(id)
+                && self.is_shown(id)
+                && (self.rect(id).is_some_and(|rect| rect.contains(x, y))
+                    || self.lock_cell(id).is_some_and(|cell| cell.contains(x, y)))
+        })
+    }
+
     fn tooltip_blocked(&self) -> bool {
         self.popup.is_some()
             || self.menu_open()
@@ -58,6 +87,12 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     }
 
     fn damage_tooltip(&mut self) {
+        if let Some(owner) = self.tip.owner
+            && let Some(rect) = self.lock_tip(owner)
+        {
+            self.damage.add(rect);
+            return;
+        }
         if let Some(owner) = self.tip.owner
             && let Some(tooltip) = self.tooltip_of(owner)
             && let Some(rect) = self.rect(tooltip)
@@ -123,9 +158,13 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
     /// The pointer moved: the widget under it with a tooltip becomes the owner.
     pub(super) fn tooltip_hover(&mut self, now_ms: u32) {
         let hovered = self
-            .hover
-            .map(|target| target.widget)
-            .filter(|&widget| self.tooltip_of(widget).is_some());
+            .pointer_at
+            .and_then(|(x, y)| self.locked_at(x, y))
+            .or_else(|| {
+                self.hover
+                    .map(|target| target.widget)
+                    .filter(|&widget| self.has_tip(widget))
+            });
         if hovered == self.tip.hovered {
             return;
         }
@@ -138,7 +177,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     /// The keyboard focus moved to `id` with the window focused.
     pub(super) fn tooltip_focus(&mut self, id: WidgetId, now_ms: u32) {
-        let owner = self.tooltip_of(id).map(|_| id);
+        let owner = self.has_tip(id).then_some(id);
         self.set_tooltip_owner(owner, now_ms);
     }
 
@@ -155,7 +194,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     /// A press on `id` on a touch screen: held still for a long-press, it shows `id`'s tooltip.
     pub(super) fn tooltip_long_press(&mut self, id: WidgetId, now_ms: u32) {
-        if self.tooltip_of(id).is_some() {
+        if self.has_tip(id) {
             self.tip.long_press = Some((id, now_ms));
         }
     }
@@ -205,14 +244,32 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         }
     }
 
-    /// The tooltip showing now, if any: its widget.
+    /// The tooltip showing now, if any: its widget (none for a lock's).
     pub fn shown_tooltip(&self) -> Option<WidgetId> {
         let owner = self.tip.owner.filter(|_| self.tip.shown)?;
+        if self.lock_tip(owner).is_some() {
+            return None;
+        }
         self.tooltip_of(owner)
+    }
+
+    /// The locked widget whose owner tooltip shows now, if any.
+    pub fn shown_lock_tip(&self) -> Option<WidgetId> {
+        let owner = self.tip.owner.filter(|_| self.tip.shown)?;
+        self.lock_tip(owner).map(|_| owner)
     }
 
     pub(super) fn paint_tooltip(&self, canvas: &mut Canvas<'_>, clip: Rect) {
         if self.tooltip_blocked() {
+            return;
+        }
+        let window = Rect::new(0, 0, self.size.0, self.size.1);
+        if let Some(owner) = self.shown_lock_tip()
+            && let Some(rect) = self.lock_tip(owner)
+        {
+            let previous = canvas.narrow(rect.intersection(&window).intersection(&clip));
+            crate::tooltip::paint_tile(canvas, rect, self.lock_owner.as_str(), "");
+            canvas.restore(previous);
             return;
         }
         let Some(id) = self.shown_tooltip() else {
@@ -221,7 +278,6 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
         let (Some(Kind::Tooltip(tooltip)), Some(rect)) = (self.kind(id), self.rect(id)) else {
             return;
         };
-        let window = Rect::new(0, 0, self.size.0, self.size.1);
         let previous = canvas.narrow(rect.intersection(&window).intersection(&clip));
         crate::tooltip::paint_tile(
             canvas,

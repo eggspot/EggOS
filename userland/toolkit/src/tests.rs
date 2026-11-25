@@ -1269,3 +1269,31 @@ fn a_locked_widget_is_disabled_and_draws_its_lock_left_of_it_or_after_it() {
     tree.set_locked(roomy, false);
     assert!(tree.is_enabled(roomy) && !tree.is_locked(roomy));
 }
+
+#[test]
+fn resting_on_a_locked_widget_or_its_lock_shows_who_locks_it() {
+    let mut tree = WidgetTree::<4>::new();
+    let apply = tree
+        .add(
+            None,
+            Place::at(40, 10, Length::Px(100), Length::Px(28)),
+            Kind::button("Apply", false),
+        )
+        .unwrap();
+    tree.resize(300, 200);
+    tree.set_locked(apply, true);
+    tree.handle(Input::PointerMove { x: 20, y: 20 }, 0);
+    tree.tick(crate::widget::TOOLTIP_DELAY_MS);
+    assert_eq!(tree.shown_lock_tip(), None);
+    tree.set_lock_owner("Managed by Contoso IT");
+    tree.handle(Input::PointerMove { x: 21, y: 20 }, 1000);
+    tree.handle(Input::PointerMove { x: 60, y: 20 }, 1010);
+    tree.tick(1010 + crate::widget::TOOLTIP_DELAY_MS);
+    assert_eq!(tree.shown_lock_tip(), Some(apply));
+    assert_eq!(tree.shown_tooltip(), None);
+    tree.handle(Input::PointerLeave, 2000);
+    assert_eq!(tree.shown_lock_tip(), None);
+    tree.handle(Input::PointerMove { x: 20, y: 20 }, 3000);
+    tree.tick(3000 + crate::widget::TOOLTIP_DELAY_MS);
+    assert_eq!(tree.shown_lock_tip(), Some(apply));
+}

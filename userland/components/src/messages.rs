@@ -487,6 +487,29 @@ pub fn checked_when(at: u64, now: Option<u64>) -> String {
     }
 }
 
+/// `Updated 2 components · today at 09:16`, after an automatic update (D772).
+pub fn updated_automatically(count: usize, when: &str) -> String {
+    let noun = if count == 1 { "component" } else { "components" };
+    format!("Updated {count} {noun} \u{b7} {when}")
+}
+
+/// `Could not update automatically: not enough space.`, from the failure's own sentence.
+pub fn automatic_update_failed(reason: Option<&str>) -> String {
+    let Some(reason) = reason.map(|reason| reason.trim_end_matches('.')) else {
+        return String::from("Could not update automatically.");
+    };
+    let mut letters = reason.chars();
+    let first = letters.next().map(|letter| letter.to_ascii_lowercase());
+    let rest = letters.as_str();
+    match first {
+        Some(first) => format!("Could not update automatically: {first}{rest}."),
+        None => String::from("Could not update automatically."),
+    }
+}
+
+/// The line under a failed automatic update's note.
+pub const AUTOMATIC_TRIES_AGAIN: &str = "It tries again with the next check.";
+
 /// `Up to date · checked today at 09:14`.
 pub fn up_to_date(when: &str) -> String {
     format!("Up to date \u{b7} checked {when}")

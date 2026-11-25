@@ -211,6 +211,8 @@ pub struct WidgetTree<const N: usize, const A: usize = 0> {
     menu_pressed: bool,
     alt_alone: bool,
     tip: tooltips::Tip,
+    lock_owner: Text<48>,
+    pointer_at: Option<(i32, i32)>,
     column: Option<tables::ColumnDrag>,
     header_move: Option<tables::HeaderMove>,
     submenu_path: [usize; crate::menu::DEPTH - 1],
@@ -281,6 +283,8 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             menu_pressed: false,
             alt_alone: false,
             tip: tooltips::Tip::NONE,
+            lock_owner: Text::new(),
+            pointer_at: None,
             column: None,
             header_move: None,
             submenu_path: [0; crate::menu::DEPTH - 1],
@@ -680,6 +684,13 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             self.damage.add(cell);
         }
         self.set_enabled(id, !locked);
+    }
+
+    /// Who locks the locked widgets (`Managed by Contoso IT`): resting on a locked widget or
+    /// its lock shows it as their tooltip; empty shows none (editions-policy v0.1 section 5.2).
+    pub fn set_lock_owner(&mut self, owner: &str) {
+        self.hide_tooltip();
+        self.lock_owner = Text::from(owner);
     }
 
     /// Whether widget `id` is locked.
@@ -1553,6 +1564,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             Input::Drop { x, y, kind, serial } => self.foreign_dropped(x, y, kind, serial),
             Input::DragEnded { landed } => Response::CarriedEnded { landed },
             Input::PointerMove { x, y } => {
+                self.pointer_at = Some((x, y));
                 if let Some(column) = self.column {
                     return self.column_moved(column, x);
                 }
@@ -1587,6 +1599,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 Response::Nothing
             }
             Input::PointerLeave => {
+                self.pointer_at = None;
                 self.set_hover(None);
                 self.tooltip_hover(time_ms);
                 if let Some(pressed) = self.pressed
