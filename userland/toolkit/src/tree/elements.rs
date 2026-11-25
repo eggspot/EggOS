@@ -339,6 +339,10 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                     role: Role::Graphic,
                     ..here
                 },
+                Kind::Row { .. } => Element {
+                    role: Role::ListItem,
+                    ..here
+                },
                 Kind::Tooltip(tooltip) => Element {
                     role: Role::Tooltip,
                     ..here
@@ -797,7 +801,9 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
                 self.set_focus(Some(id), now_ms);
                 (Outcome::Done, Response::Nothing)
             }
-            (Action::Invoke, Kind::Button { .. }, None) => (Outcome::Done, Response::Activated(id)),
+            (Action::Invoke, Kind::Button { .. } | Kind::Row { .. }, None) => {
+                (Outcome::Done, Response::Activated(id))
+            }
             (Action::Invoke | Action::Select, Kind::Checkbox { .. }, None) => {
                 (Outcome::Done, self.activate(id, 0))
             }

@@ -382,6 +382,10 @@ pub enum Kind {
     Dropdown(Dropdown),
     /// Something the program draws itself, with a word of its own data.
     Custom { painter: Painter, data: u32 },
+    /// A list row the program lays out and draws itself (D767): a Tab stop, activated by a
+    /// click, Enter or Space, with the toolkit's hover, pressed and focused looks under the
+    /// program's drawing; the row's own widgets sit over it as its siblings.
+    Row { painter: Painter, data: u32 },
     /// The tile naming its parent widget (docs/ux/toolkit-v0.5.md section 2).
     Tooltip(Tooltip),
     /// A window's menu bar (docs/ux/toolkit-v0.5.md section 3).
@@ -652,6 +656,7 @@ impl Kind {
                 | Self::Table(_)
                 | Self::Outline(_)
                 | Self::TextArea(_)
+                | Self::Row { .. }
         )
     }
 
@@ -749,7 +754,8 @@ impl Kind {
             Self::Panel { .. }
             | Self::Column { .. }
             | Self::ScrollView { .. }
-            | Self::Custom { .. } => (0, 0),
+            | Self::Custom { .. }
+            | Self::Row { .. } => (0, 0),
         }
     }
 }
@@ -1513,6 +1519,26 @@ fn paint_mark(
     );
 }
 
+fn paint_row(canvas: &mut Canvas<'_>, rect: Rect, look: Look, painter: Painter, data: u32) {
+    let palette = canvas.palette();
+    let fill = if look.enabled && look.pressed.is_some() {
+        Some(palette.button_pressed)
+    } else if look.focused {
+        Some(palette.selection)
+    } else if look.enabled && look.hovered.is_some() {
+        Some(palette.menu_hover)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        canvas.fill(rect, fill);
+    }
+    painter(canvas, rect, data);
+    if look.focused {
+        focus_ring(canvas, rect, 0);
+    }
+}
+
 fn paint_button(canvas: &mut Canvas<'_>, rect: Rect, words: &str, primary: bool, look: Look) {
     let palette = canvas.palette();
     let hovered = look.enabled && look.hovered.is_some();
@@ -2114,6 +2140,7 @@ pub fn paint(canvas: &mut Canvas<'_>, kind: &Kind, rect: Rect, look: Look) {
         Kind::Slider(slider) => paint_slider(canvas, slider, rect, look),
         Kind::Dropdown(dropdown) => paint_dropdown(canvas, dropdown, rect, look),
         Kind::Custom { painter, data } => painter(canvas, rect, *data),
+        Kind::Row { painter, data } => paint_row(canvas, rect, look, *painter, *data),
         Kind::Tooltip(_) | Kind::TextArea(_) => {}
         Kind::MenuBar(bar) => bar.paint(canvas, rect, look),
         Kind::MenuButton(button) => paint_menu_button(canvas, button, rect, look),

@@ -36,6 +36,15 @@ mod image_fit;
     )),
     allow(dead_code)
 )]
+mod list_rows;
+#[cfg(any(test, eggos_user))]
+#[cfg_attr(
+    not(all(
+        eggos_user,
+        any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+    )),
+    allow(dead_code)
+)]
 mod framework;
 #[cfg(all(
     eggos_user,

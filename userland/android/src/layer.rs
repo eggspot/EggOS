@@ -12,6 +12,7 @@
 //! texts they changed (D500).
 
 use crate::collector;
+use crate::list_rows;
 use crate::framework::{
     self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, IMAGE_VIEW, LINEAR_LAYOUT, LIST_VIEW, Native,
     Object, RECYCLER_VIEW, STRING_CLASS, TEXT_VIEWS, Target, VIEW_HOLDER, View,
@@ -58,7 +59,6 @@ const BUNDLE_RESOURCES_NAME: &[u8] = b"resources.pb";
 const MOST_WIDGETS: usize = 64;
 const ROW: i32 = 44;
 const COLUMN: i32 = 160;
-const LIST_ROW: i32 = 32;
 const DEEPEST_VIEW: usize = 32;
 const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
@@ -67,6 +67,9 @@ const MOST_FRAMES: usize = 64;
 const IME_ACTION_MASK: u32 = 0xff;
 const BITMAP_IMAGE: u32 = u32::MAX;
 const CENTRED: i32 = 500;
+const DIVIDER: u32 = 1;
+const MOST_TYPED_ROWS: usize = 10_000;
+const SPAN_FIELD: u32 = u32::MAX - 2;
 const GLYPH_WIDTH: i32 = 8;
 const PLATFORM_VERSION: u16 = 34;
 const MOST_CAUSES: usize = 8;
@@ -102,6 +105,7 @@ struct State {
     generation: u64,
     request: Option<(u32, u64)>,
     result: (u32, u64),
+    lists: BTreeMap<u64, ListRows>,
 }
 
 /// An activity under the one shown (D765): it, its content, and what it asked the one
@@ -375,7 +379,14 @@ fn collect() {
         .chain(current.statics.values().copied())
         .chain(own)
         .chain(below)
-        .chain(current.fragments.iter().copied());
+        .chain(current.fragments.iter().copied())
+        .chain(current.lists.keys().copied())
+        .chain(current.lists.values().flat_map(|rows| {
+            rows.made
+                .values()
+                .map(|&(_, holder)| holder)
+                .chain(rows.pools.views())
+        }));
     let marked = collector::trace(roots, &current.heap.objects, references_of);
     for address in collector::unmarked(&current.heap.objects, &marked) {
         current.heap.objects.remove(&address);
@@ -1511,70 +1522,235 @@ extern "C" fn set_on_item_click_listener(words: *const u64, _: *const usize) -> 
     0
 }
 
-fn recycler_row(list: u64, adapter: u64, position: usize) -> Option<u64> {
-    let class = object(adapter)?.class.clone();
-    let create = compiled_method(&class, "onCreateViewHolder")?;
-    let bind = compiled_method(&class, "onBindViewHolder")?;
-    let holder = call_at(create, &[adapter, list, 0]);
-    if failed() {
-        return None;
+/// An Android list's rows as the layer keeps them (D767): the scroll offset, the heights
+/// measured, the rows made (their view type and holder or row view) and the pools.
+#[derive(Debug, Default)]
+struct ListRows {
+    offset: i32,
+    heights: list_rows::Heights,
+    made: BTreeMap<usize, (u32, u64)>,
+    pools: list_rows::Pools,
+}
+
+fn adapter_of(list: u64) -> u64 {
+    object(list).map_or(0, |list| list.reference)
+}
+
+fn is_recycler(list: u64) -> bool {
+    object(list).is_some_and(|shown| shown.class == RECYCLER_VIEW)
+}
+
+fn adapter_call(list: u64, name: &str, words: &[u64]) -> Option<u64> {
+    let class = object(adapter_of(list))?.class.clone();
+    let address = compiled_method(&class, name)?;
+    let result = call_at(address, words);
+    (!failed()).then_some(result)
+}
+
+fn list_count(list: u64) -> usize {
+    let adapter = adapter_of(list);
+    let name = match is_recycler(list) {
+        true => "getItemCount",
+        false => "getCount",
+    };
+    if let Some(count) = adapter_call(list, name, &[adapter]) {
+        return count as u32 as usize;
     }
-    call_at(bind, &[adapter, holder, position as u64]);
-    if failed() {
-        return None;
+    let items = object(adapter).map_or(0, |adapter| adapter.reference);
+    object(items)
+        .and_then(|items| items.elements.as_ref())
+        .map_or(0, Vec::len)
+}
+
+fn view_type(list: u64, position: usize) -> u32 {
+    adapter_call(list, "getItemViewType", &[adapter_of(list), position as u64])
+        .map_or(0, |kind| kind as u32)
+}
+
+/// Makes or rebinds the row at `position` (D767): a `RecyclerView` adapter's holder
+/// (`onCreateViewHolder` only when no pooled one is given, then `onBindViewHolder`), a
+/// `ListView` adapter's `getView` with the pooled view as `convertView`, or the layer's own
+/// one-text row for an `ArrayAdapter`'s item.
+fn make_row(list: u64, position: usize, kind: u32, pooled: Option<u64>) -> Option<u64> {
+    let adapter = adapter_of(list);
+    if is_recycler(list) {
+        let holder = match pooled {
+            Some(holder) => holder,
+            None => adapter_call(list, "onCreateViewHolder", &[adapter, list, u64::from(kind)])?,
+        };
+        adapter_call(list, "onBindViewHolder", &[adapter, holder, position as u64])?;
+        return Some(holder);
+    }
+    let convert = pooled.unwrap_or(0);
+    if let Some(view) = adapter_call(list, "getView", &[adapter, position as u64, convert, list]) {
+        return Some(view);
+    }
+    let items = object(adapter).map_or(0, |adapter| adapter.reference);
+    let item = object(items)?.elements.as_ref()?.get(position).copied()?;
+    let text = object(item)
+        .map(|item| item.text.clone().unwrap_or_else(|| item.class.clone()))
+        .unwrap_or_else(|| String::from("null"));
+    let row = match pooled {
+        Some(row) => row,
+        None => new_object(Object {
+            class: String::from(framework::TEXT_VIEW),
+            view: Some(View::default()),
+            ..Object::default()
+        }),
+    };
+    object(row)?.text = Some(text);
+    Some(row)
+}
+
+fn row_view(list: u64, holder: u64) -> Option<u64> {
+    if !is_recycler(list) {
+        return Some(holder);
     }
     let field = state().dex.field_named(VIEW_HOLDER, "itemView")?;
     object(holder)?.fields.get(&field).copied()
 }
 
-fn recycler_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
-    let class = object(adapter)?.class.clone();
-    let count = call_at(compiled_method(&class, "getItemCount")?, &[adapter]) as u32 as usize;
-    let rows = (0..count.min(eggos_toolkit::widget::MAX_ROWS))
-        .map(|position| {
-            recycler_row(list, adapter, position)
-                .and_then(|row| first_text(row, 0))
-                .unwrap_or_default()
-        })
-        .collect();
-    Some(rows)
+fn list_span(list: u64) -> usize {
+    object(list)
+        .and_then(|shown| shown.view.as_ref())
+        .map_or(1, |state| state.span.max(1) as usize)
 }
 
-fn list_items(view: u64) -> Vec<String> {
-    let adapter = object(view).map_or(0, |view| view.reference);
-    let recycler = object(view).is_some_and(|view| view.class == RECYCLER_VIEW);
-    if recycler {
-        return recycler_rows(view, adapter).unwrap_or_default();
+fn list_divider(list: u64) -> bool {
+    object(list).is_some_and(|shown| {
+        shown.class == LIST_VIEW || shown.view.as_ref().is_some_and(|state| state.divider)
+    })
+}
+
+extern "C" fn grid_init(words: *const u64, _: *const usize) -> u64 {
+    let [manager, _, span] = arguments::<3>(words);
+    if let Some(manager) = object(manager) {
+        manager.fields.insert(SPAN_FIELD, span.max(1));
     }
-    if let Some(rows) = adapter_rows(view, adapter) {
-        return rows;
+    0
+}
+
+extern "C" fn set_layout_manager(words: *const u64, _: *const usize) -> u64 {
+    let [list, manager] = arguments::<2>(words);
+    let span = object(manager)
+        .and_then(|manager| manager.fields.get(&SPAN_FIELD).copied())
+        .unwrap_or(1);
+    if let Some(state) = object(list).and_then(|list| list.view.as_mut()) {
+        state.span = span as u32;
     }
-    let items = object(adapter).map_or(0, |adapter| adapter.reference);
-    let elements = object(items)
-        .and_then(|items| items.elements.clone())
+    state().generation += 1;
+    0
+}
+
+extern "C" fn add_item_decoration(words: *const u64, _: *const usize) -> u64 {
+    let [list, decoration] = arguments::<2>(words);
+    let divider = object(decoration)
+        .is_some_and(|decoration| decoration.class == framework::DIVIDER_DECORATION);
+    if let Some(state) = object(list).and_then(|list| list.view.as_mut()) {
+        state.divider |= divider;
+    }
+    state().generation += 1;
+    0
+}
+
+/// `notifyDataSetChanged` and its kin (D767): every list showing the adapter makes its rows
+/// again from the data.
+extern "C" fn notify_changed(words: *const u64, _: *const usize) -> u64 {
+    let [adapter] = arguments::<1>(words);
+    let shown: Vec<u64> = state()
+        .lists
+        .keys()
+        .copied()
+        .filter(|&list| adapter_of(list) == adapter)
+        .collect();
+    for list in shown {
+        if let Some(rows) = state().lists.get_mut(&list) {
+            let made = core::mem::take(&mut rows.made);
+            for (kind, holder) in made.into_values() {
+                rows.pools.give(kind, holder);
+            }
+            rows.heights.forget_rows();
+        }
+    }
+    state().generation += 1;
+    0
+}
+
+/// Lays out list `list` for a view `height` tall (D767): the rows that leave the made range
+/// go to their type's pool, the rows that enter it are made or rebound, each measured; the
+/// cells' rects and the range made answer.
+fn lay_out_rows(
+    list: u64,
+    width: i32,
+    height: i32,
+) -> (Vec<(i32, i32, i32, i32)>, core::ops::Range<usize>) {
+    let count = list_count(list);
+    let span = list_span(list);
+    let rows = state().lists.entry(list).or_default();
+    let offset = rows.offset;
+    let kinds: Vec<u32> = (0..count.min(MOST_TYPED_ROWS))
+        .map(|position| view_type(list, position))
+        .collect();
+    let kind_of = |position: usize| kinds.get(position).copied().unwrap_or(0);
+    let heights_of = |list: u64, position: usize| {
+        state()
+            .lists
+            .get(&list)
+            .map_or(list_rows::LIST_ROW_MIN, |rows| rows.heights.of(position, kind_of(position)))
+    };
+    let cells = list_rows::cells(count, span, width, 0, |position| heights_of(list, position));
+    let range = list_rows::made_range(&cells, span, offset, height);
+    let leaving: Vec<(usize, (u32, u64))> = state()
+        .lists
+        .get(&list)
+        .map(|rows| {
+            rows.made
+                .iter()
+                .filter(|(position, _)| !range.contains(position))
+                .map(|(&position, &made)| (position, made))
+                .collect()
+        })
         .unwrap_or_default();
-    elements
-        .into_iter()
-        .map(|item| {
-            object(item)
-                .map(|item| item.text.clone().unwrap_or_else(|| item.class.clone()))
-                .unwrap_or_else(|| String::from("null"))
-        })
-        .collect()
+    for (position, (kind, holder)) in leaving {
+        if let Some(rows) = state().lists.get_mut(&list) {
+            rows.made.remove(&position);
+            rows.pools.give(kind, holder);
+        }
+    }
+    for position in range.clone() {
+        if state().lists.get(&list).is_some_and(|rows| rows.made.contains_key(&position)) {
+            continue;
+        }
+        let kind = kind_of(position);
+        let pooled = state().lists.get_mut(&list).and_then(|rows| rows.pools.take(kind));
+        let Some(holder) = make_row(list, position, kind, pooled) else {
+            break;
+        };
+        let measured = row_view(list, holder).map_or(0, |row| measure(row, 0).1);
+        if let Some(rows) = state().lists.get_mut(&list) {
+            rows.made.insert(position, (kind, holder));
+            rows.heights.measured(position, kind, measured);
+        }
+    }
+    let cells = list_rows::cells(count, span, width, 0, |position| heights_of(list, position));
+    (cells, range)
 }
 
-fn leaked_items(items: Vec<String>) -> &'static [&'static str] {
-    let texts: Vec<&'static str> = items
-        .into_iter()
-        .map(|text| -> &'static str { Box::leak(text.into_boxed_str()) })
-        .collect();
-    Box::leak(texts.into_boxed_slice())
+fn paint_list_row(canvas: &mut Canvas<'_>, rect: Rect, data: u32) {
+    if data & DIVIDER != 0 {
+        let line = canvas.palette().menu_border;
+        canvas.fill(Rect::new(rect.x, rect.y + rect.height - 1, rect.width, 1), line);
+    }
 }
 
 fn item_clicked(view: u64, position: usize) {
     if object(view).is_some_and(|shown| shown.class == RECYCLER_VIEW) {
-        let adapter = object(view).map_or(0, |shown| shown.reference);
-        if let Some(row) = recycler_row(view, adapter, position) {
+        let holder = state()
+            .lists
+            .get(&view)
+            .and_then(|list| list.made.get(&position))
+            .map(|&(_, holder)| holder);
+        if let Some(row) = holder.and_then(|holder| row_view(view, holder)) {
             click(row);
         }
         return;
@@ -1801,39 +1977,6 @@ extern "C" fn inflate_layout(words: *const u64, _: *const usize) -> u64 {
     inflate(u64::from(layout_id as u32))
 }
 
-fn first_text(view: u64, depth: usize) -> Option<String> {
-    let shown = object(view)?;
-    if let Some(text) = shown.text.clone().filter(|text| !text.is_empty()) {
-        return Some(text);
-    }
-    if depth >= DEEPEST_VIEW {
-        return None;
-    }
-    let children = shown.view.as_ref()?.children.clone();
-    children
-        .into_iter()
-        .find_map(|child| first_text(child, depth + 1))
-}
-
-fn adapter_rows(list: u64, adapter: u64) -> Option<Vec<String>> {
-    let class = object(adapter)?.class.clone();
-    let get_view = compiled_method(&class, "getView")?;
-    let count = match compiled_method(&class, "getCount") {
-        Some(address) => call_at(address, &[adapter]) as u32 as usize,
-        None => {
-            let items = object(adapter)?.reference;
-            object(items)?.elements.as_ref()?.len()
-        }
-    };
-    let rows = (0..count.min(eggos_toolkit::widget::MAX_ROWS))
-        .map_while(|position| {
-            let row = call_at(get_view, &[adapter, position as u64, 0, list]);
-            (!failed()).then(|| first_text(row, 0).unwrap_or_default())
-        })
-        .collect();
-    Some(rows)
-}
-
 extern "C" fn set_image_resource(words: *const u64, _: *const usize) -> u64 {
     let [view, id] = arguments::<2>(words);
     let image = load_image(id as u32);
@@ -1873,6 +2016,10 @@ fn native_entry(native: Native) -> Entry {
         Native::GetText => get_text,
         Native::GetString => get_string,
         Native::GetResources => get_resources,
+        Native::GridInit => grid_init,
+        Native::SetLayoutManager => set_layout_manager,
+        Native::AddItemDecoration => add_item_decoration,
+        Native::NotifyChanged => notify_changed,
         Native::IntentInit => intent_init,
         Native::IntentAction => intent_action,
         Native::PutExtra => put_extra,
@@ -2379,6 +2526,9 @@ fn compiled_method(class: &str, name: &str) -> Option<usize> {
     let state = state();
     let mut class = String::from(class);
     for _ in 0..DEEPEST_VIEW {
+        if framework::is_replaced(&class) {
+            return None;
+        }
         let index = state.dex.class_index(&class)?;
         let found = method_named(&state.dex, index, name)
             .and_then(|method| state.compiled.get(&method))
@@ -2411,6 +2561,8 @@ struct ContentWindow {
     tree: WidgetTree<MOST_WIDGETS>,
     shown: Vec<(WidgetId, u64)>,
     lists: Vec<(WidgetId, u64)>,
+    rows: Vec<(WidgetId, u64, usize)>,
+    parent: Option<WidgetId>,
     generation: u64,
 }
 
@@ -2467,19 +2619,11 @@ impl ContentWindow {
                 painter: paint_image,
                 data: (placed_images.len() - 1) as u32,
             };
-            let _ = self.tree.add(None, place, painted);
+            let _ = self.tree.add(self.parent, place, painted);
             return area.1 + PADDING;
         }
         if class.as_str() == LIST_VIEW || class.as_str() == RECYCLER_VIEW {
-            let items = leaked_items(list_items(view));
-            let rows = items.len().min(eggos_toolkit::widget::MAX_ROWS) as i32;
-            let height = Length::Px(LIST_ROW * rows.max(1));
-            let place = Place::at(x, y, Length::Fill(PADDING), height);
-            let list = Kind::list(items, LIST_ROW, 0, PADDING);
-            if let Some(widget) = self.tree.add(None, place, list) {
-                self.lists.push((widget, view));
-            }
-            return LIST_ROW * rows.max(1);
+            return self.add_list(view, x, y, depth);
         }
         let Some(text) = text else {
             return 0;
@@ -2503,13 +2647,83 @@ impl ContentWindow {
             _ => Length::Content,
         };
         let place = Place::at(x, y, width, Length::Content);
-        if let Some(widget) = self.tree.add(None, place, kind) {
+        if let Some(widget) = self.tree.add(self.parent, place, kind) {
             if class.as_str() == EDIT_TEXT {
                 self.tree.set_text(widget, &text);
             }
             self.shown.push((widget, view));
         }
         ROW
+    }
+
+    /// A list as the app's own rows in a scroll area of its own (D767,
+    /// docs/ux/android-lists-v0.1.md): the rows made for the visible range, each a toolkit row
+    /// (its states and click) under the row view's widgets.
+    fn add_list(&mut self, list: u64, x: i32, y: i32, depth: usize) -> i32 {
+        let width = WINDOW_SIZE.0 as i32 - x - PADDING;
+        let height = (WINDOW_SIZE.1 as i32 - y - PADDING).max(list_rows::LIST_ROW_MIN);
+        let (cells, range) = lay_out_rows(list, width, height);
+        let offset = state().lists.get(&list).map_or(0, |rows| rows.offset);
+        let area = Kind::ScrollView {
+            offset,
+            content_height: list_rows::content_height(&cells),
+            offset_x: 0,
+            content_width: width,
+        };
+        let place = Place::at(x, y, Length::Px(width), Length::Px(height));
+        let Some(scroll) = self.tree.add(self.parent, place, area) else {
+            return height;
+        };
+        self.lists.push((scroll, list));
+        let divider = match list_divider(list) {
+            true => DIVIDER,
+            false => 0,
+        };
+        let outer = self.parent.replace(scroll);
+        for position in range {
+            let Some(&(cx, cy, cw, ch)) = cells.get(position) else {
+                continue;
+            };
+            let holder = state()
+                .lists
+                .get(&list)
+                .and_then(|rows| rows.made.get(&position))
+                .map(|&(_, holder)| holder);
+            let row = Kind::Row {
+                painter: paint_list_row,
+                data: divider,
+            };
+            let place = Place::at(cx, cy, Length::Px(cw), Length::Px(ch));
+            if let Some(widget) = self.tree.add(Some(scroll), place, row) {
+                self.rows.push((widget, list, position));
+            }
+            if let Some(shown) = holder.and_then(|holder| row_view(list, holder)) {
+                self.add(shown, cx, cy, depth + 1);
+            }
+        }
+        self.parent = outer;
+        height
+    }
+
+    /// Notices a list the person scrolled (D767): its offset kept, its rows made again for
+    /// the new range.
+    fn track_scrolls(&mut self) {
+        let mut moved = false;
+        for &(scroll, list) in &self.lists {
+            let Some(Kind::ScrollView { offset, .. }) = self.tree.kind(scroll).copied() else {
+                continue;
+            };
+            if let Some(rows) = state().lists.get_mut(&list)
+                && rows.offset != offset
+            {
+                rows.offset = offset;
+                moved = true;
+            }
+        }
+        if moved {
+            state().generation += 1;
+            self.refresh();
+        }
     }
 
     /// A `ConstraintLayout`'s children placed by their constraints (D766) in the window's
@@ -2552,6 +2766,8 @@ impl ContentWindow {
         self.tree = WidgetTree::<MOST_WIDGETS>::new();
         self.shown.clear();
         self.lists.clear();
+        self.rows.clear();
+        self.parent = None;
         state().placed_images.clear();
         if let Some(root) = state().content {
             self.add(root, PADDING, PADDING, 0);
@@ -2563,20 +2779,6 @@ impl ContentWindow {
         for &(widget, view) in &self.shown {
             if let Some(text) = object(view).and_then(|view| view.text.clone()) {
                 self.tree.set_text(widget, &text);
-            }
-        }
-        for &(widget, view) in &self.lists {
-            let items = list_items(view);
-            let unchanged = match self.tree.kind(widget) {
-                Some(Kind::List(list)) => list
-                    .items
-                    .iter()
-                    .copied()
-                    .eq(items.iter().map(String::as_str)),
-                _ => true,
-            };
-            if !unchanged {
-                self.tree.set_list_items(widget, leaked_items(items));
             }
         }
     }
@@ -2617,6 +2819,11 @@ impl Application<MOST_WIDGETS> for ContentWindow {
                 if let Some(&(_, view)) = self.shown.iter().find(|(shown, _)| *shown == widget) {
                     click(view);
                     self.refresh();
+                } else if let Some(&(_, list, position)) =
+                    self.rows.iter().find(|(row, _, _)| *row == widget)
+                {
+                    item_clicked(list, position);
+                    self.refresh();
                 }
             }
             Response::Edited(widget) | Response::Cut(widget) => self.edited(widget),
@@ -2628,14 +2835,15 @@ impl Application<MOST_WIDGETS> for ContentWindow {
                 back();
                 self.refresh();
             }
-            Response::Chosen(widget, position) | Response::Opened(widget, position) => {
-                if let Some(&(_, view)) = self.lists.iter().find(|(shown, _)| *shown == widget) {
-                    item_clicked(view, position);
-                    self.refresh();
-                }
-            }
             _ => {}
         }
+        self.track_scrolls();
+    }
+
+    fn back(&mut self, _now_ms: u32) -> bool {
+        back();
+        self.refresh();
+        true
     }
 }
 
@@ -2647,6 +2855,8 @@ fn show(title: &str) -> i32 {
         tree: WidgetTree::<MOST_WIDGETS>::new(),
         shown: Vec::new(),
         lists: Vec::new(),
+        rows: Vec::new(),
+        parent: None,
         generation: u64::MAX,
     };
     content.rebuild_if_changed();
@@ -2724,6 +2934,7 @@ pub fn run(startup: &Startup) -> i32 {
         generation: 0,
         request: None,
         result: (0, 0),
+        lists: BTreeMap::new(),
         stack_top: stack_pointer().saturating_add(STACK_ABOVE_RUN),
     };
     STATE.store(Box::leak(Box::new(initial)), Ordering::Release);

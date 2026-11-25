@@ -257,7 +257,7 @@ and is not listed per item.
 - [x] Android: the DEX compiler's aarch64 and riscv64 back ends, with register allocation (D471, D472) — code written, unbuilt, D760
 - [x] Android: stack traces, `ExceptionInInitializerError`, exceptions crossing the framework's code (D504) — code written, unbuilt, D761
 - [x] Android: `TextWatcher`, `onEditorAction`, input types (numbers, passwords) (D507) — code written, unbuilt, D762
-- [ ] Android: `RecyclerView` view types, recycling holders, item decorations, grids; row views shown as themselves (D511, D516)
+- [x] Android: `RecyclerView` view types, recycling holders, item decorations, grids; row views shown as themselves (D511, D516) — code written, unbuilt, D767
 - [x] Android: density buckets, `scaleType`, `setImageBitmap` (D509) — code written, unbuilt, D763
 - [x] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500; resource types and configurations code written, unbuilt: D764; activities, intents and fragments: D765) — code written, unbuilt, D764, D765, D766
 - [ ] iOS: multi-touch, pinches and rotations, velocities, recognizers that wait for each other to fail, safe areas, `UIScreen` and size classes (D501, D505, D515)

@@ -19,7 +19,8 @@ pub const ACTIVITY_CLASSES: [&str; 4] = [
 ];
 /// The string class.
 pub const STRING_CLASS: &str = "Ljava/lang/String;";
-const TEXT_VIEW: &str = "Landroid/widget/TextView;";
+/// The framework's text view.
+pub const TEXT_VIEW: &str = "Landroid/widget/TextView;";
 /// The framework's views that show text.
 pub const TEXT_VIEWS: [&str; 3] = [TEXT_VIEW, BUTTON, EDIT_TEXT];
 /// The framework's button.
@@ -33,16 +34,26 @@ pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
 pub const RECYCLER_VIEW: &str = "Landroidx/recyclerview/widget/RecyclerView;";
 /// The view holder class whose `itemView` field holds a row's view.
 pub const VIEW_HOLDER: &str = "Landroidx/recyclerview/widget/RecyclerView$ViewHolder;";
-const REPLACED: [&str; 8] = [
+const REPLACED: [&str; 11] = [
     RECYCLER_VIEW,
     "Landroidx/recyclerview/widget/LinearLayoutManager;",
-    "Landroidx/recyclerview/widget/GridLayoutManager;",
+    GRID_LAYOUT_MANAGER,
+    RECYCLER_ADAPTER,
+    DIVIDER_DECORATION,
+    "Landroidx/recyclerview/widget/RecyclerView$ItemDecoration;",
     CONSTRAINT_LAYOUT,
     FRAGMENT,
     FRAGMENT_MANAGER,
     FRAGMENT_TRANSACTION,
     "Landroidx/fragment/app/BackStackRecord;",
 ];
+
+/// AndroidX's grid layout manager (D767).
+pub const GRID_LAYOUT_MANAGER: &str = "Landroidx/recyclerview/widget/GridLayoutManager;";
+/// `RecyclerView.Adapter`, whose notifications the layer serves (D767).
+pub const RECYCLER_ADAPTER: &str = "Landroidx/recyclerview/widget/RecyclerView$Adapter;";
+/// AndroidX's `DividerItemDecoration`.
+pub const DIVIDER_DECORATION: &str = "Landroidx/recyclerview/widget/DividerItemDecoration;";
 
 /// AndroidX's `ConstraintLayout`, which the layer stands in for and places by its children's
 /// constraints (D766).
@@ -76,6 +87,7 @@ pub const LIST_VIEW: &str = "Landroid/widget/ListView;";
 const ARRAY_LIST: &str = "Ljava/util/ArrayList;";
 const LISTS: [&str; 3] = [ARRAY_LIST, "Ljava/util/List;", "Ljava/util/AbstractList;"];
 const ARRAY_ADAPTER: &str = "Landroid/widget/ArrayAdapter;";
+const BASE_ADAPTER: &str = "Landroid/widget/BaseAdapter;";
 const ADAPTER_VIEWS: [&str; 3] = [LIST_VIEW, "Landroid/widget/AdapterView;", RECYCLER_VIEW];
 const LAYOUT_INFLATER: &str = "Landroid/view/LayoutInflater;";
 const VIEW: &str = "Landroid/view/View;";
@@ -200,6 +212,15 @@ pub enum Native {
     GetInteger,
     /// `Resources.getBoolean(int)`.
     GetBoolean,
+    /// `GridLayoutManager(Context, int)` (D767): its span count kept.
+    GridInit,
+    /// `RecyclerView.setLayoutManager(LayoutManager)`: a grid's span count taken.
+    SetLayoutManager,
+    /// `RecyclerView.addItemDecoration(ItemDecoration)`: a `DividerItemDecoration` draws rows'
+    /// dividers.
+    AddItemDecoration,
+    /// An adapter's `notifyDataSetChanged` and `notifyItem…`: its lists' rows made again.
+    NotifyChanged,
     /// `Intent(Context, Class)` (D765): an explicit intent for an activity of the app.
     IntentInit,
     /// `Intent(String)` and `Intent()`: an intent by action, or empty.
@@ -422,7 +443,12 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         (_, "clear") if list => Native::ListClear,
         (ARRAY_ADAPTER, "<init>") if shorty == "VLIL" => Native::AdapterInit,
         (ARRAY_ADAPTER, "<init>") => Native::Nothing,
-        (ARRAY_ADAPTER, "notifyDataSetChanged") => Native::Nothing,
+        (ARRAY_ADAPTER | BASE_ADAPTER | RECYCLER_ADAPTER, name) if name.starts_with("notify") => {
+            Native::NotifyChanged
+        }
+        (GRID_LAYOUT_MANAGER, "<init>") => Native::GridInit,
+        (RECYCLER_VIEW, "setLayoutManager") => Native::SetLayoutManager,
+        (RECYCLER_VIEW, "addItemDecoration") => Native::AddItemDecoration,
         (_, "setAdapter") if adapter_view => Native::SetAdapter,
         (_, "setOnItemClickListener") if adapter_view => Native::SetOnItemClickListener,
         (_, "<init>") if is_exception(class) && shorty.starts_with("VL") => Native::ExceptionInit,
@@ -649,6 +675,10 @@ pub struct View {
     /// A `ConstraintLayout` child's horizontal and vertical constraints, margins in pixels
     /// (D766).
     pub constraints: Option<(Axis, Axis)>,
+    /// A grid's span count (0 or 1 a plain list), D767.
+    pub span: u32,
+    /// Whether a list draws dividers between its rows.
+    pub divider: bool,
 }
 
 /// `Resources.NotFoundException`, for a resource id the table lacks (D764).

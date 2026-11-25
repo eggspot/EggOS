@@ -2278,7 +2278,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
 
     fn activate(&mut self, id: WidgetId, part: usize) -> Response {
         match self.kind(id).copied() {
-            Some(Kind::Button { .. }) => Response::Activated(id),
+            Some(Kind::Button { .. } | Kind::Row { .. }) => Response::Activated(id),
             Some(Kind::Checkbox { checked, .. }) => {
                 self.set_selected(id, usize::from(!checked));
                 Response::Toggled(id, !checked)
@@ -2358,7 +2358,7 @@ impl<const N: usize, const A: usize> WidgetTree<N, A> {
             return unused;
         };
         let response = match kind {
-            Kind::Button { .. } => match code {
+            Kind::Button { .. } | Kind::Row { .. } => match code {
                 key::SPACE => {
                     self.key_pressed = Some(id);
                     self.damage_widget(id);
