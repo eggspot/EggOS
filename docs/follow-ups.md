@@ -259,7 +259,7 @@ and is not listed per item.
 - [x] Android: `TextWatcher`, `onEditorAction`, input types (numbers, passwords) (D507) — code written, unbuilt, D762
 - [ ] Android: `RecyclerView` view types, recycling holders, item decorations, grids; row views shown as themselves (D511, D516)
 - [x] Android: density buckets, `scaleType`, `setImageBitmap` (D509) — code written, unbuilt, D763
-- [ ] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500; resource types and configurations code written, unbuilt: D764; activities, intents and fragments: D765; left: `ConstraintLayout`)
+- [x] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500; resource types and configurations code written, unbuilt: D764; activities, intents and fragments: D765) — code written, unbuilt, D764, D765, D766
 - [ ] iOS: multi-touch, pinches and rotations, velocities, recognizers that wait for each other to fail, safe areas, `UIScreen` and size classes (D501, D505, D515)
 - [ ] Auto Layout: priorities and inequalities, right-to-left leading/trailing, stack view distributions and alignments, baselines (D506, D510)
 - [ ] WebP: animated WebP (`ANIM`/`ANMF`) and fancy chroma upsampling (D520)

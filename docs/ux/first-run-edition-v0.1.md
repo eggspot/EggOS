@@ -128,10 +128,9 @@ bar here.
 ## 6. Every device class (D23)
 
 - **Phone** (one column, 1.6's layout; `W` 390, `C` 358): the step label at (16, 56); radio
-  rows 48 tall at y 88, 156, 224, 292 (a 48 px row whose whole width is the target, the
-  summary line under each at `row + 48`... as a 68 px pitch: radio row `(16, y, C, 48)`, the
-  summary at cell top `y + 50`, 20 tall); the size right-aligned at `16 + C` on the radio
-  row; the installs lines at cell tops 364 and 384, wrapping to a second line each when wider
+  rows at a 68 px pitch, y 88, 156, 224, 292: each a 48 px row `(16, y, C, 48)` whose whole
+  width is the target (R8), the summary at cell top `y + 50`, 20 tall; the size right-aligned
+  at `16 + C` on the radio row; the installs lines at cell tops 364 and 384, wrapping to a second line each when wider
   than `C` (R9); the page scrolls; the buttons as 1.6's bottom block; the phone's `Back`
   input is `Back`.
 - **Tablet**: the desktop layout with 40 px radio rows (rows 64, 124, 184, 244; the lines at

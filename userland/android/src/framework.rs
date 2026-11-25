@@ -7,6 +7,7 @@
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use eggos_android_package::constraint::Axis;
 use eggos_android_package::dex::Dex;
 
 /// The framework's activity classes an app's activity extends.
@@ -32,15 +33,20 @@ pub const LINEAR_LAYOUT: &str = "Landroid/widget/LinearLayout;";
 pub const RECYCLER_VIEW: &str = "Landroidx/recyclerview/widget/RecyclerView;";
 /// The view holder class whose `itemView` field holds a row's view.
 pub const VIEW_HOLDER: &str = "Landroidx/recyclerview/widget/RecyclerView$ViewHolder;";
-const REPLACED: [&str; 7] = [
+const REPLACED: [&str; 8] = [
     RECYCLER_VIEW,
     "Landroidx/recyclerview/widget/LinearLayoutManager;",
     "Landroidx/recyclerview/widget/GridLayoutManager;",
+    CONSTRAINT_LAYOUT,
     FRAGMENT,
     FRAGMENT_MANAGER,
     FRAGMENT_TRANSACTION,
     "Landroidx/fragment/app/BackStackRecord;",
 ];
+
+/// AndroidX's `ConstraintLayout`, which the layer stands in for and places by its children's
+/// constraints (D766).
+pub const CONSTRAINT_LAYOUT: &str = "Landroidx/constraintlayout/widget/ConstraintLayout;";
 
 /// `android.content.Intent` (D765).
 pub const INTENT: &str = "Landroid/content/Intent;";
@@ -325,7 +331,8 @@ pub fn native(class: &str, name: &str, shorty: &str) -> Option<Native> {
         text || matches!(
             class,
             VIEW | VIEW_GROUP | LINEAR_LAYOUT | LIST_VIEW | IMAGE_VIEW
-        ) || class == RECYCLER_VIEW;
+        ) || class == RECYCLER_VIEW
+            || class == CONSTRAINT_LAYOUT;
     let list = LISTS.contains(&class);
     let adapter_view = ADAPTER_VIEWS.contains(&class);
     let takes_int = shorty == "VI";
@@ -639,6 +646,9 @@ pub struct View {
     pub height: Option<i32>,
     /// An image view's `ScaleType` ordinal; `fitCenter` when unset.
     pub scale_type: Option<u32>,
+    /// A `ConstraintLayout` child's horizontal and vertical constraints, margins in pixels
+    /// (D766).
+    pub constraints: Option<(Axis, Axis)>,
 }
 
 /// `Resources.NotFoundException`, for a resource id the table lacks (D764).

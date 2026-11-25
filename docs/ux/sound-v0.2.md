@@ -163,8 +163,7 @@ for the name; the glyph is the indicator people already read, and the row's name
   `Alert volume` at (232, 270) with the thumb at 70; releasing it at 40 returns
   `AlertVolume(40)` and one play; `Apps` at (16, 316); `Files` at (16, 356) with its glyph
   button at (196, 352) (three waves) and slider at (232, 350) at 100; `Notepad` at (16, 396)
-  with the crossed glyph and the slider at 60; `Input` at (16, 436); the pane 588 tall... with
-  two apps `508 + 80` = 588. A click on `Notepad`'s glyph returns `AppMute("windows-apps:
+  with the crossed glyph and the slider at 60; `Input` at (16, 436); the pane 588 tall (`508 + 40 x 2`). A click on `Notepad`'s glyph returns `AppMute("windows-apps:
   notepad", false)` and the glyph shows two waves; dragging `Files`'s slider to 40 returns
   `AppVolume("files", 40)`; the fake closing `Files`'s stream removes its row and moves
   `Notepad` up 40 in the same frame; no apps: `No app is playing.` and `Input` at 396.

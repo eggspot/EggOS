@@ -24,6 +24,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use eggos_android_package::dex::Dex;
+use eggos_android_package::constraint;
 use eggos_android_package::layout::{self, Text, ViewNode};
 use eggos_android_package::manifest::Manifest;
 use eggos_android_package::resources::ResourceTable;
@@ -65,6 +66,8 @@ const STACK_ABOVE_RUN: usize = 4096;
 const MOST_FRAMES: usize = 64;
 const IME_ACTION_MASK: u32 = 0xff;
 const BITMAP_IMAGE: u32 = u32::MAX;
+const CENTRED: i32 = 500;
+const GLYPH_WIDTH: i32 = 8;
 const PLATFORM_VERSION: u16 = 34;
 const MOST_CAUSES: usize = 8;
 #[cfg(target_arch = "x86_64")]
@@ -1042,6 +1045,7 @@ fn inflate_node(node: &ViewNode, depth: usize) -> u64 {
             width: pixels_of(node.layout_width),
             height: pixels_of(node.layout_height),
             scale_type: node.scale_type,
+            constraints: constraints_of(node),
             ..View::default()
         }),
         ..Object::default()
@@ -1216,6 +1220,67 @@ fn device_configuration(startup: &Startup) -> eggos_android_package::resources::
         density: SCREEN_DPI as u16,
         sdk: PLATFORM_VERSION,
     }
+}
+
+fn constraints_of(node: &ViewNode) -> Option<(constraint::Axis, constraint::Axis)> {
+    if node.anchors.iter().all(Option::is_none) {
+        return None;
+    }
+    let margin = |side: usize| pixels_of(node.margins[side]).unwrap_or(0);
+    let axis = |start: usize, end: usize, bias: Option<i32>| constraint::Axis {
+        start: node.anchors[start],
+        end: node.anchors[end],
+        start_margin: margin(start),
+        end_margin: margin(end),
+        bias: bias.unwrap_or(CENTRED),
+    };
+    Some((axis(0, 1, node.biases[0]), axis(2, 3, node.biases[1])))
+}
+
+/// The size `view` takes where the window shows it, as `ContentWindow::add` lays it out
+/// (D766): a constraint layout's children are measured to be placed.
+fn measure(view: u64, depth: usize) -> (i32, i32) {
+    let Some(shown) = object(view) else {
+        return (0, 0);
+    };
+    let state_of = shown.view.as_ref();
+    let fixed = state_of.map_or((None, None), |state| (state.width, state.height));
+    let children = state_of.map_or(Vec::new(), |state| state.children.clone());
+    let natural = if !children.is_empty() && depth < DEEPEST_VIEW {
+        let vertical = state_of.is_none_or(|state| state.vertical);
+        let sizes: Vec<(i32, i32)> = children
+            .iter()
+            .map(|&child| measure(child, depth + 1))
+            .collect();
+        match vertical {
+            true => (
+                sizes.iter().map(|size| size.0).max().unwrap_or(0),
+                sizes.iter().map(|size| size.1).sum(),
+            ),
+            false => (
+                COLUMN * sizes.len() as i32,
+                sizes.iter().map(|size| size.1).max().unwrap_or(0),
+            ),
+        }
+    } else {
+        match shown.class.as_str() {
+            EDIT_TEXT => (COLUMN * 2 - PADDING, ROW),
+            IMAGE_VIEW => {
+                let image = state_of.and_then(|state| state.image);
+                image
+                    .and_then(|index| state().images.get(index as usize))
+                    .map_or((0, 0), |(width, pixels)| {
+                        let height = (pixels.len() / (*width).max(1)) as i32;
+                        (*width as i32, height + PADDING)
+                    })
+            }
+            _ => {
+                let length = shown.text.as_deref().map_or(0, |text| text.chars().count());
+                (length as i32 * GLYPH_WIDTH + 2 * PADDING, ROW)
+            }
+        }
+    };
+    (fixed.0.unwrap_or(natural.0), fixed.1.unwrap_or(natural.1))
 }
 
 fn pixels_of(extent: Option<layout::Extent>) -> Option<i32> {
@@ -2358,6 +2423,9 @@ impl ContentWindow {
         let children = view_state
             .as_ref()
             .map_or(Vec::new(), |state| state.children.clone());
+        if !children.is_empty() && depth < DEEPEST_VIEW && class == framework::CONSTRAINT_LAYOUT {
+            return self.add_constrained(&children, x, y, depth);
+        }
         if !children.is_empty() && depth < DEEPEST_VIEW {
             let vertical = view_state.as_ref().is_none_or(|state| state.vertical);
             let mut used = 0;
@@ -2442,6 +2510,36 @@ impl ContentWindow {
             self.shown.push((widget, view));
         }
         ROW
+    }
+
+    /// A `ConstraintLayout`'s children placed by their constraints (D766) in the window's
+    /// width from `x`: each measured, the positions solved, then each added where it goes.
+    fn add_constrained(&mut self, children: &[u64], x: i32, y: i32, depth: usize) -> i32 {
+        let width = WINDOW_SIZE.0 as i32 - x - PADDING;
+        let placed: Vec<constraint::Child> = children
+            .iter()
+            .map(|&child| {
+                let shown = object(child).and_then(|child| child.view.clone());
+                let (horizontal, vertical) = shown
+                    .as_ref()
+                    .and_then(|state| state.constraints)
+                    .unwrap_or_default();
+                constraint::Child {
+                    id: shown.as_ref().map_or(0, |state| state.id),
+                    size: measure(child, depth + 1),
+                    horizontal,
+                    vertical,
+                }
+            })
+            .collect();
+        let height = WINDOW_SIZE.1 as i32 - y - PADDING;
+        let positions = constraint::solve(&placed, (width, height));
+        let mut bottom = 0;
+        for ((&child, &(cx, cy)), sized) in children.iter().zip(&positions).zip(&placed) {
+            let used = self.add(child, x + cx, y + cy, depth + 1);
+            bottom = bottom.max(cy + used.max(sized.size.1));
+        }
+        bottom
     }
 
     /// Makes the window's widgets again when the activity shown or its content changed

@@ -3,6 +3,7 @@
 //! string resource, a click handler's method name, a linear layout's orientation, an image
 //! view's drawable).
 
+use crate::constraint::{Anchor, Edge, Target};
 use crate::manifest::{half, strings, word};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -53,7 +54,63 @@ pub struct ViewNode {
     pub layout_height: Option<Extent>,
     /// `android:scaleType`, as `ImageView.ScaleType`'s ordinal (`fitCenter` is 3), D763.
     pub scale_type: Option<u32>,
+    /// A `ConstraintLayout` child's constraints (D766): its left, right, top and bottom sides'
+    /// anchors.
+    pub anchors: [Option<Anchor>; 4],
+    /// Its left, right, top and bottom margins.
+    pub margins: [Option<Extent>; 4],
+    /// Its horizontal and vertical bias, in thousandths.
+    pub biases: [Option<i32>; 2],
     pub children: Vec<ViewNode>,
+}
+
+const TYPE_FLOAT: u8 = 0x04;
+const LEFT: usize = 0;
+const RIGHT: usize = 1;
+const TOP: usize = 2;
+const BOTTOM: usize = 3;
+const CONSTRAINTS: [(&str, usize, Edge); 12] = [
+    ("layout_constraintLeft_toLeftOf", LEFT, Edge::Start),
+    ("layout_constraintStart_toStartOf", LEFT, Edge::Start),
+    ("layout_constraintLeft_toRightOf", LEFT, Edge::End),
+    ("layout_constraintStart_toEndOf", LEFT, Edge::End),
+    ("layout_constraintRight_toRightOf", RIGHT, Edge::End),
+    ("layout_constraintEnd_toEndOf", RIGHT, Edge::End),
+    ("layout_constraintRight_toLeftOf", RIGHT, Edge::Start),
+    ("layout_constraintEnd_toStartOf", RIGHT, Edge::Start),
+    ("layout_constraintTop_toTopOf", TOP, Edge::Start),
+    ("layout_constraintTop_toBottomOf", TOP, Edge::End),
+    ("layout_constraintBottom_toBottomOf", BOTTOM, Edge::End),
+    ("layout_constraintBottom_toTopOf", BOTTOM, Edge::Start),
+];
+const MARGINS: [(&str, &[usize]); 9] = [
+    ("layout_margin", &[LEFT, RIGHT, TOP, BOTTOM]),
+    ("layout_marginHorizontal", &[LEFT, RIGHT]),
+    ("layout_marginVertical", &[TOP, BOTTOM]),
+    ("layout_marginLeft", &[LEFT]),
+    ("layout_marginStart", &[LEFT]),
+    ("layout_marginRight", &[RIGHT]),
+    ("layout_marginEnd", &[RIGHT]),
+    ("layout_marginTop", &[TOP]),
+    ("layout_marginBottom", &[BOTTOM]),
+];
+
+fn anchor(attribute: &Attribute, edge: Edge) -> Option<Anchor> {
+    let target = match (attribute.kind, attribute.text.as_deref()) {
+        (TYPE_REFERENCE, _) => Target::Sibling(attribute.data),
+        (_, Some("parent")) => Target::Parent,
+        (TYPE_INT_DEC | TYPE_INT_HEX, _) if attribute.data == 0 => Target::Parent,
+        _ => return None,
+    };
+    Some(Anchor { target, edge })
+}
+
+fn bias(attribute: &Attribute) -> Option<i32> {
+    let value = match attribute.kind {
+        TYPE_FLOAT => f32::from_bits(attribute.data),
+        _ => attribute.text.as_deref()?.parse::<f32>().ok()?,
+    };
+    Some((value * 1000.0) as i32)
 }
 
 /// A view's width or height in its layout (D763).
@@ -201,6 +258,22 @@ fn node(name: String, attributes: &[Attribute]) -> ViewNode {
             "onClick" => view.on_click = attribute.text.clone(),
             "src" | "srcCompat" if attribute.kind == TYPE_REFERENCE => {
                 view.image = Some(attribute.data)
+            }
+            name if name.starts_with("layout_constraint") && name.ends_with("Of") => {
+                if let Some(&(_, side, edge)) =
+                    CONSTRAINTS.iter().find(|(known, _, _)| *known == name)
+                {
+                    view.anchors[side] = anchor(attribute, edge);
+                }
+            }
+            "layout_constraintHorizontal_bias" => view.biases[0] = bias(attribute),
+            "layout_constraintVertical_bias" => view.biases[1] = bias(attribute),
+            name if name.starts_with("layout_margin") => {
+                if let Some(&(_, sides)) = MARGINS.iter().find(|(known, _)| *known == name) {
+                    for &side in sides {
+                        view.margins[side] = extent(attribute);
+                    }
+                }
             }
             "layout_width" => view.layout_width = extent(attribute),
             "layout_height" => view.layout_height = extent(attribute),

@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+pub mod constraint;
 pub mod dalvik;
 pub mod dex;
 pub mod layout;
