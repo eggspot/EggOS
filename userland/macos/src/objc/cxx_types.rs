@@ -4,19 +4,31 @@
 //! own records, and the match a `catch` clause makes against a thrown type: the same type (by
 //! address or name), a public base found through the inheritance records with the object's
 //! address adjusted to it, or a pointer type's pointee; and `__dynamic_cast` over the same
-//! records (D408).
+//! records (D408), with the standard's rules for ambiguous and non-public bases (D755).
 
 #[cfg(eggos_user)]
 use super::exception::{image_byte, image_word};
 
-#[cfg(not(eggos_user))]
+#[cfg(all(not(eggos_user), not(test)))]
 fn image_word(_: u64) -> Option<u64> {
     None
 }
 
-#[cfg(not(eggos_user))]
+#[cfg(all(not(eggos_user), not(test)))]
 fn image_byte(_: u64) -> Option<u8> {
     None
+}
+
+#[cfg(all(not(eggos_user), test))]
+fn image_word(address: u64) -> Option<u64> {
+    // SAFETY: the tests register only their own live records as readable.
+    tests::readable(address, 8).then(|| unsafe { (address as *const u64).read_unaligned() })
+}
+
+#[cfg(all(not(eggos_user), test))]
+fn image_byte(address: u64) -> Option<u8> {
+    // SAFETY: as above.
+    tests::readable(address, 1).then(|| unsafe { (address as *const u8).read() })
 }
 
 const NON_UNIQUE_NAME: u64 = 1 << 63;
@@ -25,6 +37,7 @@ const BASE_VIRTUAL: i64 = 1;
 const BASE_OFFSET_SHIFT: u32 = 8;
 const MAX_BASE_DEPTH: usize = 32;
 const MAX_BASES: u64 = 64;
+const MAX_SUBOBJECTS: usize = 64;
 const MAX_NAME: u64 = 1024;
 
 /// A `std::type_info`'s first two words.
@@ -457,11 +470,101 @@ pub fn catches(wanted: u64, thrown: u64, object: u64) -> Option<u64> {
     find_base(wanted, thrown, object, 0)
 }
 
-/// `__dynamic_cast` (D408): the object `sub` points into, seen as `wanted`: the whole object
-/// when that is its dynamic type, else the public base of that type inside it (a downcast or
-/// a cross cast), else 0. The object's vtable gives its offset to the whole object and its
-/// dynamic type, as the Itanium ABI lays them out.
-pub fn dynamic_cast(sub: u64, wanted: u64) -> u64 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Subobject {
+    record: u64,
+    address: u64,
+    public: bool,
+}
+
+struct Subobjects {
+    found: [Subobject; MAX_SUBOBJECTS],
+    count: usize,
+}
+
+impl Subobjects {
+    const fn new() -> Self {
+        Self {
+            found: [Subobject {
+                record: 0,
+                address: 0,
+                public: false,
+            }; MAX_SUBOBJECTS],
+            count: 0,
+        }
+    }
+
+    fn note(&mut self, subobject: Subobject) {
+        let same = self.found[..self.count].iter_mut().find(|known| {
+            known.address == subobject.address && same_type(known.record, subobject.record)
+        });
+        match same {
+            Some(known) => known.public |= subobject.public,
+            None if self.count < MAX_SUBOBJECTS => {
+                self.found[self.count] = subobject;
+                self.count += 1;
+            }
+            None => {}
+        }
+    }
+
+    fn all(&self) -> &[Subobject] {
+        &self.found[..self.count]
+    }
+
+    fn holds(&self, record: u64, address: u64, public_only: bool) -> bool {
+        self.all().iter().any(|known| {
+            known.address == address
+                && same_type(known.record, record)
+                && (known.public || !public_only)
+        })
+    }
+}
+
+fn gather(record: u64, address: u64, public: bool, depth: usize, into: &mut Subobjects) {
+    into.note(Subobject {
+        record,
+        address,
+        public,
+    });
+    if depth > MAX_BASE_DEPTH {
+        return;
+    }
+    match kind(record) {
+        Kind::SingleBase => {
+            if let Some(base) = word(record + 16) {
+                gather(base, address, public, depth + 1, into);
+            }
+        }
+        Kind::MultipleBases => {
+            let Some(counts) = word(record + 16) else {
+                return;
+            };
+            for index in 0..(counts >> 32).min(MAX_BASES) {
+                let entry = record + 24 + index * 16;
+                let (Some(base), Some(offset_flags)) = (word(entry), word(entry + 8)) else {
+                    return;
+                };
+                let offset_flags = offset_flags as i64;
+                let Some(at) = base_address(address, offset_flags) else {
+                    continue;
+                };
+                let edge_public = offset_flags & BASE_PUBLIC != 0;
+                gather(base, at, public && edge_public, depth + 1, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `__dynamic_cast` (D408, D755): the object `sub` points into (a subobject of static type
+/// `source`, or of any type when `source` is 0), seen as `wanted`, by the C++ standard's rules
+/// ([expr.dynamic.cast]): a downcast when exactly one `wanted` object holds `sub` as a public
+/// base; else a cross cast when `sub` is a public base of the whole object and that object
+/// has exactly one `wanted` subobject, reached publicly; else 0. An ambiguous or non-public
+/// base gives 0. The object's vtable gives its offset to the whole object and its dynamic
+/// type, as the Itanium ABI lays them out.
+pub fn dynamic_cast(sub: u64, source: u64, wanted: u64) -> u64 {
     if sub == 0 || wanted == 0 {
         return 0;
     }
@@ -473,15 +576,106 @@ pub fn dynamic_cast(sub: u64, wanted: u64) -> u64 {
     // SAFETY: the type record is the word just before the vtable's address point.
     let dynamic = unsafe { ((vtable - 8) as *const u64).read_unaligned() };
     let whole = sub.wrapping_add(to_top as u64);
-    if same_type(wanted, dynamic) {
-        return whole;
+    let mut everything = Subobjects::new();
+    gather(dynamic, whole, true, 0, &mut everything);
+    let is_sub = |known: &Subobject| {
+        known.address == sub && (source == 0 || same_type(known.record, source))
+    };
+    let sub_public_in_whole = everything.all().iter().any(|known| is_sub(known) && known.public);
+    let mut downcast = 0;
+    let mut holders = 0;
+    for candidate in everything.all() {
+        if !same_type(candidate.record, wanted) {
+            continue;
+        }
+        let mut below = Subobjects::new();
+        gather(candidate.record, candidate.address, true, 0, &mut below);
+        let holds_sub = match source {
+            0 => below.all().iter().any(|known| known.address == sub && known.public),
+            _ => below.holds(source, sub, true),
+        };
+        if holds_sub {
+            holders += 1;
+            downcast = candidate.address;
+        }
     }
-    find_base(wanted, dynamic, whole, 0).unwrap_or(0)
+    if holders == 1 {
+        return downcast;
+    }
+    if holders > 1 || !sub_public_in_whole {
+        return 0;
+    }
+    let mut targets = everything
+        .all()
+        .iter()
+        .filter(|known| same_type(known.record, wanted));
+    match (targets.next(), targets.next()) {
+        (Some(only), None) if only.public => only.address,
+        _ => 0,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::vec::Vec;
+
+    static READABLE: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+    pub(super) fn readable(address: u64, length: u64) -> bool {
+        READABLE
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|&(start, size)| address >= start && address + length <= start + size)
+    }
+
+    fn let_read<T>(item: &'static T) -> u64 {
+        let start = item as *const T as u64;
+        READABLE
+            .lock()
+            .unwrap()
+            .push((start, core::mem::size_of::<T>() as u64));
+        start
+    }
+
+    fn leaked<T>(item: T) -> &'static T {
+        std::boxed::Box::leak(std::boxed::Box::new(item))
+    }
+
+    #[test]
+    fn an_ambiguous_base_gives_null_and_a_unique_derived_object_is_found() {
+        let class = address_point(&VTABLES.class) as u64;
+        let single = address_point(&VTABLES.single_base) as u64;
+        let multiple = address_point(&VTABLES.multiple_bases) as u64;
+        let names = leaked(*b"1A\0\02B1\02B2\01D\0");
+        let name = |at: usize| let_read(names) + at as u64;
+        let base_a = let_read(leaked([class, name(0)]));
+        let left = let_read(leaked([single, name(4), base_a]));
+        let right = let_read(leaked([single, name(8), base_a]));
+        let public = BASE_PUBLIC as u64;
+        let derived = let_read(leaked([
+            multiple,
+            name(12),
+            2 << 32,
+            left,
+            public,
+            right,
+            (8 << BASE_OFFSET_SHIFT) | public,
+        ]));
+        let whole_table = leaked([0u64, derived, 0]);
+        let right_table = leaked([(-8i64) as u64, derived, 0]);
+        let object = leaked([
+            &raw const whole_table[2] as u64,
+            &raw const right_table[2] as u64,
+        ]);
+        let whole = object as *const [u64; 2] as u64;
+        assert_eq!(dynamic_cast(whole, left, derived), whole);
+        assert_eq!(dynamic_cast(whole + 8, right, derived), whole);
+        assert_eq!(dynamic_cast(whole + 8, right, left), whole);
+        assert_eq!(dynamic_cast(whole, left, base_a), 0);
+    }
 
     #[test]
     fn a_dynamic_cast_finds_the_whole_object_or_a_base_or_nothing() {
@@ -490,10 +684,10 @@ mod tests {
         let at = &raw const object as u64;
         let bad_alloc = &raw const TYPE_BAD_ALLOC as u64;
         let exception = &raw const TYPE_EXCEPTION as u64;
-        assert_eq!(dynamic_cast(at, bad_alloc), at);
-        assert_eq!(dynamic_cast(at, exception), at);
-        assert_eq!(dynamic_cast(at, &raw const TYPE_INT as u64), 0);
-        assert_eq!(dynamic_cast(0, exception), 0);
+        assert_eq!(dynamic_cast(at, exception, bad_alloc), at);
+        assert_eq!(dynamic_cast(at, 0, exception), at);
+        assert_eq!(dynamic_cast(at, exception, &raw const TYPE_INT as u64), 0);
+        assert_eq!(dynamic_cast(0, 0, exception), 0);
     }
 
     #[test]

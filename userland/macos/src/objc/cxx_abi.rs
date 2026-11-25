@@ -553,8 +553,8 @@ fn pointer_record(record: &'static PointerRecord) -> usize {
     record as *const PointerRecord as usize
 }
 
-extern "C" fn dynamic_cast(sub: u64, _source: u64, wanted: u64, _hint: i64) -> u64 {
-    super::cxx_types::dynamic_cast(sub, wanted)
+extern "C" fn dynamic_cast(sub: u64, source: u64, wanted: u64, _hint: i64) -> u64 {
+    super::cxx_types::dynamic_cast(sub, source, wanted)
 }
 
 /// The address of the libc++abi function or variable `name`, if the layer has it.
