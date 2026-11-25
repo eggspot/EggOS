@@ -253,7 +253,7 @@ and is not listed per item.
 - [x] macOS: ambiguous and non-public bases in `__dynamic_cast` (D408; `bad_cast`/`bad_typeid` thrown code written, unbuilt: D700) — code written, unbuilt, D755
 - [x] macOS: `dlopen` of an app's own library at run time; thread-local variables in a carried library (D409) — code written, unbuilt, D756
 - [x] Android: split APKs and app bundles; the manifest's label and icon as the app's name and icon (D470; split APK sets, label and icon code written, unbuilt: D757) — code written, unbuilt, D757, D758
-- [ ] Android: a garbage collector for the layer's object heap (D472)
+- [x] Android: a garbage collector for the layer's object heap (D472) — code written, unbuilt, D759
 - [ ] Android: the DEX compiler's aarch64 and riscv64 back ends, with register allocation (D471, D472)
 - [ ] Android: stack traces, `ExceptionInInitializerError`, exceptions crossing the framework's code (D504)
 - [ ] Android: `TextWatcher`, `onEditorAction`, input types (numbers, passwords) (D507)

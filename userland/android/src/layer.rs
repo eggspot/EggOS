@@ -11,6 +11,7 @@
 //! whose clicks call the activity's `android:onClick` method or the view's click listener,
 //! then shows the texts they changed (D500).
 
+use crate::collector;
 use crate::framework::{
     self, ACTIVITY_CLASSES, BUTTON, EDIT_TEXT, IMAGE_VIEW, LINEAR_LAYOUT, LIST_VIEW, Native,
     Object, RECYCLER_VIEW, STRING_CLASS, TEXT_VIEWS, Target, VIEW_HOLDER, View,
@@ -58,6 +59,7 @@ const LIST_ROW: i32 = 32;
 const DEEPEST_VIEW: usize = 32;
 const WINDOW_SIZE: (u32, u32) = (360, 640);
 const PADDING: i32 = 16;
+const STACK_ABOVE_RUN: usize = 4096;
 
 struct State {
     dex: Dex<'static>,
@@ -72,6 +74,8 @@ struct State {
     folder: Vec<u8>,
     activity: u64,
     table: usize,
+    heap: collector::Heap,
+    stack_top: usize,
 }
 
 static STATE: AtomicPtr<State> = AtomicPtr::new(core::ptr::null_mut());
@@ -174,7 +178,88 @@ fn executable(code: &[u8]) -> Option<usize> {
 }
 
 fn new_object(object: Object) -> u64 {
-    Box::leak(Box::new(object)) as *mut Object as u64
+    let address = Box::leak(Box::new(object)) as *mut Object as u64;
+    state().heap.note(address);
+    address
+}
+
+fn callee_saved_registers() -> [u64; 6] {
+    let mut saved = [0u64; 6];
+    // SAFETY: copies the callee-saved registers into a local array; nothing else changes.
+    unsafe {
+        core::arch::asm!(
+            "mov [{0}], rbx",
+            "mov [{0} + 8], rbp",
+            "mov [{0} + 16], r12",
+            "mov [{0} + 24], r13",
+            "mov [{0} + 32], r14",
+            "mov [{0} + 40], r15",
+            in(reg) saved.as_mut_ptr(),
+            options(nostack, preserves_flags),
+        )
+    };
+    saved
+}
+
+fn stack_pointer() -> usize {
+    let pointer: usize;
+    // SAFETY: reads the stack pointer only.
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) pointer, options(nomem, nostack, preserves_flags))
+    };
+    pointer
+}
+
+fn references_of(address: u64, found: &mut Vec<u64>) {
+    let Some(held) = object(address) else {
+        return;
+    };
+    found.extend(held.fields.values().copied());
+    found.extend(held.elements.iter().flatten().copied());
+    if let Some(view) = &held.view {
+        found.extend(view.children.iter().copied());
+        found.push(view.listener);
+    }
+    found.push(held.reference);
+}
+
+/// Collects when one is due, at an allocation compiled code asks for: its frames and
+/// registers hold its references, and the layer's own code holds none outside the stack.
+fn at_safepoint() {
+    if state().heap.due() {
+        collect();
+    }
+}
+
+/// Frees every object no root reaches (D759): the layer's own references, then every word of
+/// the stack between here and where `run` started and the callee-saved registers, read
+/// conservatively.
+fn collect() {
+    let registers = callee_saved_registers();
+    let low = stack_pointer() & !7;
+    let high = state().stack_top;
+    let stack = (low..high).step_by(8).map(|word| {
+        // SAFETY: every word up to the top recorded in `run` lies in this thread's stack.
+        unsafe { core::ptr::read_volatile(word as *const u64) }
+    });
+    let current = state();
+    let exception = match current.table {
+        0 => 0,
+        _ => pending(table()),
+    };
+    let own = [current.content.unwrap_or(0), current.activity, exception];
+    let roots = registers
+        .into_iter()
+        .chain(stack)
+        .chain(current.statics.values().copied())
+        .chain(own);
+    let marked = collector::trace(roots, &current.heap.objects, references_of);
+    for address in collector::unmarked(&current.heap.objects, &marked) {
+        current.heap.objects.remove(&address);
+        // SAFETY: a leaked box from `new_object` that nothing reachable holds, dropped once.
+        drop(unsafe { Box::from_raw(address as *mut Object) });
+    }
+    current.heap.collected();
 }
 
 fn object(address: u64) -> Option<&'static mut Object> {
@@ -190,6 +275,7 @@ fn arguments<const N: usize>(words: *const u64) -> [u64; N] {
 }
 
 extern "sysv64" fn string(words: *const u64, _: *const usize) -> u64 {
+    at_safepoint();
     let [index] = arguments::<1>(words);
     let text = state().dex.string(index as u32);
     new_object(Object {
@@ -200,6 +286,7 @@ extern "sysv64" fn string(words: *const u64, _: *const usize) -> u64 {
 }
 
 extern "sysv64" fn new_instance(words: *const u64, table: *const usize) -> u64 {
+    at_safepoint();
     let [index] = arguments::<1>(words);
     let class = state().dex.type_name(index as u32).unwrap_or_default();
     initialize(&class, table);
@@ -362,6 +449,7 @@ extern "sysv64" fn static_put(words: *const u64, table: *const usize) -> u64 {
 const LARGEST_ARRAY: usize = 1 << 24;
 
 extern "sysv64" fn new_array(words: *const u64, table: *const usize) -> u64 {
+    at_safepoint();
     let [length, index] = arguments::<2>(words);
     let length = length as u32 as i32;
     if length < 0 {
@@ -1426,6 +1514,8 @@ pub fn run(startup: &Startup) -> i32 {
         folder: Vec::from(folder),
         activity: 0,
         table: 0,
+        heap: collector::Heap::default(),
+        stack_top: stack_pointer().saturating_add(STACK_ABOVE_RUN),
     };
     STATE.store(Box::leak(Box::new(initial)), Ordering::Release);
     let mut entries: Vec<usize> = helpers().iter().map(|&entry| entry as usize).collect();
