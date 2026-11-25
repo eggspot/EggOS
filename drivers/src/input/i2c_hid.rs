@@ -246,6 +246,35 @@ impl I2cHid {
         self.polled_count > 0
     }
 
+    /// Reads the input report the device holds while its interrupt line is asserted (D789): a
+    /// plain read of its length and the report, no command first; hands `event` what changed
+    /// and answers how many events it sent. A zero length is the device's reset notice.
+    pub fn read_input<B: I2cBus>(
+        &mut self,
+        bus: &mut B,
+        keep_waiting: &mut dyn FnMut() -> bool,
+        event: &mut dyn FnMut(RawEvent),
+    ) -> Result<usize, I2cHidError> {
+        let mut answer = [0u8; LENGTH_BYTES + LONGEST_REPORT];
+        let room =
+            usize::from(self.descriptor.max_input_length).clamp(LENGTH_BYTES + 1, answer.len());
+        bus.transfer(
+            self.address,
+            self.ten_bit,
+            &[],
+            &mut answer[..room],
+            keep_waiting,
+        )?;
+        let told = usize::from(u16::from_le_bytes([answer[0], answer[1]]));
+        if told <= LENGTH_BYTES {
+            return Ok(0);
+        }
+        let end = told.min(room);
+        Ok(self
+            .decoder
+            .report(&self.layout, &answer[LENGTH_BYTES..end], event))
+    }
+
     /// Asks for each polled report with `GET_REPORT` and hands `event` what changed; how many
     /// events it sent.
     pub fn poll<B: I2cBus>(

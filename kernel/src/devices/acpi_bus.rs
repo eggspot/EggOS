@@ -31,6 +31,19 @@ pub struct I2cTarget {
     /// The HID over I2C descriptor's register its `_DSM` returns, as far as it was read.
     pub descriptor_register: Option<u16>,
     pub controller: I2cController,
+    /// Its interrupt through a GPIO pin, when its resources name one (D789).
+    pub interrupt: Option<GpioLine>,
+}
+
+/// An interrupt through a pin of a GPIO controller (D789).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpioLine {
+    pub pin: u16,
+    pub edge: bool,
+    pub active_low: bool,
+    pub both_edges: bool,
+    /// The controller's namespace path, as [`Identity::Acpi`]'s `path` writes it.
+    pub controller: [u8; PATH_BYTES],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -63,12 +76,27 @@ fn i2c_target(device: &aml::Device<'_>, declared: &[Declared]) -> Option<I2cTarg
         },
         (None, None) => return None,
     };
+    let interrupt = device.gpio_interrupt.and_then(|line| {
+        let owner = declared
+            .iter()
+            .find(|candidate| aml::names_path(line.controller, &candidate.path))?;
+        let mut path = [0u8; PATH_BYTES];
+        owner.path.write(&mut path);
+        Some(GpioLine {
+            pin: line.pin,
+            edge: line.edge,
+            active_low: line.active_low,
+            both_edges: line.both_edges,
+            controller: path,
+        })
+    });
     Some(I2cTarget {
         address: connection.address,
         ten_bit: connection.ten_bit,
         speed_hz: connection.speed_hz,
         descriptor_register: device.hid_descriptor_register,
         controller,
+        interrupt,
     })
 }
 
@@ -105,11 +133,18 @@ pub(super) fn discover(dsdt: &[u8], table: &mut DeviceTable, present: &dyn Fn(&[
         if !present(text(&path)) {
             return;
         }
+        let mut interrupt = None;
+        if let Some(resources) = device.resources {
+            aml::interrupt_resources(resources, &mut |global, _, _| {
+                interrupt = interrupt.or(Some(global));
+            });
+        }
         let mut node = DeviceNode::new(Identity::Acpi {
             hid: id,
             cid: compatible,
             path,
             i2c: i2c_target(&device, &declared),
+            interrupt,
         });
         node.dma = DmaCoherence::Coherent;
         let mut slot = 0;

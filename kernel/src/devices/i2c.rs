@@ -3,7 +3,7 @@
 //! controller up, a DesignWare bus master shared by every device on the same bus, and starts
 //! the device. Its accelerometer is then polled every [`POLL_INTERVAL_MS`] as one of the
 //! kernel's input devices, so the screen turns with it (D435). A device that reports only on
-//! its interrupt line is refused until GPIO interrupts are supported.
+//! its interrupt line has it armed on its GPIO controller (D789) and is read when it fires.
 
 use super::acpi_bus::{I2cController, I2cTarget};
 use super::{
@@ -47,6 +47,7 @@ struct I2cSensor {
     controller: Controller,
     device: I2cHid,
     next_poll: Deadline,
+    interrupt: Option<(&'static super::interrupts::DeviceEvents, u64)>,
 }
 
 impl InputDevice for I2cSensor {
@@ -55,6 +56,21 @@ impl InputDevice for I2cSensor {
     }
 
     fn poll(&mut self, _budget: usize, event: &mut dyn FnMut(RawEvent)) -> usize {
+        if let Some((events, seen)) = self.interrupt.as_mut() {
+            let raised = events.raised();
+            if raised == *seen {
+                return 0;
+            }
+            let Some(mut bus) = self.controller.try_lock() else {
+                return 0;
+            };
+            *seen = raised;
+            let mut deadline = self.next_poll.again_after(TRANSFER_TIMEOUT_MS);
+            return self
+                .device
+                .read_input(&mut *bus, &mut || deadline.keep_waiting(), event)
+                .unwrap_or(0);
+        }
         if self.next_poll.keep_waiting() {
             return 0;
         }
@@ -166,15 +182,35 @@ fn probe_i2c_hid(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> 
         )
     }
     .map_err(|error| ProbeError::Refused(error.description()))?;
-    if !device.has_polled_reports() {
-        return Err(ProbeError::Refused(
-            "an I2C HID device that needs its interrupt line (no GPIO interrupts yet)",
-        ));
-    }
+    let interrupt = match (device.has_polled_reports(), target.interrupt) {
+        (true, _) => None,
+        (false, Some(line)) => {
+            let events: &'static super::interrupts::DeviceEvents =
+                Box::leak(Box::new(super::interrupts::DeviceEvents::new()));
+            events.wake_input_waiters_too();
+            let trigger = eggos_drivers::gpio::Trigger {
+                edge: line.edge,
+                active_low: line.active_low,
+                both_edges: line.both_edges,
+            };
+            if !super::gpio::bind(&line.controller, line.pin, trigger, events) {
+                return Err(ProbeError::Refused(
+                    "the I2C HID device's GPIO interrupt could not be armed",
+                ));
+            }
+            Some((events, events.raised()))
+        }
+        (false, None) => {
+            return Err(ProbeError::Refused(
+                "an I2C HID device that reports on an interrupt its resources do not name",
+            ));
+        }
+    };
     let sensor = Box::new(I2cSensor {
         controller,
         device,
         next_poll: probe.deadline(POLL_INTERVAL_MS),
+        interrupt,
     });
     crate::input::install(sensor)
         .map_err(|_| ProbeError::Refused("no room for another input device"))

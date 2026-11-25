@@ -137,6 +137,8 @@ pub struct Device<'a> {
     pub resources: Option<&'a [u8]>,
     /// Its connection to an I2C bus, from the first `I2cSerialBus` descriptor found (D462).
     pub i2c: Option<I2cConnection<'a>>,
+    /// Its interrupt through a GPIO pin, from the first `GpioInt` descriptor found (D789).
+    pub gpio_interrupt: Option<GpioInterrupt<'a>>,
     /// The HID over I2C descriptor's register its `_DSM` returns, as far as it is read.
     pub hid_descriptor_register: Option<u16>,
 }
@@ -149,6 +151,106 @@ pub struct I2cConnection<'a> {
     pub speed_hz: u32,
     /// The controller's namespace path as the descriptor names it, without its NUL.
     pub controller: &'a [u8],
+}
+
+/// An interrupt through a pin of a GPIO controller (`GpioInt`, ACPI 6.5, 6.4.3.8.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GpioInterrupt<'a> {
+    pub pin: u16,
+    /// Edge-triggered rather than level.
+    pub edge: bool,
+    /// Active low (or the falling edge) rather than high.
+    pub active_low: bool,
+    /// Both edges.
+    pub both_edges: bool,
+    /// The GPIO controller's namespace path as the descriptor names it, without its NUL.
+    pub controller: &'a [u8],
+}
+
+const GPIO_TAG: u8 = 0x8c;
+const GPIO_INTERRUPT: u8 = 0;
+const EXTENDED_INTERRUPT_TAG: u8 = 0x89;
+
+fn names_a_path(name: &[u8]) -> bool {
+    let starts_a_name = |first: &u8| {
+        matches!(*first, ROOT_CHAR | PARENT_PREFIX | b'_') || first.is_ascii_uppercase()
+    };
+    name.first().is_some_and(starts_a_name) && name.iter().all(u8::is_ascii_graphic)
+}
+
+/// The first GPIO interrupt a `GpioInt` descriptor in `bytes` names: a resource template, or a
+/// method's body that builds one (D789).
+pub fn gpio_interrupt(bytes: &[u8]) -> Option<GpioInterrupt<'_>> {
+    (0..bytes.len()).find_map(|at| {
+        if bytes[at] != GPIO_TAG {
+            return None;
+        }
+        let length = usize::from(u16::from_le_bytes([
+            *bytes.get(at + 1)?,
+            *bytes.get(at + 2)?,
+        ]));
+        let body = bytes.get(at + 3..at + 3 + length)?;
+        if *body.get(1)? != GPIO_INTERRUPT {
+            return None;
+        }
+        let flags = u16::from_le_bytes([*body.get(4)?, *body.get(5)?]);
+        let field = |from: usize| -> Option<usize> {
+            Some(usize::from(u16::from_le_bytes([
+                *body.get(from)?,
+                *body.get(from + 1)?,
+            ])))
+        };
+        let pins_at = field(11)?.checked_sub(3)?;
+        let name_at = field(14)?.checked_sub(3)?;
+        let pin = u16::from_le_bytes([*body.get(pins_at)?, *body.get(pins_at + 1)?]);
+        let name = body.get(name_at..)?;
+        let end = name.iter().position(|&byte| byte == 0)?;
+        let controller = &name[..end];
+        let polarity = (flags >> 1) & 0x3;
+        names_a_path(controller).then_some(GpioInterrupt {
+            pin,
+            edge: flags & 1 != 0,
+            active_low: polarity == 1,
+            both_edges: polarity == 2,
+            controller,
+        })
+    })
+}
+
+/// The interrupts an extended interrupt descriptor in `_CRS` template `template` names: each
+/// global system interrupt, edge-triggered or not, active low or not (D789).
+pub fn interrupt_resources(template: &[u8], found: &mut dyn FnMut(u32, bool, bool)) {
+    let mut at = 0;
+    while at < template.len() {
+        let tag = template[at];
+        if tag & 0x80 == 0 {
+            if tag & 0x78 == 0x78 {
+                return;
+            }
+            at += 1 + usize::from(tag & 0x07);
+            continue;
+        }
+        let Some(length) = template
+            .get(at + 1..at + 3)
+            .map(|bytes| usize::from(u16::from_le_bytes([bytes[0], bytes[1]])))
+        else {
+            return;
+        };
+        let Some(body) = template.get(at + 3..at + 3 + length) else {
+            return;
+        };
+        if tag == EXTENDED_INTERRUPT_TAG && body.len() >= 6 {
+            let flags = body[0];
+            let count = usize::from(body[1]);
+            for index in 0..count {
+                if let Some(bytes) = body.get(2 + 4 * index..6 + 4 * index) {
+                    let global = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                    found(global, flags & 0x2 != 0, flags & 0x4 != 0);
+                }
+            }
+        }
+        at += 3 + length;
+    }
 }
 
 const SERIAL_BUS_TAG: u8 = 0x8e;
@@ -447,6 +549,12 @@ fn walk<'a>(
                         {
                             device.i2c = Some(connection);
                         }
+                        if let Value::Buffer(bytes) = value
+                            && let Some(line) = gpio_interrupt(bytes)
+                            && (device.gpio_interrupt.is_none() || last_segment(&path) == *b"_CRS")
+                        {
+                            device.gpio_interrupt = Some(line);
+                        }
                     }
                 }
                 METHOD_OP => {
@@ -458,6 +566,9 @@ fn walk<'a>(
                     {
                         if device.i2c.is_none() {
                             device.i2c = i2c_connection(body);
+                        }
+                        if device.gpio_interrupt.is_none() {
+                            device.gpio_interrupt = gpio_interrupt(body);
                         }
                         if last_segment(&path) == *b"_DSM" {
                             device.hid_descriptor_register = hid_descriptor_register(body);

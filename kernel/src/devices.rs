@@ -34,6 +34,7 @@ pub mod ethernet;
 pub mod gic_its;
 mod fdt_bus;
 #[cfg(any(test, feature = "i2c-hid"))]
+pub mod gpio;
 pub mod i2c;
 #[cfg(any(test, feature = "intel-display"))]
 pub mod intel_display;
@@ -361,6 +362,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     #[cfg(any(test, feature = "intel-wifi"))]
     &intel_wifi::INTEL_WIFI_DRIVER,
     #[cfg(any(test, feature = "i2c-hid"))]
+    &gpio::GPIO_DRIVER,
+    #[cfg(any(test, feature = "i2c-hid"))]
     &i2c::I2C_HID_DRIVER,
 ];
 
@@ -416,6 +419,12 @@ pub fn start_wifi<P: eggos_hal::Platform>() {
     let _ = intel_wifi::start::<P>();
 }
 
+/// Starts the GPIO controllers' interrupt threads (D789).
+pub fn start_gpio<P: eggos_hal::Platform>() {
+    #[cfg(any(test, feature = "i2c-hid"))]
+    gpio::start::<P>();
+}
+
 /// What a device is, as the bus that found it says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Identity {
@@ -437,6 +446,8 @@ pub enum Identity {
         cid: [u8; acpi_bus::ID_BYTES],
         path: [u8; acpi_bus::PATH_BYTES],
         i2c: Option<acpi_bus::I2cTarget>,
+        /// The global system interrupt its `_CRS` names first (D789).
+        interrupt: Option<u32>,
     },
     /// A device on an s390x I/O subchannel (D322): the subchannel's identification word, the
     /// device number, and the control unit's type and model from `SENSE ID` (0 when it did not

@@ -164,6 +164,7 @@ pub fn boot<P: Platform, W: Write>(console: &mut W) -> ExitStatus {
                 mount_disks::<P>(console)?;
                 mount_system_file_systems::<P>();
                 devices::start_wifi::<P>();
+                devices::start_gpio::<P>();
                 devices::start_display_firmware::<P>();
                 devices::pci_hotplug::start::<P>();
                 let wants_events = BOOT_MODE == BootMode::Init;

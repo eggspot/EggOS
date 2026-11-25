@@ -19,6 +19,7 @@ pub mod embedded_controller;
 pub mod ethernet;
 pub mod gpu;
 pub use eggos_font as font;
+pub mod gpio;
 pub mod i2c;
 pub mod input;
 pub mod interrupt;

@@ -182,7 +182,7 @@ and is not listed per item.
 - [x] INTx on riscv64 device-tree PCI hosts: a PLIC or APLIC source masked on arrival (D623) — code written, unbuilt, D632
 - [x] INTx of functions behind PCI bridges on device-tree hosts: the pin swizzled bridge by bridge to the root bus (D623) — code written, unbuilt, D631
 - [x] Shared INTx lines: several functions on one input, each handler asked in turn (D413) — code written, unbuilt, D622
-- [ ] GPIO controllers (Intel and AMD pin controllers) and GPIO interrupts for I2C-HID devices (D462)
+- [x] GPIO controllers (Intel and AMD pin controllers) and GPIO interrupts for I2C-HID devices (D462) — code written, unbuilt, D789
 - [x] `simple-framebuffer`: 16-bit `r5g6b5` formats (D542) — code written, unbuilt, D620
 - [ ] AMD DCN: DMCUB commands through the inbox, the other DCN versions' register places, link training and higher rates, HDMI, the scaler, the second pipe, AUX and EDID, watermarks from the mode equations, vertical-blank interrupts, and DCE for older cards (D496, D514, D521)
 - [ ] NVIDIA: Turing's GSP boot (version 2 descriptors, the non-PKC booter path), flips into the kernel's own surfaces in video memory, mode changes after the first, more heads, the cursor channel, completion notifiers, GSP-RM's unload booter at shutdown (D512, D522, D530)

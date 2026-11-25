@@ -5,7 +5,10 @@ the Type-C PHYs that follow are taken from Intel's i915 driver (`drivers/gpu/drm
 Linux source tree: `display/intel_tc.c`, `display/intel_display_regs.h`, `i915_reg.h`,
 `display/intel_display_power_well.c`, `intel_pcode.c`), whose files Intel publishes under the
 MIT licence below, separately from the rest of that tree. No code from them or from the Linux
-kernel is used; EggOS's code is its own, written from them. Earlier Intel work used Intel's
+kernel is used; EggOS's code is its own, written from them. Ice Lake's MG PHY
+(`intel_mg_phy.rs`, D788) and the combo PHY's DisplayPort drive table (`intel_combo_phy.rs`,
+D788) take their values from i915's `display/intel_ddi_buf_trans.c` and
+`display/intel_dpll_mgr.c` the same way. Earlier Intel work used Intel's
 public graphics programmer's reference manuals. The notice is reproduced as the licence
 requires.
 
