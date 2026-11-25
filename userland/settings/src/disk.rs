@@ -9,6 +9,7 @@ use alloc::string::String;
 use eggos_commands::{ErrorDefinition, errors};
 use eggos_eggfs::{CheckMode, DiskCheck};
 use eggos_files::partitions::{self, AlongsideRefusal, DiskLayout, Placement};
+use eggos_files::shrink::ShrinkError;
 use eggos_files::storage::{
     self, AddPartitionError, BesideError, BootFiles, DiskRecord, StorageError, WholeDisks, erased_text, headline, outcome_word,
 };
@@ -652,6 +653,18 @@ fn beside_failure(console: &mut impl Console, device: &str, error: &BesideError)
             &errors::NO_ROOM_ALONGSIDE,
             "the room EggOS was to use is no longer free",
         ),
+        BesideError::Shrink(ShrinkError::TailInUse) => (
+            &errors::CANNOT_SHRINK,
+            "the free space at the partition's end is in use now: nothing was changed",
+        ),
+        BesideError::Shrink(ShrinkError::NotShrinkable) => (
+            &errors::CANNOT_SHRINK,
+            "its file system cannot be shrunk by EggOS: nothing was changed",
+        ),
+        BesideError::Shrink(ShrinkError::Read | ShrinkError::Write) => (
+            &errors::FAILED,
+            "the disk could not be read or written while shrinking: back up, then check it",
+        ),
     };
     let message = format!("{device}: {sentence}");
     report(console, false, definition, &message);
@@ -713,14 +726,6 @@ fn install_alongside(
         console.write_output(line.as_bytes());
         return 0;
     }
-    let Placement::Unallocated(room) = placement else {
-        let message = format!(
-            "{}: making room by shrinking a partition is not written yet: free space on the disk first, then install alongside",
-            record.device
-        );
-        report(console, false, &errors::CANNOT_SHRINK, &message);
-        return FAILURE;
-    };
     let system_partition = partitions::system_partition(layout);
     if !options.yes {
         if let Err(status) = confirmed_alongside(console, record, layout, &placement, size_gib) {
@@ -728,7 +733,34 @@ fn install_alongside(
         }
     }
     let sectors = (size_gib << 30) / storage::SECTOR_BYTES;
-    match storage::install_beside(disks, record.device, system_partition, room, sectors, files) {
+    let installed = match placement {
+        Placement::Unallocated(room) => {
+            storage::install_beside(disks, record.device, system_partition, room, sectors, files)
+        }
+        Placement::ShrunkTail {
+            partition,
+            shrink_bytes,
+            following,
+        } => {
+            let Some(shrunk) = layout.partitions.iter().find(|each| each.number == partition) else {
+                return FAILURE;
+            };
+            let from_following = following.map_or(0, |run| run.size_bytes());
+            let needed = (size_gib << 30).saturating_sub(from_following).max(1 << 20);
+            let taken = shrink_bytes.min(needed);
+            storage::install_shrinking(
+                disks,
+                record.device,
+                shrunk,
+                taken,
+                following,
+                system_partition,
+                sectors,
+                files,
+            )
+        }
+    };
+    match installed {
         Ok(installation) => {
             let line = format!(
                 "{}\n",

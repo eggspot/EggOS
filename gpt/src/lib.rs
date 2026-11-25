@@ -287,6 +287,34 @@ pub fn add_partition(header: &Header, entries: &mut [u8], partition: &NewPartiti
     Ok(crc32(array))
 }
 
+/// Moves the end of partition `number` (from 1, in table order) of an existing table's entry
+/// array back to block `last` (D782) and answers the array's new CRC, for [`rewritten_header`].
+/// Nothing is changed when it is refused.
+///
+/// # Errors
+///
+/// An array that does not match its header, no such partition, or an end before its start or
+/// after its current end.
+pub fn shrink_partition(header: &Header, entries: &mut [u8], number: usize, last: u64) -> Result<u32, AddRefusal> {
+    let length = header.entry_count as usize * header.entry_bytes as usize;
+    let array = entries.get_mut(..length).ok_or(AddRefusal::Damaged)?;
+    if crc32(array) != header.entries_crc {
+        return Err(AddRefusal::Damaged);
+    }
+    let stride = header.entry_bytes as usize;
+    let entry = array
+        .chunks_exact_mut(stride)
+        .nth(number.checked_sub(1).ok_or(AddRefusal::OutsideUsable)?)
+        .ok_or(AddRefusal::OutsideUsable)?;
+    let first = u64::from_le_bytes(entry[32..40].try_into().map_err(|_| AddRefusal::Damaged)?);
+    let current = u64::from_le_bytes(entry[40..48].try_into().map_err(|_| AddRefusal::Damaged)?);
+    if entry[..16].iter().all(|byte| *byte == 0) || last < first || last > current {
+        return Err(AddRefusal::OutsideUsable);
+    }
+    entry[40..48].copy_from_slice(&last.to_le_bytes());
+    Ok(crc32(array))
+}
+
 /// A header like `header` (its places, usable range, disk and entry geometry kept) over an
 /// entry array whose CRC is `entries_crc`: the primary or backup header to write back after
 /// [`add_partition`].

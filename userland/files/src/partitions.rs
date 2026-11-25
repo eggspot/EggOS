@@ -759,18 +759,29 @@ pub fn alongside_dry_run_text(layout: &DiskLayout, placement: &Placement, size_g
 pub fn alongside_question(short: &str, device: &str, layout: &DiskLayout, placement: &Placement, size_gib: u64) -> String {
     let kept = joined_names(&layout.systems);
     let kept = if kept.is_empty() { String::from("what is on it") } else { kept };
+    let mut shrinks = false;
     let what = match *placement {
         Placement::ShrunkTail { partition, following, .. } => {
             let (before, after) = shrunk_sizes(layout, partition, size_gib * GIB, following);
             if after == before {
                 alloc::format!("uses {size_gib} GB of unallocated space")
             } else {
+                shrinks = true;
                 alloc::format!("shrinks {} to {} GB", system_named(layout, partition), whole_gb(after))
             }
         }
         Placement::Unallocated(_) => alloc::format!("uses {size_gib} GB of unallocated space"),
     };
-    alloc::format!("Type {short} to install EggOS beside {kept} on {device} ({what}, erases nothing): ")
+    let bitlocker = layout
+        .partitions
+        .iter()
+        .any(|partition| partition.file_system == FileSystemKind::Bitlocker);
+    let warning = match (bitlocker, shrinks) {
+        (true, _) => "Have your BitLocker recovery key ready. ",
+        (false, true) => "Back up first: a resize can fail. ",
+        (false, false) => "",
+    };
+    alloc::format!("{warning}Type {short} to install EggOS beside {kept} on {device} ({what}, erases nothing): ")
 }
 
 /// The EFI system partition EggOS shares on a disk (section 5), the first one in its table.
@@ -980,11 +991,11 @@ const EXT4_GROUP_BLOCK_UNINIT: u16 = 2;
 const EXT4_SMALL_DESCRIPTOR: usize = 32;
 const EXT4_MOST_BLOCK_SHIFT: u32 = 6;
 
-fn le16(bytes: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn le16(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn le32(bytes: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn le32(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
@@ -1089,11 +1100,11 @@ const NTFS_MOST_INDEX_BLOCKS: u64 = 4096;
 const NTFS_MOST_INDEX_BYTES: usize = 64 * 1024;
 const HIBERNATION_FILE: &str = "hiberfil.sys";
 
-fn le64(bytes: &[u8], at: usize) -> Option<u64> {
+pub(crate) fn le64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
-fn ntfs_record(
+pub(crate) fn ntfs_record(
     record: &mut [u8],
     at: u64,
     read: &mut dyn FnMut(u64, &mut [u8]) -> bool,
@@ -1104,7 +1115,7 @@ fn ntfs_record(
     ntfs_fix_up(record)
 }
 
-fn ntfs_attribute(record: &[u8], kind: u32) -> Option<&[u8]> {
+pub(crate) fn ntfs_attribute(record: &[u8], kind: u32) -> Option<&[u8]> {
     ntfs_attribute_named(record, kind, false)
 }
 
@@ -1685,7 +1696,7 @@ mod tests {
         );
         assert_eq!(
             alongside_question("vdb", "/dev/vdb", &layout, &placement, 36),
-            "Type vdb to install EggOS beside Windows on /dev/vdb (shrinks Windows to 64 GB, erases nothing): "
+            "Back up first: a resize can fail. Type vdb to install EggOS beside Windows on /dev/vdb (shrinks Windows to 64 GB, erases nothing): "
         );
         assert_eq!(erased_systems_text(&layout).as_deref(), Some("Windows and 3 more partitions"));
         assert_eq!(

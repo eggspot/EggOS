@@ -1528,8 +1528,35 @@ fn add_partition_named(
     device: &str,
     partition: eggos_gpt::NewPartition<'_>,
 ) -> Result<eggos_gpt::Guid, AddPartitionError> {
-    let line = unmounted(disks, device, true).map_err(AddPartitionError::Storage)?;
     let unique = partition.unique;
+    change_table(disks, device, &mut |header, entries| {
+        eggos_gpt::add_partition(header, entries, &partition)
+    })?;
+    Ok(unique)
+}
+
+/// Moves the end of partition `number` of `device`'s table back to sector `last` (D782): the
+/// backup table first, then the primary.
+pub fn shrink_partition_entry(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    number: usize,
+    last: u64,
+) -> Result<(), AddPartitionError> {
+    change_table(disks, device, &mut |header, entries| {
+        eggos_gpt::shrink_partition(header, entries, number, last)
+    })
+}
+
+type TableChange<'c> =
+    dyn FnMut(&eggos_gpt::Header, &mut [u8]) -> Result<u32, eggos_gpt::AddRefusal> + 'c;
+
+fn change_table(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    change: &mut TableChange<'_>,
+) -> Result<(), AddPartitionError> {
+    let line = unmounted(disks, device, true).map_err(AddPartitionError::Storage)?;
     let handle = disks
         .open(line.device, true)
         .map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
@@ -1539,7 +1566,7 @@ fn add_partition_named(
         if eggos_gpt::crc32(&backup_entries) != primary.entries_crc {
             return Err(AddPartitionError::Table(eggos_gpt::AddRefusal::Damaged));
         }
-        let crc = eggos_gpt::add_partition(&primary, &mut entries, &partition).map_err(AddPartitionError::Table)?;
+        let crc = change(&primary, &mut entries).map_err(AddPartitionError::Table)?;
         let mut header_block = [0u8; SECTOR_BYTES as usize];
         let mut write_at = |at_block: u64, bytes: &[u8]| {
             disks
@@ -1552,13 +1579,94 @@ fn add_partition_named(
         write_at(primary.entries_at, &entries)?;
         header_block[..eggos_gpt::HEADER_BYTES].copy_from_slice(&eggos_gpt::rewritten_header(&primary, crc));
         write_at(primary.current, &header_block)?;
-        Ok(unique)
+        Ok(())
     })();
     let flushed = disks.flush(handle);
     disks.close(handle);
-    let unique = result?;
+    result?;
     flushed.map_err(|fault| AddPartitionError::Storage(StorageError::of(fault)))?;
-    Ok(unique)
+    Ok(())
+}
+
+struct PartitionOnDisk<'d, D: WholeDisks + ?Sized> {
+    disks: &'d mut D,
+    handle: usize,
+    offset: u64,
+}
+
+impl<D: WholeDisks + ?Sized> crate::shrink::PartitionIo for PartitionOnDisk<'_, D> {
+    fn read(&mut self, at: u64, buffer: &mut [u8]) -> bool {
+        self.disks
+            .read_at(self.handle, self.offset + at, buffer)
+            .is_ok()
+    }
+
+    fn write(&mut self, at: u64, bytes: &[u8]) -> bool {
+        self.disks
+            .write_at(self.handle, self.offset + at, bytes)
+            .is_ok()
+    }
+}
+
+/// Makes room for EggOS in partition `partition`'s free tail (D782): shrinks its file system
+/// (ext4 or NTFS) to `shrink_bytes` less, aligned to 1 MiB, then its table entry, then
+/// installs beside it as [`install_beside`] does in the room freed, joined with `following`.
+#[allow(clippy::too_many_arguments)]
+pub fn install_shrinking(
+    disks: &mut (impl WholeDisks + ?Sized),
+    device: &str,
+    partition: &crate::partitions::PartitionRecord,
+    shrink_bytes: u64,
+    following: Option<crate::partitions::FreeRun>,
+    system_partition: Option<&crate::partitions::PartitionRecord>,
+    sectors: u64,
+    files: &BootFiles,
+) -> Result<BesideInstallation, BesideError> {
+    use crate::partitions::FileSystemKind;
+    use crate::shrink::{ShrinkError, shrink_ext4, shrink_ntfs};
+    let line = unmounted(disks, device, true).map_err(BesideError::Storage)?;
+    let old_end = partition.first_sector + partition.sectors;
+    let wanted_end = old_end.saturating_sub(shrink_bytes / SECTOR_BYTES);
+    let new_end = wanted_end / ALIGNMENT_SECTORS * ALIGNMENT_SECTORS;
+    if new_end <= partition.first_sector || new_end >= old_end {
+        return Err(BesideError::Shrink(ShrinkError::TailInUse));
+    }
+    let new_bytes = (new_end - partition.first_sector) * SECTOR_BYTES;
+    let handle = disks
+        .open(line.device, true)
+        .map_err(|fault| BesideError::Storage(StorageError::of(fault)))?;
+    let shrunk = {
+        let mut io = PartitionOnDisk {
+            disks: &mut *disks,
+            handle,
+            offset: partition.first_sector * SECTOR_BYTES,
+        };
+        match partition.file_system {
+            FileSystemKind::Ext4 => shrink_ext4(&mut io, new_bytes),
+            FileSystemKind::Ntfs => shrink_ntfs(&mut io, new_bytes),
+            _ => Err(ShrinkError::NotShrinkable),
+        }
+    };
+    let flushed = disks.flush(handle);
+    disks.close(handle);
+    let fs_bytes = shrunk.map_err(BesideError::Shrink)?;
+    flushed.map_err(|fault| BesideError::Storage(StorageError::of(fault)))?;
+    if fs_bytes > new_bytes {
+        return Err(BesideError::Shrink(ShrinkError::TailInUse));
+    }
+    shrink_partition_entry(disks, line.device, partition.number, new_end - 1)
+        .map_err(BesideError::Partition)?;
+    let room_end = following
+        .filter(|run| {
+            run.first_sector >= old_end
+                && run.first_sector <= old_end.next_multiple_of(ALIGNMENT_SECTORS)
+        })
+        .map_or(old_end, |run| run.first_sector + run.sectors);
+    let room = crate::partitions::FreeRun {
+        first_sector: new_end,
+        sectors: room_end - new_end,
+    };
+    install_beside(disks, line.device, system_partition, room, sectors, files)
 }
 
 /// A GUID as text, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, as GPT tools write it.
@@ -1598,6 +1706,8 @@ pub enum BesideError {
     LoaderNameTooLong,
     /// EggOS's partition could not be added to the table.
     Partition(AddPartitionError),
+    /// The partition giving its tail could not be shrunk (D782); nothing was changed.
+    Shrink(crate::shrink::ShrinkError),
 }
 
 fn shared_partition_error(error: eggos_fat32::Error<Fault>) -> BesideError {

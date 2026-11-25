@@ -49,6 +49,17 @@ impl Crc32c {
     pub fn finish(self) -> u32 {
         !self.0
     }
+
+    /// A checksum going on from raw register value `register`, as ext4's metadata checksums
+    /// chain them (D782): no inversion at either end.
+    pub const fn from_register(register: u32) -> Self {
+        Self(register)
+    }
+
+    /// The raw register value, without the final inversion.
+    pub fn register(self) -> u32 {
+        self.0
+    }
 }
 
 /// The CRC-32C of `bytes`.

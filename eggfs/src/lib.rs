@@ -62,6 +62,7 @@ mod repair_tests;
 mod tests;
 
 pub use check::{CheckReport, Inconsistency};
+pub use checksum::Crc32c;
 pub use journal::{Contents, FormatError, FormatOptions, format, format_with, probe};
 pub use layout::{BLOCK_SIZE, MAX_LABEL, MAX_LINK_TARGET, MAX_LINKS, MAX_NAME, VERSION};
 pub use repair::{CheckError, CheckMode, DiskCheck, Finding, Outcome, Problem, check_disk};

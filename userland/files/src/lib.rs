@@ -21,6 +21,8 @@ pub mod program;
 #[cfg(feature = "storage")]
 pub mod partitions;
 #[cfg(feature = "storage")]
+pub mod shrink;
+#[cfg(feature = "storage")]
 pub mod storage;
 pub mod trash;
 
