@@ -5,8 +5,10 @@
 //! menus, dialogs, notices and rename field drawn inside it. It is
 //! pure state over [`Files`]: it reads and changes the file systems through the trait and asks
 //! the program for what only the system does ([`Request`]), so host tests and the QEMU test's
-//! expected frames run the same code the program shows.
+//! expected frames run the same code the program shows. Its columns' order follows the person's
+//! header drags and is kept across runs (D778).
 
+mod columns;
 mod drag;
 mod elements;
 mod paint;
@@ -90,10 +92,6 @@ pub const UP_BUTTON: Rect = Rect::new(36, 2, 28, 28);
 pub(crate) const PATH_FIELD_X: i32 = 72;
 pub(crate) const NAME_X: i32 = 28;
 pub(crate) const RENAME_X: i32 = 20;
-pub(crate) const SIZE_END_FROM_RIGHT: i32 = 144;
-pub(crate) const TIME_WIDTH: i32 = 128;
-pub(crate) const COLUMN_GAP: i32 = 8;
-pub(crate) const SIZE_WIDTH: i32 = 80;
 pub(crate) const STATUS_TEXT_X: i32 = 12;
 pub(crate) const STATUS_TEXT_TOP: i32 = 4;
 pub(crate) const STATUS_END_FROM_RIGHT: i32 = 12;
@@ -305,6 +303,7 @@ enum Pressed {
     Back,
     Up,
     Thumb { grab_y: i32, start_offset: i32 },
+    Header { from: usize, grab_x: i32, at_x: i32 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -377,6 +376,7 @@ pub struct FilesWindow {
     free_space: FreeSpace,
     selected: Option<usize>,
     selection: RowSet<SELECTION_WORDS>,
+    columns: columns::Columns,
     anchor: Option<usize>,
     deleting: alloc::vec::Vec<Path>,
     offset: i32,
@@ -449,6 +449,7 @@ impl FilesWindow {
             free_space: FreeSpace::Unknown,
             selected: None,
             selection: RowSet::EMPTY,
+            columns: read_columns(files),
             anchor: None,
             deleting: alloc::vec::Vec::new(),
             offset: 0,
@@ -675,12 +676,12 @@ impl FilesWindow {
     /// Where the rows' times are: the column a test that cannot know the guest's clock skips.
     pub fn time_column(&self) -> Rect {
         let rows = self.rows();
-        Rect::new(
-            self.columns_right() - COLUMN_GAP - TIME_WIDTH,
-            rows.y,
-            TIME_WIDTH,
-            rows.height,
-        )
+        let spans = self.column_spans();
+        let span = spans
+            .iter()
+            .find(|span| span.column == columns::Column::Time)
+            .unwrap_or(&spans[2]);
+        Rect::new(span.x, rows.y, span.width, rows.height)
     }
 
     /// Place row `index`'s rectangle in the sidebar.
@@ -1857,6 +1858,15 @@ impl FilesWindow {
     }
 
     fn pointer_moved(&mut self, x: i32, y: i32) {
+        if let Some(Pressed::Header { from, grab_x, .. }) = self.pressed {
+            self.pressed = Some(Pressed::Header {
+                from,
+                grab_x,
+                at_x: x,
+            });
+            self.damage_middle();
+            return;
+        }
         if let Some(Pressed::Thumb {
             grab_y,
             start_offset,
@@ -1910,7 +1920,50 @@ impl FilesWindow {
         }
     }
 
+    /// The list's columns' places, left to right.
+    pub(crate) fn column_spans(&self) -> [columns::Span; 3] {
+        self.columns
+            .spans(self.list().x, self.columns_right() - columns::GAP)
+    }
+
+    fn header(&self) -> Rect {
+        let list = self.list();
+        Rect::new(list.x, list.y, self.columns_right() - list.x, HEADER_HEIGHT)
+    }
+
+    /// The boundary a dragged header would drop into, while one is dragged and it moves it.
+    pub(crate) fn header_drop(&self) -> Option<(usize, i32)> {
+        let Some(Pressed::Header { from, at_x, .. }) = self.pressed else {
+            return None;
+        };
+        let spans = self.column_spans();
+        let boundary = columns::Columns::boundary_at(&spans, at_x);
+        if boundary == from || boundary == from + 1 {
+            return None;
+        }
+        let x = match spans.get(boundary) {
+            Some(span) => span.x - columns::GAP / 2,
+            None => spans[2].x + spans[2].width + columns::GAP / 2,
+        };
+        Some((boundary, x))
+    }
+
     fn left_pressed(&mut self, files: &mut impl Files, x: i32, y: i32) {
+        if self.header().contains(x, y) {
+            let spans = self.column_spans();
+            if let Some(from) = spans
+                .iter()
+                .position(|span| (span.x..span.x + span.width).contains(&x))
+            {
+                self.pressed = Some(Pressed::Header {
+                    from,
+                    grab_x: x,
+                    at_x: x,
+                });
+                self.damage_middle();
+                return;
+            }
+        }
         if BACK_BUTTON.contains(x, y) {
             self.pressed = Some(Pressed::Back);
             self.damage.add(self.toolbar());
@@ -2008,6 +2061,15 @@ impl FilesWindow {
             return;
         };
         self.damage.add(self.toolbar());
+        if let Pressed::Header { from, .. } = pressed {
+            let spans = self.column_spans();
+            let boundary = columns::Columns::boundary_at(&spans, x);
+            if self.columns.move_to(from, boundary).is_some() {
+                save_columns(files, &self.columns);
+            }
+            self.damage_middle();
+            return;
+        }
         match pressed {
             Pressed::Back if BACK_BUTTON.contains(x, y) => self.back(files),
             Pressed::Up if UP_BUTTON.contains(x, y) => self.up(files),
@@ -2866,4 +2928,24 @@ impl core::fmt::Display for Shown<'_> {
         let mut out = [0u8; names::NAME_CAPACITY * 2];
         formatter.write_str(names::display(self.0, &mut out))
     }
+}
+
+fn read_columns(files: &mut impl Files) -> columns::Columns {
+    let Ok(handle) = files.open(columns::COLUMNS_PATH) else {
+        return columns::Columns::default();
+    };
+    let mut bytes = [0u8; 64];
+    let read = files.read(handle, &mut bytes).unwrap_or(0);
+    files.close(handle);
+    columns::Columns::parse(&bytes[..read])
+}
+
+fn save_columns(files: &mut impl Files, columns: &columns::Columns) {
+    let _ = make_folders(files, b"/home/root/.config/eggos");
+    let Ok(handle) = files.create(columns::COLUMNS_PATH, 0o644) else {
+        return;
+    };
+    let line = columns.line();
+    let _ = files.write(handle, &line[..columns.line_length()]);
+    files.close(handle);
 }

@@ -154,7 +154,7 @@ and is not listed per item.
 - [x] Toolkit: table multi-selection and cell focus (docs/ux/toolkit-v0.6.md sections 4.3, 4.4) — code written, unbuilt, D627
 - [x] Toolkit: table column reordering by drag and fit-to-content (docs/ux/toolkit-v0.6.md sections 4.1, 4.2) — code written, unbuilt, D628
 - [x] Toolkit: a table header drag scrolling the table near its edges (docs/ux/toolkit-v0.6.md section 4.1) — code written, unbuilt, D633
-- [ ] Files: its table on `RowSet` multi-selection and saving its column order (docs/ux/toolkit-v0.6.md section 4; multi-selection on `RowSet` code written, unbuilt: D707; left: column order, which needs Files' list on the toolkit's `Table`)
+- [x] Files: its table on `RowSet` multi-selection and saving its column order (docs/ux/toolkit-v0.6.md section 4; multi-selection on `RowSet` code written, unbuilt: D707; left: column order, which needs Files' list on the toolkit's `Table`) — code written, unbuilt, D707, D778
 
 ## M13 Real hardware, vendor drivers and mitigations
 

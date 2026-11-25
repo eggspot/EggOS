@@ -1007,9 +1007,9 @@ fn link_rows_wear_the_badge_over_their_targets_mark_and_a_broken_one_is_dim() {
         at(folder_link.x + 19, folder_link.y + 14),
         colour_of::ICON_FOLDER
     );
-    let size_x = driver.window.columns_right() - SIZE_END_FROM_RIGHT - SIZE_WIDTH;
+    let size = driver.window.column_spans()[1];
     let name_area = |row: Rect| Rect::new(row.x + NAME_X, row.y, 60, ROW_HEIGHT);
-    let size_area = |row: Rect| Rect::new(size_x, row.y, SIZE_WIDTH, ROW_HEIGHT);
+    let size_area = |row: Rect| Rect::new(size.x, row.y, size.width, ROW_HEIGHT);
     let sound = driver.window.row_rect(driver.row("notes link.txt"));
     assert!(inks(&pixels, name_area(sound)).0 > 0);
     let broken = driver.window.row_rect(driver.row("gone"));

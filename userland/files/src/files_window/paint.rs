@@ -1,7 +1,7 @@
+use super::columns::Column;
 use super::{
-    BACK_BUTTON, COLUMN_GAP, FilesWindow, Focus, HEADER_HEIGHT, HOST_SHARE, Hover, Location,
-    NAME_X, Place, Pressed, ROW_HEIGHT, SIDEBAR_WIDTH, SIZE_END_FROM_RIGHT, SIZE_WIDTH,
-    STATUS_TEXT_X, TIME_WIDTH, UP_BUTTON, WORK, text_of,
+    BACK_BUTTON, FilesWindow, Focus, HEADER_HEIGHT, HOST_SHARE, Hover, Location, NAME_X, Place,
+    Pressed, ROW_HEIGHT, SIDEBAR_WIDTH, STATUS_TEXT_X, UP_BUTTON, WORK, text_of,
 };
 use crate::clock::list_time;
 use crate::kind::Link;
@@ -230,27 +230,41 @@ impl FilesWindow {
     fn paint_list(&self, canvas: &mut Canvas<'_>) {
         let list = self.list();
         canvas.fill(list, canvas.palette().menu);
-        let right = self.columns_right();
         let header_y = list.y + TEXT_TOP;
-        canvas.text(list.x + NAME_X, header_y, "Name", canvas.palette().text_dim, 1);
-        right_aligned(
-            canvas,
-            right - SIZE_END_FROM_RIGHT,
-            header_y,
-            "Size",
-            canvas.palette().text_dim,
-        );
         let time_heading = match self.location {
             Location::Trash => "Deleted",
             Location::Folder(_) => "Modified",
         };
-        canvas.text(
-            right - COLUMN_GAP - TIME_WIDTH,
-            header_y,
-            time_heading,
-            canvas.palette().text_dim,
-            1,
-        );
+        let dragged = match self.pressed {
+            Some(Pressed::Header { from, .. }) => Some(from),
+            _ => None,
+        };
+        for (index, span) in self.column_spans().into_iter().enumerate() {
+            let ink = match dragged == Some(index) {
+                true => canvas.palette().text,
+                false => canvas.palette().text_dim,
+            };
+            if dragged == Some(index) {
+                canvas.fill(
+                    Rect::new(span.x, list.y, span.width, HEADER_HEIGHT - 1),
+                    canvas.palette().button_pressed,
+                );
+            }
+            let first = index == 0;
+            match span.column {
+                Column::Name => {
+                    let x = span.x + if first { NAME_X } else { 0 };
+                    canvas.text(x, header_y, "Name", ink, 1);
+                }
+                Column::Size => {
+                    right_aligned(canvas, span.x + span.width, header_y, "Size", ink);
+                }
+                Column::Time => {
+                    let x = span.x + if first { NAME_X } else { 0 };
+                    canvas.text(x, header_y, time_heading, ink, 1);
+                }
+            }
+        }
         canvas.fill(
             Rect::new(list.x, list.y + HEADER_HEIGHT - 1, list.width, 1),
             canvas.palette().bar_edge,
@@ -264,6 +278,12 @@ impl FilesWindow {
         let shown = (rows.height / ROW_HEIGHT + 2) as usize;
         for index in first..(first + shown).min(self.listing.len()) {
             self.paint_row(canvas, index);
+        }
+        if let Some((_, x)) = self.header_drop() {
+            canvas.fill(
+                Rect::new(x - 1, list.y, 2, list.height),
+                canvas.palette().accent,
+            );
         }
         if let Some((track, thumb)) = self.scroll_bar() {
             canvas.fill(track, canvas.palette().progress_track);
@@ -354,46 +374,46 @@ impl FilesWindow {
                 },
             );
         } else {
-            let right = self.columns_right();
-            let size_start = right - SIZE_END_FROM_RIGHT - SIZE_WIDTH;
-            let name_x = row.x + NAME_X;
-            let space = size_start - COLUMN_GAP - name_x;
-            let name = text_of(self.listing.name(index));
-            let (end, ellipsis) = text::fit(name.as_str(), space);
-            let mut after = canvas.text(name_x, row.y + TEXT_TOP, &name.as_str()[..end], ink, 1);
-            if ellipsis {
-                after = canvas.text(after, row.y + TEXT_TOP, text::ELLIPSIS, ink, 1);
-            }
-            if let Some(source) = entry.kind.source()
-                && after + BADGE_GAP + BADGE <= size_start
-            {
-                canvas.fill(
-                    Rect::new(after + BADGE_GAP, row.y + BADGE_TOP, BADGE, BADGE),
-                    badge_colour(source, canvas.palette()),
-                );
-            }
-            let size = match entry.kind.is_folder() || entry.link == Link::Broken {
-                true => {
-                    let mut dash = crate::clock::Stamp::new();
-                    let _ = core::fmt::Write::write_str(&mut dash, "-");
-                    dash
+            for (place, span) in self.column_spans().into_iter().enumerate() {
+                let start = span.x + if place == 0 { NAME_X } else { 0 };
+                match span.column {
+                    Column::Name => {
+                        let end_x = span.x + span.width;
+                        let space = end_x - start;
+                        let name = text_of(self.listing.name(index));
+                        let (end, ellipsis) = text::fit(name.as_str(), space);
+                        let shown = &name.as_str()[..end];
+                        let mut after = canvas.text(start, row.y + TEXT_TOP, shown, ink, 1);
+                        if ellipsis {
+                            after = canvas.text(after, row.y + TEXT_TOP, text::ELLIPSIS, ink, 1);
+                        }
+                        if let Some(source) = entry.kind.source()
+                            && after + BADGE_GAP + BADGE <= end_x
+                        {
+                            canvas.fill(
+                                Rect::new(after + BADGE_GAP, row.y + BADGE_TOP, BADGE, BADGE),
+                                badge_colour(source, canvas.palette()),
+                            );
+                        }
+                    }
+                    Column::Size => {
+                        let size = match entry.kind.is_folder() || entry.link == Link::Broken {
+                            true => {
+                                let mut dash = crate::clock::Stamp::new();
+                                let _ = core::fmt::Write::write_str(&mut dash, "-");
+                                dash
+                            }
+                            false => size_text(entry.size),
+                        };
+                        let end_x = span.x + span.width;
+                        right_aligned(canvas, end_x, row.y + TEXT_TOP, size.as_str(), ink);
+                    }
+                    Column::Time => {
+                        let time = list_time(entry.time);
+                        canvas.text(start, row.y + TEXT_TOP, time.as_str(), ink, 1);
+                    }
                 }
-                false => size_text(entry.size),
-            };
-            right_aligned(
-                canvas,
-                right - SIZE_END_FROM_RIGHT,
-                row.y + TEXT_TOP,
-                size.as_str(),
-                ink,
-            );
-            canvas.text(
-                right - COLUMN_GAP - TIME_WIDTH,
-                row.y + TEXT_TOP,
-                list_time(entry.time).as_str(),
-                ink,
-                1,
-            );
+            }
         }
         if chosen && self.window_focused && self.focus == Focus::List && renaming.is_none() {
             widget::focus_ring(canvas, row, 0);
