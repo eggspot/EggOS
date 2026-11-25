@@ -48,6 +48,8 @@ pub mod rtc;
 pub(crate) mod selftest;
 #[cfg(any(test, feature = "soc-display"))]
 pub mod soc_display;
+#[cfg(any(test, feature = "hd-audio"))]
+pub mod sound;
 #[cfg(any(test, feature = "nvme", feature = "ahci"))]
 pub mod storage;
 #[cfg(any(test, feature = "xhci"))]
@@ -314,6 +316,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &virtio::IOMMU_DRIVER,
     #[cfg(any(test, feature = "virtio-rng"))]
     &virtio::RNG_DRIVER,
+    #[cfg(any(test, feature = "virtio-sound"))]
+    &virtio::SOUND_DRIVER,
     #[cfg(any(test, feature = "virtio-gpu"))]
     &virtio::GPU_DRIVER,
     #[cfg(any(test, feature = "virtio-input"))]
@@ -338,6 +342,8 @@ pub const BUILTIN: &[&DriverDescriptor] = &[
     &usb::XHCI_DRIVER,
     #[cfg(any(test, feature = "ethernet"))]
     &ethernet::ETHERNET_DRIVER,
+    #[cfg(any(test, feature = "hd-audio"))]
+    &sound::HD_AUDIO_DRIVER,
     #[cfg(any(test, feature = "vendor-gpus"))]
     &vendor_gpus::AMD_DISPLAY_DRIVER,
     #[cfg(any(test, feature = "apple-display"))]

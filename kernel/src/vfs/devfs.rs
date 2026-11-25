@@ -20,7 +20,9 @@
 //! listed, but reading or writing it fails. `rtc0` is the real-time clock's device, a regular
 //! file whose `ioctl`s read and set the clock and its alarm, on a machine with one
 //! ([`crate::linux::rtc_device`], D194). The directory `dri` holds `renderD128`, the GPU's render node
-//! ([`crate::linux::render_node`], D415), on a machine whose GPU takes 3D commands.
+//! ([`crate::linux::render_node`], D415), on a machine whose GPU takes 3D commands. `sound` is
+//! the sound output, a regular file of root's that takes interleaved 16-bit stereo frames at
+//! the device's rate, as much as the device has room for (D773).
 
 use super::{
     Attributes, DirectoryEntry, FileSystem, Name, Node, NodeKind, Refused, StorageError, Usage,
@@ -178,7 +180,10 @@ pub const RENDER_NODE_DEVICE: (u32, u32) = (226, 128);
 
 const RENDER_NODE_NAME: &[u8] = b"renderD128";
 
-const FILES: [(&[u8], u64); 22] = [
+/// `/dev/sound`'s node: the sound output, which the sound server writes frames to (D773).
+pub const SOUND: u64 = 34;
+
+const FILES: [(&[u8], u64); 23] = [
     (eggos_android_properties::AREA_NAME, PROPERTIES),
     (b"agent", AGENT),
     (eggos_android_log::LOG_NAME, ANDROID_LOG),
@@ -194,6 +199,7 @@ const FILES: [(&[u8], u64); 22] = [
     (b"rtc0", RTC),
     (b"shm", SHM),
     (eggos_android_log::SOCKETS_NAME, SOCKETS),
+    (b"sound", SOUND),
     (b"stderr", STDERR),
     (b"stdin", STDIN),
     (b"stdout", STDOUT),
@@ -243,6 +249,7 @@ fn is_listed(node: u64) -> bool {
         Some(index) => block::facts(index).present,
         None if node == RTC => crate::wall_clock::has_clock(),
         None if node == DRI => crate::rendering::is_present(),
+        None if node == SOUND => crate::sound::is_present(),
         None => node != AGENT || crate::agent_channel::is_present(),
     }
 }
@@ -291,7 +298,7 @@ fn link_of(node: u64) -> Option<&'static [u8]> {
 fn kind_of(node: u64) -> NodeKind {
     match node {
         ROOT | SHM | PTS | SOCKETS | DRI => NodeKind::Directory,
-        PROPERTIES | ANDROID_LOG | RTC => NodeKind::Regular,
+        PROPERTIES | ANDROID_LOG | RTC | SOUND => NodeKind::Regular,
         _ if disk_of(node).is_some() => NodeKind::Regular,
         LOG_WRITER => NodeKind::Socket,
         _ if link_of(node).is_some() => NodeKind::SymbolicLink,
@@ -329,7 +336,7 @@ impl FileSystem for DeviceFiles {
                 SHM => 0o1777,
                 PROPERTIES | ANDROID_LOG => 0o444,
                 LOG_WRITER => 0o222,
-                AGENT | CONSOLE | RTC => 0o600,
+                AGENT | CONSOLE | RTC | SOUND => 0o600,
                 KMSG => 0o644,
                 _ if disk_of(node).is_some() => 0o600,
                 _ if link_of(node).is_some() => 0o777,
@@ -416,7 +423,7 @@ impl FileSystem for DeviceFiles {
     }
 
     fn is_node_writable(&self, node: u64) -> bool {
-        node == RTC || disk_of(node).is_some()
+        node == RTC || node == SOUND || disk_of(node).is_some()
     }
 
     fn write(
@@ -426,6 +433,9 @@ impl FileSystem for DeviceFiles {
         bytes: &[u8],
         _now: u64,
     ) -> Result<(usize, u64), Refused> {
+        if node == SOUND {
+            return Ok((crate::sound::write(bytes), 0));
+        }
         let (Some(index), WriteAt::Offset(offset)) = (disk_of(node), at) else {
             return Err(Refused::ReadOnly);
         };

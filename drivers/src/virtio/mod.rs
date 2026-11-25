@@ -16,6 +16,7 @@ pub mod net;
 pub mod pci;
 pub mod queue;
 pub mod rng;
+pub mod sound;
 
 #[cfg(test)]
 mod tests;
@@ -61,6 +62,7 @@ pub mod device_type {
     pub const GPU: u32 = 16;
     pub const INPUT: u32 = 18;
     pub const IOMMU: u32 = 23;
+    pub const SOUND: u32 = 25;
 }
 
 /// A short name for virtio device type `device_type`.
@@ -73,6 +75,7 @@ pub fn device_type_name(device_type: u32) -> &'static str {
         device_type::GPU => "gpu",
         device_type::INPUT => "input",
         device_type::IOMMU => "iommu",
+        device_type::SOUND => "sound",
         _ => "unknown",
     }
 }
@@ -134,6 +137,8 @@ pub enum Error {
     NoCursor,
     /// The GPU takes no 3D commands, or the driver has no memory for them.
     NoThreeD,
+    /// The sound device has no output stream that plays 16-bit stereo at 48 or 44.1 kHz.
+    NoOutputStream,
     /// A virtio-ccw channel program failed.
     Channel(crate::channel::ChannelError),
 }
@@ -172,6 +177,7 @@ impl Error {
             Error::FrameTooLong => "a frame longer than the network device's buffers",
             Error::NoCursor => "the GPU has no cursor queue, or its cursor is not set up",
             Error::NoThreeD => "the GPU takes no 3D commands, or has no memory for them",
+            Error::NoOutputStream => "the sound device has no 16-bit stereo output stream",
             Error::Channel(error) => error.description(),
         }
     }

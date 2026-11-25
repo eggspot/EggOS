@@ -44,6 +44,7 @@ pub mod rendering;
 pub mod screen_reader;
 pub mod selftest;
 pub mod shared_frames;
+pub mod sound;
 pub mod suspend;
 pub mod sync;
 pub mod terminal;

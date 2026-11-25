@@ -1458,6 +1458,83 @@ mod network {
     }
 }
 
+#[cfg(any(test, feature = "virtio-sound"))]
+pub use sound_device::SOUND_DRIVER;
+
+#[cfg(any(test, feature = "virtio-sound"))]
+mod sound_device {
+    use super::*;
+    use crate::sound::SoundOutput;
+    use eggos_drivers::sound::PcmFormat;
+    use eggos_drivers::virtio::sound::{MEMORY_BYTES, VirtioSound};
+
+    const ANSWER_TIMEOUT_MS: u64 = 1000;
+    const COMMAND_SPINS: u32 = 1 << 20;
+
+    struct VirtioOutput(VirtioSound<AnyTransport, DmaRegion>);
+
+    impl SoundOutput for VirtioOutput {
+        fn id(&self) -> &'static str {
+            "virtio0-out"
+        }
+
+        fn name(&self) -> &'static str {
+            "virtio sound"
+        }
+
+        fn format(&self) -> PcmFormat {
+            self.0.format()
+        }
+
+        fn write(&mut self, samples: &[u8]) -> usize {
+            let mut spins = 0;
+            let mut keep_waiting = || {
+                spins += 1;
+                spins < COMMAND_SPINS
+            };
+            self.0.write(samples, &mut keep_waiting).unwrap_or(0)
+        }
+    }
+
+    /// The virtio sound device (virtio 1.2, 5.14), installed as the sound output (D773).
+    pub static SOUND_DRIVER: DriverDescriptor = DriverDescriptor {
+        name: "virtio-sound",
+        pass: ProbePass::Device,
+        matches: &[Match::VirtioId(virtio::device_type::SOUND)],
+        probe: probe_sound,
+    };
+
+    fn probe_sound(probe: &mut dyn Probe, id: DeviceId) -> Result<(), ProbeError> {
+        let node = *probe
+            .table()
+            .get(id)
+            .ok_or(ProbeError::Refused("no such device"))?;
+        if node.dma != DmaCoherence::Coherent {
+            return Err(ProbeError::Refused("the device's DMA is not coherent"));
+        }
+        if crate::sound::is_present() {
+            return Err(ProbeError::Refused("a sound output is already in use"));
+        }
+        let transport =
+            take_transport(&node.identity).ok_or(ProbeError::Refused("no transport"))?;
+        let memory = DmaRegion::allocate(MEMORY_BYTES)
+            .map_err(|_| ProbeError::Refused("no memory for the device's queues"))?;
+        let mut deadline = probe.deadline(ANSWER_TIMEOUT_MS);
+        match VirtioSound::new(transport, memory, &mut || deadline.keep_waiting()) {
+            Ok(sound) => crate::sound::install(Box::new(VirtioOutput(sound)))
+                .map_err(|_| ProbeError::Refused("a sound output is already in use")),
+            Err((error, transport, memory)) => {
+                if let Some(memory) = memory {
+                    // SAFETY: handed back only when the device never had it or was reset.
+                    unsafe { memory.free() };
+                }
+                give_back_transport(&node.identity, transport);
+                Err(ProbeError::Refused(error.description()))
+            }
+        }
+    }
+}
+
 #[cfg(any(test, feature = "virtio-rng"))]
 pub use entropy::{RESEED_INTERVAL, RNG_DRIVER, read_random, reseed_periodically, seed_random};
 

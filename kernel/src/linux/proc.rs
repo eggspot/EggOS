@@ -128,6 +128,7 @@ const THREAD_SELF: u64 = 33;
 const SYS_VM: u64 = 34;
 const OVERCOMMIT_MEMORY: u64 = 35;
 const DRIVER_POINTERS: u64 = 36;
+const DRIVER_SOUND: u64 = 37;
 
 const SYS_EGGOS: u64 = 23;
 
@@ -158,7 +159,7 @@ const NET_FILES: [(&[u8], u64); 4] = [
     (b"route", NET_ROUTE),
 ];
 
-const DRIVER_FILES: [(&[u8], u64); 10] = [
+const DRIVER_FILES: [(&[u8], u64); 11] = [
     (b"boot", DRIVER_BOOT),
     (b"boot-kernel", DRIVER_BOOT_KERNEL),
     (b"boot-loader", DRIVER_BOOT_LOADER),
@@ -168,10 +169,11 @@ const DRIVER_FILES: [(&[u8], u64); 10] = [
     (b"pointers", DRIVER_POINTERS),
     (b"power", DRIVER_POWER),
     (b"rtc", DRIVER_RTC),
+    (b"sound", DRIVER_SOUND),
     (b"wifi", DRIVER_WIFI),
 ];
 
-const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 9] = [
+const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 10] = [
     (b"boot", DRIVER_BOOT),
     (b"boot-kernel", DRIVER_BOOT_KERNEL),
     (b"boot-loader", DRIVER_BOOT_LOADER),
@@ -180,6 +182,7 @@ const DRIVER_FILES_WITHOUT_CLOCK: [(&[u8], u64); 9] = [
     (b"display", DRIVER_DISPLAY),
     (b"pointers", DRIVER_POINTERS),
     (b"power", DRIVER_POWER),
+    (b"sound", DRIVER_SOUND),
     (b"wifi", DRIVER_WIFI),
 ];
 
@@ -1275,6 +1278,7 @@ impl<P: Platform> FileSystem for Proc<P> {
             DRIVER_BOOT => boot_text::<P>(),
             DRIVER_WIFI => line(crate::devices::wifi_status().as_bytes()),
             DRIVER_DISPLAY => line(crate::display::status_text().as_bytes()),
+            DRIVER_SOUND => line(crate::sound::status_text().as_bytes()),
             DRIVER_POWER => line(crate::devices::acpi_namespace::power_text().as_bytes()),
             DRIVER_POINTERS => line(crate::input::pointing_devices_text().as_bytes()),
             OVERCOMMIT_MEMORY => line(b"0"),
