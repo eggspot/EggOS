@@ -91,7 +91,8 @@ impl Thread {
 }
 
 static mut MAIN: Thread = Thread::EMPTY;
-static mut TEMPLATE: [usize; 3] = [0; 3];
+static THREAD_LOCAL_PARTS: super::Exclusive<ThreadLocalParts> =
+    super::Exclusive::new(ThreadLocalParts::EMPTY);
 static KEY_IN_USE: [AtomicU32; KEYS] = [const { AtomicU32::new(0) }; KEYS];
 static KEY_DESTRUCTORS: [AtomicUsize; KEYS] = [const { AtomicUsize::new(0) }; KEYS];
 static BURIED: super::Exclusive<[usize; BURIED_THREADS]> =
@@ -165,34 +166,113 @@ pub unsafe fn set_up_main_thread(stack_pointer: usize) {
     unsafe { linux::set_thread_pointer(main as usize) };
 }
 
-/// Records the program's thread-local template (`length` bytes at `address`, aligned to
-/// `alignment`) and gives the main thread its copy; `false` if memory ran out.
+const MOST_THREAD_LOCAL_PARTS: usize = 64;
+
+#[derive(Debug, Clone, Copy)]
+struct ThreadLocalPart {
+    address: usize,
+    length: usize,
+    offset: usize,
+}
+
+/// Every image's thread-local template, laid out one after another in each thread's block
+/// (D756): the executable's first, at offset 0, then each carried library's.
+#[derive(Debug, Clone, Copy)]
+struct ThreadLocalParts {
+    parts: [ThreadLocalPart; MOST_THREAD_LOCAL_PARTS],
+    count: usize,
+    length: usize,
+    alignment: usize,
+    started: bool,
+}
+
+impl ThreadLocalParts {
+    const EMPTY: Self = Self {
+        parts: [ThreadLocalPart {
+            address: 0,
+            length: 0,
+            offset: 0,
+        }; MOST_THREAD_LOCAL_PARTS],
+        count: 0,
+        length: 0,
+        alignment: 16,
+        started: false,
+    };
+}
+
+/// Makes room for an image's thread-local template of `length` bytes aligned to `alignment`
+/// in every thread's block: its part number and its offset in the block, or `None` when the
+/// table is full or threads already have their blocks.
+pub fn reserve_thread_locals(length: usize, alignment: usize) -> Option<(usize, usize)> {
+    THREAD_LOCAL_PARTS.with(|parts| {
+        if parts.started || parts.count == MOST_THREAD_LOCAL_PARTS {
+            return None;
+        }
+        let alignment = alignment.max(1);
+        let offset = parts.length.next_multiple_of(alignment);
+        let part = parts.count;
+        parts.parts[part] = ThreadLocalPart {
+            address: 0,
+            length,
+            offset,
+        };
+        parts.count += 1;
+        parts.length = offset + length;
+        parts.alignment = parts.alignment.max(alignment);
+        Some((part, offset))
+    })
+}
+
+/// Records where part `part`'s template is mapped.
 ///
 /// # Safety
-/// Called once, before the program runs; the template must stay mapped and unchanged.
-pub unsafe fn set_thread_local_template(address: usize, length: usize, alignment: usize) -> bool {
-    // SAFETY: the caller's promise.
-    unsafe { TEMPLATE = [address, length, alignment] };
+/// The template must stay mapped and unchanged while the program runs.
+pub unsafe fn place_thread_locals(part: usize, address: usize) {
+    THREAD_LOCAL_PARTS.with(|parts| {
+        if let Some(found) = parts.parts[..parts.count].get_mut(part) {
+            found.address = address;
+        }
+    });
+}
+
+/// Gives the main thread its block of every image's thread-local variables; `false` if
+/// memory ran out. No part can be added after it.
+///
+/// # Safety
+/// Called once, before the program runs, after every part is placed.
+pub unsafe fn start_thread_locals() -> bool {
+    THREAD_LOCAL_PARTS.with(|parts| parts.started = true);
     let Some(block) = new_thread_locals() else {
         return false;
     };
-    // SAFETY: as above.
+    // SAFETY: the main thread's control block, which only it uses.
     unsafe { (*current()).thread_locals = block };
     true
 }
 
 fn new_thread_locals() -> Option<usize> {
-    // SAFETY: written once before the program runs.
-    let [address, length, alignment] = unsafe { TEMPLATE };
-    if address == 0 {
+    let parts = THREAD_LOCAL_PARTS.with(|parts| *parts);
+    if parts.count == 0 {
         return Some(0);
     }
-    let block = heap::allocate_aligned(alignment.max(16), length.max(16));
+    let block = heap::allocate_aligned(parts.alignment.max(16), parts.length.max(16));
     if block.is_null() {
         return None;
     }
-    // SAFETY: the template is `length` readable bytes and the block `length` writable ones.
-    unsafe { core::ptr::copy_nonoverlapping(address as *const u8, block, length) };
+    // SAFETY: the block is `parts.length` writable bytes.
+    unsafe { core::ptr::write_bytes(block, 0, parts.length) };
+    for part in &parts.parts[..parts.count] {
+        if part.address != 0 {
+            // SAFETY: each template is `length` readable bytes, placed inside the block.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    part.address as *const u8,
+                    block.add(part.offset),
+                    part.length,
+                )
+            };
+        }
+    }
     Some(block as usize)
 }
 

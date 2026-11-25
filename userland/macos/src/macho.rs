@@ -55,6 +55,7 @@ const MH_BUNDLE: u32 = 8;
 const MAX_RPATHS: usize = 8;
 const S_THREAD_LOCAL_REGULAR: u32 = 0x11;
 const S_THREAD_LOCAL_ZEROFILL: u32 = 0x12;
+const S_THREAD_LOCAL_VARIABLES: u32 = 0x13;
 const MAX_THREAD_LOCAL_SIZE: u64 = 16 << 20;
 const MAX_THREAD_LOCAL_ALIGNMENT_SHIFT: u32 = 12;
 const PLATFORM_MACOS: u32 = 1;
@@ -407,6 +408,9 @@ pub struct MachO<'a> {
     pub chained_fixups: Option<Range>,
     pub dyld_info: Option<DyldInfo>,
     pub thread_locals: Option<ThreadLocalTemplate>,
+    /// The `__thread_vars` section: each variable's descriptor (its accessor, a key and its
+    /// offset in the image's template).
+    pub thread_variables: Option<SectionRange>,
     pub objc: ObjcSections,
     pub unwind_info: Option<SectionRange>,
     /// The `__eh_frame` section: DWARF call frame information (D234).
@@ -476,6 +480,7 @@ impl<'a> MachO<'a> {
             chained_fixups: None,
             dyld_info: None,
             thread_locals: None,
+            thread_variables: None,
             objc: ObjcSections::default(),
             unwind_info: None,
             eh_frame: None,
@@ -619,6 +624,12 @@ impl<'a> MachO<'a> {
                     true => self.initializers = range,
                     false => self.initializer_offsets = range,
                 }
+            }
+            if kind == S_THREAD_LOCAL_VARIABLES {
+                self.thread_variables = Some(SectionRange {
+                    address: u64_at(command, at + 32).unwrap_or(0),
+                    size: u64_at(command, at + 40).unwrap_or(0),
+                });
             }
             if kind == S_THREAD_LOCAL_REGULAR || kind == S_THREAD_LOCAL_ZEROFILL {
                 let address = u64_at(command, at + 32).unwrap_or(0);

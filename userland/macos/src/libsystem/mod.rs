@@ -32,7 +32,9 @@ use eggos_runtime::errno::Errno;
 pub use dynamic::set_image;
 pub use process::{abort, exit, set_process};
 pub use stdio::set_up as set_up_streams;
-pub use thread::{set_thread_local_template, set_up_main_thread};
+pub use thread::{
+    place_thread_locals, reserve_thread_locals, set_up_main_thread, start_thread_locals,
+};
 
 /// The layer's process-wide state, behind a lock that any of the program's threads may take;
 /// `with` ends the program if the thread that holds it re-enters it, which only a bug in the

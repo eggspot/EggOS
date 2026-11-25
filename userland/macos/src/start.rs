@@ -28,6 +28,8 @@ use eggos_runtime::startup::Startup;
 #[cfg(target_arch = "aarch64")]
 use eggos_translation_loader::install_record::LAYER_OPTION;
 
+const THREAD_VARIABLE_SIZE: usize = 24;
+const THREAD_VARIABLE_OFFSET: usize = 16;
 const STANDARD_ERROR: usize = 2;
 const MOST_LIBRARY_DEPTH: usize = 16;
 const MOST_RUN_PATHS: usize = 16;
@@ -253,6 +255,14 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
     if uses_appkit && !appkit::set_up() {
         return Err(Failure::Memory);
     }
+    let main_thread_locals = match program.thread_locals {
+        Some(template) => Some(
+            libsystem::reserve_thread_locals(template.size as usize, template.alignment as usize)
+                .ok_or(Failure::Memory)?
+                .0,
+        ),
+        None => None,
+    };
     let executable_folder = bundled::folder_of(path.to_bytes());
     let mut expanded = [[0u8; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS];
     let mut run_paths: [&[u8]; MOST_RUN_PATHS] = [&[]; MOST_RUN_PATHS];
@@ -268,6 +278,7 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         loader_folder: executable_folder,
         run_paths: &run_paths[..run_path_count],
     };
+    remember_search(executable_folder, &run_paths[..run_path_count]);
     let mut carried = [None; macho::MAX_LIBRARIES];
     for (slot, library) in program.libraries().enumerate() {
         if Library::provided(library.path).is_some() {
@@ -368,20 +379,15 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         program.unwind_info.map(slid),
         program.eh_frame.map(slid),
     );
-    if let Some(template) = program.thread_locals {
+    if let (Some(template), Some(part)) = (program.thread_locals, main_thread_locals) {
         let address = base + (template.address - program.base_address()) as usize;
         // SAFETY: the template lies inside a readable segment of the image, which stays
         // mapped and which nothing writes: each thread uses its own copy.
-        let made = unsafe {
-            libsystem::set_thread_local_template(
-                address,
-                template.size as usize,
-                template.alignment as usize,
-            )
-        };
-        if !made {
-            return Err(Failure::Memory);
-        }
+        unsafe { libsystem::place_thread_locals(part, address) };
+    }
+    // SAFETY: every image is mapped and its template placed; no program code has run.
+    if !unsafe { libsystem::start_thread_locals() } {
+        return Err(Failure::Memory);
     }
     let arguments = argument_vector(&startup)?;
     let environment = environment_vector(&startup)?;
@@ -401,6 +407,14 @@ fn start(startup: Startup) -> Result<core::convert::Infallible, Failure> {
         environment,
         apple,
     );
+    OPENING.with(|opening| {
+        opening.arguments = (
+            initializer_arguments.0,
+            arguments as usize,
+            environment as usize,
+            apple as usize,
+        )
+    });
     if !translated {
         // SAFETY: every image is mapped, bound, rebased and protected, the process is set up,
         // and no program code has run but `+load` methods: the libraries' initializers run
@@ -566,11 +580,15 @@ fn load_library(
         return Err(Failure::Library(linked));
     }
     let library = MachO::parse_library(slice).map_err(Failure::Invalid)?;
-    if library.thread_locals.is_some() {
-        return Err(Failure::Invalid(InvalidMachO(
-            "carries a library with thread-local variables, which EggOS does not load yet",
-        )));
-    }
+    let thread_locals = match library.thread_locals {
+        Some(template) => Some(
+            libsystem::reserve_thread_locals(template.size as usize, template.alignment as usize)
+                .ok_or(Failure::Invalid(InvalidMachO(
+                    "has thread-local variables but was loaded after the program started",
+                )))?,
+        ),
+        None => None,
+    };
     let folder = bundled::folder_of(&path[..length]);
     let mut expanded = [[0u8; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS];
     let mut own_paths: [&[u8]; MOST_RUN_PATHS] = [&[]; MOST_RUN_PATHS];
@@ -631,6 +649,12 @@ fn load_library(
             }
         }
     }
+    if let (Some(template), Some((part, offset))) = (library.thread_locals, thread_locals) {
+        move_thread_variables(&library, image, offset as u64);
+        let address = base + (template.address - library.base_address()) as usize;
+        // SAFETY: the template lies inside the library's mapped image, which stays mapped.
+        unsafe { libsystem::place_thread_locals(part, address) };
+    }
     let slide = (base as isize).wrapping_sub(library.base_address() as isize);
     if library.objc.present() {
         // SAFETY: the library is mapped, bound and rebased, still writable everywhere, and
@@ -657,6 +681,114 @@ fn load_library(
         dependencies: carried,
     })
     .ok_or(Failure::Memory)
+}
+
+struct Opening {
+    folder: [u8; LONGEST_LIBRARY_PATH],
+    folder_length: usize,
+    run_paths: [[u8; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS],
+    run_path_lengths: [usize; MOST_RUN_PATHS],
+    run_path_count: usize,
+    arguments: (c_int, usize, usize, usize),
+}
+
+static OPENING: libsystem::Exclusive<Opening> = libsystem::Exclusive::new(Opening {
+    folder: [0; LONGEST_LIBRARY_PATH],
+    folder_length: 0,
+    run_paths: [[0; LONGEST_LIBRARY_PATH]; MOST_RUN_PATHS],
+    run_path_lengths: [0; MOST_RUN_PATHS],
+    run_path_count: 0,
+    arguments: (0, 0, 0, 0),
+});
+
+fn remember_search(folder: &[u8], run_paths: &[&[u8]]) {
+    OPENING.with(|opening| {
+        let length = folder.len().min(LONGEST_LIBRARY_PATH);
+        opening.folder[..length].copy_from_slice(&folder[..length]);
+        opening.folder_length = length;
+        opening.run_path_count = 0;
+        for run_path in run_paths.iter().take(MOST_RUN_PATHS) {
+            let slot = opening.run_path_count;
+            let length = run_path.len().min(LONGEST_LIBRARY_PATH);
+            opening.run_paths[slot][..length].copy_from_slice(&run_path[..length]);
+            opening.run_path_lengths[slot] = length;
+            opening.run_path_count += 1;
+        }
+    });
+}
+
+/// Where `dlopen` found the library `path` names: the layer's own library (`None`), or the
+/// index of the app's library, loaded now with its dependencies, its `+load` methods and
+/// initializers run, as dyld does.
+pub fn open_library(path: &[u8]) -> Result<Option<usize>, &'static core::ffi::CStr> {
+    if Library::provided(path).is_some() {
+        return Ok(None);
+    }
+    if let Some(index) = bundled::find(path) {
+        return Ok(Some(index));
+    }
+    let folder = OPENING.with(|opening| (opening.folder, opening.folder_length));
+    let run_paths = OPENING.with(|opening| {
+        (
+            opening.run_paths,
+            opening.run_path_lengths,
+            opening.run_path_count,
+        )
+    });
+    let arguments = OPENING.with(|opening| opening.arguments);
+    let mut paths: [&[u8]; MOST_RUN_PATHS] = [&[]; MOST_RUN_PATHS];
+    for (slot, (bytes, &length)) in paths
+        .iter_mut()
+        .zip(run_paths.0.iter().zip(&run_paths.1))
+        .take(run_paths.2)
+    {
+        *slot = &bytes[..length];
+    }
+    let executable_folder = &folder.0[..folder.1];
+    let search = Search {
+        executable_folder,
+        loader_folder: executable_folder,
+        run_paths: &paths[..run_paths.2],
+    };
+    let first = bundled::loaded_count();
+    let index = load_library(path, &search, 0).map_err(|failure| match failure {
+        Failure::Memory => c"out of memory loading the library",
+        Failure::Invalid(_) => c"the library is not a Mach-O library EggOS can load",
+        _ => c"the library or one of its dependencies was not found",
+    })?;
+    objc::run_load_methods();
+    let (count, argv, envp, apple) = arguments;
+    // SAFETY: the new libraries are mapped, bound, rebased and protected, and run once.
+    unsafe {
+        bundled::run_initializers_since(
+            first,
+            (
+                count,
+                argv as *mut *mut c_char,
+                envp as *mut *mut c_char,
+                apple as *mut *mut c_char,
+            ),
+        )
+    };
+    Ok(Some(index))
+}
+
+fn move_thread_variables(library: &MachO<'_>, image: &mut [u8], offset: u64) {
+    let Some(section) = library.thread_variables else {
+        return;
+    };
+    let start = (section.address - library.base_address()) as usize;
+    let end = start.saturating_add(section.size as usize).min(image.len());
+    let Some(descriptors) = image.get_mut(start..end) else {
+        return;
+    };
+    for descriptor in descriptors.chunks_exact_mut(THREAD_VARIABLE_SIZE) {
+        let field = &mut descriptor[THREAD_VARIABLE_OFFSET..THREAD_VARIABLE_SIZE];
+        let mut word = [0u8; 8];
+        word.copy_from_slice(field);
+        let moved = u64::from_le_bytes(word).wrapping_add(offset);
+        field.copy_from_slice(&moved.to_le_bytes());
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -928,7 +1060,9 @@ impl Library {
     }
 }
 
-fn resolve(name: &[u8]) -> Option<u64> {
+/// The address the layer gives symbol `name` (with its leading underscore), in any library
+/// it provides.
+pub fn resolve(name: &[u8]) -> Option<u64> {
     swift::resolve(name)
         .or_else(|| objc::resolve(name))
         .or_else(|| foundation::resolve(name))

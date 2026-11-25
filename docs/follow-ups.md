@@ -251,7 +251,7 @@ and is not listed per item.
 - [x] macOS: utility-panel and floating-panel window levels (D407) — code written, unbuilt, D753
 - [x] macOS: `RegisterEventHotKey` (Carbon hot keys through the window server's global hot keys) (D398) — code written, unbuilt, D754
 - [x] macOS: ambiguous and non-public bases in `__dynamic_cast` (D408; `bad_cast`/`bad_typeid` thrown code written, unbuilt: D700) — code written, unbuilt, D755
-- [ ] macOS: `dlopen` of an app's own library at run time; thread-local variables in a carried library (D409)
+- [x] macOS: `dlopen` of an app's own library at run time; thread-local variables in a carried library (D409) — code written, unbuilt, D756
 - [ ] Android: split APKs and app bundles; the manifest's label and icon as the app's name and icon (D470)
 - [ ] Android: a garbage collector for the layer's object heap (D472)
 - [ ] Android: the DEX compiler's aarch64 and riscv64 back ends, with register allocation (D471, D472)

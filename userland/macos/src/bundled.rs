@@ -223,6 +223,28 @@ pub unsafe fn run_initializers_of(
     }
 }
 
+/// How many libraries are loaded; a library loaded later has an index at least this.
+pub fn loaded_count() -> usize {
+    IMAGES.with(|images| images.iter().filter(|image| image.is_some()).count())
+}
+
+/// Runs the initializers of the libraries loaded at index `first` and after, in load order
+/// (a `dlopen`'s library after its dependencies).
+///
+/// # Safety
+/// As [`run_initializers_of`], for each of those libraries.
+pub unsafe fn run_initializers_since(
+    first: usize,
+    arguments: (i32, *mut *mut c_char, *mut *mut c_char, *mut *mut c_char),
+) {
+    for index in first..MOST_IMAGES {
+        if let Some(found) = image(index) {
+            // SAFETY: the caller's duty.
+            unsafe { run_initializers_of(&found.macho, found.base, arguments) };
+        }
+    }
+}
+
 /// Runs every library's initializers, in the order they were loaded (dependencies first).
 ///
 /// # Safety

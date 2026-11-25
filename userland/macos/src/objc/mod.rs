@@ -84,7 +84,8 @@ mod runtime {
     #[derive(Debug)]
     pub struct Runtime {
         pub classes: Buffer<*mut ClassRecord>,
-        load_lists: [Option<(usize, usize)>; 2],
+        load_lists: [[Option<(usize, usize)>; 2]; MOST_LOAD_IMAGES],
+        load_count: usize,
     }
 
     // SAFETY: the records the table points at are the runtime's, reached under its lock.
@@ -92,7 +93,8 @@ mod runtime {
 
     pub static RUNTIME: Exclusive<Runtime> = Exclusive::new(Runtime {
         classes: Buffer::new(),
-        load_lists: [None; 2],
+        load_lists: [[None; 2]; MOST_LOAD_IMAGES],
+        load_count: 0,
     });
 
     static SELECTORS: Exclusive<SelectorTable> = Exclusive::new(SelectorTable::new());
@@ -100,6 +102,7 @@ mod runtime {
     static STUB_CATEGORIES: Exclusive<Buffer<(usize, usize)>> = Exclusive::new(Buffer::new());
 
     const LAST_STUB_ISA: usize = 15;
+    const MOST_LOAD_IMAGES: usize = 66;
 
     /// Whether `class` is a Swift resilient class stub rather than a class object: its first
     /// word is a small marker, and its initializer makes the class (D740).
@@ -405,7 +408,7 @@ mod runtime {
                 };
                 attach_category(runtime, record, category);
             }
-            runtime.load_lists = [
+            let lists = [
                 sections
                     .non_lazy_class_list
                     .map(|range| (range.address as usize, range.size as usize)),
@@ -414,6 +417,10 @@ mod runtime {
                     .map(|range| (range.address as usize, range.size as usize)),
             ]
             .map(|list| list.map(|(address, size)| (address.wrapping_add_signed(slide), size)));
+            if runtime.load_count < MOST_LOAD_IMAGES {
+                runtime.load_lists[runtime.load_count] = lists;
+                runtime.load_count += 1;
+            }
             Ok(())
         })
     }
@@ -439,10 +446,15 @@ mod runtime {
         }
     }
 
-    /// Calls `+load` on the image's non-lazy classes, superclasses first, then on its non-lazy
-    /// categories, inside an autorelease pool, as dyld does before `main`.
+    /// Calls `+load` on the non-lazy classes, superclasses first, then on the non-lazy
+    /// categories, of every image registered since the last call, in the order they were
+    /// registered, inside an autorelease pool, as dyld does before `main` and after `dlopen`.
     pub fn run_load_methods() {
-        let lists = RUNTIME.with(|runtime| runtime.load_lists);
+        let (all_lists, count) = RUNTIME.with(|runtime| {
+            let taken = (runtime.load_lists, runtime.load_count);
+            runtime.load_count = 0;
+            taken
+        });
         let words_of = |list: Option<(usize, usize)>| -> &'static [usize] {
             let Some((address, size)) = list else {
                 return &[];
@@ -451,6 +463,16 @@ mod runtime {
             unsafe { core::slice::from_raw_parts(address as *const usize, size / 8) }
         };
         let pool = autorelease::push();
+        for lists in &all_lists[..count] {
+            load_image(lists, &words_of);
+        }
+        autorelease::pop(pool);
+    }
+
+    fn load_image(
+        lists: &[Option<(usize, usize)>; 2],
+        words_of: &dyn Fn(Option<(usize, usize)>) -> &'static [usize],
+    ) {
         for &class in words_of(lists[0]) {
             if let Some(record) = class::record_of(class as *const ClassObject) {
                 load_class(record);
@@ -468,7 +490,6 @@ mod runtime {
                 call_load(imp, category.class);
             }
         }
-        autorelease::pop(pool);
     }
 
     /// Ends the program as an uncaught Objective-C exception does on macOS: its name and
