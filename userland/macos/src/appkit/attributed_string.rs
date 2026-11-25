@@ -8,7 +8,7 @@
 
 use super::paragraph_style::{self, Layout, alignment};
 use super::{
-    NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META, NSMUTABLEATTRIBUTEDSTRING,
+    NSATTRIBUTEDSTRING, NSATTRIBUTEDSTRING_META, NSCOLOR, NSMUTABLEATTRIBUTEDSTRING,
     NSMUTABLEATTRIBUTEDSTRING_META, drawing, store, string,
 };
 use crate::objc::block::invoke_address;
@@ -644,12 +644,35 @@ fn line_colour(attributes: Id, own: &str) -> u32 {
     let colour = [own, "NSColor"]
         .iter()
         .find_map(|name| drawing::colour_of(attribute(attributes, name)));
-    colour.map_or(0, |colour| colour.pixel)
+    match (colour, attribute(attributes, "NSLink").is_null()) {
+        (Some(colour), _) => colour.pixel,
+        (None, false) => eggos_macos_gui::colour::LINK,
+        (None, true) => 0,
+    }
+}
+
+fn with_link_colour(attributes: Id) -> Id {
+    if attribute(attributes, "NSLink").is_null() || !attribute(attributes, "NSColor").is_null() {
+        return attributes;
+    }
+    let copied = send(attributes, sel!("mutableCopy"));
+    if copied.is_null() {
+        return attributes;
+    }
+    let link = send(class_pointer(&NSCOLOR).cast(), sel!("linkColor"));
+    send2(
+        copied,
+        sel!("setObject:forKey:"),
+        link as usize,
+        string("NSColor") as usize,
+    );
+    autoreleased(copied)
 }
 
 fn decorate(frame: Frame, attributes: Id) {
+    let link = !attribute(attributes, "NSLink").is_null();
     let underline = match integer_attribute(attributes, "NSUnderline") {
-        0 if !attribute(attributes, "NSLink").is_null() => 1,
+        0 if link && attribute(attributes, "NSUnderline").is_null() => 1,
         style => style,
     };
     let strike = integer_attribute(attributes, "NSStrikethrough");
@@ -686,6 +709,7 @@ fn decorate(frame: Frame, attributes: Id) {
 }
 
 fn draw_piece(text: Id, attributes: Id, at: Point) -> f64 {
+    let attributes = with_link_colour(attributes);
     let draw: extern "C" fn(Id, Sel, Point, Id) = message::msg_send_as();
     draw(text, sel!("drawAtPoint:withAttributes:"), at, attributes);
     let size = size_of_piece(text, attributes);

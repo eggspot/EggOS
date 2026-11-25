@@ -60,6 +60,8 @@ const SYSTEM_GREEN: u32 = 0x005f_b865;
 const SYSTEM_YELLOW: u32 = 0x00e2_b341;
 const SYSTEM_PURPLE: u32 = 0x00c4_6bd2;
 const SYSTEM_TEAL: u32 = 0x0044_b9c9;
+/// `linkColor` (docs/ux/macos-containers-v0.1.md section 4, the dark palette's value).
+pub const LINK: u32 = 0x004f_8fe0;
 
 /// The colour `NSColor`'s class method `name` (its selector) returns, if it is one.
 pub fn named(name: &[u8]) -> Option<Colour> {
@@ -110,7 +112,7 @@ fn semantic(name: &[u8]) -> Option<u32> {
             token::ACCENT
         }
         b"separatorColor" | b"gridColor" => token::MENU_BORDER,
-        b"linkColor" | b"systemBlueColor" => token::ICON_WINDOWS,
+        b"linkColor" | b"systemBlueColor" => LINK,
         b"systemRedColor" => SYSTEM_RED,
         b"systemGreenColor" => SYSTEM_GREEN,
         b"systemYellowColor" => SYSTEM_YELLOW,

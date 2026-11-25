@@ -25,6 +25,8 @@ use crate::objc::{Runtime, message, methods, sel, send, send1, send2};
 use eggos_image::Limits;
 use eggos_macos_gui::geometry::{Frame, Point, Size, pixel_rect, round};
 use eggos_macos_gui::image_view::{self as geometry, faded, fits, frame_style, premultiplied};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use eggos_macos_gui::system_images;
 use eggos_toolkit::colour;
 use eggos_toolkit::geometry::Rect;
 
@@ -47,6 +49,7 @@ struct ImageFields {
     generation: u32,
     cg_image: usize,
     cg_image_generation: u32,
+    template: bool,
 }
 
 #[repr(C)]
@@ -387,6 +390,29 @@ fn image_from_resources(name: Id) -> Id {
     })
 }
 
+fn system_image(name: Id) -> Id {
+    let Some(found) = with_text(name, system_images::named) else {
+        return core::ptr::null_mut();
+    };
+    let made = new_instance(class_pointer(&NSIMAGE));
+    if made.is_null() {
+        return made;
+    }
+    let pixels = system_images::render(found, 1, false, colour::TEXT);
+    let fields = image(made);
+    if !fields.pixels.reserve(pixels.len()) {
+        objc_release(made);
+        return core::ptr::null_mut();
+    }
+    for pixel in pixels {
+        fields.pixels.push(pixel);
+    }
+    fields.width = found.side;
+    fields.height = found.side;
+    fields.template = found.template;
+    made
+}
+
 extern "C" fn image_named(_: Id, _: Sel, name: Id) -> Id {
     if name.is_null() {
         return name;
@@ -395,7 +421,10 @@ extern "C" fn image_named(_: Id, _: Sel, name: Id) -> Id {
     if !found.is_null() {
         return found;
     }
-    let made = image_from_resources(name);
+    let mut made = image_from_resources(name);
+    if made.is_null() {
+        made = system_image(name);
+    }
     if made.is_null() {
         return made;
     }
@@ -613,6 +642,39 @@ word_accessors!(view_frame_style, view_set_frame_style, frame_style);
 
 extern "C" fn ignore_word(_: Id, _: Sel, _: usize) {}
 
+extern "C" fn is_template(this: Id, _: Sel) -> u8 {
+    u8::from(image(this).template)
+}
+
+extern "C" fn set_template(this: Id, _: Sel, flag: u8) {
+    image(this).template = flag != 0;
+}
+
+static NAME_CONSTANTS: [AtomicUsize; system_images::SYSTEM_IMAGES.len()] =
+    [const { AtomicUsize::new(0) }; system_images::SYSTEM_IMAGES.len()];
+
+/// Makes the `NSImageName...` constants' strings; false if there is no memory.
+pub fn set_up() -> bool {
+    let pool = crate::objc::autorelease::push();
+    let mut made = true;
+    for (slot, each) in NAME_CONSTANTS.iter().zip(&system_images::SYSTEM_IMAGES) {
+        let object = objc_retain(string(each.name));
+        made &= !object.is_null();
+        slot.store(object as usize, Ordering::Relaxed);
+    }
+    crate::objc::autorelease::pop(pool);
+    made
+}
+
+/// The address of the `NSImageName...` constant `name`, if it is one.
+pub fn resolve(name: &[u8]) -> Option<u64> {
+    let suffix = name.strip_prefix(b"_NSImageName")?;
+    system_images::SYSTEM_IMAGES
+        .iter()
+        .position(|each| system_images::constant_suffix(each.name).as_bytes() == suffix)
+        .map(|index| &raw const NAME_CONSTANTS[index] as u64)
+}
+
 fn cached_pixels(this: Id, size: (i32, i32)) -> bool {
     let fields = image_view(this);
     let generation = image(fields.image).generation;
@@ -710,7 +772,8 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "TIFFRepresentation" => tiff_representation,
         "CGImageForProposedRect:context:hints:" => cg_image_for_proposed_rect,
         "initWithCGImage:size:" => init_with_cg_image,
-        "setTemplate:" => ignore_word,
+        "setTemplate:" => set_template,
+        "isTemplate" => is_template,
     ];
     let image_class_methods = methods![
         "imageNamed:" => image_named,
