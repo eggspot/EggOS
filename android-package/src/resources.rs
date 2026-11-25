@@ -32,7 +32,12 @@ const MOST_ENTRIES: usize = 1 << 16;
 pub struct ResourceTable {
     strings: BTreeMap<u32, String>,
     colours: BTreeMap<u32, u32>,
+    variants: BTreeMap<u32, Vec<String>>,
 }
+
+const MOST_VARIANTS: usize = 32;
+const DENSITIES: [&str; 6] = ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi", "ldpi"];
+const ICON_FILES: [&str; 2] = [".png", ".webp"];
 
 const FIRST_COLOUR_TYPE: u8 = 0x1c;
 const LAST_COLOUR_TYPE: u8 = 0x1f;
@@ -124,6 +129,10 @@ impl ResourceTable {
             };
             let id = package << 24 | type_id << 16 | entry;
             self.strings.entry(id).or_insert_with(|| text.clone());
+            let variants = self.variants.entry(id).or_default();
+            if variants.len() < MOST_VARIANTS && !variants.contains(text) {
+                variants.push(text.clone());
+            }
         }
         Some(())
     }
@@ -131,6 +140,32 @@ impl ResourceTable {
     /// Resource `id`'s string value: a string resource's text or a file resource's path.
     pub fn string(&self, id: u32) -> Option<&str> {
         self.strings.get(&id).map(String::as_str)
+    }
+
+    /// Every configuration's string value of resource `id`, in the table's order: a file
+    /// resource's path for each density, locale and version it has (D757).
+    pub fn variants(&self, id: u32) -> &[String] {
+        self.variants.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The best picture file for icon resource `id`: a PNG (else WebP) of the highest density
+    /// it comes in, never an adaptive icon's XML (D757).
+    pub fn icon_file(&self, id: u32) -> Option<&str> {
+        let rank = |path: &str| {
+            let kind = ICON_FILES
+                .iter()
+                .position(|ending| path.ends_with(ending))?;
+            let density = DENSITIES
+                .iter()
+                .position(|density| path.contains(density))
+                .unwrap_or(DENSITIES.len());
+            Some((kind, density))
+        };
+        self.variants(id)
+            .iter()
+            .filter_map(|path| rank(path).map(|rank| (rank, path.as_str())))
+            .min_by_key(|&(rank, _)| rank)
+            .map(|(_, path)| path)
     }
 
     /// Colour resource `id`'s value, `0xAARRGGBB`.
@@ -232,5 +267,24 @@ mod tests {
         assert_eq!(table.string(0x7f02_0000), Some("res/layout/main.xml"));
         assert_eq!(table.string(0x7f03_0001), Some("Hello"));
         assert_eq!(table.string(0x7f03_0000), None);
+    }
+
+    #[test]
+    fn the_icon_is_the_densest_png_and_never_the_adaptive_xml() {
+        let mut table = ResourceTable::default();
+        table.variants.insert(
+            0x7f0d_0000,
+            alloc::vec![
+                String::from("res/mipmap-anydpi-v26/ic_launcher.xml"),
+                String::from("res/mipmap-hdpi-v4/ic_launcher.png"),
+                String::from("res/mipmap-xxxhdpi-v4/ic_launcher.png"),
+                String::from("res/mipmap-xhdpi-v4/ic_launcher.webp"),
+            ],
+        );
+        assert_eq!(
+            table.icon_file(0x7f0d_0000),
+            Some("res/mipmap-xxxhdpi-v4/ic_launcher.png")
+        );
+        assert_eq!(table.icon_file(0x7f0d_0001), None);
     }
 }

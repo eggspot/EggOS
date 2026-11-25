@@ -550,6 +550,17 @@ fn from_file(
     made == Some(true)
 }
 
+/// Makes `icon` from the PNG picture at `path` (an Android app's launcher icon, D757); false
+/// when it is no PNG the icon can be made from.
+pub fn from_picture(
+    files: &mut impl Files,
+    path: &[u8],
+    work: &mut Workspace,
+    icon: &mut OwnIcon,
+) -> bool {
+    from_file(files, path, IconFile::Png, work, icon)
+}
+
 /// Makes `icon` for the program installed at `program` (absolute): a bundle's `.icns`
 /// ([`bundle_icns`]) or a Windows program's icon resources, else `<stem>.png` beside the bundle
 /// or the program, else `<stem>.png` beside `source` (the program or bundle installed from);

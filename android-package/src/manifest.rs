@@ -2,7 +2,8 @@
 //! (UTF-16 or UTF-8), then the elements, each with its attributes as a name's string and a
 //! typed value. [`Manifest::parse`] reads the package's name and version, its lowest and target
 //! SDK, the permissions it asks for, and the activity the launcher starts (the one whose
-//! intent filter holds `android.intent.action.MAIN` and `android.intent.category.LAUNCHER`).
+//! intent filter holds `android.intent.action.MAIN` and `android.intent.category.LAUNCHER`),
+//! the application's label and icon, and the split a split APK is (D757).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -13,6 +14,7 @@ const START_ELEMENT: u16 = 0x0102;
 const END_ELEMENT: u16 = 0x0103;
 const UTF8_FLAG: u32 = 1 << 8;
 const NO_STRING: u32 = u32::MAX;
+const TYPE_REFERENCE: u8 = 0x01;
 const TYPE_STRING: u8 = 0x03;
 const TYPE_INT_DEC: u8 = 0x10;
 const ATTRIBUTE_BYTES: usize = 20;
@@ -31,6 +33,19 @@ pub struct Manifest {
     /// The activity the launcher starts, as its manifest names it (`.MainActivity` or a full
     /// class name).
     pub launcher_activity: Option<String>,
+    /// The application's label: its text, or the string resource holding it.
+    pub label: Option<Label>,
+    /// The application's icon resource (`android:icon`, else `android:roundIcon`).
+    pub icon: Option<u32>,
+    /// The split this APK is (`split="config.arm64_v8a"`), `None` for a base APK.
+    pub split: Option<String>,
+}
+
+/// An application's label as its manifest gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Label {
+    Text(String),
+    Resource(u32),
 }
 
 pub(crate) fn half(bytes: &[u8], at: usize) -> Option<u16> {
@@ -148,8 +163,21 @@ impl Manifest {
                 _ => text.as_deref().and_then(|text| text.parse().ok()),
             })
         };
+        let reference = |wanted: &str| {
+            value(wanted)
+                .and_then(|(_, _, (kind, data))| (*kind == TYPE_REFERENCE).then_some(*data))
+        };
         match name {
+            "application" => {
+                self.label = match (reference("label"), text("label")) {
+                    (Some(id), _) => Some(Label::Resource(id)),
+                    (None, Some(text)) => Some(Label::Text(text)),
+                    (None, None) => None,
+                };
+                self.icon = reference("icon").or_else(|| reference("roundIcon"));
+            }
             "manifest" => {
+                self.split = text("split");
                 self.package = text("package").unwrap_or_default();
                 self.version_name = text("versionName").unwrap_or_default();
                 self.version_code = number("versionCode").unwrap_or(0);
@@ -239,8 +267,12 @@ mod tests {
                         chunk.extend_from_slice(&text.to_le_bytes());
                     }
                     Err(number) => {
+                        let kind = match number >> 24 {
+                            0 => TYPE_INT_DEC,
+                            _ => TYPE_REFERENCE,
+                        };
                         chunk.extend_from_slice(&NO_STRING.to_le_bytes());
-                        chunk.extend_from_slice(&[8, 0, 0, TYPE_INT_DEC]);
+                        chunk.extend_from_slice(&[8, 0, 0, kind]);
                         chunk.extend_from_slice(&number.to_le_bytes());
                     }
                 }
@@ -347,5 +379,38 @@ mod tests {
     #[test]
     fn text_xml_is_not_binary_xml() {
         assert_eq!(Manifest::parse(b"<manifest/>"), None);
+    }
+
+    #[test]
+    fn the_application_gives_its_label_and_icon_and_a_split_its_name() {
+        let mut xml = Builder {
+            strings: Vec::new(),
+            elements: Vec::new(),
+        };
+        xml.start(
+            "manifest",
+            &[("package", Ok("org.example.notes")), ("split", Ok("config.xxhdpi"))],
+        );
+        xml.start(
+            "application",
+            &[("label", Err(0x7f0f_0001)), ("icon", Err(0x7f0d_0000))],
+        );
+        xml.end("application");
+        xml.end("manifest");
+        let manifest = Manifest::parse(&xml.finish()).unwrap();
+        assert_eq!(manifest.label, Some(Label::Resource(0x7f0f_0001)));
+        assert_eq!(manifest.icon, Some(0x7f0d_0000));
+        assert_eq!(manifest.split.as_deref(), Some("config.xxhdpi"));
+        let mut plain = Builder {
+            strings: Vec::new(),
+            elements: Vec::new(),
+        };
+        plain.start("manifest", &[("package", Ok("org.example.calc"))]);
+        plain.start("application", &[("label", Ok("Calc"))]);
+        plain.end("application");
+        plain.end("manifest");
+        let manifest = Manifest::parse(&plain.finish()).unwrap();
+        assert_eq!(manifest.label, Some(Label::Text(String::from("Calc"))));
+        assert_eq!((manifest.icon, manifest.split), (None, None));
     }
 }

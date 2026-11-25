@@ -299,6 +299,7 @@ pub struct Plan {
     console: bool,
     leftover: bool,
     total_bytes: u64,
+    android_set: bool,
 }
 
 /// A dynamically linked program's loader and library folders inside its `.zip` (D172).
@@ -684,6 +685,7 @@ pub fn plan_entry(
                 .unwrap_or(false)),
         leftover,
         total_bytes,
+        android_set: false,
     })
 }
 
@@ -935,6 +937,8 @@ struct Scanned {
     loader: Option<Loader>,
     console: bool,
     total: u64,
+    title: Option<Name>,
+    android_set: bool,
 }
 
 const MAX_LIBRARY_FOLDERS: usize = 4;
@@ -1067,6 +1071,90 @@ fn shown_name(name: &[u8], role: Role) -> &[u8] {
 }
 
 const ANDROID_MANIFEST: &[u8] = b"AndroidManifest.xml";
+const ANDROID_RESOURCES: &[u8] = b"resources.arsc";
+const APK_SUFFIX: &[u8] = b".apk";
+const STANDALONE_APKS: &[u8] = b"standalones/";
+const SIGNATURE_FOLDER: &[u8] = b"META-INF/";
+const LARGEST_ANDROID_MANIFEST: u64 = 4 << 20;
+const LARGEST_ANDROID_TABLE: u64 = 32 << 20;
+const MOST_SPLITS: usize = 16;
+
+/// What an `.apk` inside a split set (`.apks`, `.xapk`) is (D757).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApkPart {
+    Base,
+    Config,
+}
+
+fn apk_part(name: &[u8]) -> Option<ApkPart> {
+    let file = files::file_name(name);
+    let is_apk = file.len() > APK_SUFFIX.len()
+        && file[file.len() - APK_SUFFIX.len()..].eq_ignore_ascii_case(APK_SUFFIX);
+    if !is_apk || name.starts_with(STANDALONE_APKS) {
+        return None;
+    }
+    let stem = &file[..file.len() - APK_SUFFIX.len()];
+    match stem {
+        b"base" | b"base-master" => Some(ApkPart::Base),
+        _ if stem.starts_with(b"config.") || stem.starts_with(b"base-") => Some(ApkPart::Config),
+        _ if !name.contains(&b'/') && !stem.starts_with(b"split_") => Some(ApkPart::Base),
+        _ => None,
+    }
+}
+
+fn whole_entry(
+    zip: &mut impl Reader,
+    entry: &Entry,
+    window: &mut Window,
+    largest: u64,
+) -> Option<alloc::vec::Vec<u8>> {
+    if entry.size() > largest {
+        return None;
+    }
+    let mut bytes = alloc::vec![0u8; entry.size() as usize];
+    let length = archive::head(zip, entry, window, &mut bytes).ok()?;
+    bytes.truncate(length);
+    Some(bytes)
+}
+
+/// The name an app shows for a label: at most [`Name::CAPACITY`] bytes, cut at a character,
+/// with path separators and control characters made spaces.
+fn label_name(label: &str) -> Option<Name> {
+    let cleaned: alloc::string::String = label
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect();
+    let mut end = cleaned.len().min(Name::CAPACITY);
+    while !cleaned.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = cleaned[..end].trim_end();
+    (!cut.is_empty() && cut != "." && cut != "..").then(|| Name::new(cut.as_bytes()))
+}
+
+fn android_title(
+    zip: &mut impl Reader,
+    window: &mut Window,
+    manifest: Option<Entry>,
+    table: Option<Entry>,
+) -> Option<Name> {
+    use eggos_android_package::manifest::{Label, Manifest};
+    let manifest = whole_entry(zip, &manifest?, window, LARGEST_ANDROID_MANIFEST)?;
+    let manifest = Manifest::parse(&manifest)?;
+    match manifest.label? {
+        Label::Text(text) => label_name(&text),
+        Label::Resource(id) => {
+            let table = whole_entry(zip, &table?, window, LARGEST_ANDROID_TABLE)?;
+            let table = eggos_android_package::resources::ResourceTable::parse(&table)?;
+            label_name(table.string(id)?)
+        }
+    }
+}
 /// The DEX file an installed `.apk` opens with, which the Android layer runs (D470).
 pub const ANDROID_CODE: &[u8] = b"classes.dex";
 const IPA_PAYLOAD: &[u8] = b"Payload/";
@@ -1137,6 +1225,9 @@ fn scan(
     let mut carries_gui_library = false;
     let mut android_manifest = false;
     let mut android_code = None;
+    let mut android_manifest_entry = None;
+    let mut android_table = None;
+    let mut apk_base = false;
     let mut ios_bundle = false;
     let mut ios_plist = None;
     while let Some(entry) = archive.next(zip, &mut cursor).map_err(Problem::Archive)? {
@@ -1145,7 +1236,12 @@ fn scan(
         }
         if entry.name() == ANDROID_MANIFEST {
             android_manifest = true;
+            android_manifest_entry = Some(entry);
         }
+        if entry.name() == ANDROID_RESOURCES {
+            android_table = Some(entry);
+        }
+        apk_base |= apk_part(entry.name()) == Some(ApkPart::Base);
         if entry.name() == ANDROID_CODE {
             android_code = Some(entry);
         }
@@ -1188,11 +1284,14 @@ fn scan(
             loader: None,
             console: false,
             total,
+            title: None,
+            android_set: false,
         });
     }
     if android_manifest {
         let code = android_code.ok_or(Problem::NotRunnable(NotRunnable::AndroidPackage))?;
         let run = Path::from(code.name()).ok_or(Problem::PathTooLong)?;
+        let title = android_title(zip, window, android_manifest_entry, android_table);
         return Ok(Scanned {
             archive,
             run,
@@ -1204,6 +1303,25 @@ fn scan(
             loader: None,
             console: false,
             total,
+            title,
+            android_set: false,
+        });
+    }
+    if apk_base && found == 0 {
+        let run = Path::from(ANDROID_CODE).ok_or(Problem::PathTooLong)?;
+        return Ok(Scanned {
+            archive,
+            run,
+            named_after: run,
+            program: Program {
+                source: Source::Android,
+                architecture: machine,
+            },
+            loader: None,
+            console: false,
+            total,
+            title: None,
+            android_set: true,
         });
     }
     let (entry, role) = match (found, chosen) {
@@ -1258,6 +1376,8 @@ fn scan(
         loader,
         console,
         total,
+        title: None,
+        android_set: false,
     })
 }
 
@@ -1282,7 +1402,10 @@ fn plan_archive(
         Source::Android => source.as_bytes(),
         _ => scanned.named_after.as_bytes(),
     };
-    let name = name.map_or_else(|| derived_name(named_after), Name::new);
+    let name = name.map_or_else(
+        || scanned.title.unwrap_or_else(|| derived_name(named_after)),
+        Name::new,
+    );
     let leftover = settle(files, scanned.program, &name, &scanned.run)
         .map_err(|problem| Refused { name, problem })?;
     Ok(Plan {
@@ -1298,6 +1421,7 @@ fn plan_archive(
         console: scanned.console,
         leftover,
         total_bytes: scanned.total,
+        android_set: scanned.android_set,
     })
 }
 
@@ -1432,6 +1556,7 @@ pub fn remove_tree(files: &mut impl Files, path: &[u8]) -> Result<(), Errno> {
 enum Stage {
     Preparing,
     Copying,
+    Unpacking,
     Icon,
     Registering,
     Finished,
@@ -1447,6 +1572,15 @@ struct OpenCopy {
 struct OpenArchive {
     file: Handle,
     cursor: Cursor,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpenApk {
+    file: Handle,
+    archive: Archive,
+    cursor: Cursor,
+    index: usize,
+    part: ApkPart,
 }
 
 /// Where an installation is after a step.
@@ -1473,6 +1607,8 @@ pub struct Installation {
     single_copied: bool,
     done_bytes: u64,
     icon: bool,
+    apks: [Option<Path>; MOST_SPLITS],
+    unpacking: Option<OpenApk>,
 }
 
 struct SharedFile<'a, 'f, F: Files> {
@@ -1509,6 +1645,25 @@ impl<F: Files> Sink for SharedFile<'_, '_, F> {
             }
         }
     }
+}
+
+fn read_whole(files: &mut impl Files, path: &[u8], largest: u64) -> Option<alloc::vec::Vec<u8>> {
+    let size = files.status(path).ok()?.size;
+    if size > largest {
+        return None;
+    }
+    let file = files.open(path).ok()?;
+    let mut bytes = alloc::vec![0u8; size as usize];
+    let mut filled = 0;
+    while filled < bytes.len() {
+        match files.read(file, &mut bytes[filled..]) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => filled += read,
+        }
+    }
+    files.close(file);
+    bytes.truncate(filled);
+    Some(bytes)
 }
 
 fn extract_to<F: Files>(
@@ -1617,6 +1772,8 @@ impl Installation {
             single_copied: false,
             done_bytes: 0,
             icon: false,
+            apks: [None; MOST_SPLITS],
+            unpacking: None,
         }
     }
 
@@ -1639,6 +1796,7 @@ impl Installation {
         let result = match self.stage {
             Stage::Preparing => self.prepare(files),
             Stage::Copying => self.copy_some(files, buffer),
+            Stage::Unpacking => self.unpack_next(files),
             Stage::Icon => self.write_icon(files),
             Stage::Registering => self.register(files),
             Stage::Finished => Ok(Progress::Installed),
@@ -1680,6 +1838,9 @@ impl Installation {
             files.close(copy.to);
         }
         if let Some(open) = self.extracting.take() {
+            files.close(open.file);
+        }
+        if let Some(open) = self.unpacking.take() {
             files.close(open.file);
         }
         if self.stage != Stage::Preparing
@@ -1835,7 +1996,10 @@ impl Installation {
         let Some(entry) = next.map_err(Problem::Archive)? else {
             self.extracting = None;
             files.close(open.file);
-            self.stage = Stage::Icon;
+            self.stage = match self.plan.android_set {
+                true => Stage::Unpacking,
+                false => Stage::Icon,
+            };
             return Ok(Progress::Registering);
         };
         if is_reserved(entry.name()) {
@@ -1885,7 +2049,139 @@ impl Installation {
         extracted?;
         synced.map_err(Problem::from_errno)?;
         self.done_bytes = self.done_bytes.saturating_add(entry.size());
+        if self.plan.android_set && apk_part(entry.name()).is_some() {
+            self.note_apk(entry.name())?;
+        }
         Ok(Progress::Copying(self.done_bytes))
+    }
+
+    fn note_apk(&mut self, name: &[u8]) -> Result<(), Problem> {
+        let path = Path::from(name).ok_or(Problem::PathTooLong)?;
+        let slot = self
+            .apks
+            .iter()
+            .position(Option::is_none)
+            .ok_or(Problem::TooLarge)?;
+        self.apks[slot] = Some(path);
+        Ok(())
+    }
+
+    fn open_next_apk(&mut self, files: &mut impl Files) -> Result<Option<OpenApk>, Problem> {
+        let folder = self.folder()?;
+        let base_first = |apk: &Option<Path>| {
+            apk.as_ref()
+                .is_some_and(|path| apk_part(path.as_bytes()) == Some(ApkPart::Base))
+        };
+        let index = self
+            .apks
+            .iter()
+            .position(base_first)
+            .or_else(|| self.apks.iter().position(Option::is_some));
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let Some(relative) = self.apks[index] else {
+            return Ok(None);
+        };
+        let path = folder
+            .join(relative.as_bytes())
+            .ok_or(Problem::PathTooLong)?;
+        let size = files
+            .status(path.as_bytes())
+            .map_err(Problem::Unreadable)?
+            .size;
+        let file = files.open(path.as_bytes()).map_err(Problem::Unreadable)?;
+        let archive = match Archive::open(&mut FileReader::new(files, file, size)) {
+            Ok(archive) => archive,
+            Err(error) => {
+                files.close(file);
+                return Err(Problem::Archive(error));
+            }
+        };
+        Ok(Some(OpenApk {
+            file,
+            archive,
+            cursor: archive.first(),
+            index,
+            part: apk_part(relative.as_bytes()).unwrap_or(ApkPart::Config),
+        }))
+    }
+
+    fn unpack_next(&mut self, files: &mut impl Files) -> Result<Progress, Problem> {
+        let open = match self.unpacking {
+            Some(open) => open,
+            None => match self.open_next_apk(files)? {
+                Some(open) => {
+                    self.unpacking = Some(open);
+                    open
+                }
+                None => {
+                    self.stage = Stage::Icon;
+                    return Ok(Progress::Registering);
+                }
+            },
+        };
+        let mut cursor = open.cursor;
+        let next = open.archive.next(
+            &mut FileReader::new(files, open.file, open.archive.size()),
+            &mut cursor,
+        );
+        self.unpacking = Some(OpenApk { cursor, ..open });
+        let folder = self.folder()?;
+        let Some(entry) = next.map_err(Problem::Archive)? else {
+            self.unpacking = None;
+            files.close(open.file);
+            if let Some(relative) = self.apks[open.index].take()
+                && let Some(path) = folder.join(relative.as_bytes())
+            {
+                let _ = files.remove_file(path.as_bytes());
+            }
+            return Ok(Progress::Copying(self.done_bytes));
+        };
+        let name = entry.name();
+        let skipped = entry.is_metadata()
+            || entry.is_directory()
+            || entry.is_link()
+            || name.starts_with(SIGNATURE_FOLDER)
+            || (open.part == ApkPart::Config
+                && (name == ANDROID_MANIFEST || name == ANDROID_RESOURCES));
+        if skipped {
+            return Ok(Progress::Copying(self.done_bytes));
+        }
+        if is_reserved(name) {
+            return Err(Problem::ReservedName);
+        }
+        if self.done_bytes.saturating_add(entry.size()) > MAX_EXTRACTED_BYTES {
+            return Err(Problem::TooLarge);
+        }
+        make_parents(files, &folder, name)?;
+        let to = folder.join(name).ok_or(Problem::PathTooLong)?;
+        let permissions = match name == self.plan.run.as_bytes() {
+            true => PROGRAM_PERMISSIONS,
+            false => FILE_PERMISSIONS,
+        };
+        let target = files
+            .create(to.as_bytes(), permissions)
+            .map_err(Problem::from_errno)?;
+        let extracted = extract_to(files, open.file, open.archive.size(), &entry, target);
+        let synced = files.sync_file(target);
+        files.close(target);
+        extracted?;
+        synced.map_err(Problem::from_errno)?;
+        self.done_bytes = self.done_bytes.saturating_add(entry.size());
+        Ok(Progress::Copying(self.done_bytes))
+    }
+
+    fn android_icon(&self, files: &mut impl Files, folder: &Path) -> Option<Path> {
+        use eggos_android_package::manifest::Manifest;
+        use eggos_android_package::resources::ResourceTable;
+        let manifest_path = folder.join(ANDROID_MANIFEST)?;
+        let table_path = folder.join(ANDROID_RESOURCES)?;
+        let manifest = read_whole(files, manifest_path.as_bytes(), LARGEST_ANDROID_MANIFEST)?;
+        let icon = Manifest::parse(&manifest)?.icon?;
+        let table = read_whole(files, table_path.as_bytes(), LARGEST_ANDROID_TABLE)?;
+        let table = ResourceTable::parse(&table)?;
+        folder.join(table.icon_file(icon)?.as_bytes())
     }
 
     fn write_icon(&mut self, files: &mut impl Files) -> Result<Progress, Problem> {
@@ -1901,7 +2197,13 @@ impl Installation {
         let mut work = Workspace::new();
         let mut own = OwnIcon::new();
         let source = source.as_ref().map(Path::as_bytes);
-        if !icon::find(files, program.as_bytes(), source, &mut work, &mut own) {
+        let found = match self.plan.program.source {
+            Source::Android => self.android_icon(files, &folder).is_some_and(|path| {
+                icon::from_picture(files, path.as_bytes(), &mut work, &mut own)
+            }),
+            _ => icon::find(files, program.as_bytes(), source, &mut work, &mut own),
+        };
+        if !found {
             return Ok(Progress::Registering);
         }
         let path = folder
@@ -2240,3 +2542,31 @@ pub fn for_each_installed_page(
 const _: () = assert!(
     PATH_CAPACITY >= APPLICATIONS.len() + 1 + manifest::NAME_CAPACITY + 1 + manifest::RUN_CAPACITY
 );
+
+#[cfg(test)]
+mod split_set_tests {
+    use super::*;
+
+    #[test]
+    fn split_sets_name_their_base_and_configuration_apks() {
+        assert_eq!(apk_part(b"splits/base-master.apk"), Some(ApkPart::Base));
+        assert_eq!(apk_part(b"base.apk"), Some(ApkPart::Base));
+        assert_eq!(apk_part(b"org.example.notes.apk"), Some(ApkPart::Base));
+        assert_eq!(apk_part(b"splits/base-arm64_v8a.apk"), Some(ApkPart::Config));
+        assert_eq!(apk_part(b"config.xxhdpi.apk"), Some(ApkPart::Config));
+        assert_eq!(apk_part(b"standalones/standalone-x86.apk"), None);
+        assert_eq!(apk_part(b"split_feature.apk"), None);
+        assert_eq!(apk_part(b"toc.pb"), None);
+    }
+
+    #[test]
+    fn a_label_becomes_a_safe_app_name() {
+        let text = |label: &str| {
+            label_name(label).map(|name| alloc::string::String::from(name.as_str()))
+        };
+        assert_eq!(text("  Notes  ").as_deref(), Some("Notes"));
+        assert_eq!(text("A/B: C").as_deref(), Some("A B  C"));
+        assert_eq!(text(".."), None);
+        assert_eq!(text(""), None);
+    }
+}
