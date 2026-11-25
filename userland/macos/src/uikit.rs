@@ -53,7 +53,7 @@ use crate::foundation::{self, Definition, NSSET, class_pointer, new_instance};
 use crate::objc::abi::{ClassObject, Id, Sel};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, class_named, message, methods, sel, send, send_bool, send1, send2};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use eggos_macos_gui::geometry::{Frame, Point};
 use eggos_toolkit::input::TouchPhase;
 
@@ -135,6 +135,7 @@ static ATTACHED: [[AtomicUsize; 2]; MOST_RECOGNIZERS] =
     [const { [AtomicUsize::new(0), AtomicUsize::new(0)] }; MOST_RECOGNIZERS];
 
 static SCENE: AtomicUsize = AtomicUsize::new(0);
+static RUNNING: AtomicBool = AtomicBool::new(false);
 
 type Pair = (&'static [u8], &'static ClassObject, &'static ClassObject);
 
@@ -1192,7 +1193,13 @@ extern "C" fn window_init_with_frame(this: Id, _: Sel, frame: Frame) -> Id {
     )
 }
 
+/// Whether the program is an iOS app (it called `UIApplicationMain`).
+pub fn is_running() -> bool {
+    RUNNING.load(Ordering::Acquire)
+}
+
 extern "C" fn application_main(_: i32, _: usize, _: Id, delegate_class: Id) -> i32 {
+    RUNNING.store(true, Ordering::Release);
     let application = send(
         &NSAPPLICATION as *const ClassObject as Id,
         sel!("sharedApplication"),

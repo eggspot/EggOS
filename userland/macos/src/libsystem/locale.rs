@@ -47,6 +47,14 @@ fn formats_of(settings: Settings) -> TimeFormats {
     }
 }
 
+/// The locale user-facing text is in: `LC_ALL`, else `LC_MESSAGES`, else `LANG`, else `C`.
+pub fn messages_locale() -> &'static [u8] {
+    [b"LC_ALL".as_slice(), b"LC_MESSAGES", b"LANG"]
+        .into_iter()
+        .find_map(|variable| environment(variable).filter(|value| !value.is_empty()))
+        .unwrap_or(b"C")
+}
+
 fn environment(name: &[u8]) -> Option<&'static [u8]> {
     let mut variable = [0u8; LONGEST_VARIABLE];
     if name.len() >= variable.len() {

@@ -1,30 +1,37 @@
-//! Auto Layout, the part apps use most (D506): a view's anchors (`leadingAnchor`, `topAnchor`,
-//! `widthAnchor`, `centerXAnchor`, ...) make constraints (`constraintEqualToAnchor:constant:`,
-//! `constraintEqualToConstant:`, and the inequalities, kept as equalities), as does
-//! `constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:`; active
-//! constraints (`active`, `activateConstraints:`) are applied before a window draws. Each pass
-//! reads every constrained view's wanted edges, sizes and centres from the others' frames (any
-//! two items, through their places in the window) and sets its frame from them, keeping its
-//! current size along an axis no constraint sizes, or its intrinsic size when it answers one;
-//! three passes settle chains of views placed by their neighbours. Constraints are kept in a
-//! table of 512, the first come.
+//! Auto Layout (D506, D769): a view's anchors (`leadingAnchor`, `topAnchor`, `widthAnchor`,
+//! `firstBaselineAnchor`, ...) make constraints (`constraintEqualToAnchor:constant:`, the
+//! inequalities, `constraintEqualToConstant:`, the system-spacing ones), as does
+//! `constraintWithItem:attribute:relatedBy:toItem:attribute:multiplier:constant:`, each with its
+//! relation and priority; active constraints (`active`, `activateConstraints:`) are applied
+//! before a window draws. Each pass gathers what every constraint on a view wants of each axis
+//! from the other items' frames (through their places in the superview, the vertical axis
+//! measured down from the top as Auto Layout does, leading and trailing mirrored when the
+//! user's language reads right to left), adds its intrinsic size at its hugging and
+//! compression-resistance priorities, and solves each axis strongest first; three passes
+//! settle chains of views placed by their neighbours. Constraints are kept in a table of 512,
+//! the first come.
 //!
-//! Stack views (D510): `NSStackView` and UIKit's `UIStackView` keep up to 32 arranged
-//! subviews, an axis and a spacing, and each pass lays them out one after another from the
-//! stack's top or left, each as tall (or wide) as its frame or intrinsic size and as wide (or
-//! tall) as the stack. A view's `safeAreaLayoutGuide`, `layoutMarginsGuide` and
+//! Stack views (D510, D769): `NSStackView` and UIKit's `UIStackView` keep up to 32 arranged
+//! subviews, an axis, a spacing, a distribution and an alignment (read as UIKit's in an iOS
+//! app, as an `NSLayoutAttribute` in a Mac app), and each pass places the shown ones from the
+//! stack's leading edge or top. A view's `safeAreaLayoutGuide`, `layoutMarginsGuide` and
 //! `readableContentGuide` are the view itself, whose anchors stand for theirs.
 
 use super::view::fields;
 use super::{
-    NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT, NSLAYOUTCONSTRAINT_META, NSSTACKVIEW,
-    NSSTACKVIEW_META, NSVIEW,
+    NSAPPLICATION, NSFONT, NSLAYOUTANCHOR, NSLAYOUTANCHOR_META, NSLAYOUTCONSTRAINT,
+    NSLAYOUTCONSTRAINT_META, NSSTACKVIEW, NSSTACKVIEW_META, NSVIEW,
 };
 use crate::foundation::{class_pointer, new_instance};
 use crate::objc::abi::{Id, Sel};
 use crate::objc::root::NSOBJECT;
 use crate::objc::{Runtime, class, message, methods, sel, send, send_bool, send1};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use eggos_macos_gui::auto_layout::{
+    self, Alignment, Arranged, DEFAULT_COMPRESSION_RESISTANCE, DEFAULT_HUGGING, Distribution,
+    Part, REQUIRED, SYSTEM_SPACING, Want, relation,
+};
 use eggos_macos_gui::geometry::{Frame, Point, Size};
 
 mod attribute {
@@ -38,7 +45,19 @@ mod attribute {
     pub const HEIGHT: u64 = 8;
     pub const CENTER_X: u64 = 9;
     pub const CENTER_Y: u64 = 10;
+    pub const LAST_BASELINE: u64 = 11;
+    pub const FIRST_BASELINE: u64 = 12;
+    pub const LEFT_MARGIN: u64 = 13;
+    pub const RIGHT_MARGIN: u64 = 14;
+    pub const TOP_MARGIN: u64 = 15;
+    pub const BOTTOM_MARGIN: u64 = 16;
+    pub const LEADING_MARGIN: u64 = 17;
+    pub const TRAILING_MARGIN: u64 = 18;
+    pub const CENTER_X_WITHIN_MARGINS: u64 = 19;
+    pub const CENTER_Y_WITHIN_MARGINS: u64 = 20;
 }
+
+const LAYOUT_MARGIN: f64 = 8.0;
 
 const MOST_CONSTRAINTS: usize = 512;
 const PASSES: usize = 3;
@@ -62,6 +81,8 @@ struct ConstraintFields {
     multiplier: f64,
     constant: f64,
     active: u8,
+    relation: i64,
+    priority: f32,
 }
 
 fn anchor(object: Id) -> &'static mut AnchorFields {
@@ -70,8 +91,7 @@ fn anchor(object: Id) -> &'static mut AnchorFields {
 }
 
 fn constraint(object: Id) -> &'static mut ConstraintFields {
-    // SAFETY: the callers pass NSLayoutConstraint instances, whose memory starts with these
-    // fields.
+    // SAFETY: the callers pass NSLayoutConstraint instances, which start with these fields.
     unsafe { &mut *object.cast::<ConstraintFields>() }
 }
 
@@ -88,6 +108,7 @@ fn new_anchor(view: Id, kind: u64) -> Id {
 fn new_constraint(
     (first, first_attribute): (Id, u64),
     (second, second_attribute): (Id, u64),
+    relation: i64,
     multiplier: f64,
     constant: f64,
 ) -> Id {
@@ -100,6 +121,8 @@ fn new_constraint(
         fields.second_attribute = second_attribute;
         fields.multiplier = multiplier;
         fields.constant = constant;
+        fields.relation = relation.clamp(relation::LESS_OR_EQUAL, relation::GREATER_OR_EQUAL);
+        fields.priority = REQUIRED;
     }
     object
 }
@@ -125,18 +148,27 @@ anchors! {
     height_anchor => attribute::HEIGHT,
     center_x_anchor => attribute::CENTER_X,
     center_y_anchor => attribute::CENTER_Y,
+    first_baseline_anchor => attribute::FIRST_BASELINE,
+    last_baseline_anchor => attribute::LAST_BASELINE,
 }
 
-fn to_anchor(this: Id, other: Id, multiplier: f64, constant: f64) -> Id {
+fn to_anchor(this: Id, other: Id, relation: i64, multiplier: f64, constant: f64) -> Id {
     let own = anchor(this);
     let (view, kind) = (own.view, own.attribute);
     match other.is_null() {
-        true => new_constraint((view, kind), (core::ptr::null_mut(), 0), 0.0, constant),
+        true => new_constraint(
+            (view, kind),
+            (core::ptr::null_mut(), 0),
+            relation,
+            0.0,
+            constant,
+        ),
         false => {
             let other = anchor(other);
             new_constraint(
                 (view, kind),
                 (other.view, other.attribute),
+                relation,
                 multiplier,
                 constant,
             )
@@ -144,30 +176,52 @@ fn to_anchor(this: Id, other: Id, multiplier: f64, constant: f64) -> Id {
     }
 }
 
-extern "C" fn equal_to_anchor(this: Id, _: Sel, other: Id) -> Id {
-    to_anchor(this, other, 1.0, 0.0)
+macro_rules! anchor_constraints {
+    ($($relation:expr => $to:ident, $to_constant:ident, $to_multiplier:ident,
+        $to_multiplier_constant:ident, $constant:ident, $spacing:ident;)*) => {
+        $(
+            extern "C" fn $to(this: Id, _: Sel, other: Id) -> Id {
+                to_anchor(this, other, $relation, 1.0, 0.0)
+            }
+
+            extern "C" fn $to_constant(this: Id, _: Sel, other: Id, constant: f64) -> Id {
+                to_anchor(this, other, $relation, 1.0, constant)
+            }
+
+            extern "C" fn $to_multiplier(this: Id, _: Sel, other: Id, multiplier: f64) -> Id {
+                to_anchor(this, other, $relation, multiplier, 0.0)
+            }
+
+            extern "C" fn $to_multiplier_constant(
+                this: Id,
+                _: Sel,
+                other: Id,
+                multiplier: f64,
+                constant: f64,
+            ) -> Id {
+                to_anchor(this, other, $relation, multiplier, constant)
+            }
+
+            extern "C" fn $constant(this: Id, _: Sel, constant: f64) -> Id {
+                to_anchor(this, core::ptr::null_mut(), $relation, 0.0, constant)
+            }
+
+            extern "C" fn $spacing(this: Id, _: Sel, other: Id, multiplier: f64) -> Id {
+                to_anchor(this, other, $relation, 1.0, SYSTEM_SPACING * multiplier)
+            }
+        )*
+    };
 }
 
-extern "C" fn equal_to_anchor_constant(this: Id, _: Sel, other: Id, constant: f64) -> Id {
-    to_anchor(this, other, 1.0, constant)
-}
-
-extern "C" fn equal_to_anchor_multiplier(this: Id, _: Sel, other: Id, multiplier: f64) -> Id {
-    to_anchor(this, other, multiplier, 0.0)
-}
-
-extern "C" fn equal_to_anchor_multiplier_constant(
-    this: Id,
-    _: Sel,
-    other: Id,
-    multiplier: f64,
-    constant: f64,
-) -> Id {
-    to_anchor(this, other, multiplier, constant)
-}
-
-extern "C" fn equal_to_constant(this: Id, _: Sel, constant: f64) -> Id {
-    to_anchor(this, core::ptr::null_mut(), 0.0, constant)
+anchor_constraints! {
+    relation::EQUAL => equal_to_anchor, equal_to_anchor_constant, equal_to_anchor_multiplier,
+        equal_to_anchor_multiplier_constant, equal_to_constant, equal_spacing;
+    relation::GREATER_OR_EQUAL => at_least_anchor, at_least_anchor_constant,
+        at_least_anchor_multiplier, at_least_anchor_multiplier_constant, at_least_constant,
+        at_least_spacing;
+    relation::LESS_OR_EQUAL => at_most_anchor, at_most_anchor_constant,
+        at_most_anchor_multiplier, at_most_anchor_multiplier_constant, at_most_constant,
+        at_most_spacing;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -176,7 +230,7 @@ extern "C" fn with_item(
     _: Sel,
     first: Id,
     first_attribute: u64,
-    _relation: i64,
+    relation: i64,
     second: Id,
     second_attribute: u64,
     multiplier: f64,
@@ -185,6 +239,7 @@ extern "C" fn with_item(
     new_constraint(
         (first, first_attribute),
         (second, second_attribute),
+        relation,
         multiplier,
         constant,
     )
@@ -229,6 +284,44 @@ extern "C" fn constraint_constant(this: Id, _: Sel) -> f64 {
 
 extern "C" fn constraint_set_constant(this: Id, _: Sel, constant: f64) {
     constraint(this).constant = constant;
+}
+
+extern "C" fn constraint_priority(this: Id, _: Sel) -> f32 {
+    constraint(this).priority
+}
+
+extern "C" fn constraint_set_priority(this: Id, _: Sel, priority: f32) {
+    constraint(this).priority = priority.clamp(1.0, REQUIRED);
+}
+
+extern "C" fn constraint_relation(this: Id, _: Sel) -> i64 {
+    constraint(this).relation
+}
+
+extern "C" fn constraint_multiplier(this: Id, _: Sel) -> f64 {
+    constraint(this).multiplier
+}
+
+extern "C" fn constraint_first_item(this: Id, _: Sel) -> Id {
+    constraint(this).first
+}
+
+extern "C" fn constraint_second_item(this: Id, _: Sel) -> Id {
+    constraint(this).second
+}
+
+extern "C" fn constraint_first_attribute(this: Id, _: Sel) -> u64 {
+    constraint(this).first_attribute
+}
+
+extern "C" fn constraint_second_attribute(this: Id, _: Sel) -> u64 {
+    constraint(this).second_attribute
+}
+
+extern "C" fn ignore_identifier(_: Id, _: Sel, _: Id) {}
+
+extern "C" fn no_identifier(_: Id, _: Sel) -> Id {
+    core::ptr::null_mut()
 }
 
 fn each_in(array: Id, mut each: impl FnMut(Id)) {
@@ -283,43 +376,249 @@ fn frame_in(view: Id, space: Id) -> Frame {
     }
 }
 
-fn read(frame: Frame, kind: u64) -> Option<f64> {
-    Some(match kind {
-        attribute::LEFT | attribute::LEADING => frame.x,
-        attribute::RIGHT | attribute::TRAILING => frame.x + frame.width,
-        attribute::BOTTOM => frame.y,
-        attribute::TOP => frame.y + frame.height,
-        attribute::WIDTH => frame.width,
-        attribute::HEIGHT => frame.height,
-        attribute::CENTER_X => frame.x + frame.width / 2.0,
-        attribute::CENTER_Y => frame.y + frame.height / 2.0,
-        _ => return None,
+static DIRECTION: AtomicU8 = AtomicU8::new(0);
+const LEFT_TO_RIGHT: u8 = 1;
+const RIGHT_TO_LEFT: u8 = 2;
+
+fn right_to_left() -> bool {
+    match DIRECTION.load(Ordering::Relaxed) {
+        LEFT_TO_RIGHT => false,
+        RIGHT_TO_LEFT => true,
+        _ => {
+            let locale = crate::libsystem::locale::messages_locale();
+            let backwards = auto_layout::is_right_to_left(locale);
+            let direction = if backwards { RIGHT_TO_LEFT } else { LEFT_TO_RIGHT };
+            DIRECTION.store(direction, Ordering::Relaxed);
+            backwards
+        }
+    }
+}
+
+extern "C" fn layout_direction(_: Id, _: Sel) -> i64 {
+    i64::from(right_to_left())
+}
+
+extern "C" fn layout_direction_for_attribute(_: Id, _: Sel, attribute: i64) -> i64 {
+    match attribute {
+        1..=3 => 0,
+        4 => 1,
+        _ => i64::from(right_to_left()),
+    }
+}
+
+extern "C" fn semantic_content_attribute(_: Id, _: Sel) -> i64 {
+    0
+}
+
+extern "C" fn ignore_number(_: Id, _: Sel, _: i64) {}
+
+const MOST_PRIORITISED: usize = 256;
+const HUGGING: usize = 0;
+const RESISTANCE: usize = 2;
+
+static VIEW_PRIORITIES: [(AtomicUsize, AtomicU64); MOST_PRIORITISED] =
+    [const { (AtomicUsize::new(0), AtomicU64::new(0)) }; MOST_PRIORITISED];
+
+fn packed_defaults() -> u64 {
+    let hugging = DEFAULT_HUGGING as u64;
+    let resistance = DEFAULT_COMPRESSION_RESISTANCE as u64;
+    hugging | hugging << 16 | resistance << 32 | resistance << 48
+}
+
+fn view_priority(view: Id, kind: usize, vertical: bool) -> f32 {
+    let shift = (kind + usize::from(vertical)) * 16;
+    let packed = VIEW_PRIORITIES
+        .iter()
+        .find(|(owner, _)| owner.load(Ordering::Acquire) == view as usize)
+        .map_or_else(packed_defaults, |(_, packed)| packed.load(Ordering::Acquire));
+    (packed >> shift & 0xffff) as f32
+}
+
+fn set_view_priority(view: Id, kind: usize, orientation: i64, priority: f32) {
+    let owned = |(owner, _): &&(AtomicUsize, AtomicU64)| {
+        owner.load(Ordering::Acquire) == view as usize
+    };
+    let slot = VIEW_PRIORITIES.iter().find(owned).or_else(|| {
+        VIEW_PRIORITIES.iter().find(|(owner, packed)| {
+            let claimed = owner
+                .compare_exchange(0, view as usize, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+            if claimed {
+                packed.store(packed_defaults(), Ordering::Release);
+            }
+            claimed
+        })
+    });
+    let Some((_, packed)) = slot else {
+        return;
+    };
+    let shift = (kind + usize::from(orientation == 1)) * 16;
+    let value = priority.clamp(1.0, REQUIRED) as u64;
+    let old = packed.load(Ordering::Acquire);
+    packed.store(old & !(0xffff << shift) | value << shift, Ordering::Release);
+}
+
+extern "C" fn set_hugging(this: Id, _: Sel, priority: f32, orientation: i64) {
+    set_view_priority(this, HUGGING, orientation, priority);
+}
+
+extern "C" fn hugging(this: Id, _: Sel, orientation: i64) -> f32 {
+    view_priority(this, HUGGING, orientation == 1)
+}
+
+extern "C" fn set_resistance(this: Id, _: Sel, priority: f32, orientation: i64) {
+    set_view_priority(this, RESISTANCE, orientation, priority);
+}
+
+extern "C" fn resistance(this: Id, _: Sel, orientation: i64) -> f32 {
+    view_priority(this, RESISTANCE, orientation == 1)
+}
+
+fn font_metrics(view: Id) -> Option<(f64, f64)> {
+    if !send_bool(view, sel!("respondsToSelector:"), sel!("font") as usize) {
+        return None;
+    }
+    let mut font = send(view, sel!("font"));
+    if font.is_null() {
+        let system: extern "C" fn(Id, Sel, f64) -> Id = message::msg_send_as();
+        font = system(class_pointer(&NSFONT).cast(), sel!("systemFontOfSize:"), 0.0);
+    }
+    if font.is_null() {
+        return None;
+    }
+    let metric: extern "C" fn(Id, Sel) -> f64 = message::msg_send_as();
+    Some((metric(font, sel!("ascender")), metric(font, sel!("descender"))))
+}
+
+extern "C" fn first_baseline_from_top(this: Id, _: Sel) -> f64 {
+    let height = fields(this).frame.height;
+    font_metrics(this).map_or(height, |(ascender, descender)| {
+        auto_layout::baseline_offsets(height, ascender, descender).0
     })
 }
 
-#[derive(Default, Clone, Copy)]
-struct Axis {
-    low: Option<f64>,
-    high: Option<f64>,
-    size: Option<f64>,
-    centre: Option<f64>,
+extern "C" fn last_baseline_from_bottom(this: Id, _: Sel) -> f64 {
+    let height = fields(this).frame.height;
+    font_metrics(this).map_or(0.0, |(ascender, descender)| {
+        auto_layout::baseline_offsets(height, ascender, descender).1
+    })
 }
 
-impl Axis {
-    fn solve(self, origin: f64, size: f64) -> (f64, f64) {
-        let size = match (self.size, self.low, self.high) {
-            (Some(size), ..) => size,
-            (None, Some(low), Some(high)) => high - low,
-            _ => size,
-        };
-        let origin = match (self.low, self.high, self.centre) {
-            (Some(low), ..) => low,
-            (None, Some(high), _) => high - size,
-            (None, None, Some(centre)) => centre - size / 2.0,
-            (None, None, None) => origin,
-        };
-        (origin, size.max(0.0))
+fn baselines(view: Id) -> (f64, f64) {
+    let offset: extern "C" fn(Id, Sel) -> f64 = message::msg_send_as();
+    (
+        offset(view, sel!("firstBaselineOffsetFromTop")),
+        offset(view, sel!("lastBaselineOffsetFromBottom")),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct Place {
+    vertical: bool,
+    part: Part,
+    leading: bool,
+    offset: f64,
+}
+
+fn place_of(view: Id, kind: u64) -> Option<Place> {
+    let place = |vertical, part, leading, offset| {
+        Some(Place {
+            vertical,
+            part,
+            leading,
+            offset,
+        })
+    };
+    match kind {
+        attribute::LEFT => place(false, Part::Start, false, 0.0),
+        attribute::RIGHT => place(false, Part::End, false, 0.0),
+        attribute::LEADING => place(false, Part::Start, true, 0.0),
+        attribute::TRAILING => place(false, Part::End, true, 0.0),
+        attribute::WIDTH => place(false, Part::Length, false, 0.0),
+        attribute::CENTER_X | attribute::CENTER_X_WITHIN_MARGINS => {
+            place(false, Part::Centre, false, 0.0)
+        }
+        attribute::TOP => place(true, Part::Start, false, 0.0),
+        attribute::BOTTOM => place(true, Part::End, false, 0.0),
+        attribute::HEIGHT => place(true, Part::Length, false, 0.0),
+        attribute::CENTER_Y | attribute::CENTER_Y_WITHIN_MARGINS => {
+            place(true, Part::Centre, false, 0.0)
+        }
+        attribute::FIRST_BASELINE => place(true, Part::Start, false, baselines(view).0),
+        attribute::LAST_BASELINE => place(true, Part::End, false, -baselines(view).1),
+        attribute::LEFT_MARGIN => place(false, Part::Start, false, LAYOUT_MARGIN),
+        attribute::RIGHT_MARGIN => place(false, Part::End, false, -LAYOUT_MARGIN),
+        attribute::LEADING_MARGIN => place(false, Part::Start, true, LAYOUT_MARGIN),
+        attribute::TRAILING_MARGIN => place(false, Part::End, true, -LAYOUT_MARGIN),
+        attribute::TOP_MARGIN => place(true, Part::Start, false, LAYOUT_MARGIN),
+        attribute::BOTTOM_MARGIN => place(true, Part::End, false, -LAYOUT_MARGIN),
+        _ => None,
     }
+}
+
+fn space_of(superview: Id) -> Size {
+    match superview.is_null() {
+        true => Size::default(),
+        false => {
+            let frame = fields(superview).frame;
+            Size {
+                width: frame.width,
+                height: frame.height,
+            }
+        }
+    }
+}
+
+fn axis_of(frame: Frame, vertical: bool, mirrored: bool, space: Size) -> (f64, f64) {
+    match (vertical, mirrored) {
+        (true, _) => (space.height - (frame.y + frame.height), frame.height),
+        (false, true) => (space.width - (frame.x + frame.width), frame.width),
+        (false, false) => (frame.x, frame.width),
+    }
+}
+
+fn unmirrored(want: Want, width: f64) -> Want {
+    let part = match want.part {
+        Part::Start => Part::End,
+        Part::End => Part::Start,
+        other => other,
+    };
+    match want.part {
+        Part::Length => want,
+        _ => Want {
+            part,
+            value: width - want.value,
+            relation: -want.relation,
+            priority: want.priority,
+        },
+    }
+}
+
+fn want_of(view: Id, rule: &ConstraintFields, superview: Id, space: Size) -> Option<(bool, Want)> {
+    let own = place_of(view, rule.first_attribute)?;
+    let other = match rule.second.is_null() {
+        true => None,
+        false => Some(place_of(rule.second, rule.second_attribute)?),
+    };
+    let mirrored = right_to_left() && (own.leading || other.is_some_and(|other| other.leading));
+    let source = match other {
+        None => 0.0,
+        Some(other) => {
+            let frame = frame_in(rule.second, superview);
+            let (start, length) = axis_of(frame, other.vertical, mirrored, space);
+            other.part.value_at(start, length) + other.offset
+        }
+    };
+    let want = Want {
+        part: own.part,
+        value: source * rule.multiplier + rule.constant - own.offset,
+        relation: rule.relation,
+        priority: rule.priority,
+    };
+    Some(match !own.vertical && mirrored {
+        true => (false, unmirrored(want, space.width)),
+        false => (own.vertical, want),
+    })
 }
 
 fn intrinsic_size(view: Id) -> Option<Size> {
@@ -337,49 +636,50 @@ fn intrinsic_size(view: Id) -> Option<Size> {
 
 fn lay_out(view: Id) {
     let superview = fields(view).superview;
-    let mut horizontal = Axis::default();
-    let mut vertical = Axis::default();
+    let space = space_of(superview);
+    let mut horizontal: Vec<Want> = Vec::new();
+    let mut vertical: Vec<Want> = Vec::new();
     for slot in &ACTIVE {
         let object = slot.load(Ordering::Acquire) as Id;
         if object.is_null() || constraint(object).first != view {
             continue;
         }
-        let rule = constraint(object);
-        let source = match rule.second.is_null() {
-            true => Some(0.0),
-            false => read(frame_in(rule.second, superview), rule.second_attribute),
-        };
-        let Some(source) = source else {
-            continue;
-        };
-        let wanted = source * rule.multiplier + rule.constant;
-        match rule.first_attribute {
-            attribute::LEFT | attribute::LEADING => horizontal.low = Some(wanted),
-            attribute::RIGHT | attribute::TRAILING => horizontal.high = Some(wanted),
-            attribute::WIDTH => horizontal.size = Some(wanted),
-            attribute::CENTER_X => horizontal.centre = Some(wanted),
-            attribute::BOTTOM => vertical.low = Some(wanted),
-            attribute::TOP => vertical.high = Some(wanted),
-            attribute::HEIGHT => vertical.size = Some(wanted),
-            attribute::CENTER_Y => vertical.centre = Some(wanted),
-            _ => {}
+        match want_of(view, constraint(object), superview, space) {
+            Some((true, want)) => vertical.push(want),
+            Some((false, want)) => horizontal.push(want),
+            None => {}
         }
     }
     let frame = fields(view).frame;
     let intrinsic = intrinsic_size(view);
-    let width = match (frame.width, intrinsic) {
-        (width, Some(size)) if width <= 0.0 => size.width,
-        (width, _) => width,
-    };
-    let height = match (frame.height, intrinsic) {
-        (height, Some(size)) if height <= 0.0 => size.height,
-        (height, _) => height,
-    };
-    let (x, width) = horizontal.solve(frame.x, width);
-    let (y, height) = vertical.solve(frame.y, height);
+    let mut width = frame.width;
+    let mut height = frame.height;
+    if let Some(size) = intrinsic {
+        for (wants, length, is_vertical) in [
+            (&mut horizontal, size.width, false),
+            (&mut vertical, size.height, true),
+        ] {
+            if length > 0.0 {
+                wants.extend(auto_layout::intrinsic_wants(
+                    length,
+                    view_priority(view, HUGGING, is_vertical),
+                    view_priority(view, RESISTANCE, is_vertical),
+                ));
+            }
+        }
+        if width <= 0.0 {
+            width = size.width;
+        }
+        if height <= 0.0 {
+            height = size.height;
+        }
+    }
+    let (x, width) = auto_layout::solve(&horizontal, frame.x, width);
+    let top = space.height - (frame.y + frame.height);
+    let (top, height) = auto_layout::solve(&vertical, top, height);
     fields(view).frame = Frame {
         x,
-        y,
+        y: space.height - (top + height),
         width,
         height,
     };
@@ -420,11 +720,12 @@ struct StackFields {
     spacing: f64,
     count: usize,
     arranged: [Id; MOST_ARRANGED],
+    distribution: i64,
+    alignment: i64,
 }
 
 fn stack(object: Id) -> &'static mut StackFields {
-    // SAFETY: the callers pass stack view instances, whose memory starts with a view's fields
-    // and goes on with these.
+    // SAFETY: the callers pass stack views, which start with a view's fields, then these.
     unsafe { &mut *object.cast::<StackFields>() }
 }
 
@@ -440,25 +741,48 @@ fn register_stack(object: Id) {
     }
 }
 
-extern "C" fn stack_add_arranged(this: Id, _: Sel, view: Id) {
+fn insert_arranged(this: Id, view: Id, index: usize) {
     if view.is_null() {
         return;
     }
     register_stack(this);
     let fields = stack(this);
-    if fields.count < MOST_ARRANGED {
-        fields.arranged[fields.count] = view;
-        fields.count += 1;
-        send1(this, sel!("addSubview:"), view as usize);
+    if fields.count >= MOST_ARRANGED {
+        return;
+    }
+    let index = index.min(fields.count);
+    fields.arranged.copy_within(index..fields.count, index + 1);
+    fields.arranged[index] = view;
+    fields.count += 1;
+    send1(this, sel!("addSubview:"), view as usize);
+}
+
+extern "C" fn stack_add_arranged(this: Id, _: Sel, view: Id) {
+    insert_arranged(this, view, MOST_ARRANGED);
+}
+
+extern "C" fn stack_add_in_gravity(this: Id, _: Sel, view: Id, _: i64) {
+    insert_arranged(this, view, MOST_ARRANGED);
+}
+
+extern "C" fn stack_insert_arranged(this: Id, _: Sel, view: Id, index: usize) {
+    insert_arranged(this, view, index);
+}
+
+extern "C" fn stack_remove_arranged(this: Id, _: Sel, view: Id) {
+    let fields = stack(this);
+    let count = fields.count;
+    if let Some(index) = fields.arranged[..count].iter().position(|&each| each == view) {
+        fields.arranged.copy_within(index + 1..count, index);
+        fields.count -= 1;
+        fields.arranged[fields.count] = core::ptr::null_mut();
     }
 }
 
 extern "C" fn stack_with_views(class: Id, _: Sel, views: Id) -> Id {
     let this = send(send(class, sel!("alloc")), sel!("init"));
     if !this.is_null() {
-        each_in(views, |view| {
-            stack_add_arranged(this, sel!("addArrangedSubview:"), view)
-        });
+        each_in(views, |view| insert_arranged(this, view, MOST_ARRANGED));
     }
     this
 }
@@ -466,9 +790,7 @@ extern "C" fn stack_with_views(class: Id, _: Sel, views: Id) -> Id {
 extern "C" fn stack_init_with_arranged(this: Id, _: Sel, views: Id) -> Id {
     let this = send(this, sel!("init"));
     if !this.is_null() {
-        each_in(views, |view| {
-            stack_add_arranged(this, sel!("addArrangedSubview:"), view)
-        });
+        each_in(views, |view| insert_arranged(this, view, MOST_ARRANGED));
     }
     this
 }
@@ -490,40 +812,87 @@ extern "C" fn stack_spacing(this: Id, _: Sel) -> f64 {
     stack(this).spacing
 }
 
-extern "C" fn ignore_number(_: Id, _: Sel, _: i64) {}
+extern "C" fn stack_set_distribution(this: Id, _: Sel, distribution: i64) {
+    stack(this).distribution = distribution;
+}
+
+extern "C" fn stack_distribution(this: Id, _: Sel) -> i64 {
+    stack(this).distribution
+}
+
+extern "C" fn stack_set_alignment(this: Id, _: Sel, alignment: i64) {
+    stack(this).alignment = alignment;
+}
+
+extern "C" fn stack_alignment(this: Id, _: Sel) -> i64 {
+    stack(this).alignment
+}
+
+fn arranged_of(view: Id, vertical: bool) -> Arranged {
+    let frame = fields(view).frame;
+    let intrinsic = intrinsic_size(view).unwrap_or_default();
+    let width = if intrinsic.width > 0.0 { intrinsic.width } else { frame.width };
+    let height = if intrinsic.height > 0.0 { intrinsic.height } else { frame.height };
+    let (length, cross) = match vertical {
+        true => (height, width),
+        false => (width, height),
+    };
+    let (first_baseline, last_baseline) = baselines(view);
+    Arranged {
+        length,
+        cross,
+        hugging: view_priority(view, HUGGING, vertical),
+        first_baseline,
+        last_baseline,
+    }
+}
 
 fn stack_lay_out(this: Id) {
     let fields = stack(this);
     let bounds = fields.base.frame;
     let vertical = fields.vertical != 0;
-    let mut used = 0.0;
-    for &view in &fields.arranged[..fields.count] {
-        if view.is_null() || super::view::fields(view).hidden {
-            continue;
-        }
-        let frame = super::view::fields(view).frame;
-        let intrinsic = intrinsic_size(view);
-        let own = match (vertical, intrinsic) {
-            (true, Some(size)) if frame.height <= 0.0 => size.height,
-            (false, Some(size)) if frame.width <= 0.0 => size.width,
-            (true, _) => frame.height,
-            (false, _) => frame.width,
-        };
+    let backwards = right_to_left();
+    let shown: Vec<Id> = fields.arranged[..fields.count]
+        .iter()
+        .copied()
+        .filter(|&view| !view.is_null() && !super::view::fields(view).hidden)
+        .collect();
+    let views: Vec<Arranged> = shown.iter().map(|&view| arranged_of(view, vertical)).collect();
+    let alignment = match crate::uikit::is_running() {
+        true => Alignment::from_uikit(fields.alignment),
+        false => Alignment::from_appkit(fields.alignment),
+    };
+    let (length, cross) = match vertical {
+        true => (bounds.height, bounds.width),
+        false => (bounds.width, bounds.height),
+    };
+    let slots = auto_layout::stack(
+        &views,
+        (length, cross),
+        fields.spacing,
+        Distribution::from_raw(fields.distribution),
+        alignment,
+        !vertical,
+    );
+    let across = |start: f64, length: f64, room: f64| match backwards {
+        true => room - (start + length),
+        false => start,
+    };
+    for (&view, slot) in shown.iter().zip(slots) {
         super::view::fields(view).frame = match vertical {
             true => Frame {
-                x: 0.0,
-                y: bounds.height - used - own,
-                width: bounds.width,
-                height: own,
+                x: across(slot.cross_start, slot.cross_length, bounds.width),
+                y: bounds.height - (slot.start + slot.length),
+                width: slot.cross_length,
+                height: slot.length,
             },
             false => Frame {
-                x: used,
-                y: 0.0,
-                width: own,
-                height: bounds.height,
+                x: across(slot.start, slot.length, bounds.width),
+                y: bounds.height - (slot.cross_start + slot.cross_length),
+                width: slot.length,
+                height: slot.cross_length,
             },
         };
-        used += own + fields.spacing;
     }
 }
 
@@ -531,7 +900,9 @@ extern "C" fn guide_is_view(this: Id, _: Sel) -> Id {
     this
 }
 
-/// Gives every view its anchors and `translatesAutoresizingMaskIntoConstraints`.
+/// Gives every view its anchors, `translatesAutoresizingMaskIntoConstraints`, its hugging and
+/// compression-resistance priorities, its baselines and the layout direction, and the
+/// application its layout direction.
 pub fn extend_views(runtime: &mut Runtime) -> bool {
     let view_methods = methods![
         "leftAnchor" => left_anchor,
@@ -544,34 +915,82 @@ pub fn extend_views(runtime: &mut Runtime) -> bool {
         "heightAnchor" => height_anchor,
         "centerXAnchor" => center_x_anchor,
         "centerYAnchor" => center_y_anchor,
+        "firstBaselineAnchor" => first_baseline_anchor,
+        "lastBaselineAnchor" => last_baseline_anchor,
         "translatesAutoresizingMaskIntoConstraints" => yes,
         "setTranslatesAutoresizingMaskIntoConstraints:" => ignore_flag,
         "safeAreaLayoutGuide" => guide_is_view,
         "layoutMarginsGuide" => guide_is_view,
         "readableContentGuide" => guide_is_view,
+        "setContentHuggingPriority:forOrientation:" => set_hugging,
+        "setContentHuggingPriority:forAxis:" => set_hugging,
+        "contentHuggingPriorityForOrientation:" => hugging,
+        "contentHuggingPriorityForAxis:" => hugging,
+        "setContentCompressionResistancePriority:forOrientation:" => set_resistance,
+        "setContentCompressionResistancePriority:forAxis:" => set_resistance,
+        "contentCompressionResistancePriorityForOrientation:" => resistance,
+        "contentCompressionResistancePriorityForAxis:" => resistance,
+        "firstBaselineOffsetFromTop" => first_baseline_from_top,
+        "lastBaselineOffsetFromBottom" => last_baseline_from_bottom,
+        "baselineOffsetFromBottom" => last_baseline_from_bottom,
+        "userInterfaceLayoutDirection" => layout_direction,
+        "effectiveUserInterfaceLayoutDirection" => layout_direction,
+        "semanticContentAttribute" => semantic_content_attribute,
+        "setSemanticContentAttribute:" => ignore_number,
+        "setUserInterfaceLayoutDirection:" => ignore_number,
     ];
-    class::extend(runtime, &NSVIEW, &view_methods, &[])
+    let view_class_methods = methods![
+        "userInterfaceLayoutDirectionForSemanticContentAttribute:" =>
+            layout_direction_for_attribute,
+    ];
+    let application_methods = methods![
+        "userInterfaceLayoutDirection" => layout_direction,
+    ];
+    class::extend(runtime, &NSVIEW, &view_methods, &view_class_methods)
+        && class::extend(runtime, &NSAPPLICATION, &application_methods, &[])
 }
 
 pub fn define(runtime: &mut Runtime) -> bool {
     let anchor_methods = methods![
         "constraintEqualToAnchor:" => equal_to_anchor,
         "constraintEqualToAnchor:constant:" => equal_to_anchor_constant,
-        "constraintGreaterThanOrEqualToAnchor:" => equal_to_anchor,
-        "constraintGreaterThanOrEqualToAnchor:constant:" => equal_to_anchor_constant,
-        "constraintLessThanOrEqualToAnchor:" => equal_to_anchor,
-        "constraintLessThanOrEqualToAnchor:constant:" => equal_to_anchor_constant,
         "constraintEqualToAnchor:multiplier:" => equal_to_anchor_multiplier,
         "constraintEqualToAnchor:multiplier:constant:" => equal_to_anchor_multiplier_constant,
         "constraintEqualToConstant:" => equal_to_constant,
-        "constraintGreaterThanOrEqualToConstant:" => equal_to_constant,
-        "constraintLessThanOrEqualToConstant:" => equal_to_constant,
+        "constraintEqualToSystemSpacingAfterAnchor:multiplier:" => equal_spacing,
+        "constraintEqualToSystemSpacingBelowAnchor:multiplier:" => equal_spacing,
+        "constraintGreaterThanOrEqualToAnchor:" => at_least_anchor,
+        "constraintGreaterThanOrEqualToAnchor:constant:" => at_least_anchor_constant,
+        "constraintGreaterThanOrEqualToAnchor:multiplier:" => at_least_anchor_multiplier,
+        "constraintGreaterThanOrEqualToAnchor:multiplier:constant:" =>
+            at_least_anchor_multiplier_constant,
+        "constraintGreaterThanOrEqualToConstant:" => at_least_constant,
+        "constraintGreaterThanOrEqualToSystemSpacingAfterAnchor:multiplier:" => at_least_spacing,
+        "constraintGreaterThanOrEqualToSystemSpacingBelowAnchor:multiplier:" => at_least_spacing,
+        "constraintLessThanOrEqualToAnchor:" => at_most_anchor,
+        "constraintLessThanOrEqualToAnchor:constant:" => at_most_anchor_constant,
+        "constraintLessThanOrEqualToAnchor:multiplier:" => at_most_anchor_multiplier,
+        "constraintLessThanOrEqualToAnchor:multiplier:constant:" =>
+            at_most_anchor_multiplier_constant,
+        "constraintLessThanOrEqualToConstant:" => at_most_constant,
+        "constraintLessThanOrEqualToSystemSpacingAfterAnchor:multiplier:" => at_most_spacing,
+        "constraintLessThanOrEqualToSystemSpacingBelowAnchor:multiplier:" => at_most_spacing,
     ];
     let constraint_methods = methods![
         "isActive" => constraint_is_active,
         "setActive:" => constraint_set_active,
         "constant" => constraint_constant,
         "setConstant:" => constraint_set_constant,
+        "priority" => constraint_priority,
+        "setPriority:" => constraint_set_priority,
+        "relation" => constraint_relation,
+        "multiplier" => constraint_multiplier,
+        "firstItem" => constraint_first_item,
+        "secondItem" => constraint_second_item,
+        "firstAttribute" => constraint_first_attribute,
+        "secondAttribute" => constraint_second_attribute,
+        "identifier" => no_identifier,
+        "setIdentifier:" => ignore_identifier,
     ];
     let constraint_class_methods = methods![
         "activateConstraints:" => activate_constraints,
@@ -580,7 +999,9 @@ pub fn define(runtime: &mut Runtime) -> bool {
     ];
     let stack_methods = methods![
         "addArrangedSubview:" => stack_add_arranged,
-        "addView:inGravity:" => stack_add_arranged,
+        "addView:inGravity:" => stack_add_in_gravity,
+        "insertArrangedSubview:atIndex:" => stack_insert_arranged,
+        "removeArrangedSubview:" => stack_remove_arranged,
         "initWithArrangedSubviews:" => stack_init_with_arranged,
         "setAxis:" => stack_set_axis,
         "axis" => stack_axis,
@@ -588,8 +1009,10 @@ pub fn define(runtime: &mut Runtime) -> bool {
         "orientation" => stack_axis,
         "setSpacing:" => stack_set_spacing,
         "spacing" => stack_spacing,
-        "setAlignment:" => ignore_number,
-        "setDistribution:" => ignore_number,
+        "setAlignment:" => stack_set_alignment,
+        "alignment" => stack_alignment,
+        "setDistribution:" => stack_set_distribution,
+        "distribution" => stack_distribution,
     ];
     let stack_class_methods = methods![
         "stackViewWithViews:" => stack_with_views,

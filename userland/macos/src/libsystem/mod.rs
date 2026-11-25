@@ -9,7 +9,7 @@ pub mod dispatch;
 pub mod dynamic;
 pub mod file;
 pub mod heap;
-mod locale;
+pub mod locale;
 mod math;
 mod memory;
 mod multibyte;

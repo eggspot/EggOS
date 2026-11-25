@@ -5,13 +5,14 @@
 //! window server's `SET_MENU` pool, the server's key records as `NSEvent`'s key codes,
 //! characters and modifier flags, the standard About panel (D175), the button types and their
 //! states, and NSCursor's shapes and cursor rects, and NSPasteboard's type names (D233), and
-//! reading RTF into styled text (D731).
+//! reading RTF into styled text (D731), and Auto Layout's arithmetic (D769).
 
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 pub mod about;
+pub mod auto_layout;
 pub mod alert;
 pub mod bitmap;
 pub mod button;

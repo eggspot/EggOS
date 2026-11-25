@@ -261,7 +261,7 @@ and is not listed per item.
 - [x] Android: density buckets, `scaleType`, `setImageBitmap` (D509) — code written, unbuilt, D763
 - [x] Android: other resource types (dimensions, colours, styles), configurations beyond the default, `ConstraintLayout`, fragments, more activities and intents (D500; resource types and configurations code written, unbuilt: D764; activities, intents and fragments: D765) — code written, unbuilt, D764, D765, D766
 - [x] iOS: multi-touch, pinches and rotations, velocities, recognizers that wait for each other to fail, safe areas, `UIScreen` and size classes (D501, D505, D515) — code written, unbuilt, D768
-- [ ] Auto Layout: priorities and inequalities, right-to-left leading/trailing, stack view distributions and alignments, baselines (D506, D510)
+- [x] Auto Layout: priorities and inequalities, right-to-left leading/trailing, stack view distributions and alignments, baselines (D506, D510) — code written, unbuilt, D769
 - [ ] WebP: animated WebP (`ANIM`/`ANMF`) and fancy chroma upsampling (D520)
 
 ## M16 Editions
