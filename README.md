@@ -155,7 +155,7 @@ cargo xtask run --arch aarch64 --add path/to/hello     # a thin or fat Mach-O fi
 | `userland/` | our own Linux programs: init, the [shell](docs/shell.md), the [core utilities](docs/coreutils.md), [Settings](docs/settings.md), the GUI toolkit (`toolkit`), the Wayland server (`eggway`) and the runtime they share |
 | `tests/` | programs the boot tests add to the image: `linux-static`, an ordinary static Linux program ([Linux programs](docs/linux-programs.md)), `linux-gui`, `linux-paint`, a Wayland client written against the wire protocol, `windows-console`, Windows console programs ([Windows programs](docs/windows-programs.md)), `android-console`, a static Android console program linked against bionic ([Android programs](docs/android-programs.md)), `macos-console`, macOS console programs linked by Apple's linker, and `macos-objc`, an Objective-C program built by Apple's clang ([macOS programs](docs/macos-programs.md)) |
 | `xtask/` | developer commands (`cargo xtask ...`) |
-| `docs/` | [roadmap](docs/roadmap.md), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
+| `docs/` | [roadmap](docs/roadmap.md), [open issues](https://github.com/eggspot/EggOS/issues?q=is%3Aopen+label%3Aroadmap), [decisions](docs/decisions.md), [dependencies](docs/dependencies.md), [UX research](docs/ux/README.md) |
 
 ## Build and test
 Requires [rustup](https://rustup.rs); the pinned toolchain in `rust-toolchain.toml` installs itself.

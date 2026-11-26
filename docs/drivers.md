@@ -379,7 +379,8 @@ folder, the disk and the channel uses all 8.
    that feature.
 4. Add a self-test that the device works on every architecture QEMU offers it on, and the
    QEMU arguments in `xtask` (`ARCHES`). A hot path gets a gated benchmark (D27).
-5. Record the decision in `docs/decisions.md` and the driver in the roadmap's support matrix.
+5. Record the decision in the driver's GitHub issue and its closing commit, and the driver in the
+   roadmap's support matrix.
 
 ## Keyboard layouts and Caps Lock's light (D185)
 

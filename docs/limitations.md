@@ -218,7 +218,7 @@ the [roadmap](roadmap.md); the reasons behind the current state are in the
   what it prints on Linux. CI's `workspace-build` job (D173) builds a multi-crate workspace of
   ours with a job per CPU (cargo's jobserver, a `rustc` per CPU) inside EggOS and inside Linux
   booted in the same QEMU machine, and reports each phase's time against Linux's in the job
-  summary; the times are reported, not gated, and the gaps go into the roadmap once the job has
+  summary; the times are reported, not gated, and the gaps become GitHub issues once the job has
   run. EggOS ships no toolchain, C compiler or linker: programs for the glibc targets (whose
   linker is a C compiler) do not link inside it yet. A `/proc/<pid>/fd` link to an end of a
   pipe opens that pipe again (D173), as jobserver clients do; links to sockets, event files
