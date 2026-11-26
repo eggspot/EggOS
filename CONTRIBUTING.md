@@ -29,7 +29,10 @@ the benchmarks against `benchmarks/baseline.txt`. It needs QEMU installed (`brew
 macOS; QEMU's Windows installer or MSYS2 on Windows; your distribution's `qemu-system-*` packages on
 Linux).
 
-Architecture decisions go in `docs/decisions.md` as a new numbered entry.
+Open work is tracked in [GitHub issues](https://github.com/eggspot/EggOS/issues?q=is%3Aopen+label%3Aroadmap)
+(label `roadmap`, one milestone per roadmap milestone). A change closes its issue (`Closes #<n>`), and
+an architecture decision is written in its issue, labelled `decision`, and in the closing commit or
+PR. `docs/decisions.md` is the frozen history of D1 to D791.
 
 ## License
 EggOS is licensed under either the MIT License or the Apache License 2.0, at your option (see
