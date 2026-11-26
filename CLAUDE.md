@@ -84,8 +84,9 @@ Check each task against these before starting and again before opening the PR.
   Bring-up order is an engineering choice, not a scope limit: start where QEMU emulation is good and most
   users are (e.g. x86_64, aarch64, riscv64; virtio devices and virtio-gpu first), then real hardware and
   vendor GPUs (Intel, AMD, NVIDIA, Apple, Arm Mali, Qualcomm Adreno, ...) behind the same interfaces.
-- Record every further architecture decision as a numbered entry in docs/decisions.md (append-only;
-  a later entry may supersede an earlier one).
+- Record every further architecture decision in its GitHub issue, labelled `decision` ("Work
+  tracking" below; open one when the work has none). `docs/decisions.md` (D1 to D791) is frozen history; a decision that supersedes
+  one of its entries names that entry in the issue.
 
 ## The target: the fastest OS
 EggOS must be the fastest operating system: faster boot, lower latency, higher throughput and a smaller
@@ -155,7 +156,7 @@ them.
   Rust and no `#` comments in TOML or YAML. Allowed: `// SAFETY:`, lint directives, and `///`/`//!`
   on public items, which `cargo xtask docs` (part of `cargo xtask ci`) builds with rustdoc; keep them
   short and about the contract. Reasons, spec references and design notes go in names, constants,
-  tests or `docs/decisions.md`. Existing comments are removed crate by crate in cleanup PRs.
+  tests, the issue or the commit message. Existing comments are removed crate by crate in cleanup PRs.
 - Development hosts are Windows and macOS; changes must build and be testable on both.
 - Build/test: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.
 - **Integration tests go in the package's single `tests/all` program; never add a new top-level
@@ -173,6 +174,52 @@ them.
 - `cargo xtask lint` (part of `cargo xtask ci` and CI's fast job) fails on a disallowed comment in a
   tracked `.rs`, `.toml` or `.yml` file beyond the counts in `xtask/lint-legacy-files.txt`, which only
   shrinks (`cargo xtask lint --shrink` after a cleanup).
+
+## Work tracking: GitHub issues, the code as the docs
+Owner, 2026-11-26: "instead of add them to md in code -> what if we use the github issue and just use
+the code as docs?". Open work and the reasons behind it live in GitHub issues. The code, its tests
+and the commit history document what is built. Markdown in the repo is kept only for what users read
+and for what the code is built from.
+
+**What lives where**
+- **Open work:** one issue per buildable feature, label `roadmap`, milestone `M<n> <name>` (the
+  roadmap's milestone). An item that needs money or accounts carries `needs-owner` and no milestone;
+  agents skip it.
+- **Decisions:** the issue body (what users get, the design) and the commit or PR that closes it
+  (what was built, the choice made and why, the source it was learned from). An architecture choice
+  also gets the label `decision`, so `gh issue list --label decision --state all` lists them all.
+- **Frozen history:** `docs/decisions.md` (D1 to D791) and the "follow-ups" prose in
+  `docs/roadmap.md` take no new entries. Read them only to trace an old choice; code that cites a
+  D-number keeps it. The one exception is the owner's licence instructions ("License" below), which
+  are still appended to `docs/decisions.md`.
+- **Kept in the repo:** README, the user docs in `docs/` (how to build, boot and use EggOS), the GUI
+  designs in `docs/ux/` (the screens are built from them), NOTICE files, `docs/releases/`, and
+  `docs/roadmap.md` as the milestone table: a milestone is marked done there when its last issue
+  closes.
+- **Progress files** (`.git/progress-*.md`) hold only what a session needs to resume: the issue in
+  hand, the next few issues, and facts that took effort to find. A few dozen lines, not a history.
+
+**The flow**
+1. **Pick** the next issue: the oldest open milestone first, skipping `needs-owner`:
+   `gh issue list --label roadmap --state open --milestone "<milestone>"`. Read it with
+   `gh issue view <n>`.
+2. **Write the code and its tests.** A large issue may take several commits; each one ends its body
+   with `Part of #<n>`.
+3. **Close it with the commit or PR that finishes it.** The subject says what was built; the body
+   says the choice made and why and names any source learned from (also in the module's NOTICE file);
+   the last line is `Closes #<n>`. Pushed to `main`, or merged in a PR, GitHub closes the issue.
+4. **Found more to do?** Open a new issue with the same label and milestone instead of writing a
+   "Left:", "Not yet" or "Follow-up" line anywhere, and name it in the closing commit
+   (`Left: #<m>`).
+5. **Code-only mode:** commit subjects start with "Code written, unbuilt:" and contain `[skip ci]`
+   as before. After the issue closes, label it: `gh issue edit <n> --add-label
+   "code written (unbuilt)"`. The build-and-fix pass works from
+   `gh issue list --label "code written (unbuilt)" --state closed` and removes the label once that
+   code builds and its tests pass, reopening the issue if it doesn't.
+6. **A milestone is finished** when it has no open `roadmap` issue: close the GitHub milestone and
+   follow "Releases" below.
+7. **Open questions** are researched as before ("Open questions" below); the answer goes in an
+   issue comment and the closing commit or PR.
 
 ## Pull requests: review, then merge automatically
 The owner does not merge PRs by hand. After opening a PR, in the same session:
@@ -193,7 +240,8 @@ block a PR (D122) and a UX regression does not need the owner: settle it with re
 changes the license is never merged at all (see License).
 
 ## Releases: ship every major feature, don't ask
-A major feature is a roadmap milestone (`docs/roadmap.md`, M-numbers). When one is finished, its PRs
+A major feature is a roadmap milestone (`docs/roadmap.md`, M-numbers; its open work is the GitHub
+milestone of the same name). When one is finished, its PRs
 are merged and CI on `main` passed, release it in the same session without asking the owner:
 1. **Version** (semantic versioning, tags `vMAJOR.MINOR.PATCH`): until 1.0, each finished milestone
    bumps MINOR (`0.2.0`, `0.3.0`, ...) and fixes in between bump PATCH. `1.0.0` is the first release
@@ -230,13 +278,13 @@ Still the owner's: anything that needs new accounts, signing keys or other crede
   public specifications, man pages and observed behaviour. Never copy, paste, translate or closely
   paraphrase their code, and never add their files, tables or comments: write our own design, names
   and structure.
-  When a part was learned from someone else's code, name that source in its decision and in a NOTICE
+  When a part was learned from someone else's code, name that source in its issue or commit and in a NOTICE
   file next to the module (D550).
 
 ## Open questions: research them yourself
 Don't stop work to wait for the owner. When a question comes up (a design tradeoff, an assumption about
 intent, a choice between approaches, a name), research it yourself, with no subagent: read the repo and,
 where useful, the web, weigh the options and pick one with its reasons. Follow it, record it (PR
-description under "Decided by research", and docs/decisions.md for
-architecture), and keep working. The owner can overrule any of these later.
+description under "Decided by research", or the issue and its closing commit; an architecture
+choice also labels the issue `decision`), and keep working. The owner can overrule any of these later.
 Still open: none.

@@ -503,7 +503,7 @@ light theme in the boot menu; Secure Boot signing (`real-hardware.md`); Apple si
    when the shared one has no room. This needs `eggos-fat32` to add files to an existing
    volume, and the loader to read its files from the folder it was started from.
 6. The firmware entry `EggOS`, first in the order, through the runtime variable services
-   (`follow-ups.md`), for alongside and whole-disk installs.
+   (GitHub issues), for alongside and whole-disk installs.
 7. The loader's menu: when it shows, its entries, places, colours, keys, the wait, the
    high-contrast form, the serial form, and starting another entry by the firmware's
    next-boot variable and a restart.
