@@ -1,5 +1,9 @@
 # Architecture decisions
 
+**Frozen on 2026-11-26.** New decisions live in GitHub issues (label `decision`) and the commits that
+close them (CLAUDE.md, "Work tracking"). This file is the history of D1 to D791; only the owner's
+licence instructions are still appended here.
+
 Numbered, append-only. A later decision may supersede an earlier one; say so in both entries.
 Status is **Decided** (owner) or **Provisional, owner to confirm**.
 

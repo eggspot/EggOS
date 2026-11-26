@@ -1,7 +1,10 @@
 # EggOS roadmap
 
 Status keys: **done**, **in progress**, **next**, planned (no marker).
-Updated by every build-loop run; the order is refined as we learn (reasons in `docs/decisions.md`).
+Open work is tracked in [GitHub issues](https://github.com/eggspot/EggOS/issues?q=is%3Aopen+label%3Aroadmap),
+one per feature, grouped by milestone (CLAUDE.md, "Work tracking"). This page keeps the milestone
+table and the support matrix; a milestone is marked **done** here when its last issue closes. The
+plans and follow-up notes below are history up to 2026-11-26.
 
 ## v0.3.0 plan (**done**, released as v0.3.0 on 2026-11-05; owner 2026-10-26, D99)
 
